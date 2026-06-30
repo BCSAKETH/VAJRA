@@ -1,0 +1,10 @@
+{
+  "name": "VAJRA KSP Intelligence",
+  "description": "Conversational AI Intelligence Platform for Karnataka State Police SCRB investigators.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
