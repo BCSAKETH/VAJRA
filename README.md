@@ -5,6 +5,34 @@ VAJRA (ವಜ್ರ) is a state-of-the-art, secure law enforcement intelligence 
 
 ---
 
+## 📸 Interface Walkthrough
+
+### 1. Secure Badge (KGID) Authentication
+Officers log in securely using their 7-digit general credentials. Station constraints are applied instantly.
+![KGID Authentication Login Screen](assets/login_page.png)
+
+### 2. Operational CommandCenter Dashboard
+Includes live stats on district crime trends, dynamic alerts, and district filter summaries.
+![Command Center Dashboard Interface](assets/command_center.png)
+
+### 3. FIR Registry Search & Repository
+Granular filtering by District, Station, and Status. Direct links to load full Case Chronicles.
+![FIR Registry Search Screen](assets/fir_repository.png)
+
+### 4. Interactive Case Workspace & Threat Analysis
+Analyze offender characteristics, risk level attributions, and local incidents side-by-side.
+![Case Workspace Interface](assets/case_workspace.png)
+
+### 5. Gemini Grounded Case Summarization
+Click "Explain Crime" or query details to get clear AI summaries matched against real cases.
+![Gemini AI Grounded Summarizer Output](assets/gemini_case_summary.png)
+
+### 6. Accused Profiling & Recidivism Predictor
+Inspect accused dossiers, crime histories, and SHAP-explainable risk factors.
+![Accused Profiles Page](assets/suspects_screen.png)
+
+---
+
 ## 🏗️ System Architecture & Data Pipelines
 
 ```mermaid
