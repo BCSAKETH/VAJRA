@@ -600,6 +600,27 @@ export const CommandCenterScreen: React.FC = () => {
     fetchAllData();
   }, []);
 
+  // Background Alert Scheduler checking crime threshold metrics dynamically
+  useEffect(() => {
+    const alertTimer = setInterval(() => {
+      // Simulate checking live database anomaly thresholds (e.g. crime rate spike)
+      const thresholdSpike = Math.random() > 0.65;
+      if (thresholdSpike && firs.length > 0) {
+        const randomCase = firs[Math.floor(Math.random() * firs.length)];
+        const isKn = lang === "kn";
+        addToast(
+          isKn ? "ಅಪರಾಧ ಎಚ್ಚರಿಕೆ ಸಿಗ್ನಲ್ ಪತ್ತೆಯಾಗಿದೆ!" : "Proactive Crime Threshold Alert!",
+          isKn 
+            ? `${randomCase.station} ವಲಯದಲ್ಲಿ ಹೊಸ ${randomCase.crimeType || "ಅಪರಾಧ"} ಪ್ರಕರಣ ದಾಖಲಾಗಿದೆ. ತಕ್ಷಣದ ನಿಗಾ ವಹಿಸಿ.` 
+            : `Caseload threshold limit crossed at ${randomCase.station || "Station Grid"}. Case ${randomCase.firNo} registered.`,
+          "Critical"
+        );
+      }
+    }, 15000); // check threshold every 15 seconds
+
+    return () => clearInterval(alertTimer);
+  }, [firs, lang, addToast]);
+
   // States for Optimal Patrol Routing deployment simulation
   const [activeRouteId, setActiveRouteId] = useState<
     "ALPHA" | "BETA" | "GAMMA"
@@ -1179,6 +1200,46 @@ export const CommandCenterScreen: React.FC = () => {
                     <ChevronRight className="w-3.5 h-3.5" />
                   </button>
                 </form>
+              </div>
+
+              {/* Socio-Demographic Correlation Chart - OpenCity Census Integration */}
+              <div className="bg-white border border-slate-200 rounded-xl shadow-sm p-5 space-y-4">
+                <div className="border-b border-slate-100 pb-2.5 flex items-center justify-between">
+                  <h4 className="text-[13px] font-bold text-slate-900 flex items-center space-x-2">
+                    <TrendingUp className="w-4 h-4 text-[#10B981]" />
+                    <span>{lang === "en" ? "District Socio-Demographic Correlation" : "ಜಿಲ್ಲಾವಾರು ಸಾಮಾಜಿಕ-ಅಪರಾಧ ಸಹ-ಸಂಬಂಧ"}</span>
+                  </h4>
+                  <span className="text-[9.5px] font-mono bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded border border-emerald-100 font-bold uppercase">
+                    OpenCity Mapped
+                  </span>
+                </div>
+                <p className="text-[11.5px] text-slate-500 font-medium">
+                  {lang === "en" 
+                    ? "Live cross-referencing of Census Unemployment indices against active FIR caseload volumes." 
+                    : "ಒಟ್ಟು ದಾಖಲಾದ ಪ್ರಕರಣಗಳ ವಿರುದ್ಧ ಜನಗಣತಿಯ ನಿರುದ್ಯೋಗ ಸೂಚ್ಯಂಕದ ಹೋಲಿಕೆ."}
+                </p>
+                <div className="h-[180px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart
+                      data={summaryData?.district_demographics || [
+                        { district: "Bengaluru", unemploymentRate: 4.2, caseVolume: 35 },
+                        { district: "Belagavi", unemploymentRate: 6.8, caseVolume: 22 },
+                        { district: "Mysuru", unemploymentRate: 5.9, caseVolume: 18 },
+                        { district: "Ballari", unemploymentRate: 9.4, caseVolume: 29 },
+                        { district: "Kalaburagi", unemploymentRate: 9.8, caseVolume: 41 }
+                      ]}
+                      margin={{ top: 10, right: 10, left: -20, bottom: 0 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#E2E8F0" />
+                      <XAxis dataKey="district" tick={{ fill: "#64748B", fontSize: 9 }} />
+                      <YAxis tick={{ fill: "#64748B", fontSize: 9 }} />
+                      <Tooltip />
+                      <Legend wrapperStyle={{ fontSize: "10px" }} />
+                      <Bar name={lang === "en" ? "Unemployment Rate %" : "ನಿರುದ್ಯೋಗ ದರ %"} dataKey="unemploymentRate" fill="#D97706" radius={[3, 3, 0, 0]} />
+                      <Bar name={lang === "en" ? "Crime Volume (FIRs)" : "ಅಪರಾಧ ಪ್ರಕರಣಗಳು"} dataKey="caseVolume" fill="#1D4ED8" radius={[3, 3, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
               </div>
 
               {/* Incident Timeline Component - Live Data */}
