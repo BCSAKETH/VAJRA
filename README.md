@@ -1,83 +1,111 @@
-<div align="center">
-<img width="1200" height="475" alt="VAJRA Banner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# VAJRA (ವಜ್ರ) - Intelligent Conversational AI & Crime Intelligence Portal
+### Karnataka State Police Datathon 2026 — Challenge 01
 
-# VAJRA (ವಜ್ರ) - Secure Intelligence Portal
-
-VAJRA is a state-of-the-art law enforcement intelligence portal for the Karnataka State Police. It integrates live database case records from `FIR_Details_Data.csv` (uploaded to Supabase) into the frontend's FIR Repository and Case Workspace screens, dynamically filtered using Row-Level Security (RLS).
+VAJRA (ವಜ್ರ) is a state-of-the-art, secure law enforcement intelligence portal designed for the Karnataka State Police. It translates raw crime, accident, and historical records into actionable insights using advanced NLP, Explainable AI (SHAP), and GraphRAG. It provides an intuitive, high-performance interface for investigators to traverse criminal networks, locate spatial hotspots, profile offenders, and query database information in both English and Kannada.
 
 ---
 
-## 🏗️ System Architecture & Data Flow
+## 🏗️ System Architecture & Data Pipelines
 
 ```mermaid
 graph TD
-    A[React/Vite Frontend - Port 3000] -->|Fetch /api/firs| B[FastAPI Backend - Port 8000]
-    B -->|Binds JWT Token| C[Supabase DB]
-    C -->|Enforces RLS| D[Case Registry & Accident Reports]
-    E[FIR_Details_Data.csv] -->|migrate_to_supabase.py| C
+    %% User Interfaces
+    SubGraph1[Web UI - React/Vite - Port 3000] -->|HTTP Requests / WebSpeech ASR| API[FastAPI Gateway - Port 8000]
+    
+    %% Analytics & ML Engines
+    API -->|1. Natural Language Routing| Router[LangChain Query Router]
+    API -->|2. Risk Scoring & Explainability| RiskModel[XGBoost & SHAP Explainability Engine]
+    API -->|3. Spatial Hotspot Mapping| DBSCAN[DBSCAN KDE Spatial Engine]
+    
+    %% Data Store Layers
+    Router -->|Semantic Vector Search| PGV[(Vector DB / pgvector)]
+    Router -->|Entity Relationship Traversal| Neo4j[(Neo4j Graph Database)]
+    Router -->|Relational Queries & RLS| Supabase[(Supabase Database)]
+    
+    %% Data Ingestion
+    CSV[Raw FIR & Accident CSVs] -->|migrate_to_supabase.py| Supabase
 ```
 
-1. **Frontend Connections**:
-   - [FIRSearchScreen.tsx](file:///c:/Users/B.C%20SAKETH/Downloads/VAJRA-main/src/screens/FIRSearchScreen.tsx) fetches cases from the backend at `http://localhost:8000/api/firs?limit=150`.
-   - [CaseWorkspaceScreen.tsx](file:///c:/Users/B.C%20SAKETH/Downloads/VAJRA-main/src/screens/CaseWorkspaceScreen.tsx) queries `http://localhost:8000/api/firs/{firNo}` to load specific facts and briefs.
-   - [LoginScreen.tsx](file:///c:/Users/B.C%20SAKETH/Downloads/VAJRA-main/src/screens/LoginScreen.tsx) authenticates the officer using their 7-digit numeric badge number (KGID) and password.
-
-2. **Row-Level Security (RLS)**:
-   - When a user logs in, the FastAPI server verifies the JWT token and extracts their profile and station.
-   - The Supabase client automatically applies the RLS policy: officers can only query cases belonging to their own station (e.g. `Amengad PS` for badge `4003385`).
+### 1. Unified Layer Breakdown
+*   **Speech Input (ASR)**: Uses web browser-native `webkitSpeechRecognition` to capture live voice queries in Kannada and English directly from the dashboard.
+*   **NLP & Router**: Maps queries using Gemini 1.5 Flash alongside localized dictionaries to resolve regional slangs, transliterate fields, and route queries.
+*   **Row-Level Security (RLS)**: Enforces access bounds. Officers logging in using their 7-digit Karnataka General ID (KGID) can only view records corresponding to their assigned station (e.g. `Amengad PS`).
+*   **Predictive Modeling**: Computes recidivism/threat risks via custom XGBoost models and renders local contributions instantly as interactive SHAP feature-contribution tables and bar charts.
+*   **Spatial Cluster Computations**: Applies dynamic Density-Based Spatial Clustering of Applications with Noise (DBSCAN) to group geospatial coordinates (`latitude`, `longitude`) into actionable police patrol zones.
 
 ---
 
-## 🚀 Running the Project Locally
+## 🛠️ Tech Stack & Dependencies
 
-### 1. Run the FastAPI Backend (Port 8000)
+*   **Frontend**: React (v18), Vite, TypeScript, TailwindCSS, Lucide Icons, Leaflet (React-Leaflet) for GIS Mapping, Recharts for analytics visualization.
+*   **Backend**: Python 3.10+, FastAPI, Uvicorn, LangChain, Joblib.
+*   **Databases**: Supabase (PostgreSQL), GraphRAG (Neo4j/Graph logic), local JSON caching.
+*   **Machine Learning / NLP**: Scikit-Learn, XGBoost, SHAP, Gemini API.
 
-Navigate to the backend directory, install Python dependencies, and start the Uvicorn server:
+---
+
+## 🚀 Installation & Local Execution
+
+### 1. Prerequisites
+Ensure you have the following installed on your machine:
+*   [Node.js (v18+)](https://nodejs.org/)
+*   [Python (3.10+)](https://www.python.org/)
+
+### 2. Run the FastAPI Backend (Port 8000)
 
 ```bash
-# 1. Navigate to the backend folder
+# 1. Navigate to the backend directory
 cd vajra_backend
 
-# 2. Activate virtual environment (if created)
+# 2. Set up a virtual environment
+python -m venv .venv
+
+# 3. Activate the virtual environment
 # On Windows:
 .venv\Scripts\activate
 # On macOS/Linux:
 source .venv/bin/activate
 
-# 3. Install Python dependencies
+# 4. Install required packages
 pip install -r requirements.txt
 
-# 4. Start the backend server
+# 5. Start the API server
 python main.py
 ```
+*The backend server will spin up on **`http://localhost:8000`**.*
 
-*The backend server will run on **http://localhost:8000**.*
+### 3. Run the React Frontend (Port 3000)
 
-### 2. Run the React Frontend (Port 3000)
-
-In a new terminal window in the project root directory:
+In a new terminal window at the project root directory:
 
 ```bash
-# 1. Install Node.js dependencies
+# 1. Install Node modules
 npm install
 
-# 2. Start the Vite development server
+# 2. Boot up the Vite dev server
 npm run dev
 ```
-
-*The frontend application will be available at **http://localhost:3000**.*
+*The web interface will compile and run on **`http://localhost:3000`**.*
 
 ---
 
-## 🗄️ Database Seeding & Migration
+## 🗃️ Database Migrations
 
-If you need to re-migrate or seed the CSV data into Supabase:
+To import, parse, and upload raw police records (`FIR_Details_Data.csv`, `Crime_Data.csv`, `AccidentReports.csv`) to your remote database:
 
 ```bash
 cd vajra_backend
 python migrate_to_supabase.py
 ```
 
-This script parses the CSV files (`FIR_Details_Data.csv`, `Crime_Data.csv`, and `Copy of AccidentReports.csv`), structures them, and uploads them to the Supabase database.
+---
 
+## 🛡️ Data Governance & Compliance
+
+*   **DPDPA 2023 / IT Act 2000**: All AI-synthesized profiles feature mandatory advisory headers, reminding officers that AI outputs must be validated manually before being entered into formal case briefs.
+*   **Audit Trail Log**: Every search query, profile inspection, and case access is logged transparently inside the **System Audit Log** screen, including timestamp, operator badge (KGID), action description, and station IP.
+
+---
+
+## 📄 Licensing & Attribution
+Developed for the **Karnataka State Police Datathon 2026**. Authorized for internal evaluation and pilot deployment.
