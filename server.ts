@@ -57,7 +57,7 @@ Grounded analysis rules: Always refer to these details when answering questions 
         : 'No specific active case context is locked.';
 
       const systemInstruction = `You are "Vajra (ವಜ್ರ)", the state-of-the-art bilingual law-enforcement AI cognitive intelligence copilot deployed by the Karnataka Police Department.
-You have access to 1.6 Million historical CCTNS Karnataka Police records.
+You have access to the Secure Synthetic CCTNS Register (80 records / 30 tables).
 Always remain professional, objective, precise, and humble.
 Do not invent facts. Ground all statistics and responses where possible on facts.
 The user is speaking in language: ${lang === 'en' ? 'English' : 'Kannada'}.

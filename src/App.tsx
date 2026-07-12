@@ -1,72 +1,51 @@
-/**
- * @license
- * SPDX-License-Identifier: Apache-2.0
- */
-
-import React from 'react';
-import { AppProvider, useApp } from './AppContext';
-import { LandingScreen } from './screens/LandingScreen';
-import { LoginScreen } from './screens/LoginScreen';
-import { MainLayout } from './components/MainLayout';
-
-// Import All 11 Operational Screens
-import { CommandCenterScreen } from './screens/CommandCenterScreen';
-import { AIChatScreen } from './screens/AIChatScreen';
-import { SpatialScreen } from './screens/SpatialScreen';
-import { NetworkScreen } from './screens/NetworkScreen';
-import { CaseWorkspaceScreen } from './screens/CaseWorkspaceScreen';
-import { AccusedProfileScreen } from './screens/AccusedProfileScreen';
-import { FIRSearchScreen } from './screens/FIRSearchScreen';
-import { AlertsFeedScreen } from './screens/AlertsFeedScreen';
-import { ReportsScreen } from './screens/ReportsScreen';
-import { AuditTrailScreen } from './screens/AuditTrailScreen';
-import { SettingsScreen } from './screens/SettingsScreen';
+import React from "react";
+import { AppProvider, useApp } from "./AppContext";
+import { LoginScreen } from "./screens/LoginScreen";
+import { MainLayout } from "./components/MainLayout";
+import { AIChatScreen } from "./screens/AIChatScreen";
+import { SpatialScreen } from "./screens/SpatialScreen";
+import { FIRSearchScreen } from "./screens/FIRSearchScreen";
+import { ReportsScreen } from "./screens/ReportsScreen";
+import { SupervisorDashboardScreen } from "./screens/SupervisorDashboardScreen";
+import { SettingsScreen } from "./screens/SettingsScreen";
+import { SessionTimeoutGuard } from "./components/SessionTimeoutGuard";
 
 const AppContent: React.FC = () => {
   const { currentScreen, isAuthenticated } = useApp();
 
-  // If investigator is not authenticated, restrict view strictly to landing or login
-  if (!isAuthenticated) {
-    if (currentScreen === 'landing') {
-      return <LandingScreen />;
-    }
-    return <LoginScreen />;
+  if (!isAuthenticated || currentScreen === "login") {
+    return (
+      <>
+        <LoginScreen />
+        <SessionTimeoutGuard />
+      </>
+    );
   }
 
-  // Define operational router rendering based on currentScreen ID
-  const renderOperationalScreen = () => {
+  const renderScreen = () => {
     switch (currentScreen) {
-      case 'command_center':
-        return <CommandCenterScreen />;
-      case 'ai_chat':
+      case "ai_chat":
         return <AIChatScreen />;
-      case 'spatial':
+      case "spatial":
         return <SpatialScreen />;
-      case 'network':
-        return <NetworkScreen />;
-      case 'case_workspace':
-        return <CaseWorkspaceScreen />;
-      case 'accused_profile':
-        return <AccusedProfileScreen />;
-      case 'fir_search':
+      case "fir_search":
         return <FIRSearchScreen />;
-      case 'alerts_feed':
-        return <AlertsFeedScreen />;
-      case 'reports':
+      case "reports":
         return <ReportsScreen />;
-      case 'audit_trail':
-        return <AuditTrailScreen />;
-      case 'settings':
+      case "supervisor":
+      case "audit":
+        return <SupervisorDashboardScreen />;
+      case "settings":
         return <SettingsScreen />;
       default:
-        return <CommandCenterScreen />;
+        return <AIChatScreen />;
     }
   };
 
-  // If authenticated, we wrap all operational views with MainLayout
   return (
     <MainLayout>
-      {renderOperationalScreen()}
+      {renderScreen()}
+      <SessionTimeoutGuard />
     </MainLayout>
   );
 };

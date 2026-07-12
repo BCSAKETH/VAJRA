@@ -6,27 +6,27 @@ import React, {
   useEffect,
 } from "react";
 import { Language, Translations, translations } from "./i18n";
+import { API_BASE } from "./config";
 
 export type ScreenId =
-  | "landing"
   | "login"
-  | "command_center"
   | "ai_chat"
   | "spatial"
-  | "network"
-  | "case_workspace"
-  | "accused_profile"
   | "fir_search"
-  | "alerts_feed"
   | "reports"
-  | "audit_trail"
+  | "supervisor"
+  | "audit"
   | "settings";
 
 export interface ChatMessage {
   id: string;
-  sender: "user" | "assistant";
+  sender: "user" | "assistant" | "system";
   text: string;
   timestamp: string;
+  responseType?: "text" | "map" | "network" | "risk" | "forecast";
+  data?: any;
+  isSimulated?: boolean;
+  simulatedReason?: string;
   citations?: { type: string; id: string; details: string }[];
 }
 
@@ -68,6 +68,12 @@ interface AppContextType {
   isGlobalLoading: boolean;
   globalLoadingMessage: string;
   setGlobalLoading: (isLoading: boolean, message?: string) => void;
+  writeAuditLog: (
+    actionType: string,
+    targetEntity: string,
+    queryText: string,
+    responseSummary: string,
+  ) => Promise<boolean>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -82,8 +88,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
 
   const [currentScreen, setCurrentScreenState] = useState<ScreenId>(() => {
     const saved = localStorage.getItem("vajra_screen");
-    // If authenticated, we can resume, but default to landing if fresh
-    return (saved as ScreenId) || "landing";
+    return (saved as ScreenId) || "login";
   });
 
   const [isAuthenticated, setIsAuthenticatedState] = useState<boolean>(() => {
@@ -94,32 +99,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     return localStorage.getItem("vajra_badge");
   });
 
-  // System connectivity status for the settings screen config
   const [isDbConnected, setIsDbConnected] = useState<boolean>(true);
   const [isNeo4jConnected, setIsNeo4jConnected] = useState<boolean>(true);
-
-  // Global toast alerts state
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
 
-  // Theme state
-  const [theme, setThemeState] = useState<"light" | "high-contrast-dark">(
-    () => {
-      const saved = localStorage.getItem("vajra_theme");
-      return saved === "light" || saved === "high-contrast-dark"
-        ? saved
-        : "light";
-    },
-  );
+  const [theme, setThemeState] = useState<"light" | "high-contrast-dark">(( ) => {
+    const saved = localStorage.getItem("vajra_theme");
+    return saved === "light" || saved === "high-contrast-dark" ? saved : "light";
+  });
 
-  // Active selected FIR state
   const [selectedFirNo, setSelectedFirNoState] = useState<string | null>(() => {
     return localStorage.getItem("vajra_selected_fir_no") || null;
   });
 
-  // Global Chat State
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-
-  // Global Loading State
   const [isGlobalLoading, setIsGlobalLoading] = useState(false);
   const [globalLoadingMessage, setGlobalLoadingMessage] = useState("");
 
@@ -159,7 +152,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     setToasts((prev) => prev.filter((t) => t.id !== id));
   };
 
-  // Sync state to localStorage to persist through frame refreshes
   useEffect(() => {
     localStorage.setItem("vajra_lang", lang);
   }, [lang]);
@@ -182,10 +174,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
 
   useEffect(() => {
     localStorage.setItem("vajra_theme", theme);
-    if (theme === "high-contrast-dark") {
-      document.documentElement.classList.add("dark");
+    if (theme === "light") {
+      document.documentElement.classList.add("light");
     } else {
-      document.documentElement.classList.remove("dark");
+      document.documentElement.classList.remove("light");
     }
   }, [theme]);
 
@@ -198,14 +190,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
   };
 
   const setCurrentScreen = (screen: ScreenId) => {
-    // If not authenticated, restrict accessing operational dashboards
-    if (!isAuthenticated && screen !== "landing" && screen !== "login") {
+    if (!isAuthenticated && screen !== "login") {
       setCurrentScreenState("login");
-    } else if (
-      isAuthenticated &&
-      (screen === "landing" || screen === "login")
-    ) {
-      setCurrentScreenState("command_center");
+    } else if (isAuthenticated && screen === "login") {
+      setCurrentScreenState("ai_chat");
     } else {
       setCurrentScreenState(screen);
     }
@@ -214,15 +202,43 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
   const setIsAuthenticated = (auth: boolean) => {
     setIsAuthenticatedState(auth);
     if (auth) {
-      setCurrentScreenState("command_center");
+      setCurrentScreenState("ai_chat");
     } else {
       setBadgeNumberState(null);
-      setCurrentScreenState("landing");
+      localStorage.removeItem("vajra_token");
+      setCurrentScreenState("login");
     }
   };
 
   const setBadgeNumber = (badge: string | null) => {
     setBadgeNumberState(badge);
+  };
+
+  const writeAuditLog = async (
+    actionType: string,
+    targetEntity: string,
+    queryText: string,
+    responseSummary: string,
+  ): Promise<boolean> => {
+    try {
+      const response = await fetch(`${API_BASE}/api/audit-logs/write`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
+        },
+        body: JSON.stringify({
+          action_type: actionType,
+          target_entity: targetEntity,
+          query_text: queryText,
+          response_summary: responseSummary,
+        }),
+      });
+      return response.ok;
+    } catch (e) {
+      console.error("Failed to write audit log:", e);
+      return false;
+    }
   };
 
   const t = translations[lang];
@@ -255,6 +271,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         isGlobalLoading,
         globalLoadingMessage,
         setGlobalLoading,
+        writeAuditLog,
       }}
     >
       {children}

@@ -1,0 +1,12 @@
+{
+  "project": {
+    "name": "VAJRA",
+    "id": "50212000000025002"
+  },
+  "client": {
+    "source": "client"
+  },
+  "appsail": {
+    "source": "vajra_backend"
+  }
+}

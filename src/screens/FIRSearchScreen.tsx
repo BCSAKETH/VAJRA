@@ -1,325 +1,249 @@
 import React, { useState, useEffect } from "react";
 import { useApp } from "../AppContext";
-import { mockFIRs, FIRRecord } from "../mockData";
-import { FIRSearchSkeleton } from "../components/SkeletonLoader";
-import {
-  Search,
-  Filter,
-  CheckCircle,
-  FileText,
-  Clock,
-  ArrowRight,
-  Database,
-  ExternalLink,
-} from "lucide-react";
+import { API_BASE } from "../config";
+import { WatermarkOverlay } from "../components/WatermarkOverlay";
+import { Search, ShieldAlert, FolderOpen, Calendar, MapPin, Eye } from "lucide-react";
+
+interface CaseRecord {
+  CaseMasterID: number;
+  CrimeNo: string;
+  BriefFacts: string;
+  CrimeRegisteredDate: string;
+  DistrictName: string;
+  UnitName: string;
+  LookupValue: string; // Heinous etc.
+  VictimCount: number;
+  AccusedCount: number;
+}
 
 export const FIRSearchScreen: React.FC = () => {
-  const { lang, setCurrentScreen, setSelectedFirNo } = useApp();
-  const [searchTerm, setSearchTerm] = useState("");
-  const [selectedStation, setSelectedStation] = useState("All");
-  const [selectedDistrict, setSelectedDistrict] = useState("All");
-  const [selectedStatus, setSelectedStatus] = useState("All");
+  const { lang, addToast, setIsAuthenticated } = useApp();
+  const [query, setQuery] = useState("");
+  const [firs, setFirs] = useState<CaseRecord[]>([]);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [firs, setFirs] = useState<FIRRecord[]>([]);
+  const [selectedCase, setSelectedCase] = useState<CaseRecord | null>(null);
 
-  useEffect(() => {
-    const fetchFirs = async () => {
-      try {
-        setIsLoading(true);
-        const token = localStorage.getItem("vajra_token");
-        const response = await fetch("http://localhost:8000/api/firs?limit=150", {
-          headers: {
-            "Authorization": `Bearer ${token}`
-          }
-        });
-        if (!response.ok) {
-          throw new Error("Failed to fetch records from registry.");
-        }
-        const data = await response.json();
-        setFirs(data);
-      } catch (err: any) {
-        console.error("Error fetching live FIRs:", err);
-        // Fallback to mock data to prevent blocking prototype auditing
-        setFirs(mockFIRs);
-      } finally {
-        setIsLoading(false);
+  // Fetch FIRs on mount/search
+  const handleSearch = async (searchStr: string) => {
+    try {
+      setIsLoading(true);
+      setErrorMsg(null);
+
+      const endpoint = searchStr.trim()
+        ? `${API_BASE}/api/cases/search?query=${encodeURIComponent(searchStr)}`
+        : `${API_BASE}/api/cases/all`;
+
+      const response = await fetch(endpoint, {
+        headers: {
+          "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
+        },
+      });
+
+      if (response.status === 401) {
+        addToast(
+          lang === "en" ? "Session Expired" : "ಅಧಿವೇಶನ ಅವಧಿ ಮುಗಿದಿದೆ",
+          lang === "en" ? "Please sign in again to establish a secure logon." : "ಸುರಕ್ಷಿತ ಲಾಗಿನ್ ಸ್ಥಾಪಿಸಲು ದಯವಿಟ್ಟು ಮತ್ತೊಮ್ಮೆ ಲಾಗ್ ಇನ್ ಮಾಡಿ.",
+          "Warning"
+        );
+        setIsAuthenticated(false);
+        return;
       }
-    };
-    fetchFirs();
-  }, []);
 
-  const filteredFIRs = firs.filter((fir) => {
-    const matchesSearch =
-      fir.firNo.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      fir.accusedName.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      fir.actSection.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      fir.crimeType.toLowerCase().includes(searchTerm.toLowerCase());
+      if (!response.ok) {
+        throw new Error("Data Unavailable — Security Registry Offline");
+      }
 
-    const matchesDistrict =
-      selectedDistrict === "All" || fir.district.toLowerCase() === selectedDistrict.toLowerCase();
-    const matchesStation =
-      selectedStation === "All" || fir.station.toLowerCase() === selectedStation.toLowerCase();
-    const matchesStatus =
-      selectedStatus === "All" || fir.status === selectedStatus;
-
-    return matchesSearch && matchesDistrict && matchesStation && matchesStatus;
-  });
-
-  const districts = [
-    "All",
-    ...Array.from(new Set(firs.map((f) => f.district).filter(Boolean))),
-  ];
-
-  const stations = [
-    "All",
-    ...Array.from(new Set(firs.map((f) => f.station))),
-  ];
-  const statuses = [
-    "All",
-    "Under Investigation",
-    "Charge Sheeted",
-    "Closed",
-    "Untraced",
-  ];
-
-  const handleLaunchWorkspace = (firNo: string) => {
-    // Save chosen file to local storage so workspace can mount it
-    localStorage.setItem("vajra_initial_workspace_case", firNo);
-    setSelectedFirNo(firNo);
-    setCurrentScreen("case_workspace");
+      const data = await response.json();
+      if (!data || data.length === 0) {
+        setFirs([]);
+        if (searchStr.trim()) {
+          addToast("Search Result", "No CCTNS matches found for query.", "Info");
+        }
+      } else {
+        setFirs(data);
+      }
+    } catch (err: any) {
+      console.error(err);
+      setErrorMsg(err.message || "Failed to contact database registry.");
+      setFirs([]);
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const dictionary = {
-    en: {
-      title: "CCTNS FIR Registry Index Directory",
-      desc: "Instant search of 1.6 Million historical entries from the Kaggle SCRB dataset. Instantly filter by police station jurisdiction and file processing state.",
-      searchPlaceholder: "Enter suspect name, IPC section, or FIR card ID...",
-      colNo: "FIR No.",
-      colStation: "Subdivision PS",
-      colType: "Crime Classification",
-      colAccused: "Charged Suspect",
-      colStatus: "CCTNS Status",
-      colActions: "Workspace Actions",
-      inspectBtn: "Deport to Workspace",
-    },
-    kn: {
-      title: "CCTNS ಎಫ್ಐಆರ್ ನೋಂದಣಿ ಸೂಚಿಕೆ ಡೈರೆಕ್ಟರಿ",
-      desc: "ರಾಜ್ಯ ಪೊಲೀಸ್ ಇಲಾಖೆಯ ೧.೬ ಮಿಲಿಯನ್ CCTNS ದಾಖಲೆಗಳ ಸುಧಾರಿತ ಹುಡುಕಾಟ. ಠಾಣೆ ಮತ್ತು ತನಿಖೆಯ ಸ್ಥಿತಿಯ ಆಧಾರದ ಮೇಲೆ ಫಿಲ್ಟರ್ ಮಾಡಿ.",
-      searchPlaceholder:
-        "ಆರೋಪಿಯ ಹೆಸರು, ಕಾನೂನು ಕಲಂಗಳು ಅಥವಾ ಎಫ್‌ಐಆರ್ ಸಂಖ್ಯೆ ನಮೂದಿಸಿ...",
-      colNo: "ಎಫ್ಐಆರ್ ಸಂಖ್ಯೆ",
-      colStation: "ಪೊಲೀಸ್ ಠಾಣೆ",
-      colType: "ಅಪರಾಧ ವಿಧ",
-      colAccused: "ಸಂಶಯಾಸ್ಪದ ಆರೋಪಿ",
-      colStatus: "ತನಿಖಾ ಸ್ಥಿತಿ",
-      colActions: "ಕ್ರಿಯೆಗಳು",
-      inspectBtn: "ಕಾರ್ಯಸ್ಥಳದಲ್ಲಿ ನೋಡಿ",
-    },
-  }[lang];
-
-  if (isLoading) {
-    return <FIRSearchSkeleton />;
-  }
+  useEffect(() => {
+    handleSearch("");
+  }, []);
 
   return (
-    <div className="p-6 space-y-6 font-sans animate-fade-in bg-slate-50">
-      {/* Title */}
-      <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-sm space-y-1">
-        <div className="inline-flex items-center space-x-1 px-2 py-0.5 rounded bg-blue-50 text-[#1D4ED8] text-[10px] font-mono font-bold">
-          <Database className="w-3.5 h-3.5" />
-          <span>KSP SECURE DATABASE ACCESS NODE</span>
+    <div className="h-full flex flex-col relative p-6 space-y-6 bg-slate-950/20">
+      {/* Repeating security watermark overlay */}
+      <WatermarkOverlay />
+
+      {/* Top Search Controls */}
+      <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center bg-slate-905/30 shrink-0">
+        <div className="space-y-1">
+          <h2 className="text-base font-black text-slate-100 uppercase tracking-wider font-mono flex items-center gap-2">
+            <FolderOpen className="w-5 h-5 text-[#00C6AD]" />
+            <span>FIR Security Registry</span>
+          </h2>
+          <p className="text-[11px] text-slate-550 leading-relaxed font-mono">
+            Audit case registry entries across the Karnataka CCTNS datastore.
+          </p>
         </div>
-        <h2 className="text-xl font-bold text-slate-900 tracking-tight kn-text">
-          {dictionary.title}
-        </h2>
-        <p className="text-[12.5px] text-slate-500 max-w-2xl kn-text">
-          {dictionary.desc}
-        </p>
-      </div>
 
-      {/* Filter and Search Layout Controls */}
-      <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4">
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-3.5">
-          {/* Search Box */}
-          <div className="md:col-span-4 relative">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-3.5" />
-            <input
-              type="text"
-              placeholder={dictionary.searchPlaceholder}
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg text-[13px] focus:outline-none focus:ring-1 focus:ring-[#1D4ED8]"
-            />
-          </div>
-
-          {/* District Filter Dropdown */}
-          <div className="md:col-span-3 flex items-center space-x-1.5">
-            <Filter className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <select
-              value={selectedDistrict}
-              onChange={(e) => setSelectedDistrict(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2.5 text-[12.5px] text-slate-700 focus:outline-none"
-            >
-              <option disabled>Filter District</option>
-              {districts.map((dst) => (
-                <option key={dst} value={dst}>
-                  {dst === "All" ? "All Districts / ಎಲ್ಲಾ ಜಿಲ್ಲೆಗಳು" : dst}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Station drop */}
-          <div className="md:col-span-3 flex items-center space-x-1.5">
-            <Filter className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <select
-              value={selectedStation}
-              onChange={(e) => setSelectedStation(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2.5 text-[12.5px] text-slate-700 focus:outline-none"
-            >
-              <option disabled>Filter Police Station</option>
-              {stations.map((st) => (
-                <option key={st} value={st}>
-                  {st === "All" ? "All Stations / ಎಲ್ಲಾ ಠಾಣೆಗಳು" : st}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Status drop */}
-          <div className="md:col-span-2 flex items-center space-x-1.5">
-            <Clock className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-            <select
-              value={selectedStatus}
-              onChange={(e) => setSelectedStatus(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2.5 text-[12.5px] text-slate-700 focus:outline-none"
-            >
-              <option disabled>Filter File Status</option>
-              {statuses.map((st) => (
-                <option key={st} value={st}>
-                  {st === "All" ? "All Statuses / ಎಲ್ಲಾ ಸ್ಥಿತಿಗಳು" : st}
-                </option>
-              ))}
-            </select>
-          </div>
+        {/* Search Bar */}
+        <div className="w-full sm:w-80 relative">
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSearch(query)}
+            placeholder="Search CrimeNo or facts..."
+            className="w-full bg-slate-950/60 border border-slate-850 focus:border-[#00C6AD] rounded-xl py-2.5 pl-3.5 pr-10 text-xs text-slate-200 focus:outline-none transition-all placeholder-slate-650"
+          />
+          <button
+            onClick={() => handleSearch(query)}
+            className="absolute right-2 top-2 p-1 text-slate-500 hover:text-[#00C6AD] transition-all cursor-pointer"
+          >
+            <Search className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
-      {/* Directory Table View */}
-      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-        {/* Count stripe */}
-        <div className="bg-slate-50/55 border-b border-slate-100 p-3 flex justify-between items-center text-[11px] font-mono font-bold text-slate-500">
-          <span>INDEX RESULTS MATCHED: {filteredFIRs.length} ENTRIES</span>
-          <span className="text-[#1D4ED8]">SECURE DIRECT QUERY COMPLIABLE</span>
-        </div>
-
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse border-0 text-[12.5px]">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-slate-500 font-mono text-[10px] uppercase font-bold">
-                <th className="p-4">{dictionary.colNo}</th>
-                <th className="p-4">{dictionary.colStation}</th>
-                <th className="p-4">{dictionary.colType}</th>
-                <th className="p-4">{dictionary.colAccused}</th>
-                <th className="p-4">{dictionary.colStatus}</th>
-                <th className="p-4 text-right">{dictionary.colActions}</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 text-slate-700 font-sans">
-              {filteredFIRs.map((fir) => {
-                return (
-                  <tr
-                    key={fir.firNo}
-                    className="hover:bg-slate-50 transition-colors"
-                  >
-                    {/* FIR ID */}
-                    <td className="p-4 font-mono font-bold text-slate-900 flex items-center space-x-1.5">
-                      <FileText className="w-4 h-4 text-[#1D4ED8] shrink-0" />
-                      <span>{fir.firNo}</span>
-                    </td>
-
-                    {/* Sub station */}
-                    <td className="p-4">
-                      <div className="font-bold text-slate-800 kn-text leading-tight">
-                        {fir.station}
-                      </div>
-                      <div className="text-[10px] text-slate-400 font-mono">
-                        {fir.district}
-                      </div>
-                    </td>
-
-                    {/* Classification */}
-                    <td className="p-4">
-                      <div
-                        className="font-medium text-slate-700 truncate max-w-[170px]"
-                        title={fir.actSection}
-                      >
-                        {fir.crimeType}
-                      </div>
-                      <div
-                        className="text-[10px] font-mono text-slate-400 truncate max-w-[170px]"
-                        title={fir.actSection}
-                      >
-                        {fir.actSection}
-                      </div>
-                    </td>
-
-                    {/* Charge block */}
-                    <td className="p-4">
-                      <div className="font-bold text-slate-800 kn-text leading-tight">
-                        {fir.accusedName}
-                      </div>
-                      <div className="text-[10px] text-slate-500 font-mono">
-                        Age: {fir.accusedAge}
-                      </div>
-                    </td>
-
-                    {/* Case state */}
-                    <td className="p-4">
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                          fir.status === "Closed"
-                            ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
-                            : fir.status === "Charge Sheeted"
-                              ? "bg-blue-50 text-blue-800 border border-blue-200"
-                              : fir.status === "Untraced"
-                                ? "bg-rose-50 text-rose-800 border border-rose-200"
-                                : "bg-amber-50 text-amber-800 border border-amber-200"
+      {/* Main Table or Card details */}
+      <div className="flex-1 min-h-[300px] overflow-hidden flex flex-col md:flex-row gap-6 relative">
+        {errorMsg ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-6 text-center bg-slate-950/40 rounded-2xl border border-rose-500/10 space-y-4">
+            <div className="w-12 h-12 bg-rose-500/10 border border-rose-500/25 text-rose-500 rounded-full flex items-center justify-center">
+              <ShieldAlert className="w-6 h-6" />
+            </div>
+            <div className="space-y-1 max-w-md">
+              <h4 className="text-sm font-black text-rose-400 uppercase tracking-wider font-mono">
+                {lang === "en" ? "Data Unavailable — Security Registry Offline" : "ಡೇಟಾ ಲಭ್ಯವಿಲ್ಲ — ಸಿಐಎಸ್ ರಿಜಿಸ್ಟ್ರಿ ಆಫ್‌ಲೈನ್"}
+              </h4>
+              <p className="text-xs text-slate-500 leading-relaxed font-semibold">
+                Unable to establish a secure handshake with KSP directory server. Mocks are strictly blocked.
+              </p>
+            </div>
+          </div>
+        ) : isLoading ? (
+          <div className="flex-1 flex items-center justify-center text-slate-400 text-xs font-mono">
+            Decrypting CCTNS files...
+          </div>
+        ) : firs.length === 0 ? (
+          <div className="flex-1 flex items-center justify-center text-slate-500 text-xs font-mono">
+            No secure case records resolved.
+          </div>
+        ) : (
+          <>
+            {/* Table Panel */}
+            <div className="flex-1 bg-slate-900/10 border border-slate-850 rounded-2xl overflow-hidden flex flex-col">
+              <div className="overflow-x-auto flex-1">
+                <table className="w-full text-left text-xs font-mono border-collapse">
+                  <thead>
+                    <tr className="bg-slate-950/45 border-b border-slate-800 text-slate-400 uppercase text-[9.5px] font-black tracking-wider">
+                      <th className="py-3.5 px-4">Crime No</th>
+                      <th className="py-3.5 px-4">Registered</th>
+                      <th className="py-3.5 px-4">District / Unit</th>
+                      <th className="py-3.5 px-4">Gravity</th>
+                      <th className="py-3.5 px-4 text-center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-850">
+                    {firs.map((row) => (
+                      <tr
+                        key={row.CaseMasterID}
+                        className={`hover:bg-slate-900/40 transition-colors ${
+                          selectedCase?.CaseMasterID === row.CaseMasterID ? "bg-[#00C6AD]/5 text-[#00C6AD]" : "text-slate-300"
                         }`}
                       >
-                        {fir.status}
-                      </span>
-                    </td>
+                        <td className="py-3 px-4 font-bold tracking-wide">{row.CrimeNo}</td>
+                        <td className="py-3 px-4 text-slate-450">{row.CrimeRegisteredDate?.split(" ")[0]}</td>
+                        <td className="py-3 px-4">
+                          <span className="text-slate-350">{row.DistrictName}</span>
+                          <span className="block text-[10px] text-slate-500">{row.UnitName}</span>
+                        </td>
+                        <td className="py-3 px-4">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[9px] font-bold ${
+                              row.LookupValue === "Heinous" ? "bg-rose-500/10 text-rose-450" : "bg-slate-800 text-slate-400"
+                            }`}
+                          >
+                            {row.LookupValue || "Non-Heinous"}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 text-center">
+                          <button
+                            onClick={() => setSelectedCase(row)}
+                            className="p-1.5 rounded hover:bg-slate-850 text-slate-400 hover:text-[#00C6AD] transition-colors cursor-pointer"
+                          >
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
 
-                    {/* Jump buttons */}
-                    <td className="p-4 text-right">
-                      <button
-                        onClick={() => handleLaunchWorkspace(fir.firNo)}
-                        className="bg-white border border-slate-200 hover:border-[#1D4ED8] text-[#1D4ED8] hover:bg-blue-50/50 text-[11px] font-bold px-3 py-1.5 rounded transition-all flex items-center justify-center space-x-1 ml-auto cursor-pointer"
-                      >
-                        <span className="kn-text">{dictionary.inspectBtn}</span>
-                        <ArrowRight className="w-3.5 h-3.5" />
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-
-              {filteredFIRs.length === 0 && (
-                <tr>
-                  <td
-                    colSpan={6}
-                    className="text-center p-8 text-slate-400 kn-text"
+            {/* Sidebar Inspector Panel */}
+            {selectedCase && (
+              <div className="w-full md:w-96 glass-panel border border-slate-800 rounded-2xl p-5 flex flex-col gap-4 animate-fade-in relative z-10 shrink-0">
+                <div className="border-b border-slate-850 pb-3 flex justify-between items-start">
+                  <div>
+                    <span className="text-[10px] font-bold text-[#00C6AD] font-mono block">CASE DOSSIER</span>
+                    <h4 className="font-extrabold text-slate-200 text-sm font-mono mt-0.5">{selectedCase.CrimeNo}</h4>
+                  </div>
+                  <button
+                    onClick={() => setSelectedCase(null)}
+                    className="text-xs text-slate-500 hover:text-slate-300 cursor-pointer font-bold font-mono"
                   >
-                    {lang === "en"
-                      ? "No indexed files match query. Try modifying your Station or Status filters."
-                      : "ಯಾವುದೇ ಸೂಕ್ತ ಸಿಐಎಸ್ ದಾಖಲೆಗಳು ಕಂಡುಬಂದಿಲ್ಲ. ಫಿಲ್ಟರ್‌ಗಳನ್ನು ಬದಲಾಯಿಸಿ."}
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+                    Close
+                  </button>
+                </div>
+
+                <div className="space-y-4 text-xs font-sans text-slate-350 leading-relaxed flex-1 overflow-y-auto pr-1">
+                  <div className="bg-slate-950/45 p-3 rounded-lg border border-slate-900 font-mono text-[10.5px]">
+                    <div className="flex items-center gap-1.5 mb-1.5 text-slate-200 font-bold">
+                      <Calendar className="w-3.5 h-3.5 text-[#00C6AD]" />
+                      <span>Registration Log</span>
+                    </div>
+                    <p className="text-slate-400">{selectedCase.CrimeRegisteredDate}</p>
+                  </div>
+
+                  <div className="bg-slate-950/45 p-3 rounded-lg border border-slate-900 font-mono text-[10.5px]">
+                    <div className="flex items-center gap-1.5 mb-1.5 text-slate-200 font-bold">
+                      <MapPin className="w-3.5 h-3.5 text-[#00C6AD]" />
+                      <span>Incident Precinct</span>
+                    </div>
+                    <p className="text-slate-400">{selectedCase.UnitName} • {selectedCase.DistrictName}</p>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <span className="block text-[11px] font-bold text-slate-400 font-mono">Incident Narrative (Brief Facts):</span>
+                    <div className="bg-slate-950/65 rounded-lg p-3 text-slate-300 border border-slate-900">
+                      {selectedCase.BriefFacts || "No narrative details compiled."}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 border-t border-slate-850 pt-3.5 font-mono text-[10.5px]">
+                    <div>
+                      <span className="block text-slate-500">Victim Count:</span>
+                      <span className="font-extrabold text-slate-250">{selectedCase.VictimCount}</span>
+                    </div>
+                    <div>
+                      <span className="block text-slate-500">Accused Count:</span>
+                      <span className="font-extrabold text-slate-250">{selectedCase.AccusedCount}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
       </div>
     </div>
   );

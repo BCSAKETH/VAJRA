@@ -69,19 +69,3 @@ export interface LiveAlert {
   details: string;
   isAcknowledged: boolean;
 }
-
-// All static mock database arrays are removed.
-// Data is loaded dynamically via Supabase Casemaster and Accused schemas.
-export const mockFIRs: FIRRecord[] = [];
-export const mockAccused: AccusedProfile[] = [];
-export const mockHotspots: Hotspot[] = [];
-export const mockGraphNodes: GraphNode[] = [];
-export const mockGraphEdges: GraphEdge[] = [];
-export const mockLiveAlerts: LiveAlert[] = [];
-
-export let mockAuditLogs: AuditLog[] = [];
-
-export const appendAuditLog = (log: Omit<AuditLog, 'hash'>) => {
-  const fakeHash = `sha256-${Math.random().toString(16).substring(2, 10)}`;
-  mockAuditLogs = [{ ...log, hash: fakeHash }, ...mockAuditLogs];
-};

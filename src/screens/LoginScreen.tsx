@@ -1,15 +1,8 @@
 import React, { useState } from "react";
 import { useApp } from "../AppContext";
-import {
-  Shield,
-  ArrowRight,
-  Lock,
-  Key,
-  Info,
-  HelpCircle,
-  ArrowLeft,
-  Languages,
-} from "lucide-react";
+import { API_BASE } from "../config";
+import { Shield, Lock, Key, Languages } from "lucide-react";
+import { VajraLogo } from "../components/VajraLogo";
 
 export const LoginScreen: React.FC = () => {
   const {
@@ -18,12 +11,12 @@ export const LoginScreen: React.FC = () => {
     setLang,
     setIsAuthenticated,
     setBadgeNumber,
-    setCurrentScreen,
     setGlobalLoading,
     addToast,
   } = useApp();
-  const [badgeInput, setBadgeInput] = useState("4003385");
-  const [passwordInput, setPasswordInput] = useState("vajra-secure");
+
+  const [badgeInput, setBadgeInput] = useState("");
+  const [passwordInput, setPasswordInput] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -53,7 +46,7 @@ export const LoginScreen: React.FC = () => {
     try {
       setGlobalLoading(true, lang === "en" ? "Authenticating with CCTNS gateway..." : "ಸಿಐಎಸ್ ದ್ವಾರದೊಂದಿಗೆ ದೃಢೀಕರಿಸಲಾಗುತ್ತಿದೆ...");
       
-      const response = await fetch("http://localhost:8000/api/auth/login", {
+      const response = await fetch(`${API_BASE}/api/auth/login`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -95,38 +88,32 @@ export const LoginScreen: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#F8FAFC] flex flex-col items-center justify-center relative p-4 overflow-hidden">
-      {/* STRICT DESIGN RULE 1: NIC Flag Strip */}
-      <div className="h-[4px] absolute top-0 left-0 right-0 w-full flex z-50 select-none">
-        <div className="flex-1 bg-[#FF9933]"></div>
-        <div className="flex-1 bg-white"></div>
-        <div className="flex-1 bg-[#138808]"></div>
-      </div>
+    <div className="min-h-screen bg-[#070F1E] flex flex-col items-center justify-center relative p-4 overflow-hidden">
+      {/* Indian Tricolour Top Accent Strip */}
+      <div className="tricolour-strip absolute top-0 left-0 right-0 z-50" />
 
-      {/* Floating Language Switcher in Login Page */}
+      {/* Floating Language Switcher */}
       <div className="absolute top-6 right-6">
         <button
           onClick={() => setLang(lang === "en" ? "kn" : "en")}
-          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white shadow-sm text-[12px] font-semibold text-slate-700 hover:bg-slate-50 transition-colors"
+          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-850/80 text-xs font-semibold text-[#00C6AD] hover:text-white transition-all shadow-lg"
         >
-          <Languages className="w-3.5 h-3.5 text-[#1D4ED8]" />
-          <span className="kn-text leading-[1.8] font-medium">
-            {lang === "en" ? "ಕನ್ನಡ" : "English"}
-          </span>
+          <Languages className="w-3.5 h-3.5" />
+          <span>{lang === "en" ? "ಕನ್ನಡ" : "English"}</span>
         </button>
       </div>
 
-      <div className="w-full max-w-md space-y-6">
+      <div className="w-full max-w-md space-y-6 animate-slide-up">
         {/* State Seal and Headers */}
-        <div className="text-center space-y-2">
-          <div className="inline-flex w-16 h-16 rounded-full bg-white border border-slate-200 shadow-sm items-center justify-center mx-auto text-[#1D4ED8]">
-            <Shield className="w-9 h-9 text-[#1D4ED8]" />
+        <div className="text-center space-y-3">
+          <div className="flex justify-center mx-auto pb-1">
+            <VajraLogo animated={true} size={64} />
           </div>
           <div>
-            <h2 className="text-2xl font-display font-extrabold text-slate-950 tracking-tight leading-none">
+            <h2 className="text-2xl font-black text-white tracking-tight">
               VAJRA / ವಜ್ರ
             </h2>
-            <p className="text-[11px] font-mono tracking-widest text-[#1D4ED8] uppercase font-bold mt-1">
+            <p className="text-[10px] font-mono tracking-widest text-[#00C6AD] uppercase font-bold mt-1.5">
               {lang === "en"
                 ? "CCTNS SECURE CENTRAL SHELL"
                 : "ಸಿಐಎಸ್ ಸುರಕ್ಷಿತ ಕೇಂದ್ರ ಶೆಲ್"}
@@ -135,140 +122,77 @@ export const LoginScreen: React.FC = () => {
         </div>
 
         {/* Central Auth Container */}
-        <div
-          id="login-container"
-          className="bg-white border border-slate-200 rounded-2xl p-8 shadow-xl relative overflow-hidden w-full"
-        >
+        <div className="glass-panel border border-slate-800 rounded-2xl p-8 shadow-2xl relative overflow-hidden w-full">
           <div className="absolute top-0 right-0 p-4">
-            <div className="w-12 h-12 bg-slate-50 rounded-full flex items-center justify-center opacity-50">
-              <Shield className="w-6 h-6 text-slate-300" />
+            <div className="w-12 h-12 bg-slate-900/40 rounded-full flex items-center justify-center">
+              <VajraLogo animated={false} size={24} className="opacity-30" />
             </div>
           </div>
 
-          <div className="border-b border-slate-100 pb-4 mb-6">
-            <h3 className="text-[14px] font-bold text-slate-900 uppercase tracking-wide flex items-center space-x-2 kn-text">
-              <Lock className="w-4 h-4 text-[#1D4ED8]" />
+          <div className="border-b border-slate-850 pb-4 mb-6">
+            <h3 className="text-xs font-black text-slate-350 uppercase tracking-wider flex items-center space-x-2">
+              <Lock className="w-4 h-4 text-[#00C6AD]" />
               <span>{t.loginHeader}</span>
             </h3>
-            <p className="text-[11px] text-slate-400 mt-0.5 uppercase tracking-wider">
-              Authorized personnel only
-            </p>
           </div>
 
-          <form onSubmit={handleLogin} className="space-y-6">
-            {/* Bilingual labels above inputs */}
-            <div className="space-y-1">
-              <label
-                htmlFor="badge-no-input"
-                className="block text-[11px] uppercase tracking-wider text-slate-500 font-bold kn-text"
-              >
-                {lang === "en"
-                  ? "Badge No. / ಬ್ಯಾಡ್ಜ್ ಸಂಖ್ಯೆ"
-                  : "ಬ್ಯಾಡ್ಜ್ ಸಂಖ್ಯೆ / Badge No."}
+          <form onSubmit={handleLogin} className="space-y-5">
+            {errorMsg && (
+              <div className="p-3.5 rounded-lg bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs font-semibold leading-relaxed">
+                {errorMsg}
+              </div>
+            )}
+
+            {/* Badge ID Input */}
+            <div className="space-y-1.5">
+              <label className="block text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">
+                {t.badgeNo}
               </label>
               <div className="relative">
                 <input
-                  id="badge-no-input"
                   type="text"
                   value={badgeInput}
                   onChange={(e) => setBadgeInput(e.target.value)}
-                  placeholder="4003385"
-                  className="w-full h-11 pl-10 pr-4 bg-slate-50 border border-slate-200 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-[#1D4ED8]/20 transition-all font-mono font-medium"
+                  placeholder="e.g. 4003385"
+                  className="w-full bg-slate-950/60 border border-slate-800 focus:border-[#00C6AD] rounded-xl py-3 px-10 text-sm text-slate-100 placeholder-slate-600 focus:outline-none transition-all"
                   required
                 />
-                <Shield className="w-4 h-4 text-slate-400 absolute left-3 top-[14px]" />
+                <Key className="w-4 h-4 text-slate-600 absolute left-3.5 top-3.5" />
               </div>
             </div>
 
-            <div className="space-y-1">
-              <label
-                htmlFor="password-input"
-                className="block text-[11px] uppercase tracking-wider text-slate-500 font-bold kn-text"
-              >
-                {lang === "en" ? "Password / ರಹಸ್ಯಪದ" : "ರಹಸ್ಯಪದ / Password"}
+            {/* Password Input */}
+            <div className="space-y-1.5">
+              <label className="block text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">
+                {t.password}
               </label>
               <div className="relative">
                 <input
-                  id="password-input"
                   type="password"
                   value={passwordInput}
                   onChange={(e) => setPasswordInput(e.target.value)}
                   placeholder="••••••••"
-                  className="w-full h-11 pl-10 pr-4 bg-slate-50 border border-slate-200 rounded-lg text-[13px] focus:outline-none focus:ring-2 focus:ring-[#1D4ED8]/20 transition-all"
+                  className="w-full bg-slate-950/60 border border-slate-800 focus:border-[#00C6AD] rounded-xl py-3 px-10 text-sm text-slate-100 placeholder-slate-600 focus:outline-none transition-all"
                   required
                 />
-                <Key className="w-4 h-4 text-slate-400 absolute left-3 top-[14px]" />
+                <Lock className="w-4 h-4 text-slate-600 absolute left-3.5 top-3.5" />
               </div>
             </div>
 
-            {/* Error Message Section */}
-            {errorMsg && (
-              <div className="p-3 bg-red-50 border-l-2 border-[#EF4444] rounded-lg text-[12px] text-red-700 flex items-start space-x-2 animate-fade-in">
-                <Info className="w-4 h-4 text-[#EF4444] shrink-0 mt-0.5" />
-                <span className="kn-text leading-[1.6]">{errorMsg}</span>
-              </div>
-            )}
-
-            {/* Information Alert - No Color Only Status */}
-            <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-lg text-slate-600 flex items-start space-x-2.5">
-              <Info className="w-4 h-4 text-[#1D4ED8] shrink-0 mt-0.5" />
-              <div className="text-[12px] space-y-0.5 leading-[1.6]">
-                <div className="font-bold text-slate-800 flex items-center space-x-1">
-                  <span>Demo Credentials Pre-configured</span>
-                </div>
-                <div className="text-slate-500 kn-text text-[11px]">
-                  {lang === "en"
-                    ? "Preloaded for the 2026 Datathon. Unlocked for rapid prototype auditing."
-                    : "೨೦೨೬ ರ ದತ್ತಾಂಶ ಹ್ಯಾಕಥಾನ್ ಗಾಗಿ ಮೊದಲೇ ಹೊಂದಿಸಲಾದ ರುಜುವಾತುಗಳು."}
-                </div>
-              </div>
-            </div>
-
-            {/* CTA action buttons */}
-            <div className="space-y-3 pt-2">
-              {/* STRICT RULE 6: Only one filled --blue-primary button per screen. All others are outline/ghost */}
-              <button
-                id="btn-login-submit"
-                type="submit"
-                className="w-full h-11 bg-[#1D4ED8] text-white rounded-lg font-bold text-[13px] uppercase tracking-widest shadow-lg shadow-[#1D4ED8]/20 hover:bg-[#1D4ED8]/90 transition-all flex items-center justify-center space-x-2 cursor-pointer"
-              >
-                <Shield className="w-4 h-4 text-amber-300" />
-                <span className="kn-text">{t.loginButton}</span>
-                <ArrowRight className="w-4 h-4" />
-              </button>
-
-              <button
-                id="btn-login-back"
-                type="button"
-                onClick={() => setCurrentScreen("landing")}
-                className="w-full h-11 border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 text-[13px] font-bold rounded-lg flex items-center justify-center space-x-2 transition-colors duration-150 cursor-pointer"
-              >
-                <ArrowLeft className="w-4 h-4" />
-                <span className="kn-text">
-                  {lang === "en"
-                    ? "Back to Portal Intro"
-                    : "ಮುಖಪುಟಕ್ಕೆ ಹಿಂತಿರುಗಿ"}
-                </span>
-              </button>
-            </div>
+            {/* Submit Button */}
+            <button
+              type="submit"
+              className="w-full bg-slate-900 border border-slate-800 hover:border-[#00C6AD]/40 text-slate-100 hover:bg-[#00C6AD]/10 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all duration-200 cursor-pointer shadow-md shadow-[#00C6AD]/5"
+            >
+              {t.loginButton}
+            </button>
           </form>
-
-          <div className="mt-8 pt-6 border-t border-slate-100 flex items-center gap-3">
-            <div className="w-2 h-2 rounded-full bg-[#10B981]"></div>
-            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-              System Online: node-blr-01
-            </span>
-          </div>
         </div>
 
-        {/* Informative Warning Footer */}
-        <div className="text-center">
-          <p className="text-[11px] text-slate-400 kn-text">
-            {lang === "en"
-              ? "Warning: State Intel asset. Unauthorised logins are punishable under IPC & Information Technology Act India."
-              : "ಗಮನಿಸಿ: ರಾಜ್ಯ ರಕ್ಷಣಾ ಸ್ವತ್ತು. ಅನಧಿಕೃತ ಲಾಗಿನ್ ಮೂಲಕ ಡೇಟಾ ದುರುಪಯೋಗ ಕಂಡುಬಂದರೆ ಶಿಕ್ಷಾರ್ಹ ಅಪರಾಧ."}
-          </p>
-        </div>
+        {/* Footer info */}
+        <p className="text-center text-[10px] text-slate-600 leading-relaxed max-w-sm mx-auto">
+          {t.footerRights}
+        </p>
       </div>
     </div>
   );
