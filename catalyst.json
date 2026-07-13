@@ -8,5 +8,11 @@
   },
   "appsail": {
     "source": "vajra_backend"
-  }
+  },
+  "functions": [
+    {
+      "name": "proactive_alerts",
+      "source": "vajra_backend/functions/proactive_alerts"
+    }
+  ]
 }

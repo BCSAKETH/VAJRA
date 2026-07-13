@@ -1,0 +1,5 @@
+{
+  "name": "proactive_alerts",
+  "runtime": "python3.12",
+  "entry_point": "index.handler"
+}

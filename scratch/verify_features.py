@@ -6,9 +6,16 @@ BASE_URL = "http://127.0.0.1:8000"
 def verify_all():
     print("=== STARTING VAJRA FULL BACKEND INTEGRATION TEST ===")
     
-    # 1. Fake Login / Headers setup to bypass security firewall
+    # 1. Load active cached Zoho developer token to satisfy the firewall
+    import os
+    token = "fake-token-for-gowda"
+    token_path = os.path.join("vajra_backend", ".token_cache")
+    if os.path.exists(token_path):
+        with open(token_path, "r") as f:
+            token = f.read().strip()
+            
     headers = {
-        "Authorization": "Bearer fake-token-for-gowda",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "X-Session-ID": "test-session-999"
     }

@@ -339,6 +339,18 @@ async def get_firs(
         subheads = {r.get("CrimeSubHead", {}).get("CrimeSubHeadID"): r.get("CrimeSubHead", {}).get("CrimeHeadName") for r in catalyst_app.zql().execute_query("SELECT CrimeSubHeadID, CrimeHeadName FROM CrimeSubHead")}
         statuses = {r.get("CaseStatusMaster", {}).get("CaseStatusID"): r.get("CaseStatusMaster", {}).get("CaseStatusName") for r in catalyst_app.zql().execute_query("SELECT CaseStatusID, CaseStatusName FROM CaseStatusMaster")}
         
+        # Pre-fetch socio profiles
+        socio_map = {}
+        try:
+            socio_res = catalyst_app.zql().execute_query("SELECT DistrictID, LiteracyRate, UnemploymentRate FROM DistrictSocioProfile")
+            for r in socio_res:
+                s_data = r.get("DistrictSocioProfile", {})
+                d_id = s_data.get("DistrictID")
+                if d_id:
+                    socio_map[int(d_id)] = s_data
+        except Exception as ex:
+            logger.warning(f"Could not pre-fetch DistrictSocioProfile table: {ex}")
+        
         # Accused list grouped by CaseMasterID
         accused_rows = catalyst_app.zql().execute_query("SELECT AccusedName, AgeYear, CaseMasterID FROM Accused")
         accused_map = {}
@@ -404,6 +416,11 @@ async def get_firs(
                 if not matches_search:
                     continue
                     
+            # Resolve demographics from pre-fetched socio_map
+            socio = socio_map.get(int(district_id), {}) if district_id else {}
+            lit_rate = socio.get("LiteracyRate") or 78.2
+            unemp_rate = socio.get("UnemploymentRate") or 6.5
+
             formatted_firs.append({
                 "firNo": crime_no,
                 "station": unit_name,
@@ -414,8 +431,8 @@ async def get_firs(
                 "status": status_name,
                 "accusedName": accused_name,
                 "accusedAge": accused_age,
-                "unemploymentRate": 6.5,
-                "literacyRate": 78.2,
+                "unemploymentRate": unemp_rate,
+                "literacyRate": lit_rate,
                 "latitude": float(cm.get("Latitude") or 0.0),
                 "longitude": float(cm.get("Longitude") or 0.0)
             })
@@ -499,6 +516,23 @@ async def get_fir_by_no(
         if vic_res:
             victim_name = vic_res[0].get("Victim", {}).get("VictimName", "Victim")
             
+        # Resolve demographics dynamically from DistrictSocioProfile
+        socio = {}
+        if station_id:
+            try:
+                unit_res = catalyst_app.zql().execute_query(f"SELECT DistrictID FROM Unit WHERE UnitID = {station_id} LIMIT 1")
+                if unit_res:
+                    dist_id = unit_res[0].get("Unit", {}).get("DistrictID")
+                    if dist_id:
+                        sp_res = catalyst_app.zql().execute_query(f"SELECT LiteracyRate, UnemploymentRate FROM DistrictSocioProfile WHERE DistrictID = {dist_id} LIMIT 1")
+                        if sp_res:
+                            socio = sp_res[0].get("DistrictSocioProfile", {})
+            except Exception as ex:
+                logger.warning(f"Could not fetch socio profile for station {station_id}: {ex}")
+
+        lit_rate = socio.get("LiteracyRate") or 78.2
+        unemp_rate = socio.get("UnemploymentRate") or 6.5
+
         return {
             "firNo": cm.get("CrimeNo"),
             "station": unit_name,
@@ -514,8 +548,8 @@ async def get_fir_by_no(
             "brieffacts": cm.get("BriefFacts", ""),
             "latitude": float(cm.get("Latitude") or 0.0),
             "longitude": float(cm.get("Longitude") or 0.0),
-            "unemploymentRate": 6.5,
-            "literacyRate": 78.2
+            "unemploymentRate": unemp_rate,
+            "literacyRate": lit_rate
         }
     except HTTPException:
         raise
