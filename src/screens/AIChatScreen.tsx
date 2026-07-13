@@ -19,6 +19,7 @@ export const AIChatScreen: React.FC = () => {
   const [inputVal, setInputVal] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState("");
+  const [voiceAvailable, setVoiceAvailable] = useState(true);
   const [isThinking, setIsThinking] = useState(false);
   const [thinkingType, setThinkingType] = useState<"standard" | "translation">("standard");
 
@@ -32,6 +33,15 @@ export const AIChatScreen: React.FC = () => {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMessages, isThinking]);
+
+  // Check whether voice/STT is actually configured before letting an officer record
+  // audio that would otherwise be recorded, uploaded, and thrown away on a 503.
+  useEffect(() => {
+    fetch(`${API_BASE}/health`)
+      .then((res) => res.json())
+      .then((data) => setVoiceAvailable(Boolean(data.voice_service_available)))
+      .catch(() => setVoiceAvailable(false));
+  }, []);
 
   // Start Mic Audio Recording
   const startRecording = async () => {
@@ -307,15 +317,20 @@ export const AIChatScreen: React.FC = () => {
 
           {/* Input controls block */}
           <div className="flex items-center gap-3">
-            {/* Microphone Toggle */}
+            {/* Microphone Toggle — disabled honestly when voice/STT isn't actually
+                configured, instead of letting an officer record audio that would
+                just be uploaded and discarded on a guaranteed 503. */}
             <button
               onClick={isRecording ? stopRecording : startRecording}
-              className={`p-3.5 rounded-xl border transition-all cursor-pointer ${
-                isRecording
-                  ? "bg-rose-500/10 border-rose-500/30 text-rose-500 animate-pulse"
-                  : "bg-slate-900 border-slate-800 hover:border-[#00C6AD]/40 text-slate-400 hover:text-slate-200"
+              disabled={!voiceAvailable}
+              className={`p-3.5 rounded-xl border transition-all ${
+                !voiceAvailable
+                  ? "bg-slate-950/40 border-slate-900 text-slate-700 cursor-not-allowed"
+                  : isRecording
+                  ? "bg-rose-500/10 border-rose-500/30 text-rose-500 animate-pulse cursor-pointer"
+                  : "bg-slate-900 border-slate-800 hover:border-[#00C6AD]/40 text-slate-400 hover:text-slate-200 cursor-pointer"
               }`}
-              title="Speak Kannada/English"
+              title={voiceAvailable ? "Speak Kannada/English" : "Voice input is not available — speech-to-text service is not yet configured"}
             >
               {isRecording ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
             </button>

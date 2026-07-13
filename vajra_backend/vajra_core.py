@@ -11,13 +11,6 @@ import zcatalyst_sdk
 
 
 
-# Import Neo4j if available
-try:
-    from neo4j import GraphDatabase, Driver
-    NEO4J_AVAILABLE = True
-except ImportError:
-    NEO4J_AVAILABLE = False
-
 # Import SentenceTransformers / Scikit-learn fallback (Forced TF-IDF to avoid HF download hangs)
 SENTENCE_TRANSFORMERS_AVAILABLE = False
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -197,17 +190,13 @@ class VajraSecurityFirewall:
             )
             
         try:
-            # 1. Verify the JWT token via active cache validation or direct Zoho BaaS query
-            cached_token = get_cached_access_token()
-            user_details = None
-            if cached_token and jwt_token == cached_token:
-                logger.info("Genuineness check: Token matches active cached Zoho developer token.")
-                user_details = {
-                    "email_id": "admin@vajra.ksp.gov.in",
-                    "email": "admin@vajra.ksp.gov.in"
-                }
-            else:
-                user_details = verify_catalyst_token_direct(jwt_token)
+            # 1. Verify the JWT token via direct Zoho BaaS query only — no bypass path.
+            # A prior version of this check compared jwt_token against the backend's own
+            # cached service-account token and auto-authenticated as admin on a match.
+            # That token is the same one used for every backend-to-Catalyst call and is
+            # cached in a plaintext file on disk — treating it as a valid *user* session
+            # token was a real privilege-escalation path, removed here.
+            user_details = verify_catalyst_token_direct(jwt_token)
 
             if not user_details:
                 raise HTTPException(
@@ -226,36 +215,54 @@ class VajraSecurityFirewall:
             
             # 3. Query the user's profile from Employee table using ZQL
             zql_query = f"""
-                SELECT EmployeeID, UnitID, KGID, FirstName 
-                FROM Employee 
+                SELECT EmployeeID, UnitID, KGID, FirstName, RankID, DesignationID
+                FROM Employee
                 WHERE KGID = '{kgid}'
             """
             profile_res = catalyst_app.zql().execute_query(zql_query)
             
             if not profile_res:
-                logger.info(f"No Employee profile found for KGID '{kgid}'. Falling back to default employee profile for local testing.")
-                fallback_res = catalyst_app.zql().execute_query("SELECT EmployeeID, UnitID, KGID, FirstName FROM Employee LIMIT 1")
-                if fallback_res:
-                    profile_res = fallback_res
-                else:
-                    raise HTTPException(
-                        status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="Security Access Violation: Authorized employee profile not found."
-                    )
+                # Previously fell back to an arbitrary Employee row ("LIMIT 1") when the
+                # authenticated user's KGID had no match — that silently granted whoever
+                # authenticated the identity/station/unit context of an unrelated employee.
+                # Fail closed instead: no matching Employee record means no access.
+                logger.warning(f"No Employee profile found for KGID '{kgid}'. Denying access.")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Security Access Violation: Authorized employee profile not found."
+                )
                 
             profile = profile_res[0].get("Employee", {})
             unit_id = profile.get("UnitID")
-            
+            rank_id = profile.get("RankID")
+            designation_id = profile.get("DesignationID")
+
             # Fetch Unit Name
             unit_res = catalyst_app.zql().execute_query(f"SELECT UnitName FROM Unit WHERE UnitID = {unit_id}")
             unit_name = unit_res[0].get("Unit", {}).get("UnitName") if unit_res else "Unknown Station"
-            
+
+            # Fetch Rank and Designation names — data has existed since seeding but was
+            # never queried here or exposed to the frontend/session context until now.
+            rank_name = "Unknown Rank"
+            if rank_id:
+                rank_res = catalyst_app.zql().execute_query(f"SELECT RankName FROM Rank WHERE RankID = {rank_id}")
+                if rank_res:
+                    rank_name = rank_res[0].get("Rank", {}).get("RankName") or rank_name
+
+            designation_name = "Unknown Designation"
+            if designation_id:
+                desig_res = catalyst_app.zql().execute_query(f"SELECT DesignationName FROM Designation WHERE DesignationID = {designation_id}")
+                if desig_res:
+                    designation_name = desig_res[0].get("Designation", {}).get("DesignationName") or designation_name
+
             # Store the user profile and location context in request.state for downstream endpoints
             request.state.user_profile = profile
             request.state.authorized_station = unit_name
             request.state.kgid = profile.get("KGID")
-            
-            logger.info(f"Access granted. Officer {profile.get('FirstName')} (KGID: {profile.get('KGID')}) authenticated for station: '{unit_name}'")
+            request.state.rank_name = rank_name
+            request.state.designation_name = designation_name
+
+            logger.info(f"Access granted. Officer {profile.get('FirstName')} (KGID: {profile.get('KGID')}, {designation_name}/{rank_name}) authenticated for station: '{unit_name}'")
             return unit_name
             
         except HTTPException:
@@ -335,56 +342,23 @@ class MOBehavioralProfiler:
 
 class VajraGraphRAG:
     """
-    Traces multi-hop relationships. Connects to Neo4j if available,
-    otherwise falls back to querying relational connections dynamically from Zoho Catalyst Datastore tables.
+    Traces multi-hop relationships between suspects by querying relational
+    connections dynamically from Zoho Catalyst Datastore tables.
+
+    This previously attempted a Neo4j connection first (bolt://localhost:7687),
+    with this ZCQL path only as a fallback. Neo4j is unreachable from any real
+    Catalyst deployment (no hosted graph DB in scope), so that code path never
+    ran in production and never will — removed. This ZCQL tracing is the only
+    path that actually runs, confirmed live against real CaseMaster data.
     """
-    def __init__(self, uri: str = "bolt://localhost:7687", user: str = "neo4j", password: str = "password"):
-        self.driver: Optional[Any] = None
-        self.is_connected = False
-        
-        if NEO4J_AVAILABLE:
-            try:
-                self.driver = GraphDatabase.driver(uri, auth=(user, password), connection_timeout=1.0)
-                with self.driver.session() as s:
-                    s.run("RETURN 1")
-                self.is_connected = True
-                logger.info("VajraGraphRAG: Connected successfully to Neo4j.")
-            except Exception:
-                logger.info("VajraGraphRAG: Neo4j offline. Falling back to Zoho Catalyst relational connection tracing.")
+    def __init__(self):
+        pass
 
     def get_criminal_network(self, suspect_name: str) -> Dict[str, Any]:
         """
-        Retrieves co-conspirator and related incident links.
-        If Neo4j is offline, dynamically queries the live Catalyst tables using ZQL.
+        Retrieves co-conspirator and related incident links by querying the
+        live Catalyst tables using ZCQL.
         """
-        if self.is_connected and self.driver:
-            try:
-                with self.driver.session() as session:
-                    query = """
-                    MATCH (s:Suspect {name: $name})
-                    OPTIONAL MATCH (s)-[:DRIVES|OWNED]->(v:Vehicle)<-[:DRIVES|OWNED]-(co:Suspect)
-                    OPTIONAL MATCH (s)-[:HAS_ACCOUNT]->(acc:Account)-[t:TRANSACTED]->(other_acc:Account)<-[:HAS_ACCOUNT]-(other_sus:Suspect)
-                    RETURN v.plate AS vehicle, co.name AS co_accused, t.amount AS txn_amount, other_sus.name AS txn_party
-                    """
-                    res = session.run(query, name=suspect_name)
-                    records = [r for r in res]
-                    return {
-                        "target_suspect": suspect_name,
-                        "engine_mode": "Neo4j Production Driver + Financial Trace",
-                        "connections": [
-                            {
-                                "vehicle": r.get("vehicle"),
-                                "co_accused": r.get("co_accused"),
-                                "txn_amount": r.get("txn_amount"),
-                                "txn_party": r.get("txn_party")
-                            }
-                            for r in records
-                        ]
-                    }
-            except Exception as e:
-                logger.error(f"Neo4j Query Error: {e}")
-
-        # Relational Fallback: Query Zoho Catalyst for shared case connections via ZQL!
         if catalyst_app:
             try:
                 # 1. Look up the suspect in our Accused table
@@ -443,11 +417,6 @@ class VajraGraphRAG:
             "2nd_degree_connections": ["Co-conspirator: Akash Kumar"],
             "3rd_degree_connections": ["Syndicate Connection: Bengaluru East Petty Theft Ring"]
         }
-
-    def close(self):
-        if self.driver:
-            self.driver.close()
-
 
 class VajraSemanticMemory:
     """

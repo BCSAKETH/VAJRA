@@ -2,7 +2,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+import json
+import hashlib
 import logging
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 import numpy as np
 import pandas as pd
@@ -93,7 +96,12 @@ async def health_check():
             "xgboost": "active" if xgboost_risk_model else "offline",
             "shap": "active" if shap_explainer else "offline",
             "encoders": "active" if label_encoders else "offline"
-        }
+        },
+        # Voice STT is not wired to any real service yet — /api/voice/process-stream
+        # always returns 503. Reported here so the frontend can disable the mic
+        # button honestly instead of letting an officer record audio that's
+        # guaranteed to be thrown away.
+        "voice_service_available": False
     }
 
 
@@ -247,15 +255,37 @@ class AuthRequest(BaseModel):
 @app.post("/api/auth/login")
 async def login(payload: AuthRequest):
     """
-    Authenticates an officer using their 7-digit numeric badge number (KGID) and password.
-    Directly returns a genuine Catalyst-issued session token from our credentials helper.
+    Authenticates an officer against a real stored bcrypt password hash in
+    OfficerCredentials. Previously this endpoint accepted any password for
+    any well-formed 7-digit badge number — it never checked one. Only the
+    officers seeded into OfficerCredentials can log in; everyone else is
+    rejected, including badge numbers that exist in Employee but have no
+    credential row.
     """
     if not payload.badge_no.isdigit() or len(payload.badge_no) != 7:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid Credentials: Badge Number (KGID) must be exactly 7 digits and strictly numeric."
         )
-    
+
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+
+    import bcrypt
+    try:
+        cred_res = catalyst_app.zql().execute_query(
+            f"SELECT KGID, PasswordHash FROM OfficerCredentials WHERE KGID = '{payload.badge_no}'"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Credential lookup failed: {str(e)}")
+
+    if not cred_res:
+        raise HTTPException(status_code=401, detail="Invalid Credentials: Badge Number or password incorrect.")
+
+    stored_hash = cred_res[0].get("OfficerCredentials", {}).get("PasswordHash")
+    if not stored_hash or not bcrypt.checkpw(payload.password.encode("utf-8"), stored_hash.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Invalid Credentials: Badge Number or password incorrect.")
+
     from vajra_core import get_cached_access_token
     token = get_cached_access_token()
     if not token:
@@ -263,7 +293,7 @@ async def login(payload: AuthRequest):
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Failed to generate genuine Zoho Catalyst session token. Verify OAuth credentials."
         )
-        
+
     return {
         "access_token": token,
         "token_type": "Bearer",
@@ -273,6 +303,25 @@ async def login(payload: AuthRequest):
             "badge_no": payload.badge_no,
             "email": f"{payload.badge_no}@vajra.ksp.gov.in"
         }
+    }
+
+
+@app.get("/api/auth/me")
+async def get_current_officer(
+    request: Request,
+    location_context: str = Depends(security_firewall)
+):
+    """
+    Returns the authenticated officer's profile, including rank and designation —
+    previously fetched by the firewall but never exposed to any endpoint or the frontend.
+    """
+    profile = request.state.user_profile
+    return {
+        "kgid": request.state.kgid,
+        "first_name": profile.get("FirstName"),
+        "station": request.state.authorized_station,
+        "rank": request.state.rank_name,
+        "designation": request.state.designation_name
     }
 
 
@@ -433,8 +482,8 @@ async def get_firs(
                 "accusedAge": accused_age,
                 "unemploymentRate": unemp_rate,
                 "literacyRate": lit_rate,
-                "latitude": float(cm.get("Latitude") or 0.0),
-                "longitude": float(cm.get("Longitude") or 0.0)
+                "latitude": float(cm.get("latitude") or 0.0),
+                "longitude": float(cm.get("longitude") or 0.0)
             })
             
         return formatted_firs[:limit]
@@ -546,8 +595,8 @@ async def get_fir_by_no(
             "accusedId": accused_id,
             "victimName": victim_name,
             "brieffacts": cm.get("BriefFacts", ""),
-            "latitude": float(cm.get("Latitude") or 0.0),
-            "longitude": float(cm.get("Longitude") or 0.0),
+            "latitude": float(cm.get("latitude") or 0.0),
+            "longitude": float(cm.get("longitude") or 0.0),
             "unemploymentRate": unemp_rate,
             "literacyRate": lit_rate
         }
@@ -747,8 +796,6 @@ class IndicTrans2Translator:
     def translate(cls, text: str, source_lang: str, target_lang: str) -> str:
         normalized_text = cls.normalize_slang(text) if source_lang == "kn" else text
         if source_lang == "kn" and target_lang == "en":
-            if "ರಮೇಶ್" in normalized_text or "ಪೀಣ್ಯ" in normalized_text:
-                return "Ramesh Peenya metal theft"
             return f"[Translation Unavailable: Zia Translation service offline for '{normalized_text}']"
         elif source_lang == "en" and target_lang == "kn":
             return f"[ಅನುವಾದ ಲಭ್ಯವಿಲ್ಲ: Zia ಅನುವಾದ ಸೇವೆಗಳು ಆಫ್‌ಲೈನ್‌ನಲ್ಲಿವೆ] (Original: {text})"
@@ -759,8 +806,116 @@ translator = IndicTrans2Translator()
 class ChatRequest(BaseModel):
     message: str
     lang: str = "en"
+    session_id: Optional[str] = None
     dictionaryTerms: Optional[List[Any]] = []
     activeFIR: Optional[Dict[str, Any]] = None
+
+
+def _persist_chat_message(session_id: str, sender: str, text: str, response_type: str = "text", data: Optional[Dict[str, Any]] = None, citations: Optional[List[Any]] = None):
+    """
+    Writes a message to the ChatMessage table and bumps ChatSession.LastActiveAt.
+    Degrades gracefully (logs only) if ChatSession/ChatMessage don't exist yet in the
+    live console — this feature requires those two tables to be created manually first.
+    """
+    if not catalyst_app:
+        return
+    try:
+        catalyst_app.datastore().table("ChatMessage").insert_row({
+            "session_id": session_id,
+            "sender": sender,
+            "text": text[:2000],
+            "response_type": response_type,
+            "data_json": json.dumps(data or {})[:4000],
+            "citations_json": json.dumps(citations or [])[:2000],
+            "sent_at": datetime.utcnow().isoformat()
+        })
+    except Exception as e:
+        logger.warning(f"Could not persist chat message (ChatMessage table may not exist yet): {e}")
+
+    try:
+        existing = catalyst_app.zql().execute_query(f"SELECT ROWID FROM ChatSession WHERE session_id = '{session_id}' LIMIT 1")
+        if existing:
+            catalyst_app.datastore().table("ChatSession").update_row({
+                "ROWID": existing[0].get("ChatSession", {}).get("ROWID"),
+                "last_active_at": datetime.utcnow().isoformat()
+            })
+    except Exception as e:
+        logger.warning(f"Could not update ChatSession.last_active_at (table may not exist yet): {e}")
+
+
+@app.post("/api/sessions")
+async def create_session(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Creates a new persistent chat session for the authenticated officer.
+    Requires the ChatSession table to exist in the console (see docs/SCHEMA.md).
+    """
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    session_id = f"sess-{employee_id}-{int(datetime.utcnow().timestamp())}"
+    if catalyst_app:
+        try:
+            catalyst_app.datastore().table("ChatSession").insert_row({
+                "session_id": session_id,
+                "employee_id": employee_id,
+                "title": "New Conversation",
+                "created_at": datetime.utcnow().isoformat(),
+                "last_active_at": datetime.utcnow().isoformat()
+            })
+        except Exception as e:
+            logger.error(f"Failed to create ChatSession row (table may not exist yet): {e}")
+            raise HTTPException(status_code=503, detail="Session persistence unavailable — ChatSession table not configured yet.")
+    return {"session_id": session_id}
+
+
+@app.get("/api/sessions")
+async def list_sessions(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Lists the authenticated officer's own chat sessions, most recent first.
+    """
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not catalyst_app:
+        return []
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT session_id, title, last_active_at FROM ChatSession WHERE employee_id = {employee_id} ORDER BY last_active_at DESC LIMIT 50"
+        )
+        return [r.get("ChatSession", {}) for r in res]
+    except Exception as e:
+        logger.warning(f"Could not list sessions (ChatSession table may not exist yet): {e}")
+        return []
+
+
+@app.get("/api/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Returns the full message history for one session. Ownership is enforced by only
+    ever returning a session the caller could plausibly have created (session_id embeds
+    the owning employee_id); this is a lightweight check, not a substitute for row-level
+    ACLs if this table's scope permissions aren't also configured in the console.
+    """
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not session_id.startswith(f"sess-{employee_id}-"):
+        raise HTTPException(status_code=403, detail="You do not own this session.")
+    if not catalyst_app:
+        return []
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT sender, text, response_type, data_json, citations_json, sent_at FROM ChatMessage WHERE session_id = '{session_id}' ORDER BY sent_at ASC LIMIT 300"
+        )
+        messages = []
+        for r in res:
+            m = r.get("ChatMessage", {})
+            messages.append({
+                "sender": m.get("sender"),
+                "text": m.get("text"),
+                "response_type": m.get("response_type"),
+                "data": json.loads(m.get("data_json") or "{}"),
+                "citations": json.loads(m.get("citations_json") or "[]"),
+                "timestamp": m.get("sent_at")
+            })
+        return messages
+    except Exception as e:
+        logger.warning(f"Could not fetch session messages (ChatMessage table may not exist yet): {e}")
+        return []
 
 
 @app.post("/api/chat")
@@ -770,15 +925,18 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     """
     message = payload.message.strip()
     lang = payload.lang
-    
-    # Resolve session ID based on active logged-in employee ID or header
-    session_id = request.headers.get("X-Session-ID") or f"session-{request.state.kgid}"
+
+    # Resolve session ID: prefer the real persisted session_id from the request body,
+    # fall back to the header, then to a per-officer default for backward compatibility.
+    session_id = payload.session_id or request.headers.get("X-Session-ID") or f"session-{request.state.kgid}"
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId") or 4003385
     unit_id = request.state.user_profile.get("UnitID") or request.state.user_profile.get("unitid")
 
+    _persist_chat_message(session_id, "user", message)
+
     # Run query through IndicTrans2 translation layer if Kannada
     processed_query = translator.translate(message, "kn", "en") if lang == "kn" else message
-    
+
     # Execute the central Agent Loop
     result = agent_loop.run_agent_loop(
         query=processed_query,
@@ -786,12 +944,14 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
         employee_id=employee_id,
         user_unit_id=unit_id
     )
-    
+
     # Translate response back to Kannada if required
     text = result["text"]
     if lang == "kn":
         text = translator.translate(text, "en", "kn")
-        
+
+    _persist_chat_message(session_id, "assistant", text, result["response_type"], result["data"], result["citations"])
+
     return {
         "text": text,
         "response_type": result["response_type"],
@@ -868,23 +1028,97 @@ async def get_audit_logs(request: Request, location_context: str = Depends(secur
     if not catalyst_app:
         return []
     try:
-        query = "SELECT * FROM AuditLog ORDER BY logged_at DESC LIMIT 100"
+        query = "SELECT * FROM AuditLog ORDER BY LoggedAt DESC LIMIT 100"
         res = catalyst_app.zql().execute_query(query)
         logs = []
         for r in res:
             log_data = r.get("AuditLog", {})
             logs.append({
-                "timestamp": log_data.get("logged_at"),
-                "badgeId": f"KSP-{log_data.get('employee_id')}",
-                "action": log_data.get("action_type"),
-                "queryParam": log_data.get("query_text"),
+                "timestamp": log_data.get("LoggedAt"),
+                "badgeId": f"KSP-{log_data.get('EmployeeID')}",
+                "action": log_data.get("ActionType"),
+                "queryParam": log_data.get("QueryText"),
                 "recordsAccessed": 1,
-                "hash": f"sha256-{log_data.get('ROWID')}"
+                "hash": log_data.get("RowHash")
             })
         return logs
     except Exception as e:
         logger.error(f"Error querying AuditLog table: {e}")
         return []
+
+
+@app.get("/api/audit-logs/verify")
+async def verify_audit_ledger(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Recomputes the SHA-256 hash chain server-side and reports whether it's intact —
+    replaces the old client-side check, which only verified that each hash string
+    was formatted as "sha256-<something>", never recomputed anything, and ran on a
+    fabricated hash the /api/audit-logs endpoint made up from ROWID.
+
+    Honest limitation: _write_audit_log computes the hash from the FULL, untruncated
+    target/query/response strings at write time, but only stores TargetEntity[:200],
+    QueryText[:500], ResponseSummary[:200]. If any of those fields ever exceeded
+    those lengths historically, this recomputation can't perfectly reconstruct the
+    original hash input and could report a false mismatch — a real gap in the
+    original design, not something this fix can retroactively repair without
+    breaking the chain for every row already written.
+    """
+    if not catalyst_app:
+        return {"valid": False, "reason": "Database offline.", "checked": 0}
+    try:
+        query = (
+            "SELECT EmployeeID, ActionType, TargetEntity, QueryText, ResponseSummary, "
+            "SessionID, LoggedAt, PrevHash, RowHash FROM AuditLog ORDER BY LoggedAt ASC"
+        )
+        res = catalyst_app.zql().execute_query(query)
+        if not res:
+            return {"valid": True, "reason": "No audit log entries yet.", "checked": 0}
+
+        genesis_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+        expected_prev_hash = genesis_hash
+        checked = 0
+
+        for r in res:
+            log = r.get("AuditLog", {})
+            stored_prev_hash = log.get("PrevHash")
+            stored_row_hash = log.get("RowHash")
+
+            if stored_prev_hash != expected_prev_hash:
+                return {
+                    "valid": False,
+                    "reason": f"Chain broken at entry {checked + 1}: stored prev_hash does not match the previous entry's actual hash.",
+                    "checked": checked
+                }
+
+            employee_id = log.get("EmployeeID")
+            action_type = log.get("ActionType")
+            target = log.get("TargetEntity") or ""
+            query_text = log.get("QueryText") or ""
+            response_summary = log.get("ResponseSummary") or ""
+            session_id = log.get("SessionID")
+            logged_at = log.get("LoggedAt")
+
+            serialized_content = f"{employee_id}|{action_type}|{target}|{query_text[:100]}|{response_summary[:100]}|{session_id}|{logged_at}"
+            computed_hash = hashlib.sha256((stored_prev_hash + serialized_content).encode("utf-8")).hexdigest()
+
+            if computed_hash != stored_row_hash:
+                return {
+                    "valid": False,
+                    "reason": f"Hash mismatch at entry {checked + 1} — this row's content does not match its stored hash. Either tampered, or a field exceeded its stored length at write time (see endpoint note).",
+                    "checked": checked
+                }
+
+            expected_prev_hash = stored_row_hash
+            checked += 1
+
+        return {
+            "valid": True,
+            "reason": f"All {checked} entries verified — recomputed hash chain matches stored values, no tampering detected.",
+            "checked": checked
+        }
+    except Exception as e:
+        logger.error(f"Error verifying audit ledger: {e}")
+        return {"valid": False, "reason": f"Verification error: {e}", "checked": 0}
 
 
 @app.get("/api/alerts/consistency-flags")

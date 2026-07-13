@@ -257,7 +257,7 @@ class VajraAgentLoop:
     def _write_audit_log(self, employee_id: int, action_type: str, target: str, query: str, response: str, session_id: str):
         """
         Writes a secure, immutable audit log entry into the Catalyst AuditLog table.
-        Computes row_hash = hash(prev_hash + serialized_row_content) for tamper detection.
+        Computes rowhash = hash(prevhash + serialized_row_content) for tamper detection.
         """
         if not catalyst_app:
             return
@@ -265,9 +265,9 @@ class VajraAgentLoop:
             # 1. Fetch the hash of the last log entry in AuditLog
             prev_hash = "0000000000000000000000000000000000000000000000000000000000000000"
             try:
-                last_res = catalyst_app.zql().execute_query("SELECT row_hash FROM AuditLog ORDER BY logged_at DESC LIMIT 1")
+                last_res = catalyst_app.zql().execute_query("SELECT RowHash FROM AuditLog ORDER BY LoggedAt DESC LIMIT 1")
                 if last_res:
-                    prev_hash = last_res[0].get("AuditLog", {}).get("row_hash") or prev_hash
+                    prev_hash = last_res[0].get("AuditLog", {}).get("RowHash") or prev_hash
             except Exception as e:
                 logger.warning(f"Error querying last AuditLog hash (might be first log): {e}")
 
@@ -277,18 +277,18 @@ class VajraAgentLoop:
             row_hash = hashlib.sha256((prev_hash + serialized_content).encode('utf-8')).hexdigest()
 
             row = {
-                "employee_id": employee_id,
-                "action_type": action_type,
-                "target_entity": target[:200],
-                "query_text": query[:500],
-                "response_summary": response[:200],
-                "session_id": session_id,
-                "logged_at": logged_at,
-                "prev_hash": prev_hash,
-                "row_hash": row_hash
+                "EmployeeID": employee_id,
+                "ActionType": action_type,
+                "TargetEntity": target[:200],
+                "QueryText": query[:500],
+                "ResponseSummary": response[:200],
+                "SessionID": session_id,
+                "LoggedAt": logged_at,
+                "PrevHash": prev_hash,
+                "RowHash": row_hash
             }
             catalyst_app.datastore().table("AuditLog").insert_row(row)
-            logger.info(f"Audit log hash-chained: {action_type} -> row_hash={row_hash[:10]}...")
+            logger.info(f"Audit log hash-chained: {action_type} -> RowHash={row_hash[:10]}...")
         except Exception as e:
             logger.error(f"Failed to write to AuditLog table: {e}")
 
@@ -501,7 +501,8 @@ class VajraAgentLoop:
             desc = params.get("crime_description", "")
             suggestions = self.suggest_sections_for_query(desc)
             data = suggestions
-            text_result = f"Suggested Sections: {suggestions.get('suggested_section')} (Confidence: {suggestions.get('confidence_score')}). Precedents: {len(suggestions.get('precedents', []))} found.\n\n{suggestions.get('disclaimer', '')}"
+            precedent_summary = suggestions.get("precedent_note") or f"Precedents: {len(suggestions.get('precedents', []))} charge-sheeted case(s) found."
+            text_result = f"Suggested Sections: {suggestions.get('suggested_section')} (Confidence: {suggestions.get('confidence_score')}). {precedent_summary}\n\n{suggestions.get('disclaimer', '')}"
             citations.append({"type": "IPC / BNS Legal Guidelines", "id": "IPC-BNS-Registry", "details": "Section mapping engine"})
             self._write_audit_log(employee_id, "Legal Precedent Suggestion", "IPC/BNS Table", desc, text_result, session_id)
 
@@ -566,12 +567,12 @@ class VajraAgentLoop:
             coordinates = []
             if catalyst_app:
                 try:
-                    map_query = f"SELECT Latitude, Longitude, CrimeNo FROM CaseMaster WHERE Latitude IS NOT NULL LIMIT 200"
+                    map_query = f"SELECT Latitude, Longitude, CrimeNo FROM CaseMaster WHERE Latitude IS NOT NULL LIMIT 300"
                     map_res = catalyst_app.zql().execute_query(map_query)
                     for r in map_res:
                         cm = r.get("CaseMaster", {})
-                        lat = cm.get("Latitude")
-                        lng = cm.get("Longitude")
+                        lat = cm.get("latitude")
+                        lng = cm.get("longitude")
                         if lat is not None and lng is not None:
                             coordinates.append({
                                 "lat": float(lat),
@@ -829,7 +830,7 @@ class VajraAgentLoop:
                             )
                             if cm_res:
                                 cm_data = cm_res[0].get("CaseMaster", {})
-                                latitude = cm_data.get("Latitude") or 13.027
+                                latitude = cm_data.get("latitude") or 13.027
                                 gravity_id = cm_data.get("GravityOffenceID") or 4
                                 accused_count = cm_data.get("AccusedCount") or 1
                                 crime_head_id = cm_data.get("CrimeMajorHeadID") or 5
@@ -955,7 +956,7 @@ class VajraAgentLoop:
             district = self.sanitize_sql_input(params.get("district", "Bengaluru Urban"))
             response_type = "correlation"
             profile_data = None
-            warning = "*Warning: Demographic correlation is based on synthetic estimates and should be used with operational caution.*"
+            warning = "*Warning: Demographic correlation is based on synthetic estimates and should be used with operational caution. Note: socio-economic figures are illustrative synthetic estimates, not official Census/NCRB data.*"
             if catalyst_app:
                 try:
                     d_res = catalyst_app.zql().execute_query(f"SELECT DistrictID FROM District WHERE DistrictName LIKE '%{district}%' LIMIT 1")
@@ -1107,34 +1108,83 @@ class VajraAgentLoop:
 
     def suggest_sections_for_query(self, query: str) -> Dict[str, Any]:
         """
-        Suggests relevant legal sections/acts and returns precedents.
+        Suggests relevant legal sections/acts and returns real charge-sheeted
+        precedent cases carrying that section — previously returned the same two
+        hardcoded fake FIR numbers regardless of input.
         """
         query_lower = query.lower()
-        
-        # Deterministic CrimeHeadActSection mapping
+
+        # Deterministic keyword mapping — act_code/section_code must exactly match
+        # what's actually seeded in the Section table (migrate_to_catalyst.py's
+        # IPC_SECTIONS list), not an invented/display-friendly code.
+        act_code, section_code = "IPC", "379"
         suggested_section = "IPC Section 379 (Theft / BNS 303)"
         confidence_score = 0.90
-        
+
         if "accident" in query_lower or "hit and run" in query_lower:
+            act_code, section_code = "IPC", "279"
             suggested_section = "IPC Section 279 / 337 (Negligent Driving / BNS 281)"
             confidence_score = 0.95
         elif "cyber" in query_lower or "hacking" in query_lower or "phishing" in query_lower:
-            suggested_section = "IT Act Section 66D (Cyber Impersonation / BNS 318)"
+            act_code, section_code = "IT", "66(D)"
+            suggested_section = "IT Act Section 66(D) (Cyber Impersonation / BNS 318)"
             confidence_score = 0.92
         elif "murder" in query_lower or "kill" in query_lower:
+            act_code, section_code = "IPC", "302"
             suggested_section = "IPC Section 302 (Murder / BNS 103)"
             confidence_score = 0.98
 
-        precedents = [
-            {"case_no": "FIR-2026-0814", "station": "Peenya PS", "charge_sheeted": "Yes"},
-            {"case_no": "FIR-2026-0912", "station": "Indiranagar PS", "charge_sheeted": "Yes"}
-        ]
-        
+        precedents = []
+        if catalyst_app:
+            try:
+                sec_res = catalyst_app.zql().execute_query(
+                    f"SELECT ROWID FROM Section WHERE ActCode = '{act_code}' AND SectionCode = '{section_code}' LIMIT 1"
+                )
+                if sec_res:
+                    section_rowid = sec_res[0].get("Section", {}).get("ROWID")
+                    assoc_res = catalyst_app.zql().execute_query(
+                        f"SELECT CaseMasterID FROM ActSectionAssociation WHERE SectionID = {section_rowid} LIMIT 20"
+                    )
+                    for row in assoc_res:
+                        if len(precedents) >= 2:
+                            break
+                        cm_id = row.get("ActSectionAssociation", {}).get("CaseMasterID")
+                        if not cm_id:
+                            continue
+                        # Only count it as a precedent if it's actually been charge-sheeted.
+                        cs_res = catalyst_app.zql().execute_query(
+                            f"SELECT CSID FROM ChargesheetDetails WHERE CaseMasterID = {cm_id} LIMIT 1"
+                        )
+                        if not cs_res:
+                            continue
+                        cm_res = catalyst_app.zql().execute_query(
+                            f"SELECT CrimeNo, PoliceStationID FROM CaseMaster WHERE CaseMasterID = {cm_id} LIMIT 1"
+                        )
+                        if not cm_res:
+                            continue
+                        cm_data = cm_res[0].get("CaseMaster", {})
+                        station_name = "Unknown PS"
+                        unit_id = cm_data.get("PoliceStationID")
+                        if unit_id:
+                            unit_res = catalyst_app.zql().execute_query(f"SELECT UnitName FROM Unit WHERE UnitID = {unit_id} LIMIT 1")
+                            if unit_res:
+                                station_name = unit_res[0].get("Unit", {}).get("UnitName") or station_name
+                        precedents.append({
+                            "case_no": cm_data.get("CrimeNo"),
+                            "station": station_name,
+                            "charge_sheeted": "Yes"
+                        })
+            except Exception as e:
+                logger.warning(f"Error finding real precedents for {act_code} {section_code}: {e}")
+
+        precedent_note = None if precedents else "No charge-sheeted precedent cases carrying this section were found in the current database."
+
         return {
             "suggested_section": suggested_section,
             "confidence_score": confidence_score,
             "precedents": precedents,
-            "disclaimer": "*Disclaimer: IPC/BNS mappings are AI-generated based on the KSP Datathon 2026 schema and must be verified against official gazettes.*"
+            "precedent_note": precedent_note,
+            "disclaimer": "*Disclaimer: IPC/BNS mappings are AI-generated based on the KSP Datathon 2026 schema and must be verified against official gazettes. Confirm with your SHO or legal officer before filing.*"
         }
 
     def summarize_case(self, case_id: int) -> str:

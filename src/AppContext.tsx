@@ -50,8 +50,6 @@ interface AppContextType {
   setBadgeNumber: (badge: string | null) => void;
   isDbConnected: boolean;
   setIsDbConnected: (connected: boolean) => void;
-  isNeo4jConnected: boolean;
-  setIsNeo4jConnected: (connected: boolean) => void;
   toasts: ToastMessage[];
   addToast: (
     title: string,
@@ -100,8 +98,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
   });
 
   const [isDbConnected, setIsDbConnected] = useState<boolean>(true);
-  const [isNeo4jConnected, setIsNeo4jConnected] = useState<boolean>(true);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+
+  // Poll the real /health endpoint instead of hardcoding "connected" forever —
+  // this used to never reflect reality. Also drops isNeo4jConnected entirely:
+  // Neo4j was dead code (unreachable bolt://localhost:7687 in any real deployment)
+  // and has been removed from the backend; the ZCQL relational path is the only
+  // graph-tracing path that ever ran.
+  useEffect(() => {
+    const checkHealth = () => {
+      fetch(`${API_BASE}/health`)
+        .then((res) => res.json())
+        .then((data) => setIsDbConnected(Boolean(data.database_connected)))
+        .catch(() => setIsDbConnected(false));
+    };
+    checkHealth();
+    const interval = setInterval(checkHealth, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   const [theme, setThemeState] = useState<"light" | "high-contrast-dark">(( ) => {
     const saved = localStorage.getItem("vajra_theme");
@@ -257,8 +271,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         setBadgeNumber,
         isDbConnected,
         setIsDbConnected,
-        isNeo4jConnected,
-        setIsNeo4jConnected,
         toasts,
         addToast,
         removeToast,

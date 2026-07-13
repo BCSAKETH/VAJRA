@@ -80,7 +80,7 @@ most important distinction in the whole brief, so it's worth being precise:
 
 **Why not overbuild this one:** the brief doesn't ask for cutting-edge trend detection here specifically — it asks for accessible, drill-down-able trend views (Problem Statement 2's officers wanted "immediate sense of what is going on" from a glance). Simple, well-visualized statistics beat a complex model that's hard to explain — which also serves the Explainable AI requirement (Section 9).
 
-**Catalyst constraint:** Pre-computed hotspot coordinates (from your DBSCAN job) should be **cached results served fast** — this is a Tier 1 sync-function job (< 30s), not something recomputed live per query. Run the clustering itself as a periodic **Job Function** (scheduled via cron), store results in Data Store, and have the fast-path function just read the pre-computed table.
+**Catalyst constraint:** Pre-computed hotspot coordinates (from your DBSCAN job) should be **cached results served fast** — this is a Tier 1 sync-function job (< 30s), not something recomputed live per query. Run the clustering itself as a periodic **Job Function**, scheduled via **Job Scheduling** — not Cron, which reached End of Life 30 Apr 2026 (confirmed via Zoho's own deprecation notice) and should not be used for any new or existing scheduling in this project. Store results in Data Store, and have the fast-path function just read the pre-computed table.
 
 ---
 

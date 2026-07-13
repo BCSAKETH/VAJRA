@@ -32,6 +32,8 @@ ACCOUNTS_URL = "https://accounts.zoho.in/oauth/v2/token"
 ZCQL_URL = f"https://api.catalyst.zoho.in/baas/v1/project/{PROJECT_ID}/query"
 
 _current_token = None
+import threading
+token_lock = threading.Lock()
 
 def get_access_token():
     global _current_token
@@ -43,22 +45,29 @@ def get_access_token():
         logger.info("Access token loaded from cache.")
         return _current_token
 
-    payload = {
-        "client_id": CLIENT_ID,
-        "client_secret": CLIENT_SECRET,
-        "refresh_token": REFRESH_TOKEN,
-        "grant_type": "refresh_token"
-    }
-    response = requests.post(ACCOUNTS_URL, data=payload)
-    data = response.json()
-    if "access_token" not in data:
-        raise Exception(f"Auth failed: {json.dumps(data)}")
-    _current_token = data["access_token"]
-    # Cache it
-    with open(token_cache_path, "w") as f:
-        f.write(_current_token)
-    logger.info("OAuth access token acquired and cached.")
-    return _current_token
+    return force_refresh_access_token()
+
+def force_refresh_access_token():
+    global _current_token
+    with token_lock:
+        token_cache_path = os.path.join(os.path.dirname(__file__), ".token_cache")
+        payload = {
+            "client_id": CLIENT_ID,
+            "client_secret": CLIENT_SECRET,
+            "refresh_token": REFRESH_TOKEN,
+            "grant_type": "refresh_token"
+        }
+        try:
+            response = requests.post(ACCOUNTS_URL, data=payload)
+            data = response.json()
+            if "access_token" in data:
+                _current_token = data["access_token"]
+                with open(token_cache_path, "w") as f:
+                    f.write(_current_token)
+                logger.info("OAuth access token refreshed successfully.")
+        except Exception as e:
+            logger.error(f"Failed to refresh access token: {e}")
+        return _current_token
 
 def random_date_after(start_date, max_days=30):
     delta = random.randint(0, max_days)
@@ -96,6 +105,12 @@ def zcql_insert(table_name, row_dict):
             res = requests.post(ZCQL_URL, headers=headers, json={"query": query})
             if res.status_code in (200, 201):
                 return True
+            elif res.status_code == 401 or "INVALID_TOKEN" in res.text:
+                logger.warning(f"ZCQL INSERT returned 401/INVALID_TOKEN. Refreshing token...")
+                new_token = force_refresh_access_token()
+                headers["Authorization"] = f"Zoho-oauthtoken {new_token}"
+                time.sleep(0.5)
+                continue
             elif res.status_code == 429:
                 sleep_time = 0.5 * (2 ** attempt) + random.uniform(0.1, 0.3)
                 time.sleep(sleep_time)
@@ -255,11 +270,23 @@ def main():
             "X-Catalyst-Environment": "Development",
             "environment": "Development"
         }
-        res = requests.post(ZCQL_URL, headers=headers, json={"query": q})
-        if res.status_code == 200:
-            logger.info(f"  Cleared {tbl}")
-        else:
-            logger.warning(f"  Could not clear {tbl}: {res.status_code}")
+        for attempt in range(3):
+            try:
+                res = requests.post(ZCQL_URL, headers=headers, json={"query": q})
+                if res.status_code == 200:
+                    logger.info(f"  Cleared {tbl}")
+                    break
+                elif res.status_code == 401 or "INVALID_TOKEN" in res.text:
+                    logger.warning(f"DELETE returned 401/INVALID_TOKEN for {tbl}. Refreshing token...")
+                    new_token = force_refresh_access_token()
+                    headers["Authorization"] = f"Zoho-oauthtoken {new_token}"
+                    continue
+                else:
+                    logger.warning(f"  Could not clear {tbl}: {res.status_code}")
+                    break
+            except Exception as e:
+                logger.error(f"Error clearing {tbl}: {e}")
+                break
 
     # --- Phase 1: Lookup Tables ---
     logger.info("\n--- Phase 1: Lookup Tables ---")
@@ -392,7 +419,7 @@ def main():
             "EmployeeID": i+1, "DistrictID": random.randint(1, 30),
             "UnitID": random.randint(1, 30), "RankID": random.randint(1, 10),
             "DesignationID": random.randint(1, 8),
-            "KGID": str(random.randint(100000, 999999)),
+            "KGID": str(random.randint(1000000, 9999999)),
             "FirstName": fake.name().replace("'", ""),
             "EmployeeDOB": fake.date_of_birth(minimum_age=25, maximum_age=58).isoformat(),
             "GenderID": random.choice([1, 2]), "BloodGroupID": random.randint(1, 8),
@@ -531,7 +558,7 @@ def main():
             "IncidentFromDate": reg_date.isoformat(),
             "IncidentToDate": reg_date.isoformat(),
             "InfoReceivedPSDate": reg_date.isoformat(),
-            "latitude": lat, "longitude": lng,
+            "Latitude": lat, "Longitude": lng,
             "BriefFacts": f"Incident of {crime.lower()} reported at {fake.street_address().replace(chr(39), '')}. Official beat patrol logged."
         })
 
@@ -572,7 +599,7 @@ def main():
             # Outcome Funnel: ~50% Arrest
             if random.random() <= 0.50:
                 arrests.append({
-                    "ArrestSurrenderID": arrest_id_counter, "CaseMasterID": cid,
+                    "ArrestSurrender": arrest_id_counter, "CaseMasterID": cid,
                     "ArrestSurrenderTypeID": random.choice([1, 2]),
                     "ArrestSurrenderDate": random_date_after(reg_date).isoformat(),
                     "ArrestSurrenderStateId": 1,
@@ -694,6 +721,34 @@ def main():
          "crime_month": random.choice(months)}
         for i in range(100)
     ])
+
+    # --- Seed FinancialTransaction ---
+    logger.info("\n--- Seeding FinancialTransaction ---")
+    txns = []
+    for i in range(150):
+        case_id = random.randint(1, 8000)
+        sender = random.choice([
+            "SBI-10847293", "HDFC-30294827", "ICICI-50928374", "Suspect Wallet 0x3f8e", 
+            "GPay-98450123", "Paytm-99450912", "PhonePe-88450991", "BTC-1A1zP1e"
+        ])
+        receiver = random.choice([
+            "SBI-90238471", "HDFC-10928374", "ICICI-80928374", "Suspect Wallet 0x9b4f",
+            "GPay-91450234", "Paytm-81450912", "PhonePe-78450991", "BTC-3FZbwp9"
+        ])
+        if sender == receiver:
+            receiver = "SBI-90238471"
+            
+        txn_time = (datetime.datetime.now() - datetime.timedelta(days=random.randint(0, 30))).isoformat()
+        
+        txns.append({
+            "sender_ref": sender,
+            "receiver_ref": receiver,
+            "amount": round(random.uniform(5000.0, 750000.0), 2),
+            "txn_time": txn_time,
+            "linked_case_id": case_id,
+            "account_or_wallet_id": random.choice(["SBI-ACCT", "HDFC-ACCT", "WALLET-ETH", "UPI-GPAY"])
+        })
+    seed_table("FinancialTransaction", txns)
 
     logger.info("\n" + "=" * 60)
     logger.info("ALL DONE! Synthetic data seeding complete.")

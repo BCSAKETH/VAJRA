@@ -9,7 +9,6 @@ export const SettingsScreen: React.FC = () => {
     setLang,
     badgeNumber,
     isDbConnected,
-    isNeo4jConnected,
     theme,
     setTheme,
   } = useApp();
@@ -81,14 +80,6 @@ export const SettingsScreen: React.FC = () => {
                 <span className="text-slate-400">Zoho Catalyst ZCQL Client:</span>
                 <span className={`font-bold text-[11px] ${isDbConnected ? "text-[#00C6AD]" : "text-rose-500"}`}>
                   {isDbConnected ? "ONLINE (Catalyst serverless)" : "OFFLINE"}
-                </span>
-              </div>
-
-              {/* Neo4j Sandbox Status */}
-              <div className="flex justify-between items-center p-2.5 rounded bg-slate-950/40 border border-slate-900">
-                <span className="text-slate-400">Neo4j Sandbox Syndicate Engine:</span>
-                <span className={`font-bold text-[11px] ${isNeo4jConnected ? "text-[#00C6AD]" : "text-rose-500"}`}>
-                  {isNeo4jConnected ? "CONNECTED" : "DISCONNECTED (GraphRAG using relation fallback)"}
                 </span>
               </div>
             </div>

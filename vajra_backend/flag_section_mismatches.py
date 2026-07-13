@@ -67,7 +67,6 @@ def run_consistency_check():
             is_consistent = any(suggested_sec.lower() in rec.lower() for rec in recorded_sections) if recorded_sections else False
             
             if not is_consistent:
-                # Check if already flagged to avoid duplicates
                 try:
                     exists_res = catalyst_app.zql().execute_query(
                         f"SELECT ROWID FROM ConsistencyFlags WHERE case_id = {case_id} LIMIT 1"

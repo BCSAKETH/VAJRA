@@ -1,8 +1,14 @@
-with open("vajra_backend/agent_loop.py", "r", encoding="utf-8") as f:
+with open("vajra_backend/main.py", "r", encoding="utf-8") as f:
     lines = f.readlines()
 
 for i, line in enumerate(lines):
-    if "def _write_audit_log" in line:
-        print(f"Found _write_audit_log at line {i+1}")
-    if "def run_agent_loop" in line:
-        print(f"Found run_agent_loop at line {i+1}")
+    if '"/api/audit-logs"' in line or "'/api/audit-logs'" in line:
+        print(f"Found /api/audit-logs start at line {i+1}")
+        for j in range(i, min(i+25, len(lines))):
+            print(f"{j+1}: {lines[j]}", end="")
+            
+for i, line in enumerate(lines):
+    if '"/api/alerts/consistency-flags"' in line or "'/api/alerts/consistency-flags'" in line:
+        print(f"\nFound /api/alerts/consistency-flags start at line {i+1}")
+        for j in range(i, min(i+35, len(lines))):
+            print(f"{j+1}: {lines[j]}", end="")

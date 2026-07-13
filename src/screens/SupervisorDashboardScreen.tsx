@@ -104,36 +104,37 @@ export const SupervisorDashboardScreen: React.FC = () => {
     fetchAuditLogs();
   }, []);
 
-  // Run ledger cryptographic hash-chain validation
-  const handleVerifyLedger = () => {
+  // Run ledger cryptographic hash-chain validation — asks the backend to actually
+  // recompute SHA-256(prev_hash + content) across every entry and compare against
+  // what's stored, rather than just checking the hash string is formatted correctly.
+  const handleVerifyLedger = async () => {
     setIsVerifyingLedger(true);
     setLedgerVerified(null);
 
-    setTimeout(() => {
-      // Simulate sequential SHA-256 chain verification
-      let isValid = true;
-      if (auditLogs.length === 0) isValid = false;
-      
-      // Perform validation check (prove non-tampering of sequence hashes)
-      auditLogs.forEach((log) => {
-        if (!log.hash || !log.hash.startsWith("sha256-")) {
-          isValid = false;
-        }
+    try {
+      const response = await fetch(`${API_BASE}/api/audit-logs/verify`, {
+        headers: {
+          "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
+        },
       });
+      const result = await response.json();
+      setLedgerVerified(result.valid);
 
-      setLedgerVerified(isValid);
-      setIsVerifyingLedger(false);
-      
-      if (isValid) {
+      if (result.valid) {
         addToast(
           lang === "en" ? "Ledger Verified" : "ಲೆಡ್ಜರ್ ಪರಿಶೀಲಿಸಲಾಗಿದೆ",
-          lang === "en" ? "Cryptographic block hash-chain validation matches. Zero tampering detected." : "ಬ್ಲಾಕ್ ಹ್ಯಾಶ್-ಚೈನ್ ದೃಢೀಕರಣ ಯಶಸ್ವಿಯಾಗಿದೆ.",
+          result.reason,
           "Success"
         );
       } else {
-        addToast("Ledger Inconsistent", "Failed sequential hash comparison checks.", "Critical");
+        addToast("Ledger Inconsistent", result.reason || "Hash chain verification failed.", "Critical");
       }
-    }, 1500);
+    } catch (err: any) {
+      setLedgerVerified(false);
+      addToast("Verification Failed", err.message || "Could not reach the ledger verification service.", "Critical");
+    } finally {
+      setIsVerifyingLedger(false);
+    }
   };
 
   // Trigger double authorization flow
