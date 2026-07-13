@@ -455,6 +455,7 @@ class VajraSemanticMemory:
     On startup, attempts to fetch real incident reports from Zoho Catalyst to index!
     """
     def __init__(self, data_path: str = "synthetic_fir_data.json"):
+        t_start = time.time()
         self.documents: List[str] = []
         self.fir_metadata: List[Dict[str, Any]] = []
         
@@ -541,6 +542,9 @@ class VajraSemanticMemory:
         if not self.use_transformer:
             self.tfidf_vectorizer = TfidfVectorizer(stop_words='english')
             self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(self.documents)
+            
+        t_end = time.time()
+        logger.info(f"VajraSemanticMemory: Initialization took {t_end - t_start:.4f} seconds.")
 
     def recall_context(self, query: str, top_k: int = 1) -> List[Dict[str, Any]]:
         if not self.documents or self.documents[0] == "No reports index compiled.":

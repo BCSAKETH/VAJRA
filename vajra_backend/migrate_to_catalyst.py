@@ -60,6 +60,11 @@ def get_access_token():
     logger.info("OAuth access token acquired and cached.")
     return _current_token
 
+def random_date_after(start_date, max_days=30):
+    delta = random.randint(0, max_days)
+    return start_date + datetime.timedelta(days=delta)
+
+
 def zcql_insert(table_name, row_dict):
     """Insert a row using ZCQL INSERT statement with rate-limiting retries."""
     columns = ", ".join(row_dict.keys())
@@ -569,7 +574,7 @@ def main():
                 arrests.append({
                     "ArrestSurrenderID": arrest_id_counter, "CaseMasterID": cid,
                     "ArrestSurrenderTypeID": random.choice([1, 2]),
-                    "ArrestSurrenderDate": fake.date_between(start_date=reg_date, end_date="today").isoformat(),
+                    "ArrestSurrenderDate": random_date_after(reg_date).isoformat(),
                     "ArrestSurrenderStateId": 1,
                     "ArrestSurrenderDistrictId": dist_id,
                     "PoliceStationID": random.randint(1, 30),
@@ -591,7 +596,7 @@ def main():
         if random.random() <= 0.87:
             chargesheets.append({
                 "CSID": cs_id_counter, "CaseMasterID": cid,
-                "csdate": fake.date_between(start_date=reg_date, end_date="today").isoformat(),
+                "csdate": random_date_after(reg_date).isoformat(),
                 "cstype": random.choice(["Regular", "Supplementary"]),
                 "PolicePersonID": random.randint(1, 30)
             })
