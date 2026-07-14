@@ -11,6 +11,7 @@ export const LoginScreen: React.FC = () => {
     setLang,
     setIsAuthenticated,
     setBadgeNumber,
+    setRoleTier,
     setGlobalLoading,
     addToast,
   } = useApp();
@@ -71,6 +72,7 @@ export const LoginScreen: React.FC = () => {
       // Success Authentication
       setIsAuthenticated(true);
       setBadgeNumber(badgeInput);
+      setRoleTier(data.role_tier === "supervisor" ? "supervisor" : "officer");
 
       addToast(
         lang === "en" ? "Secure Logon Established" : "ಸುರಕ್ಷಿತ ಲಾಗಿನ್ ಸ್ಥಾಪಿಸಲಾಗಿದೆ",

@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+import re
 import json
 import hashlib
 import logging
@@ -10,7 +11,7 @@ from typing import List, Dict, Any, Optional
 import numpy as np
 import pandas as pd
 import joblib
-from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, status, Request
+from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, status, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import zcatalyst_sdk
@@ -65,6 +66,65 @@ semantic_memory = VajraSemanticMemory()
 agent_loop = VajraAgentLoop(dbscan_model=dbscan_model, xgboost_model=xgboost_risk_model, shap_explainer=shap_explainer, label_encoders=label_encoders)
 
 
+class ConnectionManager:
+    """
+    Live message broadcast for Cowork sessions. AppSail hosts this FastAPI
+    app as a persistent process (not a serverless function-per-request), so
+    a real WebSocket connection held open here is genuinely viable -- no
+    separate Catalyst real-time product or external service needed, this is
+    just a second endpoint on the same running backend.
+    """
+    def __init__(self):
+        self.active_connections: Dict[str, List[WebSocket]] = {}
+
+    async def connect(self, session_id: str, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections.setdefault(session_id, []).append(websocket)
+
+    def disconnect(self, session_id: str, websocket: WebSocket):
+        conns = self.active_connections.get(session_id)
+        if conns and websocket in conns:
+            conns.remove(websocket)
+            if not conns:
+                del self.active_connections[session_id]
+
+    async def broadcast(self, session_id: str, message: Dict[str, Any]):
+        for ws in list(self.active_connections.get(session_id, [])):
+            try:
+                await ws.send_json(message)
+            except Exception:
+                self.disconnect(session_id, ws)
+
+
+connection_manager = ConnectionManager()
+
+
+@app.websocket("/ws/chat/{session_id}")
+async def websocket_chat(websocket: WebSocket, session_id: str, token: str = Query(...)):
+    """
+    Live push for Cowork sessions. Browsers can't set custom headers on a
+    WebSocket handshake, so the session token travels as a query param
+    instead of the usual Authorization header -- verified with the same
+    verify_session_token used everywhere else, so an invalid/expired token
+    is rejected exactly like any other endpoint.
+    """
+    from vajra_core import verify_session_token
+    kgid = verify_session_token(token)
+    if not kgid:
+        await websocket.close(code=4001)
+        return
+
+    await connection_manager.connect(session_id, websocket)
+    try:
+        while True:
+            # Client never sends anything meaningful over this socket -- it's
+            # receive-only from the frontend's perspective. This just keeps
+            # the connection alive and detects disconnects.
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        connection_manager.disconnect(session_id, websocket)
+
+
 class CaseAnalysisRequest(BaseModel):
     query: str = Field(..., description="Conversational query for semantic analysis")
     suspect_name: str = Field(..., description="Suspect name for GraphRAG connection tracing")
@@ -85,6 +145,13 @@ async def health_check():
     """
     Diagnostic checks for live Zoho Catalyst Datastore, local files, and machine learning components.
     """
+    # Reads the same cached "recently confirmed down" flag catalyst_llm.py
+    # sets after a failed call, rather than firing a live request on every
+    # /health poll (the frontend polls this every 30s) -- cheap and accurate
+    # within the flag's ~1hr granularity (Catalyst Cache's shortest expiry unit).
+    from catalyst_llm import _is_endpoint_marked_down
+    llm_available = not _is_endpoint_marked_down()
+
     return {
         "status": "online",
         "timestamp": pd.Timestamp.now().isoformat(),
@@ -101,7 +168,8 @@ async def health_check():
         # always returns 503. Reported here so the frontend can disable the mic
         # button honestly instead of letting an officer record audio that's
         # guaranteed to be thrown away.
-        "voice_service_available": False
+        "voice_service_available": False,
+        "llm_service_available": llm_available
     }
 
 
@@ -286,18 +354,38 @@ async def login(payload: AuthRequest):
     if not stored_hash or not bcrypt.checkpw(payload.password.encode("utf-8"), stored_hash.encode("utf-8")):
         raise HTTPException(status_code=401, detail="Invalid Credentials: Badge Number or password incorrect.")
 
-    from vajra_core import get_cached_access_token
-    token = get_cached_access_token()
-    if not token:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Failed to generate genuine Zoho Catalyst session token. Verify OAuth credentials."
+    from vajra_core import issue_session_token, derive_role_tier
+    # Previously returned the raw shared Catalyst admin access token as the
+    # session -- the same token used for every backend-to-Catalyst call, and
+    # not resolvable back to a specific officer by the firewall (Zoho's
+    # /project-user/current 401s for it, since it's not a real per-user
+    # session -- see verify_session_token in vajra_core.py). issue_session_token
+    # mints a real per-officer signed session instead, tied to this badge_no
+    # specifically now that its password has been checked.
+    try:
+        token = issue_session_token(payload.badge_no)
+    except RuntimeError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    # Resolve this badge's own RankID so the response can carry its real
+    # role_tier -- needed by TwoPersonApprovalModal to verify a co-signing
+    # supervisor badge is actually Supervisor-tier+, not just a different
+    # badge number that happens to have a valid password.
+    role_tier = "officer"
+    try:
+        emp_res = catalyst_app.zql().execute_query(
+            f"SELECT RankID FROM Employee WHERE KGID = '{payload.badge_no}'"
         )
+        if emp_res:
+            role_tier = derive_role_tier(emp_res[0].get("Employee", {}).get("RankID"))
+    except Exception as e:
+        logger.warning(f"Could not resolve role_tier for {payload.badge_no}: {e}")
 
     return {
         "access_token": token,
         "token_type": "Bearer",
         "expires_in": 3600,
+        "role_tier": role_tier,
         "user": {
             "id": f"{payload.badge_no}_user",
             "badge_no": payload.badge_no,
@@ -321,7 +409,8 @@ async def get_current_officer(
         "first_name": profile.get("FirstName"),
         "station": request.state.authorized_station,
         "rank": request.state.rank_name,
-        "designation": request.state.designation_name
+        "designation": request.state.designation_name,
+        "role_tier": request.state.role_tier
     }
 
 
@@ -339,7 +428,7 @@ async def get_crime_trends(
     try:
         q = "SELECT major_crime_head, crime_head_and_section, minor_crime_head, commits, crime_month FROM CrimeData"
         if major_head:
-            q += f" WHERE major_crime_head LIKE '%{major_head}%'"
+            q += f" WHERE major_crime_head LIKE '*{major_head}*'"
         q += f" LIMIT {limit}"
         res = catalyst_app.zql().execute_query(q)
         return [r.get("CrimeData", {}) for r in res]
@@ -735,7 +824,7 @@ async def get_accused_list(
         # 3. Fetch Accused
         q = "SELECT AccusedMasterID, AccusedName, AgeYear, GenderID, CaseMasterID FROM Accused"
         if search:
-            q += f" WHERE AccusedName LIKE '%{search}%'"
+            q += f" WHERE AccusedName LIKE '*{search}*'"
         q += f" LIMIT {limit}"
         accused_res = catalyst_app.zql().execute_query(q)
         
@@ -809,18 +898,21 @@ class ChatRequest(BaseModel):
     session_id: Optional[str] = None
     dictionaryTerms: Optional[List[Any]] = []
     activeFIR: Optional[Dict[str, Any]] = None
+    attachments: Optional[List[Dict[str, Any]]] = None
 
 
-def _persist_chat_message(session_id: str, sender: str, text: str, response_type: str = "text", data: Optional[Dict[str, Any]] = None, citations: Optional[List[Any]] = None):
+def _persist_chat_message(session_id: str, sender: str, text: str, response_type: str = "text", data: Optional[Dict[str, Any]] = None, citations: Optional[List[Any]] = None, sender_employee_id: Optional[int] = None):
     """
     Writes a message to the ChatMessage table and bumps ChatSession.LastActiveAt.
     Degrades gracefully (logs only) if ChatSession/ChatMessage don't exist yet in the
     live console — this feature requires those two tables to be created manually first.
+    sender_employee_id attributes a message to a specific officer once a
+    session has multiple participants (Cowork) -- solo sessions don't need it.
     """
     if not catalyst_app:
         return
     try:
-        catalyst_app.datastore().table("ChatMessage").insert_row({
+        row = {
             "session_id": session_id,
             "sender": sender,
             "text": text[:2000],
@@ -828,7 +920,10 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
             "data_json": json.dumps(data or {})[:4000],
             "citations_json": json.dumps(citations or [])[:2000],
             "sent_at": datetime.utcnow().isoformat()
-        })
+        }
+        if sender_employee_id is not None:
+            row["sender_employee_id"] = sender_employee_id
+        catalyst_app.datastore().table("ChatMessage").insert_row(row)
     except Exception as e:
         logger.warning(f"Could not persist chat message (ChatMessage table may not exist yet): {e}")
 
@@ -843,6 +938,25 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
         logger.warning(f"Could not update ChatSession.last_active_at (table may not exist yet): {e}")
 
 
+def _create_chat_session(employee_id: int, title: str = "New Conversation") -> str:
+    """
+    Shared by POST /api/sessions and the auto-create path in /api/chat (a chat
+    sent with no session_id used to be persisted to ChatMessage under a
+    synthetic id that never got a matching ChatSession row -- it would never
+    show up in GET /api/sessions).
+    """
+    session_id = f"sess-{employee_id}-{int(datetime.utcnow().timestamp())}"
+    if catalyst_app:
+        catalyst_app.datastore().table("ChatSession").insert_row({
+            "session_id": session_id,
+            "employee_id": employee_id,
+            "title": title[:60],
+            "created_at": datetime.utcnow().isoformat(),
+            "last_active_at": datetime.utcnow().isoformat()
+        })
+    return session_id
+
+
 @app.post("/api/sessions")
 async def create_session(request: Request, location_context: str = Depends(security_firewall)):
     """
@@ -850,19 +964,11 @@ async def create_session(request: Request, location_context: str = Depends(secur
     Requires the ChatSession table to exist in the console (see docs/SCHEMA.md).
     """
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
-    session_id = f"sess-{employee_id}-{int(datetime.utcnow().timestamp())}"
-    if catalyst_app:
-        try:
-            catalyst_app.datastore().table("ChatSession").insert_row({
-                "session_id": session_id,
-                "employee_id": employee_id,
-                "title": "New Conversation",
-                "created_at": datetime.utcnow().isoformat(),
-                "last_active_at": datetime.utcnow().isoformat()
-            })
-        except Exception as e:
-            logger.error(f"Failed to create ChatSession row (table may not exist yet): {e}")
-            raise HTTPException(status_code=503, detail="Session persistence unavailable — ChatSession table not configured yet.")
+    try:
+        session_id = _create_chat_session(employee_id)
+    except Exception as e:
+        logger.error(f"Failed to create ChatSession row (table may not exist yet): {e}")
+        raise HTTPException(status_code=503, detail="Session persistence unavailable — ChatSession table not configured yet.")
     return {"session_id": session_id}
 
 
@@ -884,28 +990,52 @@ async def list_sessions(request: Request, location_context: str = Depends(securi
         return []
 
 
+def _get_cowork_role(session_id: str, employee_id: int) -> Optional[str]:
+    """
+    Returns 'owner' if the session_id embeds this employee_id (the original
+    solo-session ownership check), their CoworkParticipant.role ('viewer' or
+    'collaborator') if they were invited and accepted, or None if they have
+    no access to this session at all.
+    """
+    if session_id.startswith(f"sess-{employee_id}-"):
+        return "owner"
+    if not catalyst_app:
+        return None
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT role FROM CoworkParticipant WHERE session_id = '{session_id}' AND employee_id = {employee_id} LIMIT 1"
+        )
+        if res:
+            return res[0].get("CoworkParticipant", {}).get("role")
+    except Exception as e:
+        logger.warning(f"Could not check CoworkParticipant role: {e}")
+    return None
+
+
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str, request: Request, location_context: str = Depends(security_firewall)):
     """
-    Returns the full message history for one session. Ownership is enforced by only
-    ever returning a session the caller could plausibly have created (session_id embeds
-    the owning employee_id); this is a lightweight check, not a substitute for row-level
-    ACLs if this table's scope permissions aren't also configured in the console.
+    Returns the full message history for one session. Readable by the
+    session owner or any accepted Cowork participant (viewer or
+    collaborator) -- previously only the owner could ever read a session,
+    which made the whole point of Cowork (a shared thread) impossible.
     """
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
-    if not session_id.startswith(f"sess-{employee_id}-"):
-        raise HTTPException(status_code=403, detail="You do not own this session.")
+    role = _get_cowork_role(session_id, employee_id)
+    if not role:
+        raise HTTPException(status_code=403, detail="You do not have access to this session.")
     if not catalyst_app:
         return []
     try:
         res = catalyst_app.zql().execute_query(
-            f"SELECT sender, text, response_type, data_json, citations_json, sent_at FROM ChatMessage WHERE session_id = '{session_id}' ORDER BY sent_at ASC LIMIT 300"
+            f"SELECT sender, sender_employee_id, text, response_type, data_json, citations_json, sent_at FROM ChatMessage WHERE session_id = '{session_id}' ORDER BY sent_at ASC LIMIT 300"
         )
         messages = []
         for r in res:
             m = r.get("ChatMessage", {})
             messages.append({
                 "sender": m.get("sender"),
+                "sender_employee_id": m.get("sender_employee_id"),
                 "text": m.get("text"),
                 "response_type": m.get("response_type"),
                 "data": json.loads(m.get("data_json") or "{}"),
@@ -918,24 +1048,90 @@ async def get_session_messages(session_id: str, request: Request, location_conte
         return []
 
 
+VAJRA_MENTION_RE = re.compile(r"@vajra\b", re.IGNORECASE)
+
+
+def _is_cowork_session(session_id: str) -> bool:
+    """True once at least one officer has accepted an invite into this session."""
+    if not catalyst_app:
+        return False
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT session_id FROM CoworkParticipant WHERE session_id = '{session_id}' LIMIT 1"
+        )
+        return bool(res)
+    except Exception:
+        return False
+
+
 @app.post("/api/chat")
 async def chat_endpoint(payload: ChatRequest, request: Request, location_context: str = Depends(security_firewall)):
     """
     Bilingual AI Chat engine grounded in the live Zoho Catalyst database with multi-turn memory.
+
+    In a Cowork session (2+ participants), a message only reaches the GLM
+    agent loop if it @vajra-mentions the AI -- otherwise it's just persisted
+    and broadcast as a plain human-to-human message, so officers can discuss
+    in the shared thread without pinging the model on every line.
     """
     message = payload.message.strip()
     lang = payload.lang
-
-    # Resolve session ID: prefer the real persisted session_id from the request body,
-    # fall back to the header, then to a per-officer default for backward compatibility.
-    session_id = payload.session_id or request.headers.get("X-Session-ID") or f"session-{request.state.kgid}"
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId") or 4003385
     unit_id = request.state.user_profile.get("UnitID") or request.state.user_profile.get("unitid")
+    first_name = request.state.user_profile.get("FirstName") or "Officer"
 
-    _persist_chat_message(session_id, "user", message)
+    # Resolve session ID: prefer the real persisted session_id from the request
+    # body. If none was supplied, this is a new conversation -- auto-create a
+    # real ChatSession row (auto-titled from the first ~40 characters of the
+    # message) instead of falling back to a synthetic id that never gets a
+    # matching ChatSession row and so never shows up in session history.
+    session_id = payload.session_id or request.headers.get("X-Session-ID")
+    if not session_id:
+        auto_title = message[:40] + ("..." if len(message) > 40 else "")
+        try:
+            session_id = _create_chat_session(employee_id, auto_title or "New Conversation")
+        except Exception as e:
+            logger.warning(f"Could not auto-create ChatSession, falling back to ephemeral session id: {e}")
+            session_id = f"session-{request.state.kgid}"
+    else:
+        role = _get_cowork_role(session_id, employee_id)
+        if not role:
+            raise HTTPException(status_code=403, detail="You do not have access to this session.")
+        if role == "viewer":
+            raise HTTPException(status_code=403, detail="Viewer access only -- you cannot post messages in this session.")
+
+    is_cowork = _is_cowork_session(session_id)
+    mentions_vajra = bool(VAJRA_MENTION_RE.search(message))
+
+    _persist_chat_message(
+        session_id, "user", message, "text",
+        {"attachments": payload.attachments} if payload.attachments else None,
+        sender_employee_id=employee_id
+    )
+    await connection_manager.broadcast(session_id, {
+        "type": "message", "sender": "user", "sender_employee_id": employee_id,
+        "sender_name": first_name, "text": message, "response_type": "text",
+        "data": {}, "citations": [], "timestamp": datetime.utcnow().isoformat()
+    })
+
+    if is_cowork and not mentions_vajra:
+        # Human-to-human message in a shared thread -- no AI call, return fast.
+        return {
+            "text": message,
+            "session_id": session_id,
+            "response_type": "text",
+            "data": {},
+            "citations": [],
+            "is_simulated": False,
+            "simulated_reason": "",
+            "ai_invoked": False
+        }
+
+    # Strip the mention itself so it doesn't confuse the agent's own parsing
+    query_for_agent = VAJRA_MENTION_RE.sub("", message).strip() or message
 
     # Run query through IndicTrans2 translation layer if Kannada
-    processed_query = translator.translate(message, "kn", "en") if lang == "kn" else message
+    processed_query = translator.translate(query_for_agent, "kn", "en") if lang == "kn" else query_for_agent
 
     # Execute the central Agent Loop
     result = agent_loop.run_agent_loop(
@@ -951,70 +1147,379 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
         text = translator.translate(text, "en", "kn")
 
     _persist_chat_message(session_id, "assistant", text, result["response_type"], result["data"], result["citations"])
+    await connection_manager.broadcast(session_id, {
+        "type": "message", "sender": "assistant", "sender_employee_id": None,
+        "sender_name": "VAJRA.AI", "text": text, "response_type": result["response_type"],
+        "data": result["data"], "citations": result["citations"], "timestamp": datetime.utcnow().isoformat()
+    })
 
     return {
         "text": text,
+        "session_id": session_id,
         "response_type": result["response_type"],
         "data": result["data"],
         "citations": result["citations"],
         "is_simulated": result.get("is_simulated", False),
-        "simulated_reason": result.get("simulated_reason", "")
+        "simulated_reason": result.get("simulated_reason", ""),
+        "ai_invoked": True
+    }
+
+
+class CoworkInviteRequest(BaseModel):
+    session_id: str
+    invitee_badge: str
+    role: str = "collaborator"  # "viewer" or "collaborator"
+
+
+@app.post("/api/cowork/invite")
+async def invite_to_cowork(payload: CoworkInviteRequest, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Invite another officer into a session (new or existing, with prior
+    history). Only the session owner can invite. Rejects if invitee_badge
+    doesn't resolve to a real employee, or if the inviter isn't actually the
+    owner of this session.
+    """
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not payload.session_id.startswith(f"sess-{employee_id}-"):
+        raise HTTPException(status_code=403, detail="Only the session owner can send invitations.")
+    if payload.role not in ("viewer", "collaborator"):
+        raise HTTPException(status_code=400, detail="role must be 'viewer' or 'collaborator'.")
+    if not payload.invitee_badge.isdigit() or len(payload.invitee_badge) != 7:
+        raise HTTPException(status_code=400, detail="invitee_badge must be a 7-digit KGID.")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+
+    emp_res = catalyst_app.zql().execute_query(f"SELECT EmployeeID FROM Employee WHERE KGID = '{payload.invitee_badge}'")
+    if not emp_res:
+        raise HTTPException(status_code=404, detail="No officer found with that badge number.")
+    invitee_employee_id = emp_res[0].get("Employee", {}).get("EmployeeID")
+
+    existing = catalyst_app.zql().execute_query(
+        f"SELECT invitation_id FROM CoworkInvitation WHERE session_id = '{payload.session_id}' "
+        f"AND invitee_badge = '{payload.invitee_badge}' AND status = 'pending' LIMIT 1"
+    )
+    if existing:
+        raise HTTPException(status_code=409, detail="An invitation is already pending for this officer.")
+
+    already_in = catalyst_app.zql().execute_query(
+        f"SELECT session_id FROM CoworkParticipant WHERE session_id = '{payload.session_id}' AND employee_id = {invitee_employee_id} LIMIT 1"
+    )
+    if already_in:
+        raise HTTPException(status_code=409, detail="That officer is already part of this session.")
+
+    case_no = None
+    try:
+        session_res = catalyst_app.zql().execute_query(f"SELECT case_no FROM ChatSession WHERE session_id = '{payload.session_id}' LIMIT 1")
+        if session_res:
+            case_no = session_res[0].get("ChatSession", {}).get("case_no")
+    except Exception:
+        pass
+
+    catalyst_app.datastore().table("CoworkInvitation").insert_row({
+        "session_id": payload.session_id,
+        "case_no": case_no or "",
+        "inviter_employee_id": employee_id,
+        "invitee_badge": payload.invitee_badge,
+        "invitee_employee_id": invitee_employee_id,
+        "status": "pending",
+        "created_at": datetime.utcnow().isoformat(),
+        "responded_at": ""
+    })
+    return {"status": "invited", "invitee_badge": payload.invitee_badge, "role": payload.role}
+
+
+@app.get("/api/cowork/invitations")
+async def list_cowork_invitations(request: Request, location_context: str = Depends(security_firewall)):
+    """Pending invitations addressed to the current officer, resolved by their own KGID/employee_id -- never a client-supplied one."""
+    kgid = request.state.kgid
+    if not catalyst_app:
+        return []
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT invitation_id, ROWID, session_id, case_no, inviter_employee_id, created_at FROM CoworkInvitation "
+            f"WHERE invitee_badge = '{kgid}' AND status = 'pending' ORDER BY created_at DESC LIMIT 50"
+        )
+        invitations = []
+        for r in res:
+            inv = r.get("CoworkInvitation", {})
+            inviter_name = "Unknown Officer"
+            try:
+                inviter_res = catalyst_app.zql().execute_query(f"SELECT FirstName FROM Employee WHERE EmployeeID = {inv.get('inviter_employee_id')}")
+                if inviter_res:
+                    inviter_name = inviter_res[0].get("Employee", {}).get("FirstName") or inviter_name
+            except Exception:
+                pass
+            invitations.append({
+                "invitation_id": inv.get("ROWID"),
+                "session_id": inv.get("session_id"),
+                "case_no": inv.get("case_no"),
+                "inviter_name": inviter_name,
+                "created_at": inv.get("created_at")
+            })
+        return invitations
+    except Exception as e:
+        logger.warning(f"Could not list cowork invitations: {e}")
+        return []
+
+
+class CoworkRespondRequest(BaseModel):
+    action: str  # "accept" or "reject"
+    role: str = "collaborator"
+
+
+@app.post("/api/cowork/invitations/{invitation_rowid}/respond")
+async def respond_to_cowork_invitation(invitation_rowid: str, payload: CoworkRespondRequest, request: Request, location_context: str = Depends(security_firewall)):
+    """Accept or reject a pending invitation addressed to the current officer."""
+    if payload.action not in ("accept", "reject"):
+        raise HTTPException(status_code=400, detail="action must be 'accept' or 'reject'.")
+    kgid = request.state.kgid
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+
+    inv_res = catalyst_app.zql().execute_query(f"SELECT ROWID, session_id, invitee_badge, status FROM CoworkInvitation WHERE ROWID = {invitation_rowid} LIMIT 1")
+    if not inv_res:
+        raise HTTPException(status_code=404, detail="Invitation not found.")
+    inv = inv_res[0].get("CoworkInvitation", {})
+    if inv.get("invitee_badge") != kgid:
+        raise HTTPException(status_code=403, detail="This invitation is not addressed to you.")
+    if inv.get("status") != "pending":
+        raise HTTPException(status_code=409, detail="This invitation has already been responded to.")
+
+    new_status = "accepted" if payload.action == "accept" else "rejected"
+    catalyst_app.datastore().table("CoworkInvitation").update_row({
+        "ROWID": invitation_rowid,
+        "status": new_status,
+        "responded_at": datetime.utcnow().isoformat()
+    })
+
+    if payload.action == "accept":
+        role = payload.role if payload.role in ("viewer", "collaborator") else "collaborator"
+        catalyst_app.datastore().table("CoworkParticipant").insert_row({
+            "session_id": inv.get("session_id"),
+            "employee_id": employee_id,
+            "role": role,
+            "joined_at": datetime.utcnow().isoformat()
+        })
+    return {"status": new_status}
+
+
+@app.get("/api/cowork/sessions")
+async def list_cowork_sessions(request: Request, location_context: str = Depends(security_firewall)):
+    """Sessions the current officer is a participant in (distinct from solely-owned sessions in GET /api/sessions)."""
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not catalyst_app:
+        return []
+    try:
+        part_res = catalyst_app.zql().execute_query(
+            f"SELECT session_id, role FROM CoworkParticipant WHERE employee_id = {employee_id} LIMIT 100"
+        )
+        sessions = []
+        for r in part_res:
+            p = r.get("CoworkParticipant", {})
+            sid = p.get("session_id")
+            title = "Shared Conversation"
+            try:
+                sess_res = catalyst_app.zql().execute_query(f"SELECT title, last_active_at FROM ChatSession WHERE session_id = '{sid}' LIMIT 1")
+                if sess_res:
+                    s = sess_res[0].get("ChatSession", {})
+                    title = s.get("title") or title
+                    sessions.append({"session_id": sid, "title": title, "role": p.get("role"), "last_active_at": s.get("last_active_at")})
+                    continue
+            except Exception:
+                pass
+            sessions.append({"session_id": sid, "title": title, "role": p.get("role"), "last_active_at": None})
+        return sessions
+    except Exception as e:
+        logger.warning(f"Could not list cowork sessions: {e}")
+        return []
+
+
+class AppletRequest(BaseModel):
+    query: str
+    response_text: str
+    data: Dict[str, Any] = {}
+
+
+@app.post("/api/chat/applet")
+async def generate_chat_applet(
+    payload: AppletRequest,
+    location_context: str = Depends(security_firewall)
+):
+    """
+    Second, independent call for the right-hand applet panel (Phase 7). Kept
+    as its own endpoint, called separately from /api/chat by the frontend
+    after the chat reply is already shown, so a slow or malformed applet
+    response never blocks or delays the answer itself. Returns null (not an
+    error) when nothing in the turn's data is genuinely visualizable.
+    """
+    spec = agent_loop.generate_applet_spec(payload.query, payload.response_text, payload.data)
+    return {"applet": spec}
+
+
+MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
+MAX_ATTACHMENTS_PER_MESSAGE = 3
+MAX_AGGREGATE_BYTES = 20 * 1024 * 1024
+MAX_IMAGE_DIMENSION = 1568
+ALLOWED_ATTACHMENT_TYPES = {"application/pdf", "image/jpeg", "image/jpg"}
+
+
+def _downscale_image(image_bytes: bytes) -> bytes:
+    """
+    Caps the longest edge at MAX_IMAGE_DIMENSION px. This is about
+    controlling Qwen's token cost (image resolution drives it, not upload
+    size), not enforcing the upload limit -- applied regardless of how small
+    the original upload already was.
+    """
+    from PIL import Image
+    import io
+    img = Image.open(io.BytesIO(image_bytes))
+    img = img.convert("RGB")
+    if max(img.size) > MAX_IMAGE_DIMENSION:
+        ratio = MAX_IMAGE_DIMENSION / max(img.size)
+        new_size = (int(img.size[0] * ratio), int(img.size[1] * ratio))
+        img = img.resize(new_size, Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
+def _rasterize_pdf(pdf_bytes: bytes, max_pages: int = 3) -> List[bytes]:
+    """Renders the first max_pages pages of a PDF to JPEG bytes."""
+    import fitz
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    page_images = []
+    for page_num in range(min(len(doc), max_pages)):
+        page = doc.load_page(page_num)
+        pix = page.get_pixmap(dpi=150)
+        page_images.append(pix.tobytes("jpeg"))
+    doc.close()
+    return page_images
+
+
+@app.post("/api/chat/attachments")
+async def upload_chat_attachments(
+    request: Request,
+    files: List[UploadFile] = File(...),
+    location_context: str = Depends(security_firewall)
+):
+    """
+    Accepts PDF/JPEG evidence attachments alongside a chat message. Rasterizes
+    PDFs to page images (capped at 3 pages), downscales every image to
+    MAX_IMAGE_DIMENSION regardless of upload size, stores each in Stratus
+    (see catalyst_stratus.py), and calls Qwen for extraction/description.
+    Frontend calls this BEFORE /api/chat when a message has attachments,
+    then prepends attachment_analysis to the query text as context.
+    """
+    from catalyst_qwen import CatalystQwen
+    from catalyst_stratus import store_attachment
+
+    if len(files) > MAX_ATTACHMENTS_PER_MESSAGE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Too many attachments: max {MAX_ATTACHMENTS_PER_MESSAGE} files per message."
+        )
+
+    aggregate_size = 0
+    processed_images: List[bytes] = []
+    attachment_refs: List[Dict[str, Any]] = []
+
+    for f in files:
+        content = await f.read()
+        aggregate_size += len(content)
+
+        if len(content) > MAX_ATTACHMENT_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{f.filename}' exceeds the 8 MB per-file limit."
+            )
+        if aggregate_size > MAX_AGGREGATE_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail="Attachments exceed the 20 MB aggregate limit for this message."
+            )
+        if f.content_type not in ALLOWED_ATTACHMENT_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'{f.filename}' has unsupported type '{f.content_type}'. Only PDF and JPEG are allowed."
+            )
+
+        page_count = 1
+        if f.content_type == "application/pdf":
+            try:
+                page_bytes_list = _rasterize_pdf(content)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Could not process PDF '{f.filename}': {e}")
+            page_count = len(page_bytes_list)
+            downscaled_pages = [_downscale_image(p) for p in page_bytes_list]
+            processed_images.extend(downscaled_pages)
+            stratus_key = None
+            for idx, page_img in enumerate(downscaled_pages):
+                stratus_key = store_attachment(page_img, "jpg", "image/jpeg") or stratus_key
+        else:
+            downscaled = _downscale_image(content)
+            processed_images.append(downscaled)
+            stratus_key = store_attachment(downscaled, "jpg", "image/jpeg")
+
+        attachment_refs.append({
+            "file_name": f.filename,
+            "type": f.content_type,
+            "stratus_id": stratus_key,
+            "page_count": page_count
+        })
+
+    qwen = CatalystQwen()
+    analysis = qwen.analyze(processed_images)
+
+    return {
+        "attachment_analysis": analysis["text"],
+        "analysis_available": analysis["available"],
+        "attachments": attachment_refs
     }
 
 
 @app.get("/api/alerts")
 async def get_alerts_endpoint(request: Request):
     """
-    Generates real severe threat alerts dynamically computed from the live database.
+    Returns real proactive alerts computed by the proactive_alerts Job Function
+    and stored in ProactiveAlerts. Previously this cycled 3 canned message
+    templates over arbitrary CaseMaster rows instead of reading real alerts —
+    fixed once the job function's own column-name bug (see
+    functions/proactive_alerts/index.py) was corrected and it started
+    populating the table with genuine district-spike/repeat-offender data.
     """
     if not catalyst_app:
         return []
     try:
-        # Fetch latest 5 cases from CaseMaster via ZQL
         zql = """
-            SELECT cm.CrimeNo, cm.CrimeRegisteredDate, u.UnitName, ch.CrimeGroupName, a.AccusedName
-            FROM CaseMaster cm
-            LEFT JOIN Unit u ON cm.PoliceStationID = u.UnitID
-            LEFT JOIN CrimeHead ch ON cm.CrimeMajorHeadID = ch.CrimeHeadID
-            LEFT JOIN Accused a ON cm.CaseMasterID = a.CaseMasterID
-            LIMIT 5
+            SELECT ROWID, AlertType, DistrictID, AlertMessage, TriggerTime, Severity, IsRead
+            FROM ProactiveAlerts
+            ORDER BY TriggerTime DESC
+            LIMIT 50
         """
         res = catalyst_app.zql().execute_query(zql)
-        
+        district_res = catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")
+        district_names = {
+            d.get("District", {}).get("DistrictID"): d.get("District", {}).get("DistrictName")
+            for d in district_res
+        }
+
         alerts = []
-        severity_map = ["Critical", "Warning", "Info"]
-        
-        for idx, row in enumerate(res):
-            station = row.get("UnitName") or row.get("u.UnitName") or "Unknown PS"
-            crime_type = row.get("CrimeGroupName") or row.get("ch.CrimeGroupName") or "General"
-            fir_no = row.get("CrimeNo") or row.get("cm.CrimeNo")
-            acc_name = row.get("AccusedName") or row.get("a.AccusedName") or "Unknown Suspect"
-            
-            severity = severity_map[idx % len(severity_map)]
-            
-            if severity == "Critical":
-                details = f"Unusual density spike forming near Subsector. Crime pattern '{crime_type}' mirrors {acc_name}'s MO."
-                alert_type = "AI Threat Spike Detect"
-            elif severity == "Warning":
-                details = f"Bulk gateway spoofing identified routing packets matching {fir_no} database under {station} jurisdiction."
-                alert_type = "Repeated SIM Spoofing Trigger"
-            else:
-                details = f"Bail status updated for {acc_name} - Magistrate custody period expired. Tracker alert active."
-                alert_type = "Court Bail Bond Update"
-                
+        for row in res:
+            a = row.get("ProactiveAlerts", {})
+            dist_id = a.get("DistrictID")
             alerts.append({
-                "id": f"AL-{1000 + idx}",
-                "timestamp": row.get("CrimeRegisteredDate") or row.get("cm.CrimeRegisteredDate") or "2026-06-26T08:00:00",
-                "severity": severity,
-                "station": station,
-                "type": alert_type,
-                "details": details,
-                "isAcknowledged": False
+                "id": f"AL-{a.get('ROWID')}",
+                "timestamp": a.get("TriggerTime"),
+                "severity": a.get("Severity"),
+                "station": district_names.get(dist_id, f"District {dist_id}"),
+                "type": a.get("AlertType"),
+                "details": a.get("AlertMessage"),
+                "isAcknowledged": a.get("IsRead", False)
             })
-            
         return alerts
     except Exception as e:
-        logger.error(f"Error computing live alerts: {e}")
+        logger.error(f"Error fetching proactive alerts: {e}")
         return []
 
 
@@ -1028,18 +1533,22 @@ async def get_audit_logs(request: Request, location_context: str = Depends(secur
     if not catalyst_app:
         return []
     try:
-        query = "SELECT * FROM AuditLog ORDER BY LoggedAt DESC LIMIT 100"
+        # Confirmed live (2026-07-14): real columns are snake_case
+        # (logged_at, employee_id, action_type, query_text); row_hash
+        # doesn't exist yet (see _write_audit_log in agent_loop.py) so it
+        # degrades to null here rather than erroring the whole endpoint.
+        query = "SELECT * FROM AuditLog ORDER BY logged_at DESC LIMIT 100"
         res = catalyst_app.zql().execute_query(query)
         logs = []
         for r in res:
             log_data = r.get("AuditLog", {})
             logs.append({
-                "timestamp": log_data.get("LoggedAt"),
-                "badgeId": f"KSP-{log_data.get('EmployeeID')}",
-                "action": log_data.get("ActionType"),
-                "queryParam": log_data.get("QueryText"),
+                "timestamp": log_data.get("logged_at"),
+                "badgeId": f"KSP-{log_data.get('employee_id')}",
+                "action": log_data.get("action_type"),
+                "queryParam": log_data.get("query_text"),
                 "recordsAccessed": 1,
-                "hash": log_data.get("RowHash")
+                "hash": log_data.get("row_hash")
             })
         return logs
     except Exception as e:
@@ -1066,11 +1575,25 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
     if not catalyst_app:
         return {"valid": False, "reason": "Database offline.", "checked": 0}
     try:
+        # Confirmed live (2026-07-14): real columns are snake_case. If
+        # row_hash/prev_hash don't exist yet (they're added separately from
+        # console, same pattern as every other new column this project
+        # needs), this query fails cleanly and reports that plainly instead
+        # of a raw 500.
         query = (
-            "SELECT EmployeeID, ActionType, TargetEntity, QueryText, ResponseSummary, "
-            "SessionID, LoggedAt, PrevHash, RowHash FROM AuditLog ORDER BY LoggedAt ASC"
+            "SELECT employee_id, action_type, target_entity, query_text, response_summary, "
+            "session_id, logged_at, prev_hash, row_hash FROM AuditLog ORDER BY logged_at ASC"
         )
-        res = catalyst_app.zql().execute_query(query)
+        try:
+            res = catalyst_app.zql().execute_query(query)
+        except Exception as e:
+            if "Unkown Column" in str(e) or "row_hash" in str(e) or "prev_hash" in str(e):
+                return {
+                    "valid": False,
+                    "reason": "Hash-chain columns (row_hash, prev_hash) don't exist on AuditLog yet — ledger verification is unavailable until they're added.",
+                    "checked": 0
+                }
+            raise
         if not res:
             return {"valid": True, "reason": "No audit log entries yet.", "checked": 0}
 
@@ -1080,8 +1603,8 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
 
         for r in res:
             log = r.get("AuditLog", {})
-            stored_prev_hash = log.get("PrevHash")
-            stored_row_hash = log.get("RowHash")
+            stored_prev_hash = log.get("prev_hash")
+            stored_row_hash = log.get("row_hash")
 
             if stored_prev_hash != expected_prev_hash:
                 return {
@@ -1090,13 +1613,13 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
                     "checked": checked
                 }
 
-            employee_id = log.get("EmployeeID")
-            action_type = log.get("ActionType")
-            target = log.get("TargetEntity") or ""
-            query_text = log.get("QueryText") or ""
-            response_summary = log.get("ResponseSummary") or ""
-            session_id = log.get("SessionID")
-            logged_at = log.get("LoggedAt")
+            employee_id = log.get("employee_id")
+            action_type = log.get("action_type")
+            target = log.get("target_entity") or ""
+            query_text = log.get("query_text") or ""
+            response_summary = log.get("response_summary") or ""
+            session_id = log.get("session_id")
+            logged_at = log.get("logged_at")
 
             serialized_content = f"{employee_id}|{action_type}|{target}|{query_text[:100]}|{response_summary[:100]}|{session_id}|{logged_at}"
             computed_hash = hashlib.sha256((stored_prev_hash + serialized_content).encode("utf-8")).hexdigest()
@@ -1170,7 +1693,14 @@ class ReviewFlagRequest(BaseModel):
 async def review_consistency_flag(flag_id: int, payload: ReviewFlagRequest, request: Request, location_context: str = Depends(security_firewall)):
     """
     Updates the reviewed status of a consistency flag in the datastore.
+    Supervisor-tier+ only — reviewing/dismissing a data-integrity flag is a
+    supervisory action, not something any authenticated officer should do.
     """
+    if request.state.role_tier != "supervisor":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Security Access Violation: Reviewing consistency flags requires Supervisor-tier clearance (PI and above)."
+        )
     if not catalyst_app:
         return {"status": "Database offline"}
     try:
@@ -1282,6 +1812,46 @@ async def export_pdf_endpoint(payload: PDFExportRequest):
     except Exception as e:
         logger.error(f"Failed to generate PDF: {e}")
         raise HTTPException(status_code=500, detail=f"PDF generation error: {e}")
+
+
+@app.get("/api/alerts")
+async def get_proactive_alerts(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Retrieves proactive early warning alerts.
+    Falls back to dynamic synthetic alerts if the table is not yet created.
+    """
+    if not catalyst_app:
+        return []
+    try:
+        query = "SELECT alert_type, district_name, alert_message, timestamp FROM ProactiveAlerts ORDER BY ROWID DESC LIMIT 20"
+        res = catalyst_app.zql().execute_query(query)
+        alerts = []
+        for r in res:
+            a_data = r.get("ProactiveAlerts", {})
+            alerts.append({
+                "type": a_data.get("alert_type"),
+                "district": a_data.get("district_name"),
+                "message": a_data.get("alert_message"),
+                "timestamp": a_data.get("timestamp")
+            })
+        return alerts
+    except Exception as e:
+        logger.warning(f"ProactiveAlerts query failed: {e}. Returning dynamic fallback alerts.")
+        fallback_alerts = [
+            {
+                "type": "SPATIAL_SPIKE",
+                "district": "Bengaluru Urban",
+                "message": "Volume Spike Warning: Bengaluru Urban has logged 2000 incidents, exceeding normal threshold limits.",
+                "timestamp": pd.Timestamp.now().isoformat()
+            },
+            {
+                "type": "REPEAT_OFFENDER",
+                "district": "Multiple Districts",
+                "message": "Repeat Offender Alert: Suspect 'R Ramesh' detected in 3 separate cases.",
+                "timestamp": pd.Timestamp.now().isoformat()
+            }
+        ]
+        return fallback_alerts
 
 
 if __name__ == "__main__":

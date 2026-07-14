@@ -159,6 +159,44 @@ KARNATAKA_DISTRICTS = [
     "Tumakuru", "Udupi", "Uttara Kannada", "Vijayapura", "Yadgir"
 ]
 
+# 3 real-world hotspot anchor points per district (approximate district HQ /
+# major town coordinates), keyed by DistrictID (1-indexed, matching
+# KARNATAKA_DISTRICTS order). Cases are jittered tightly around one of these
+# points rather than scattered uniformly across the whole district, so the
+# DBSCAN hotspot-clustering tool has real density to find.
+DISTRICT_HOTSPOTS = {
+    1: [(16.1691, 75.6636), (16.0865, 75.7005), (16.2312, 75.5980)],   # Bagalkot
+    2: [(15.1394, 76.9214), (15.2109, 76.8542), (15.0721, 76.9803)],   # Ballari
+    3: [(15.8497, 74.4977), (15.7801, 74.5623), (15.9102, 74.4321)],   # Belagavi
+    4: [(12.9716, 77.5946), (12.9352, 77.6245), (13.0298, 77.5691), (12.9081, 77.5432)],  # Bengaluru Urban
+    5: [(13.2846, 77.5871), (13.2201, 77.6403), (13.3421, 77.5209)],   # Bengaluru Rural
+    6: [(17.9104, 77.5199), (17.9532, 77.4732), (17.8654, 77.5601)],   # Bidar
+    7: [(11.9236, 76.9456), (11.9601, 76.8932), (11.8802, 76.9853)],   # Chamarajanagar
+    8: [(13.4351, 77.7315), (13.3921, 77.6892), (13.4732, 77.7654)],   # Chikkaballapur
+    9: [(13.3161, 75.7720), (13.2698, 75.8123), (13.3603, 75.7301)],   # Chikkamagaluru
+    10: [(14.2251, 76.3980), (14.1832, 76.4402), (14.2654, 76.3521)],  # Chitradurga
+    11: [(12.8438, 75.2479), (12.8901, 75.2087), (12.7954, 75.2843)],  # Dakshina Kannada
+    12: [(14.4644, 75.9932), (14.5201, 75.9503), (14.4132, 76.0301)],  # Davanagere
+    13: [(15.4589, 75.0078), (15.4132, 75.0521), (15.5021, 74.9632)],  # Dharwad
+    14: [(15.4167, 75.6167), (15.3721, 75.6598), (15.4602, 75.5732)],  # Gadag
+    15: [(13.0072, 76.0962), (12.9621, 76.1398), (13.0521, 76.0521)],  # Hassan
+    16: [(14.7935, 75.4046), (14.7502, 75.4487), (14.8365, 75.3601)],  # Haveri
+    17: [(17.3297, 76.8343), (17.2845, 76.8792), (17.3743, 76.7893)],  # Kalaburagi
+    18: [(12.3375, 75.8069), (12.2932, 75.8501), (12.3812, 75.7632)],  # Kodagu
+    19: [(13.1372, 78.1298), (13.0921, 78.1732), (13.1812, 78.0864)],  # Kolar
+    20: [(15.3547, 76.1548), (15.3102, 76.1982), (15.3985, 76.1112)],  # Koppal
+    21: [(12.5242, 76.8958), (12.4801, 76.9392), (12.5681, 76.8523)],  # Mandya
+    22: [(12.2958, 76.6394), (12.2512, 76.6832), (12.3401, 76.5951)],  # Mysuru
+    23: [(16.2076, 77.3463), (16.1632, 77.3893), (16.2512, 77.3031)],  # Raichur
+    24: [(12.7217, 77.2812), (12.6772, 77.3243), (12.7659, 77.2381)],  # Ramanagara
+    25: [(13.9299, 75.5681), (13.8852, 75.6112), (13.9743, 75.5251)],  # Shimoga
+    26: [(13.3379, 77.1173), (13.2932, 77.1602), (13.3821, 77.0741)],  # Tumakuru
+    27: [(13.3409, 74.7421), (13.2962, 74.7852), (13.3852, 74.6991)],  # Udupi
+    28: [(14.7998, 74.6979), (14.7552, 74.7412), (14.8442, 74.6551)],  # Uttara Kannada
+    29: [(16.8302, 75.7100), (16.7852, 75.7532), (16.8742, 75.6671)],  # Vijayapura
+    30: [(16.7642, 77.1374), (16.7202, 77.1802), (16.8082, 77.0942)],  # Yadgir
+}
+
 POLICE_STATIONS = [
     "Cubbon Park PS", "Indiranagar PS", "Koramangala PS", "Whitefield PS",
     "Jayanagar PS", "HSR Layout PS", "Marathahalli PS", "Rajajinagar PS",
@@ -522,15 +560,19 @@ def main():
 
         # 2. Weighted District & Coordinate Bound
         dist_id = random.choices(district_ids, weights=district_weights)[0]
-        
-        # Map Coordinates based on District
-        # Skew around Bengaluru center (12.97, 77.59) for District 4, else random Karnataka
-        if dist_id == 4:
-            lat = round(random.uniform(12.85, 13.10), 6)
-            lng = round(random.uniform(77.45, 77.75), 6)
-        else:
-            lat = round(random.uniform(12.0, 17.5), 6)
-            lng = round(random.uniform(74.0, 78.0), 6)
+
+        # Map coordinates around a handful of real hotspot points per district,
+        # not uniformly across the whole district box. A uniform-random point
+        # inside a ~30km box essentially never lands within DBSCAN's 500m (eps
+        # 0.005) radius of another point 10+ times, so the hotspot map's own
+        # clustering tool could never find a real cluster. Clustering cases
+        # around a small set of real hotspot coordinates per district (station
+        # areas, markets, transit hubs -- the kind of places incidents actually
+        # concentrate) with a tight jitter makes DBSCAN able to find them.
+        district_hotspots = DISTRICT_HOTSPOTS.get(dist_id, DISTRICT_HOTSPOTS[4])
+        center_lat, center_lng = random.choice(district_hotspots)
+        lat = round(center_lat + random.uniform(-0.003, 0.003), 6)
+        lng = round(center_lng + random.uniform(-0.003, 0.003), 6)
 
         # 3. Weighted Crime Group
         crime = random.choices(CRIME_GROUPS, weights=crime_groups_weights)[0]

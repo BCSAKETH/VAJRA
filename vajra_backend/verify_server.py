@@ -35,3 +35,6 @@ check_endpoint("/api/analytics/summary", "Analytics Summary")
 
 # Check get_accused_list
 check_endpoint("/api/accused", "Accused Profiles")
+
+# Check get_proactive_alerts
+check_endpoint("/api/alerts", "Proactive Alerts")

@@ -23,11 +23,15 @@ export interface ChatMessage {
   sender: "user" | "assistant" | "system";
   text: string;
   timestamp: string;
-  responseType?: "text" | "map" | "network" | "risk" | "forecast";
+  responseType?: "text" | "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation";
   data?: any;
   isSimulated?: boolean;
   simulatedReason?: string;
   citations?: { type: string; id: string; details: string }[];
+  attachments?: { file_name: string; type: string; page_count: number }[];
+  // Cowork sender attribution -- who actually typed this in a shared session.
+  senderName?: string;
+  senderEmployeeId?: number | string | null;
 }
 
 export interface ToastMessage {
@@ -48,6 +52,8 @@ interface AppContextType {
   setIsAuthenticated: (auth: boolean) => void;
   badgeNumber: string | null;
   setBadgeNumber: (badge: string | null) => void;
+  roleTier: "officer" | "supervisor" | null;
+  setRoleTier: (tier: "officer" | "supervisor" | null) => void;
   isDbConnected: boolean;
   setIsDbConnected: (connected: boolean) => void;
   toasts: ToastMessage[];
@@ -96,6 +102,26 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
   const [badgeNumber, setBadgeNumberState] = useState<string | null>(() => {
     return localStorage.getItem("vajra_badge");
   });
+
+  // role_tier comes directly from the /api/auth/login response (set by
+  // LoginScreen.tsx) rather than a separate /api/auth/me fetch. /api/auth/me
+  // depends on Catalyst resolving the Bearer token to a specific end-user
+  // session, which requires Third-party Authentication -- not wired yet, so
+  // that endpoint currently 401s for every request. The login response
+  // already resolves role_tier server-side from the authenticating badge's
+  // own RankID, so we use that directly instead of a call that can't work yet.
+  const [roleTierState, setRoleTierState] = useState<"officer" | "supervisor" | null>(() => {
+    const saved = localStorage.getItem("vajra_role_tier");
+    return saved === "officer" || saved === "supervisor" ? saved : null;
+  });
+  const setRoleTier = (tier: "officer" | "supervisor" | null) => {
+    setRoleTierState(tier);
+    if (tier) {
+      localStorage.setItem("vajra_role_tier", tier);
+    } else {
+      localStorage.removeItem("vajra_role_tier");
+    }
+  };
 
   const [isDbConnected, setIsDbConnected] = useState<boolean>(true);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
@@ -219,7 +245,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
       setCurrentScreenState("ai_chat");
     } else {
       setBadgeNumberState(null);
+      setRoleTierState(null);
       localStorage.removeItem("vajra_token");
+      localStorage.removeItem("vajra_role_tier");
       setCurrentScreenState("login");
     }
   };
@@ -269,6 +297,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         setIsAuthenticated,
         badgeNumber,
         setBadgeNumber,
+        roleTier: roleTierState,
+        setRoleTier,
         isDbConnected,
         setIsDbConnected,
         toasts,

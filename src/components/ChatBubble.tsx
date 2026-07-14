@@ -1,6 +1,6 @@
 import React from "react";
 import { ChatMessage } from "../AppContext";
-import { AlertTriangle, Tag } from "lucide-react";
+import { AlertTriangle, Tag, Paperclip } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 
 interface ChatBubbleProps {
@@ -13,9 +13,13 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onExpandWidget 
   
   return (
     <div className={`flex flex-col gap-1.5 w-full animate-fade-in ${isAI ? "items-start" : "items-end"}`}>
-      {/* Sender Label */}
+      {/* Sender Label -- shows the actual officer's name in a Cowork
+          session (senderName is only ever set on WebSocket-delivered
+          messages, which is the only path used once a session has real
+          participants) instead of a generic "INVESTIGATOR" label that gave
+          no way to tell collaborators apart. */}
       <span className="text-[10px] text-slate-500 font-semibold px-2 font-mono">
-        {isAI ? "VAJRA.AI" : "INVESTIGATOR"} • {message.timestamp}
+        {isAI ? "VAJRA.AI" : (message.senderName ? message.senderName.toUpperCase() : "INVESTIGATOR")} • {message.timestamp}
       </span>
 
       {/* Bubble Container */}
@@ -43,6 +47,21 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onExpandWidget 
         >
           {/* Main Text Content */}
           <div className="whitespace-pre-wrap font-sans text-slate-200">{message.text}</div>
+
+          {/* Attachment indicator */}
+          {message.attachments && message.attachments.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2.5">
+              {message.attachments.map((a, i) => (
+                <span
+                  key={i}
+                  className="flex items-center gap-1 px-2 py-1 rounded-md bg-slate-950/40 border border-slate-800 text-[10px] text-slate-400 font-mono"
+                >
+                  <Paperclip className="w-3 h-3" />
+                  {a.file_name}{a.page_count > 1 ? ` (${a.page_count}p)` : ""}
+                </span>
+              ))}
+            </div>
+          )}
 
           {/* Citation Pills */}
           {isAI && message.citations && message.citations.length > 0 && (

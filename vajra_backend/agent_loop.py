@@ -261,36 +261,80 @@ class VajraAgentLoop:
         """
         if not catalyst_app:
             return
+        # Confirmed live (2026-07-14): the real AuditLog table is snake_case
+        # (session_id, target_entity, query_text, response_summary,
+        # action_type, employee_id, logged_at) -- PascalCase columns this
+        # code used before don't exist under any casing tried, and neither do
+        # row_hash/prev_hash, so hash-chaining silently never wrote anything
+        # real despite being reported as "already implemented" earlier this
+        # session. Tries the hash-chained insert first (works automatically
+        # the moment row_hash/prev_hash columns are added to the console
+        # table, no further code change needed); falls back to a plain write
+        # of the fields that do exist if those columns aren't there yet, so
+        # basic audit logging isn't blocked on that console change either.
+        logged_at = datetime.utcnow().isoformat()
+        base_row = {
+            "employee_id": employee_id,
+            "action_type": action_type,
+            "target_entity": target[:200],
+            "query_text": query[:500],
+            "response_summary": response[:200],
+            "session_id": session_id,
+            "logged_at": logged_at
+        }
         try:
-            # 1. Fetch the hash of the last log entry in AuditLog
             prev_hash = "0000000000000000000000000000000000000000000000000000000000000000"
             try:
-                last_res = catalyst_app.zql().execute_query("SELECT RowHash FROM AuditLog ORDER BY LoggedAt DESC LIMIT 1")
+                last_res = catalyst_app.zql().execute_query("SELECT row_hash FROM AuditLog ORDER BY logged_at DESC LIMIT 1")
                 if last_res:
-                    prev_hash = last_res[0].get("AuditLog", {}).get("RowHash") or prev_hash
-            except Exception as e:
-                logger.warning(f"Error querying last AuditLog hash (might be first log): {e}")
+                    prev_hash = last_res[0].get("AuditLog", {}).get("row_hash") or prev_hash
+            except Exception:
+                pass  # row_hash column doesn't exist yet -- fall through to plain write below
 
-            # 2. Serialize row contents and compute SHA-256 hash
-            logged_at = datetime.utcnow().isoformat()
             serialized_content = f"{employee_id}|{action_type}|{target}|{query[:100]}|{response[:100]}|{session_id}|{logged_at}"
             row_hash = hashlib.sha256((prev_hash + serialized_content).encode('utf-8')).hexdigest()
+            catalyst_app.datastore().table("AuditLog").insert_row({**base_row, "prev_hash": prev_hash, "row_hash": row_hash})
+            logger.info(f"Audit log hash-chained: {action_type} -> row_hash={row_hash[:10]}...")
+            return
+        except Exception as e:
+            logger.warning(f"Hash-chained audit write failed (row_hash/prev_hash columns may not exist yet), falling back to plain write: {e}")
 
-            row = {
-                "EmployeeID": employee_id,
-                "ActionType": action_type,
-                "TargetEntity": target[:200],
-                "QueryText": query[:500],
-                "ResponseSummary": response[:200],
-                "SessionID": session_id,
-                "LoggedAt": logged_at,
-                "PrevHash": prev_hash,
-                "RowHash": row_hash
-            }
-            catalyst_app.datastore().table("AuditLog").insert_row(row)
-            logger.info(f"Audit log hash-chained: {action_type} -> RowHash={row_hash[:10]}...")
+        try:
+            catalyst_app.datastore().table("AuditLog").insert_row(base_row)
+            logger.info(f"Audit log written (no hash chain): {action_type} for session {session_id}")
         except Exception as e:
             logger.error(f"Failed to write to AuditLog table: {e}")
+
+    @staticmethod
+    def _extract_json(content_str: str) -> str:
+        """
+        The deployed GLM model (crm-di-glm47b_30b_it) is a "thinking" model --
+        it emits step-by-step reasoning text before the actual answer, often
+        ending with the real JSON inside a ```json fenced block (confirmed
+        live). A naive greedy `re.search(r"\{.*\}", ..., re.DOTALL)` grabs
+        from the FIRST '{' anywhere in the reasoning text through to the
+        LAST '}' at the end -- across totally unrelated JSON fragments
+        (e.g. a tool's parameter schema mentioned mid-reasoning) -- producing
+        invalid, unparsable JSON. This prefers the last fenced ```json block
+        if present, otherwise falls back to the last balanced {...} object
+        found via brace counting (not regex, so nested braces don't break it).
+        """
+        fence_matches = re.findall(r"```(?:json)?\s*(\{.*?\})\s*```", content_str, re.DOTALL)
+        if fence_matches:
+            return fence_matches[-1]
+
+        start = content_str.rfind("{")
+        while start != -1:
+            depth = 0
+            for i in range(start, len(content_str)):
+                if content_str[i] == "{":
+                    depth += 1
+                elif content_str[i] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return content_str[start:i + 1]
+            start = content_str.rfind("{", 0, start)
+        return content_str
 
     def run_agent_loop(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None) -> Dict[str, Any]:
         """
@@ -351,9 +395,7 @@ class VajraAgentLoop:
             try:
                 content_str = llm_res["choices"][0]["message"]["content"]
                 # Extract JSON from response
-                json_match = re.search(r"\{.*\}", content_str, re.DOTALL)
-                if json_match:
-                    content_str = json_match.group(0)
+                content_str = self._extract_json(content_str)
 
                 decision = json.loads(content_str)
                 logger.info(f"Agent decision parsed (Iteration {current_iteration}): {decision}")
@@ -382,8 +424,14 @@ class VajraAgentLoop:
                     history.append({"role": "assistant", "content": json.dumps(decision)})
                     history.append({"role": "user", "content": f"Tool '{tool_name}' returned: {json.dumps(tool_output['text_result'])}"})
                 else:
-                    # Final synthesis response text or clarifying question
-                    response_text = decision.get("text_response") or decision.get("text") or "Please clarify your request."
+                    # Final synthesis response text or clarifying question.
+                    # .split("</think>")[-1] guards against a "thinking" model
+                    # ever putting its reasoning preamble inside this field
+                    # instead of before the JSON block (the more common case,
+                    # already handled by _extract_json stripping everything
+                    # before the JSON itself).
+                    raw_text = decision.get("text_response") or decision.get("text") or "Please clarify your request."
+                    response_text = raw_text.split("</think>")[-1].strip() or raw_text
                     break
             except Exception as e:
                 logger.error(f"Error executing LLM agent loop choices on iteration {current_iteration}: {e}")
@@ -397,17 +445,28 @@ class VajraAgentLoop:
                 logger.info("Executing final LLM response synthesis turn...")
                 synthesis_res = self.llm.chat(history)
                 raw_response = synthesis_res["choices"][0]["message"]["content"]
-                
+
                 try:
-                    desc = json.loads(raw_response)
+                    desc = json.loads(self._extract_json(raw_response))
                     if desc.get("is_simulated"):
                         is_simulated = True
                         simulated_reason = desc.get("simulated_reason") or "Catalyst LLM generative endpoint offline"
                         response_text = desc.get("text_response") or "I have successfully retrieved the corresponding CCTNS records. However, secure AI reasoning is degraded due to endpoint offline status."
                     else:
-                        response_text = desc.get("text_response") or desc.get("text") or raw_response
+                        # desc parsed as valid JSON but had neither key (e.g.
+                        # the model responded with another {"tool": ...}
+                        # instead of a text_response, confirmed live) -- the
+                        # raw_response fallback must still have its
+                        # </think> preamble stripped, or the officer sees the
+                        # model's full internal reasoning trace verbatim.
+                        fallback = raw_response.split("</think>")[-1].strip() or raw_response
+                        response_text = desc.get("text_response") or desc.get("text") or fallback
                 except Exception:
-                    response_text = raw_response
+                    # Not JSON at all (plain prose answer) -- still strip any
+                    # </think> preamble before using it as-is, so the model's
+                    # internal reasoning trace never leaks into what the
+                    # officer sees.
+                    response_text = raw_response.split("</think>")[-1].strip() or raw_response
             except Exception as e:
                 logger.error(f"Error on final synthesis turn: {e}")
                 response_text = "I have successfully retrieved the files. Let me know if you need specific details."
@@ -437,6 +496,76 @@ class VajraAgentLoop:
             "citations": citations,
             "is_simulated": is_simulated,
             "simulated_reason": simulated_reason
+        }
+
+    # Only these component kinds are ever rendered -- anything else GLM emits
+    # is dropped server-side rather than passed through. No freeform/custom
+    # rendering path exists for widget specs, intentionally.
+    APPLET_COMPONENT_KINDS = {
+        "bar_chart", "line_chart", "map", "network_graph",
+        "stat_tile", "table", "timeline", "gauge"
+    }
+
+    def generate_applet_spec(self, query: str, response_text: str, data_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """
+        A second, independent GLM call that turns the data already resolved
+        for this turn into a bounded UI spec for the right-hand applet panel.
+        Called separately from run_agent_loop (a second HTTP round-trip from
+        the frontend, after the chat reply is already shown) so a slow or
+        malformed applet response never blocks or delays the chat answer
+        itself.
+        """
+        if not data_payload:
+            return None
+
+        # Softer framing throughout -- "emit ONLY X, nothing else" style
+        # instructions trigger this deployed model's baked-in guardrail
+        # against "expose protected instructions" style requests (confirmed
+        # live), the same issue fixed in catalyst_llm.py's main system prompt.
+        applet_prompt = (
+            "You help turn retrieved police case data into a UI widget specification for a dashboard panel. "
+            "Given the user's query and the data already retrieved for it, respond with a JSON object "
+            "in this shape:\n"
+            '{ "layout": "grid" or "single", "components": [ '
+            '{ "kind": one of ["bar_chart","line_chart","map","network_graph","stat_tile","table","timeline","gauge"], '
+            '...kind-specific fields such as "title", "data", "columns", "value", "label" } ] }\n'
+            "Only include components that are genuinely supported by the data provided -- do not invent fields. "
+            "If nothing in the data is visualizable, respond with {\"layout\": \"single\", \"components\": []}."
+        )
+        messages = [
+            {"role": "system", "content": applet_prompt},
+            {"role": "user", "content": json.dumps({
+                "query": query,
+                "response_text": response_text,
+                "data": data_payload
+            }, default=str)[:6000]}
+        ]
+
+        try:
+            llm_res = self.llm.chat(messages, use_agent_system_prompt=False)
+            content_str = llm_res["choices"][0]["message"]["content"]
+            content_str = self._extract_json(content_str)
+            spec = json.loads(content_str)
+        except Exception as e:
+            logger.warning(f"Applet spec generation failed or was unparsable: {e}")
+            return None
+
+        if not isinstance(spec, dict) or "components" not in spec:
+            return None
+
+        # Drop any component whose "kind" isn't in the whitelist rather than
+        # passing it through -- this is the actual enforcement point, not
+        # just documentation.
+        valid_components = [
+            c for c in spec.get("components", [])
+            if isinstance(c, dict) and c.get("kind") in self.APPLET_COMPONENT_KINDS
+        ]
+        if not valid_components:
+            return None
+
+        return {
+            "layout": spec.get("layout") if spec.get("layout") in ("grid", "single") else "single",
+            "components": valid_components
         }
 
     def _execute_tool(self, tool_name: str, params: Dict[str, Any], employee_id: int, session_id: str, user_unit_id: Optional[int]) -> Dict[str, Any]:
@@ -512,11 +641,17 @@ class VajraAgentLoop:
             response_type = "network"
             network_info = graph_rag.get_criminal_network(suspect)
             
-            # Combine financial transaction links
+            # Combine financial transaction links -- filtered to this
+            # suspect's actual linked cases. Previously pulled the first 10
+            # FinancialTransaction rows globally with no WHERE clause at all,
+            # so every suspect query showed the same handful of rows
+            # (including leftover test data) regardless of relevance.
             fin_txns = []
-            if catalyst_app:
+            case_ids = network_info.get("case_ids") or []
+            if catalyst_app and case_ids:
                 try:
-                    tx_query = f"SELECT * FROM FinancialTransaction LIMIT 10"
+                    case_ids_str = ",".join(str(c) for c in case_ids)
+                    tx_query = f"SELECT * FROM FinancialTransaction WHERE linked_case_id IN ({case_ids_str}) LIMIT 10"
                     tx_res = catalyst_app.zql().execute_query(tx_query)
                     for r in tx_res:
                         txn = r.get("FinancialTransaction", {})
@@ -588,7 +723,16 @@ class VajraAgentLoop:
                 try:
                     from sklearn.cluster import DBSCAN
                     X = np.array([[c["lat"], c["lng"]] for c in coordinates])
-                    db = DBSCAN(eps=0.005, min_samples=10, metric='euclidean')
+                    # min_samples lowered from 10: Catalyst hard-caps every ZCQL
+                    # query at 300 rows, so this tool only ever sees a 300-row
+                    # slice of ~18000 total cases spread across ~30 city-wide
+                    # hotspot points -- confirmed live that even with cases
+                    # concentrated onto real hotspot points (not scattered
+                    # randomly), a 300-row sample averages ~10 points per
+                    # hotspot, right at the old threshold with no margin for
+                    # sampling variance across which 300 rows happen to be
+                    # returned.
+                    db = DBSCAN(eps=0.005, min_samples=6, metric='euclidean')
                     labels = db.fit_predict(X)
                     
                     unique_labels = set(labels)
@@ -679,7 +823,7 @@ class VajraAgentLoop:
                 try:
                     # Query Accused details (AgeYear and CaseMasterID)
                     acc_res = catalyst_app.zql().execute_query(
-                        f"SELECT CaseMasterID, AgeYear FROM Accused WHERE AccusedName LIKE '%{suspect}%' LIMIT 1"
+                        f"SELECT CaseMasterID, AgeYear FROM Accused WHERE AccusedName LIKE '*{suspect}*' LIMIT 1"
                     )
                     if acc_res:
                         acc_data = acc_res[0].get("Accused", {})
@@ -818,7 +962,7 @@ class VajraAgentLoop:
                 try:
                     # Query Accused to find CaseMasterID
                     acc_res = catalyst_app.zql().execute_query(
-                        f"SELECT CaseMasterID FROM Accused WHERE AccusedName LIKE '%{suspect}%' LIMIT 1"
+                        f"SELECT CaseMasterID FROM Accused WHERE AccusedName LIKE '*{suspect}*' LIMIT 1"
                     )
                     if acc_res:
                         cm_id = acc_res[0].get("Accused", {}).get("CaseMasterID")
@@ -959,7 +1103,7 @@ class VajraAgentLoop:
             warning = "*Warning: Demographic correlation is based on synthetic estimates and should be used with operational caution. Note: socio-economic figures are illustrative synthetic estimates, not official Census/NCRB data.*"
             if catalyst_app:
                 try:
-                    d_res = catalyst_app.zql().execute_query(f"SELECT DistrictID FROM District WHERE DistrictName LIKE '%{district}%' LIMIT 1")
+                    d_res = catalyst_app.zql().execute_query(f"SELECT DistrictID FROM District WHERE DistrictName LIKE '*{district}*' LIMIT 1")
                     if d_res:
                         dist_id = d_res[0].get("District", {}).get("DistrictID")
                         if dist_id:
@@ -1024,7 +1168,7 @@ class VajraAgentLoop:
                     is_district = False
                     try:
                         d_res = catalyst_app.zql().execute_query(
-                            f"SELECT DistrictName FROM District WHERE DistrictName LIKE '%{token}%' LIMIT 1"
+                            f"SELECT DistrictName FROM District WHERE DistrictName LIKE '*{token}*' LIMIT 1"
                         )
                         if d_res:
                             validated_tokens.append(token)
@@ -1036,7 +1180,7 @@ class VajraAgentLoop:
                         # Validate potential CrimeSubHead entities
                         try:
                             s_res = catalyst_app.zql().execute_query(
-                                f"SELECT CrimeHeadName FROM CrimeSubHead WHERE CrimeHeadName LIKE '%{token}%' LIMIT 1"
+                                f"SELECT CrimeHeadName FROM CrimeSubHead WHERE CrimeHeadName LIKE '*{token}*' LIMIT 1"
                             )
                             if s_res:
                                 validated_tokens.append(token)
@@ -1052,7 +1196,7 @@ class VajraAgentLoop:
                     q = f"""
                         SELECT CrimeNo, BriefFacts, CaseMasterID 
                         FROM CaseMaster 
-                        WHERE (CrimeNo LIKE '%{token}%' OR BriefFacts LIKE '%{token}%') {unit_filter}
+                        WHERE (CrimeNo LIKE '*{token}*' OR BriefFacts LIKE '*{token}*') {unit_filter}
                         LIMIT 3
                     """
                     res = catalyst_app.zql().execute_query(q)

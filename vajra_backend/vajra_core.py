@@ -4,10 +4,12 @@ load_dotenv()
 import os
 import json
 import logging
+import time
 from typing import List, Dict, Any, Optional
 import numpy as np
 from fastapi import Request, HTTPException, status
 import zcatalyst_sdk
+import jwt as pyjwt
 
 
 
@@ -138,6 +140,41 @@ except Exception as e:
     catalyst_app = None
 
 
+SESSION_SECRET = os.getenv("SESSION_SECRET")
+SESSION_TTL_SECONDS = 3600
+
+
+def issue_session_token(kgid: str) -> str:
+    """
+    Mints a real, cryptographically-signed session for the specific badge that
+    just passed the bcrypt password check in /api/auth/login. This exists
+    because verify_catalyst_token_direct (below) requires a genuine per-user
+    Catalyst session via /project-user/current, which needs Third-party
+    Authentication enabled in the console -- not done yet, and until it is,
+    every officer authenticates through the same shared admin-scoped
+    RefreshTokenCredential, which Zoho's own endpoint can't resolve to an
+    individual identity. This token is real (HS256-signed, tied to one KGID,
+    expires, can't be forged without SESSION_SECRET) -- it replaces which
+    system verifies the session, it isn't a bypass of the check itself.
+    """
+    if not SESSION_SECRET:
+        raise RuntimeError("SESSION_SECRET is not configured.")
+    payload = {"kgid": kgid, "iat": int(time.time()), "exp": int(time.time()) + SESSION_TTL_SECONDS}
+    return pyjwt.encode(payload, SESSION_SECRET, algorithm="HS256")
+
+
+def verify_session_token(token: str) -> Optional[str]:
+    """Returns the KGID embedded in a valid, unexpired session token, or None."""
+    if not SESSION_SECRET:
+        return None
+    try:
+        payload = pyjwt.decode(token, SESSION_SECRET, algorithms=["HS256"])
+        return payload.get("kgid")
+    except pyjwt.PyJWTError as e:
+        logger.warning(f"Session token verification failed: {e}")
+        return None
+
+
 def verify_catalyst_token_direct(jwt_token: str) -> Optional[Dict[str, Any]]:
     project_id = os.getenv("CATALYST_PROJECT_ID")
     region = os.getenv("CATALYST_REGION", "IN")
@@ -165,6 +202,19 @@ def verify_catalyst_token_direct(jwt_token: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def derive_role_tier(rank_id: Optional[int]) -> str:
+    """
+    RANKS in migrate_to_catalyst.py is seeded in ascending order of seniority
+    (["Constable", "Head Constable", "ASI", "PSI", "PI", "DySP", "SP", "DIG",
+    "IGP", "DGP"], RankID 1-10, 1-indexed). PI (RankID 5) and above are
+    gazetted supervisory ranks in the real KSP hierarchy, so that's the
+    cutoff for "Supervisor-tier+". Shared by the firewall (per-request) and
+    the login endpoint (so TwoPersonApprovalModal can verify a co-signing
+    badge is actually a supervisor, not just a different badge).
+    """
+    return "supervisor" if rank_id and int(rank_id) >= 5 else "officer"
+
+
 class VajraSecurityFirewall:
     """
     A live security firewall enforcing data access context.
@@ -190,29 +240,27 @@ class VajraSecurityFirewall:
             )
             
         try:
-            # 1. Verify the JWT token via direct Zoho BaaS query only — no bypass path.
-            # A prior version of this check compared jwt_token against the backend's own
-            # cached service-account token and auto-authenticated as admin on a match.
-            # That token is the same one used for every backend-to-Catalyst call and is
-            # cached in a plaintext file on disk — treating it as a valid *user* session
-            # token was a real privilege-escalation path, removed here.
-            user_details = verify_catalyst_token_direct(jwt_token)
+            # 1. Verify VAJRA's own signed session token (see issue_session_token /
+            # verify_session_token above). A prior version of this check compared
+            # jwt_token against the backend's own cached service-account token and
+            # auto-authenticated as admin on a match — a real privilege-escalation
+            # path, removed. A version after that called Zoho's
+            # /project-user/current, but that requires a genuine per-user Catalyst
+            # session (Third-party Authentication, not enabled in console yet) —
+            # every officer currently shares one admin-scoped RefreshTokenCredential,
+            # which Zoho's own endpoint can't resolve to an individual identity, so
+            # that check 401'd for every request regardless of who logged in. The
+            # token verified here is real and per-officer (HS256-signed at login,
+            # tied to the specific badge that passed the bcrypt check, expires) —
+            # it replaces which system verifies the session, not the check itself.
+            kgid = verify_session_token(jwt_token)
 
-            if not user_details:
+            if not kgid:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Security Access Violation: Session authentication failed."
                 )
 
-            email = user_details.get("email_id") or user_details.get("email")
-            if not email:
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Security Access Violation: User email not found in session."
-                )
-                
-            kgid = email.split('@')[0]
-            
             # 3. Query the user's profile from Employee table using ZQL
             zql_query = f"""
                 SELECT EmployeeID, UnitID, KGID, FirstName, RankID, DesignationID
@@ -255,12 +303,15 @@ class VajraSecurityFirewall:
                 if desig_res:
                     designation_name = desig_res[0].get("Designation", {}).get("DesignationName") or designation_name
 
+            role_tier = derive_role_tier(rank_id)
+
             # Store the user profile and location context in request.state for downstream endpoints
             request.state.user_profile = profile
             request.state.authorized_station = unit_name
             request.state.kgid = profile.get("KGID")
             request.state.rank_name = rank_name
             request.state.designation_name = designation_name
+            request.state.role_tier = role_tier
 
             logger.info(f"Access granted. Officer {profile.get('FirstName')} (KGID: {profile.get('KGID')}, {designation_name}/{rank_name}) authenticated for station: '{unit_name}'")
             return unit_name
@@ -362,7 +413,10 @@ class VajraGraphRAG:
         if catalyst_app:
             try:
                 # 1. Look up the suspect in our Accused table
-                accused_query = f"SELECT CaseMasterID FROM Accused WHERE AccusedName LIKE '%{suspect_name}%'"
+                # ZCQL's LIKE wildcard is '*', not SQL-standard '%' -- confirmed
+                # live that every '%...%' pattern anywhere in this codebase
+                # silently matched zero rows regardless of real data present.
+                accused_query = f"SELECT CaseMasterID FROM Accused WHERE AccusedName LIKE '*{suspect_name}*'"
                 accused_res = catalyst_app.zql().execute_query(accused_query)
                 
                 if accused_res:
@@ -385,24 +439,47 @@ class VajraGraphRAG:
                     """
                     cases_res = catalyst_app.zql().execute_query(cases_query)
                     linked_cases = []
+                    # Structured graph data for a real node-link diagram, built
+                    # alongside the existing human-readable strings (kept for
+                    # backward compat with any caller still reading them) --
+                    # the suspect is the root, cases are 1st-degree nodes,
+                    # co-accused sharing those cases are 2nd-degree nodes.
+                    nodes = [{"id": "suspect", "label": suspect_name, "type": "suspect"}]
+                    edges = []
                     for c in cases_res:
                         cm_data = c.get("CaseMaster", {})
                         crime_no = cm_data.get("CrimeNo")
                         station_id = cm_data.get("PoliceStationID")
-                        
+
                         unit_name = "Unknown PS"
                         if station_id:
                             unit_res = catalyst_app.zql().execute_query(f"SELECT UnitName FROM Unit WHERE UnitID = {station_id}")
                             if unit_res:
                                 unit_name = unit_res[0].get("Unit", {}).get("UnitName") or "Unknown PS"
                         linked_cases.append(f"{crime_no} ({unit_name})")
-                    
+
+                        case_node_id = f"case_{crime_no}"
+                        nodes.append({"id": case_node_id, "label": crime_no, "sublabel": unit_name, "type": "case"})
+                        edges.append({"source": "suspect", "target": case_node_id})
+
+                    for co in co_accused_names:
+                        co_node_id = f"person_{co}"
+                        nodes.append({"id": co_node_id, "label": co, "type": "person"})
+                        # Link each co-accused to the first case node (best-effort;
+                        # a precise per-case link would need the co-accused's own
+                        # CaseMasterID carried through from the co_query above)
+                        if len(nodes) > 1:
+                            edges.append({"source": nodes[1]["id"], "target": co_node_id})
+
                     return {
                         "target_suspect": suspect_name,
                         "engine_mode": "Live Zoho Catalyst ZQL Tracing",
                         "1st_degree_connections": [f"Case Link: {c}" for c in linked_cases],
                         "2nd_degree_connections": [f"Co-Accused: {co}" for co in co_accused_names],
-                        "3rd_degree_connections": ["Syndicate Connection: Local Crime Cell (Grounded in shared FIRs)"]
+                        "3rd_degree_connections": ["Syndicate Connection: Local Crime Cell (Grounded in shared FIRs)"],
+                        "nodes": nodes,
+                        "edges": edges,
+                        "case_ids": case_ids
                     }
             except Exception as e:
                 logger.error(f"Failed to perform Zoho Catalyst relational GraphRAG trace: {e}")
@@ -415,7 +492,18 @@ class VajraGraphRAG:
             "engine_mode": "Static Fallback Simulation",
             "1st_degree_connections": ["Vehicle: KA-01-ME-8821", "Phone: +91-9882377182"],
             "2nd_degree_connections": ["Co-conspirator: Akash Kumar"],
-            "3rd_degree_connections": ["Syndicate Connection: Bengaluru East Petty Theft Ring"]
+            "3rd_degree_connections": ["Syndicate Connection: Bengaluru East Petty Theft Ring"],
+            "nodes": [
+                {"id": "suspect", "label": suspect_name, "type": "suspect"},
+                {"id": "vehicle_1", "label": "KA-01-ME-8821", "type": "vehicle"},
+                {"id": "phone_1", "label": "+91-9882377182", "type": "phone"},
+                {"id": "person_akash", "label": "Akash Kumar", "type": "person"},
+            ],
+            "edges": [
+                {"source": "suspect", "target": "vehicle_1"},
+                {"source": "suspect", "target": "phone_1"},
+                {"source": "suspect", "target": "person_akash"},
+            ]
         }
 
 class VajraSemanticMemory:

@@ -12,11 +12,11 @@ import {
   ChevronLeft,
   ChevronRight,
   Shield,
-  Bell,
   Sun,
   Moon,
 } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
+import { CoworkInvitationsPanel } from "./CoworkInvitationsPanel";
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -32,6 +32,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
     isAuthenticated,
     setIsAuthenticated,
     badgeNumber,
+    roleTier,
     theme,
     setTheme,
   } = useApp();
@@ -45,9 +46,15 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
 
   const isExpanded = isSidebarExpanded || isSidebarHovered;
 
+  // Supervisor Dashboard is a supervisory-action screen (two-person approval,
+  // ledger verification, consistency-flag review) -- only shown to
+  // Supervisor-tier+ officers, matching the backend enforcement on
+  // /api/alerts/consistency-flags/{id}/review.
   const navItems = [
     { id: "ai_chat" as ScreenId, label: t.navChat, icon: MessageSquare },
-    { id: "supervisor" as ScreenId, label: t.navSupervisor, icon: UserCheck },
+    ...(roleTier === "supervisor"
+      ? [{ id: "supervisor" as ScreenId, label: t.navSupervisor, icon: UserCheck }]
+      : []),
     { id: "settings" as ScreenId, label: t.navSettings, icon: Settings },
   ];
 
@@ -170,13 +177,10 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
                 {theme === "light" ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
               </button>
 
-              {/* Notification Badge */}
-              <div className="relative">
-                <button className="p-2 rounded-lg border border-slate-800 hover:border-slate-700 bg-slate-900/60 hover:bg-slate-850/80 text-slate-400 hover:text-slate-200 transition-all">
-                  <Bell className="w-4 h-4" />
-                </button>
-                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-rose-500 animate-ping" />
-              </div>
+              {/* Real pending Cowork invitations -- previously just a
+                  decorative icon with a permanently-on ping dot regardless
+                  of whether anything was actually pending. */}
+              <CoworkInvitationsPanel />
 
               {/* Operator Badge Display */}
               <div className="hidden md:flex items-center gap-2 border-l border-slate-850 pl-3.5">

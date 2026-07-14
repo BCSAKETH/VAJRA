@@ -17,3 +17,5 @@ __pycache__/
 *.csv
 *.pdf
 .git/index.lock
+.token_cache
+*.joblib

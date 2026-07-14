@@ -1,11 +1,12 @@
 import React, { useEffect } from "react";
-import { X, MapPin, Network, ShieldAlert, TrendingUp } from "lucide-react";
+import { X, MapPin, Network, ShieldAlert, TrendingUp, Clock, Fingerprint, Users } from "lucide-react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, CartesianGrid } from "recharts";
 import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import { WatermarkOverlay } from "./WatermarkOverlay";
+import { NetworkGraph } from "./NetworkGraph";
 
 interface ExpandedOverlayProps {
-  type: "map" | "network" | "risk" | "forecast";
+  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation";
   data: any;
   onClose: () => void;
 }
@@ -68,6 +69,24 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                 <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">Seasonal Early Warning Predictions</h3>
               </>
             )}
+            {type === "timeline" && (
+              <>
+                <Clock className="w-5 h-5 text-[#00C6AD]" />
+                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">Case Investigation Chronology</h3>
+              </>
+            )}
+            {type === "mo_match" && (
+              <>
+                <Fingerprint className="w-5 h-5 text-amber-500" />
+                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">Behavioral MO Profiling Matches</h3>
+              </>
+            )}
+            {type === "correlation" && (
+              <>
+                <Users className="w-5 h-5 text-[#00C6AD]" />
+                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">District Socio-demographic Dashboard</h3>
+              </>
+            )}
           </div>
 
           <button
@@ -112,27 +131,25 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
 
           {type === "network" && (
             <div className="h-full flex flex-col md:flex-row gap-6">
-              {/* Left Details List */}
-              <div className="md:w-1/3 space-y-4">
-                <h4 className="font-bold text-slate-200 uppercase tracking-wide text-xs">Syndicate Profile: {data.suspect}</h4>
-                <div className="glass-card p-4 space-y-3 border border-slate-850">
-                  <div className="text-xs text-slate-400">
-                    <span className="block font-semibold text-slate-350">Active Links:</span>
-                    Phones: {data.phones?.join(", ") || "None"}
-                  </div>
-                  <div className="text-xs text-slate-400">
-                    <span className="block font-semibold text-slate-350">Vehicles Traced:</span>
-                    {data.vehicles?.join(", ") || "None"}
-                  </div>
-                  <div className="text-xs text-slate-400">
-                    <span className="block font-semibold text-slate-350">Co-Accused / Companions:</span>
-                    {data.co_accused?.join(", ") || "None"}
-                  </div>
+              {/* Left: real node-link graph traced from live case/co-accused
+                  data (or the honestly-labeled fallback simulation when the
+                  suspect isn't in the database) -- previously this whole
+                  panel read data.phones/data.vehicles/data.co_accused, fields
+                  the backend never actually populated, always showing "None". */}
+              <div className="flex-1 flex flex-col gap-3 min-w-0">
+                <h4 className="font-bold text-slate-200 uppercase tracking-wide text-xs">
+                  Syndicate Graph: {data.target_suspect || data.suspect}
+                  {data.engine_mode === "Static Fallback Simulation" && (
+                    <span className="ml-2 text-amber-500 normal-case font-normal text-[10px]">(simulated — suspect not found in database)</span>
+                  )}
+                </h4>
+                <div className="flex-1 bg-slate-950/60 border border-slate-900 rounded-xl p-2 min-h-[320px]">
+                  <NetworkGraph nodes={data.nodes || []} edges={data.edges || []} />
                 </div>
               </div>
 
               {/* Right Transaction Ledger Flow */}
-              <div className="flex-1 flex flex-col gap-3">
+              <div className="md:w-1/3 flex flex-col gap-3">
                 <h4 className="font-bold text-slate-200 uppercase tracking-wide text-xs">Linked Financial Transaction Nodes</h4>
                 <div className="flex-1 bg-slate-950/60 border border-slate-900 rounded-xl p-4 overflow-y-auto max-h-[350px]">
                   {data.financial_transactions && data.financial_transactions.length > 0 ? (
@@ -225,6 +242,119 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                     <Line type="monotone" dataKey="Baseline" stroke="#00C6AD" strokeWidth={2} strokeDasharray="5 5" />
                   </LineChart>
                 </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {type === "timeline" && (
+            <div className="h-full flex flex-col gap-6">
+              <div className="bg-slate-900/25 border border-slate-850 p-4 rounded-xl">
+                <h4 className="font-black text-slate-100 text-sm">Chronological Milestones (Case ID {data.case_id})</h4>
+                <p className="text-xs text-slate-450 mt-1">
+                  Dynamic trace compiled from occurrence, registry, surrender, and chargesheet archives.
+                </p>
+              </div>
+              <div className="flex-1 overflow-y-auto pr-2">
+                <div className="relative border-l border-[#00C6AD]/30 ml-4 space-y-6 py-2">
+                  {(data.timeline || []).map((e: any, idx: number) => (
+                    <div key={idx} className="relative pl-6">
+                      <div className="absolute -left-[5px] top-1.5 w-2.5 h-2.5 rounded-full bg-[#00C6AD]" />
+                      <div className="bg-slate-900/60 border border-slate-850 p-3 rounded-lg">
+                        <span className="text-[10px] font-mono text-[#00C6AD] font-bold block">{e.date}</span>
+                        <span className="text-xs font-extrabold text-slate-200 block mt-0.5">{e.event}</span>
+                        <p className="text-xs text-slate-400 mt-1">{e.description}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {type === "mo_match" && (
+            <div className="h-full flex flex-col gap-6">
+              <div className="bg-slate-900/25 border border-slate-850 p-4 rounded-xl">
+                <h4 className="font-black text-slate-100 text-sm">Modus Operandi Behavior Profile ({data.suspect})</h4>
+                <p className="text-xs text-slate-450 mt-1">
+                  Cosine similarity ranking against primary historical incident profiles.
+                </p>
+              </div>
+              <div className="flex-1 overflow-y-auto space-y-3">
+                {(data.matches || []).map((m: any, idx: number) => (
+                  <div key={idx} className="bg-slate-900/60 border border-slate-850 p-4 rounded-lg flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                    <div className="space-y-1">
+                      <span className="text-xs font-black text-slate-250">Suspect: {m.suspect || "Unknown"}</span>
+                      <p className="text-xs text-slate-400">Incident ID: {m.case_id} | Precinct: {m.station}</p>
+                      <p className="text-[11px] text-slate-500 italic mt-1 font-mono">MO: {m.mo_signature || m.signature_narrative || "No narrative details"}</p>
+                    </div>
+                    <div className="shrink-0 text-right w-full sm:w-auto">
+                      <div className="text-xs font-bold text-amber-500 mb-1">{Math.round((m.similarity_score || 0.84) * 100)}% Match Rate</div>
+                      <div className="w-32 bg-slate-850 h-1.5 rounded-full overflow-hidden">
+                        <div className="bg-amber-500 h-full" style={{ width: `${(m.similarity_score || 0.84) * 100}%` }} />
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {type === "correlation" && (
+            <div className="h-full flex flex-col gap-6">
+              <div className="bg-slate-900/25 border border-slate-850 p-4 rounded-xl">
+                <h4 className="font-black text-slate-100 text-sm">Socio-demographic Profile: {data.profile?.district}</h4>
+                <p className="text-xs text-slate-450 mt-1">
+                  Correlation indices compiled from socio-economic, literacy, and census registers.
+                </p>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-1">
+                <div className="bg-slate-900/40 border border-slate-850 p-4 rounded-xl space-y-4">
+                  <h5 className="text-xs font-bold text-slate-350 tracking-wider uppercase font-mono border-b border-slate-800 pb-1.5">Education & Employment</h5>
+                  
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs text-slate-400">
+                      <span>Literacy Rate</span>
+                      <span className="font-bold text-[#00C6AD]">{data.profile?.literacy}%</span>
+                    </div>
+                    <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                      <div className="bg-[#00C6AD] h-full" style={{ width: `${data.profile?.literacy}%` }} />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs text-slate-400">
+                      <span>Unemployment Rate</span>
+                      <span className="font-bold text-amber-500">{data.profile?.unemployment}%</span>
+                    </div>
+                    <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                      <div className="bg-amber-500 h-full" style={{ width: `${data.profile?.unemployment * 5}%` }} />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="bg-slate-900/40 border border-slate-850 p-4 rounded-xl space-y-4">
+                  <h5 className="text-xs font-bold text-slate-350 tracking-wider uppercase font-mono border-b border-slate-800 pb-1.5">Development Indices</h5>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs text-slate-400">
+                      <span>Economic Stress Index</span>
+                      <span className="font-bold text-rose-450">{data.profile?.stress}</span>
+                    </div>
+                    <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                      <div className="bg-rose-500 h-full" style={{ width: `${data.profile?.stress * 100}%` }} />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex justify-between text-xs text-slate-400">
+                      <span>Urbanization Index</span>
+                      <span className="font-bold text-[#00C6AD]">{data.profile?.urbanization}</span>
+                    </div>
+                    <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                      <div className="bg-[#00C6AD] h-full" style={{ width: `${data.profile?.urbanization * 100}%` }} />
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           )}

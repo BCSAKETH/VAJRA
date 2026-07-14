@@ -69,6 +69,19 @@ export const TwoPersonApprovalModal: React.FC<TwoPersonApprovalModalProps> = ({
         );
       }
 
+      const data = await response.json();
+      // Previously this only checked the badge differed from the active
+      // operator's own badge -- any two valid officer accounts could
+      // co-sign each other regardless of rank. role_tier is now resolved
+      // server-side from the co-signer's real RankID.
+      if (data.role_tier !== "supervisor") {
+        throw new Error(
+          lang === "en"
+            ? "Two-Person Integrity Error: Co-signing officer does not hold Supervisor-tier clearance (PI and above)."
+            : "ದ್ವಿ-ವ್ಯಕ್ತಿ ಸಮಗ್ರತೆಯ ದೋಷ: ಸಹಿ ಮಾಡುವ ಅಧಿಕಾರಿಗೆ ಮೇಲ್ವಿಚಾರಕ ಹಂತದ ಅನುಮತಿ ಇಲ್ಲ."
+        );
+      }
+
       // Valid Supervisor
       onApprove(supBadge);
       setSupBadge("");
