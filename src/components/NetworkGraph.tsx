@@ -26,15 +26,25 @@ const NODE_COLORS: Record<string, string> = {
   phone: "#38bdf8",
 };
 
+// Real queries against the case DB can match dozens of records (e.g. a
+// common name via LIKE '*ramesh*'). Beyond this many nodes on a single ring,
+// the rest get collapsed into one "+N more" node so labels stay readable
+// instead of overlapping into an unreadable mass.
+const MAX_NODES_PER_RING = 10;
+// Minimum arc length (px) between adjacent node centers on the same ring,
+// so circles/labels don't visually collide as ring population grows.
+const MIN_ARC_SPACING = 58;
+const RING_STEP = 110;
+
 // Simple deterministic radial layout: BFS distance from the "suspect" root
 // determines which ring a node sits on; nodes on the same ring are spread
 // evenly around the circle. No external graph/force-layout library --
-// keeps this dependency-free and fully predictable for a handful of nodes.
-function computeLayout(nodes: GraphNode[], edges: GraphEdge[], width: number, height: number) {
-  const cx = width / 2;
-  const cy = height / 2;
+// keeps this dependency-free and fully predictable. Canvas size and per-ring
+// radius both scale with how many nodes actually need to fit, and
+// overcrowded rings are capped with an aggregated overflow node.
+function computeLayout(nodes: GraphNode[], edges: GraphEdge[]) {
   const root = nodes.find((n) => n.type === "suspect") || nodes[0];
-  if (!root) return new Map<string, { x: number; y: number }>();
+  if (!root) return { positions: new Map<string, { x: number; y: number }>(), width: 640, height: 380, renderNodes: nodes, overflowByRing: new Map<number, number>() };
 
   const adjacency = new Map<string, string[]>();
   nodes.forEach((n) => adjacency.set(n.id, []));
@@ -57,6 +67,7 @@ function computeLayout(nodes: GraphNode[], edges: GraphEdge[], width: number, he
     }
   }
 
+  const nodeById = new Map(nodes.map((n) => [n.id, n]));
   const ringGroups = new Map<number, string[]>();
   nodes.forEach((n) => {
     const d = depth.get(n.id) ?? 1;
@@ -64,29 +75,69 @@ function computeLayout(nodes: GraphNode[], edges: GraphEdge[], width: number, he
     ringGroups.get(d)!.push(n.id);
   });
 
+  // Cap each ring's population, folding the overflow into a single
+  // aggregated node so the graph stays legible instead of crowding.
+  const overflowByRing = new Map<number, number>();
+  ringGroups.forEach((ids, ringDepth) => {
+    if (ringDepth === 0 || ids.length <= MAX_NODES_PER_RING) return;
+    const overflowCount = ids.length - (MAX_NODES_PER_RING - 1);
+    overflowByRing.set(ringDepth, overflowCount);
+    ringGroups.set(ringDepth, ids.slice(0, MAX_NODES_PER_RING - 1));
+  });
+
+  const maxRingDepth = Math.max(...ringGroups.keys(), 1);
+  // Radius needed on each ring so nodes have enough arc spacing, given how
+  // many will actually be drawn on it (including the +N overflow node).
+  let maxRadius = 0;
+  ringGroups.forEach((ids, ringDepth) => {
+    if (ringDepth === 0) return;
+    const count = ids.length + (overflowByRing.has(ringDepth) ? 1 : 0);
+    const spacingRadius = (count * MIN_ARC_SPACING) / (2 * Math.PI);
+    const stepRadius = RING_STEP * ringDepth;
+    maxRadius = Math.max(maxRadius, spacingRadius, stepRadius);
+  });
+  maxRadius = Math.max(maxRadius, RING_STEP);
+
+  const width = Math.max(640, maxRadius * 2 + 160);
+  const height = Math.max(380, maxRadius * 2 + 160);
+  const cx = width / 2;
+  const cy = height / 2;
+
   const positions = new Map<string, { x: number; y: number }>();
-  const maxRadius = Math.min(width, height) / 2 - 40;
+  const renderNodes: GraphNode[] = [];
   ringGroups.forEach((ids, ringDepth) => {
     if (ringDepth === 0) {
       positions.set(ids[0], { x: cx, y: cy });
+      renderNodes.push(nodeById.get(ids[0])!);
       return;
     }
-    const radius = (maxRadius / Math.max(...ringGroups.keys())) * ringDepth;
+    const overflowCount = overflowByRing.get(ringDepth) || 0;
+    const totalOnRing = ids.length + (overflowCount > 0 ? 1 : 0);
+    const radius = (maxRadius / maxRingDepth) * ringDepth;
     ids.forEach((id, idx) => {
-      const angle = (2 * Math.PI * idx) / ids.length - Math.PI / 2;
+      const angle = (2 * Math.PI * idx) / totalOnRing - Math.PI / 2;
       positions.set(id, {
         x: cx + radius * Math.cos(angle),
         y: cy + radius * Math.sin(angle),
       });
+      renderNodes.push(nodeById.get(id)!);
     });
+    if (overflowCount > 0) {
+      const overflowId = `__overflow_ring_${ringDepth}`;
+      const angle = (2 * Math.PI * ids.length) / totalOnRing - Math.PI / 2;
+      positions.set(overflowId, {
+        x: cx + radius * Math.cos(angle),
+        y: cy + radius * Math.sin(angle),
+      });
+      renderNodes.push({ id: overflowId, label: `+${overflowCount} more`, type: "overflow" });
+    }
   });
 
-  return positions;
+  return { positions, width, height, renderNodes, overflowByRing };
 }
 
-export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height = 380 }) => {
-  const width = 640;
-  const positions = useMemo(() => computeLayout(nodes, edges, width, height), [nodes, edges, height]);
+export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height: minHeight = 380 }) => {
+  const { positions, width, height, renderNodes } = useMemo(() => computeLayout(nodes, edges), [nodes, edges]);
 
   if (nodes.length === 0) {
     return (
@@ -96,8 +147,11 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
     );
   }
 
+  const isDense = renderNodes.length > 14;
+
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-full">
+    <div className="w-full h-full overflow-auto">
+    <svg width={width} height={Math.max(height, minHeight)} viewBox={`0 0 ${width} ${Math.max(height, minHeight)}`} className="block mx-auto">
       {edges.map((e, idx) => {
         const from = positions.get(e.source);
         const to = positions.get(e.target);
@@ -112,27 +166,35 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
           />
         );
       })}
-      {nodes.map((n) => {
+      {renderNodes.map((n) => {
         const pos = positions.get(n.id);
         if (!pos) return null;
-        const color = NODE_COLORS[n.type] || "#64748b";
-        const radius = n.type === "suspect" ? 26 : 18;
+        const isOverflow = n.type === "overflow";
+        const color = isOverflow ? "#94a3b8" : NODE_COLORS[n.type] || "#64748b";
+        const radius = n.type === "suspect" ? 26 : isDense ? 14 : 18;
+        const maxLabelLen = isDense ? 12 : 18;
         return (
           <g key={n.id}>
-            <circle cx={pos.x} cy={pos.y} r={radius} fill="#0f172a" stroke={color} strokeWidth={2} />
+            <circle
+              cx={pos.x} cy={pos.y} r={radius}
+              fill="#0f172a"
+              stroke={color}
+              strokeWidth={2}
+              strokeDasharray={isOverflow ? "3 3" : undefined}
+            />
             <text
-              x={pos.x} y={pos.y + radius + 14}
+              x={pos.x} y={pos.y + radius + 13}
               textAnchor="middle"
               fill={color}
-              fontSize={10}
+              fontSize={isDense ? 8.5 : 10}
               fontFamily="monospace"
               fontWeight={n.type === "suspect" ? 700 : 500}
             >
-              {n.label.length > 18 ? n.label.slice(0, 16) + "…" : n.label}
+              {n.label.length > maxLabelLen ? n.label.slice(0, maxLabelLen - 2) + "…" : n.label}
             </text>
-            {n.sublabel && (
+            {n.sublabel && !isDense && (
               <text
-                x={pos.x} y={pos.y + radius + 26}
+                x={pos.x} y={pos.y + radius + 25}
                 textAnchor="middle"
                 fill="#64748b"
                 fontSize={8.5}
@@ -145,5 +207,6 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
         );
       })}
     </svg>
+    </div>
   );
 };

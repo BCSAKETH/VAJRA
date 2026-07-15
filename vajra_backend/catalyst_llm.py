@@ -115,8 +115,21 @@ class CatalystLLM:
                 "You have access to tools that can look up real data for the officer. "
                 "When a tool would help answer the officer's question, respond with JSON containing a 'tool' field "
                 "(the tool name) and a 'parameters' field (an object with the needed parameters). "
-                "When you can answer directly without a tool, or the query is ambiguous and needs clarification, "
-                "respond with JSON containing a 'text_response' field with your answer or clarifying question. "
+                "When you can answer directly without a tool, or the query is genuinely ambiguous between two or "
+                "more DIFFERENT tools, respond with JSON containing a 'text_response' field with your answer or "
+                "clarifying question. "
+                # Confirmed live: a one-word query like "map" produced 25+
+                # steps of internal deliberation before asking a clarifying
+                # question, even though query_hotspots was the only tool
+                # that plausibly matched -- officers typing short commands
+                # ("map", "hotspots", "network of X") expect the obvious
+                # tool to just run, not a clarifying question back.
+                "Officers often type short commands, not full sentences -- 'map' or 'hotspots' means run "
+                "query_hotspots, 'network of X' or 'connections for X' means run query_graph_network with that "
+                "name, 'risk for X' means run get_offender_risk. If exactly one tool plausibly matches, call it "
+                "directly -- do not ask a clarifying question just because the wording was brief. Only ask for "
+                "clarification when the request could equally mean two or more different tools, or a required "
+                "parameter (like a name or case number) is completely missing. "
                 "Available tools:\n"
             )
             for t in tools:

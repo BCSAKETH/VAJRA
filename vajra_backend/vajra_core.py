@@ -215,6 +215,20 @@ def derive_role_tier(rank_id: Optional[int]) -> str:
     return "supervisor" if rank_id and int(rank_id) >= 5 else "officer"
 
 
+# In-process cache for the Employee/Unit/Rank/Designation profile chain the
+# firewall resolves on every single request. Confirmed live: this chain was
+# costing ~2.5-3.5s of pure network round-trip time (4 sequential ZCQL
+# queries at ~0.6-0.8s each to Zoho's India servers) on TOP OF whatever the
+# endpoint itself does -- explaining why every protected call felt slow
+# regardless of what it actually needed to do. This data changes rarely (an
+# officer's rank/station), so a short TTL cache eliminates that cost on
+# every request after the first for a given officer, at the cost of a stale
+# read for up to PROFILE_CACHE_TTL_SECONDS after a real change (e.g. a
+# promotion) -- acceptable for a data-store lookup this infrequently mutated.
+_profile_cache: Dict[str, Any] = {}
+PROFILE_CACHE_TTL_SECONDS = 600
+
+
 class VajraSecurityFirewall:
     """
     A live security firewall enforcing data access context.
@@ -261,49 +275,65 @@ class VajraSecurityFirewall:
                     detail="Security Access Violation: Session authentication failed."
                 )
 
-            # 3. Query the user's profile from Employee table using ZQL
-            zql_query = f"""
-                SELECT EmployeeID, UnitID, KGID, FirstName, RankID, DesignationID
-                FROM Employee
-                WHERE KGID = '{kgid}'
-            """
-            profile_res = catalyst_app.zql().execute_query(zql_query)
-            
-            if not profile_res:
-                # Previously fell back to an arbitrary Employee row ("LIMIT 1") when the
-                # authenticated user's KGID had no match — that silently granted whoever
-                # authenticated the identity/station/unit context of an unrelated employee.
-                # Fail closed instead: no matching Employee record means no access.
-                logger.warning(f"No Employee profile found for KGID '{kgid}'. Denying access.")
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail="Security Access Violation: Authorized employee profile not found."
-                )
-                
-            profile = profile_res[0].get("Employee", {})
-            unit_id = profile.get("UnitID")
-            rank_id = profile.get("RankID")
-            designation_id = profile.get("DesignationID")
+            # 3. Resolve the officer's profile -- from the in-process cache if
+            # a recent lookup already did this (see PROFILE_CACHE_TTL_SECONDS
+            # above), otherwise via the real 4-query chain and cache the result.
+            cached = _profile_cache.get(kgid)
+            if cached and (time.time() - cached["cached_at"]) < PROFILE_CACHE_TTL_SECONDS:
+                profile = cached["profile"]
+                unit_name = cached["unit_name"]
+                rank_name = cached["rank_name"]
+                designation_name = cached["designation_name"]
+                role_tier = cached["role_tier"]
+            else:
+                zql_query = f"""
+                    SELECT EmployeeID, UnitID, KGID, FirstName, RankID, DesignationID
+                    FROM Employee
+                    WHERE KGID = '{kgid}'
+                """
+                profile_res = catalyst_app.zql().execute_query(zql_query)
 
-            # Fetch Unit Name
-            unit_res = catalyst_app.zql().execute_query(f"SELECT UnitName FROM Unit WHERE UnitID = {unit_id}")
-            unit_name = unit_res[0].get("Unit", {}).get("UnitName") if unit_res else "Unknown Station"
+                if not profile_res:
+                    # Previously fell back to an arbitrary Employee row ("LIMIT 1") when the
+                    # authenticated user's KGID had no match — that silently granted whoever
+                    # authenticated the identity/station/unit context of an unrelated employee.
+                    # Fail closed instead: no matching Employee record means no access.
+                    logger.warning(f"No Employee profile found for KGID '{kgid}'. Denying access.")
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Security Access Violation: Authorized employee profile not found."
+                    )
 
-            # Fetch Rank and Designation names — data has existed since seeding but was
-            # never queried here or exposed to the frontend/session context until now.
-            rank_name = "Unknown Rank"
-            if rank_id:
-                rank_res = catalyst_app.zql().execute_query(f"SELECT RankName FROM Rank WHERE RankID = {rank_id}")
-                if rank_res:
-                    rank_name = rank_res[0].get("Rank", {}).get("RankName") or rank_name
+                profile = profile_res[0].get("Employee", {})
+                unit_id = profile.get("UnitID")
+                rank_id = profile.get("RankID")
+                designation_id = profile.get("DesignationID")
 
-            designation_name = "Unknown Designation"
-            if designation_id:
-                desig_res = catalyst_app.zql().execute_query(f"SELECT DesignationName FROM Designation WHERE DesignationID = {designation_id}")
-                if desig_res:
-                    designation_name = desig_res[0].get("Designation", {}).get("DesignationName") or designation_name
+                # Fetch Unit Name
+                unit_res = catalyst_app.zql().execute_query(f"SELECT UnitName FROM Unit WHERE UnitID = {unit_id}")
+                unit_name = unit_res[0].get("Unit", {}).get("UnitName") if unit_res else "Unknown Station"
 
-            role_tier = derive_role_tier(rank_id)
+                # Fetch Rank and Designation names — data has existed since seeding but was
+                # never queried here or exposed to the frontend/session context until now.
+                rank_name = "Unknown Rank"
+                if rank_id:
+                    rank_res = catalyst_app.zql().execute_query(f"SELECT RankName FROM Rank WHERE RankID = {rank_id}")
+                    if rank_res:
+                        rank_name = rank_res[0].get("Rank", {}).get("RankName") or rank_name
+
+                designation_name = "Unknown Designation"
+                if designation_id:
+                    desig_res = catalyst_app.zql().execute_query(f"SELECT DesignationName FROM Designation WHERE DesignationID = {designation_id}")
+                    if desig_res:
+                        designation_name = desig_res[0].get("Designation", {}).get("DesignationName") or designation_name
+
+                role_tier = derive_role_tier(rank_id)
+
+                _profile_cache[kgid] = {
+                    "profile": profile, "unit_name": unit_name, "rank_name": rank_name,
+                    "designation_name": designation_name, "role_tier": role_tier,
+                    "cached_at": time.time()
+                }
 
             # Store the user profile and location context in request.state for downstream endpoints
             request.state.user_profile = profile
@@ -326,17 +356,46 @@ class VajraSecurityFirewall:
             )
 
 
+def _compute_mo_vector(latitude: float, gravity_id: int, incident_hour: int, accused_count: int, crime_head_id: int) -> np.ndarray:
+    """
+    Shared normalization so a target suspect's MO signature and the reference
+    vectors it's compared against (in MOBehavioralProfiler) are built from the
+    exact same feature scaling -- must stay in sync with the target_vector
+    construction in agent_loop.py's get_mo_profile.
+    """
+    lat_factor = (latitude - 11.0) / 8.0 if (11.0 <= latitude <= 19.0) else 0.5
+    gravity_factor = min(gravity_id, 10) / 10.0
+    hour_factor = incident_hour / 24.0
+    group_factor = min(accused_count, 10) / 10.0
+    type_factor = min(crime_head_id, 50) / 50.0
+    return np.array([lat_factor, gravity_factor, hour_factor, group_factor, type_factor])
+
+
 class MOBehavioralProfiler:
     """
     Numpy-based cosine similarity classifier engine for Modus Operandi (MO) signatures.
-    Pulls historical signatures from the generated narrative database (synthetic_fir_data.json).
+    Prefers real historical MO signatures computed from live CaseMaster/Accused
+    records; falls back to the generated narrative database
+    (synthetic_fir_data.json), and only as a last resort to random vectors
+    labeled MOCK (kept so the tool never hard-fails, but real/seeded data is
+    always tried first since the whole point is grounded investigative recall).
     """
-    def __init__(self, data_path: str = "synthetic_fir_data.json"):
+    def __init__(self, data_path: str = "synthetic_fir_data.json", catalyst_app=None):
         self.vectors: List[np.ndarray] = []
         self.metadata: List[Dict[str, Any]] = []
-        
+        self.data_source = "mock"
+
+        if catalyst_app:
+            try:
+                self._load_from_live_db(catalyst_app)
+                if self.vectors:
+                    self.data_source = "live_db"
+                    logger.info(f"MOBehavioralProfiler: Built {len(self.vectors)} real MO vectors from live CaseMaster/Accused data.")
+            except Exception as e:
+                logger.warning(f"MOBehavioralProfiler: live DB vector build failed, falling back: {e}")
+
         # Load profile signatures
-        if os.path.exists(data_path):
+        if not self.vectors and os.path.exists(data_path):
             try:
                 with open(data_path, 'r', encoding='utf-8') as f:
                     records = json.load(f)
@@ -349,10 +408,12 @@ class MOBehavioralProfiler:
                             "crime_type": r.get("crime_type"),
                             "station": r.get("station")
                         })
+                if self.vectors:
+                    self.data_source = "synthetic_file"
                 logger.info(f"MOBehavioralProfiler: Loaded {len(self.vectors)} historical MO vectors.")
             except Exception as e:
                 logger.error(f"Failed to load MO database: {e}")
-                
+
         if not self.vectors:
             np.random.seed(42)
             for i in range(50):
@@ -363,11 +424,62 @@ class MOBehavioralProfiler:
                     "crime_type": "Theft",
                     "station": "Cubbon Park PS"
                 })
-                
+
         self.mo_matrix = np.vstack(self.vectors)
         norms = np.linalg.norm(self.mo_matrix, axis=1, keepdims=True)
         norms[norms == 0] = 1e-9
         self.mo_matrix_normalized = self.mo_matrix / norms
+
+    def _load_from_live_db(self, catalyst_app):
+        cases_res = catalyst_app.zql().execute_query(
+            "SELECT CaseMasterID, latitude, GravityOffenceID, IncidentFromDate, CrimeMajorHeadID, PoliceStationID, CrimeNo FROM CaseMaster LIMIT 250"
+        )
+        if not cases_res:
+            return
+
+        crimehead_res = catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead")
+        crimehead_map = {r["CrimeHead"]["CrimeHeadID"]: r["CrimeHead"]["CrimeGroupName"] for r in crimehead_res}
+        unit_res = catalyst_app.zql().execute_query("SELECT UnitID, UnitName FROM Unit")
+        unit_map = {r["Unit"]["UnitID"]: r["Unit"]["UnitName"] for r in unit_res}
+
+        accused_res = catalyst_app.zql().execute_query("SELECT CaseMasterID, AccusedName FROM Accused LIMIT 300")
+        accused_by_case: Dict[str, List[str]] = {}
+        for r in accused_res:
+            a = r.get("Accused", {})
+            cid = a.get("CaseMasterID")
+            if cid:
+                accused_by_case.setdefault(cid, []).append(a.get("AccusedName"))
+
+        for r in cases_res:
+            c = r.get("CaseMaster", {})
+            cm_id = c.get("CaseMasterID")
+            try:
+                latitude = float(c.get("latitude") or 13.027)
+                gravity_id = int(c.get("GravityOffenceID") or 4)
+                ch_id_raw = c.get("CrimeMajorHeadID")
+                crime_head_id = int(ch_id_raw or 5)
+
+                raw_date = c.get("IncidentFromDate") or "2026-06-25 12:00:00"
+                incident_hour = 12
+                if " " in raw_date:
+                    try:
+                        incident_hour = int(raw_date.split()[1].split(":")[0])
+                    except Exception:
+                        pass
+
+                names = accused_by_case.get(cm_id, [])
+                accused_count = len(names) or 1
+
+                vector = _compute_mo_vector(latitude, gravity_id, incident_hour, accused_count, crime_head_id)
+                self.vectors.append(vector)
+                self.metadata.append({
+                    "fir_id": c.get("CrimeNo") or f"CASE-{cm_id}",
+                    "suspect_name": names[0] if names else "Unknown",
+                    "crime_type": crimehead_map.get(ch_id_raw, "Unknown"),
+                    "station": unit_map.get(c.get("PoliceStationID"), "Unknown")
+                })
+            except Exception:
+                continue
 
     def find_matches(self, target_vector: np.ndarray, top_k: int = 3) -> List[Dict[str, Any]]:
         if len(target_vector) != 5:

@@ -981,8 +981,12 @@ async def list_sessions(request: Request, location_context: str = Depends(securi
     if not catalyst_app:
         return []
     try:
+        # Sessions with a non-empty description are Investigations, surfaced
+        # separately by GET /api/investigations (pinned section) -- exclude
+        # them here so they don't also show up in the flat history list.
         res = catalyst_app.zql().execute_query(
-            f"SELECT session_id, title, last_active_at FROM ChatSession WHERE employee_id = {employee_id} ORDER BY last_active_at DESC LIMIT 50"
+            f"SELECT session_id, title, last_active_at FROM ChatSession "
+            f"WHERE employee_id = {employee_id} AND description = '' ORDER BY last_active_at DESC LIMIT 50"
         )
         return [r.get("ChatSession", {}) for r in res]
     except Exception as e:
@@ -1129,6 +1133,28 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
 
     # Strip the mention itself so it doesn't confuse the agent's own parsing
     query_for_agent = VAJRA_MENTION_RE.sub("", message).strip() or message
+
+    # If this session is an Investigation linked to a real case, prepend that
+    # case's real context so the officer doesn't have to keep re-explaining
+    # "this is about case CR-2026-XXXXX" every single message.
+    try:
+        sess_res = catalyst_app.zql().execute_query(f"SELECT case_no FROM ChatSession WHERE session_id = '{session_id}' LIMIT 1")
+        case_no = sess_res[0].get("ChatSession", {}).get("case_no") if sess_res else None
+        if case_no:
+            # CaseMasterID (not CrimeNo) is what summarize_case/other
+            # case_id-based tools actually take as a parameter -- omitting it
+            # here meant the model had a case number to talk about but no
+            # way to actually invoke any tool that operates on the case.
+            case_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID, CrimeNo, BriefFacts FROM CaseMaster WHERE CrimeNo = '{case_no}' LIMIT 1")
+            if case_res:
+                cm = case_res[0].get("CaseMaster", {})
+                query_for_agent = (
+                    f"[Context: this conversation is about case {cm.get('CrimeNo')} "
+                    f"(CaseMasterID {cm.get('CaseMasterID')}) — {cm.get('BriefFacts')}. "
+                    f"Use CaseMasterID {cm.get('CaseMasterID')} for any tool that needs a case_id.]\n\n{query_for_agent}"
+                )
+    except Exception as e:
+        logger.warning(f"Could not resolve investigation case context: {e}")
 
     # Run query through IndicTrans2 translation layer if Kannada
     processed_query = translator.translate(query_for_agent, "kn", "en") if lang == "kn" else query_for_agent
@@ -1335,9 +1361,126 @@ async def list_cowork_sessions(request: Request, location_context: str = Depends
         return []
 
 
+@app.get("/api/investigations/search-cases")
+async def search_cases_for_investigation(q: str = "", location_context: str = Depends(security_firewall)):
+    """
+    Autocomplete search for linking a real case to an Investigation --
+    matches against the actual CrimeNo (e.g. CR-2026-XXXXX), not a raw text
+    field the officer could typo into pointing at nothing real.
+    """
+    if not catalyst_app or not q or len(q) < 2:
+        return []
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT CaseMasterID, CrimeNo, BriefFacts FROM CaseMaster WHERE CrimeNo LIKE '*{q}*' LIMIT 10"
+        )
+        return [{
+            "case_no": r.get("CaseMaster", {}).get("CrimeNo"),
+            "brief_facts": (r.get("CaseMaster", {}).get("BriefFacts") or "")[:100]
+        } for r in res]
+    except Exception as e:
+        logger.warning(f"Case search failed: {e}")
+        return []
+
+
+class CreateInvestigationRequest(BaseModel):
+    title: str
+    description: str = ""
+    case_no: Optional[str] = None
+
+
+@app.post("/api/investigations")
+async def create_investigation(payload: CreateInvestigationRequest, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    An Investigation is a ChatSession with a title/description explicitly set
+    at creation (vs. a regular quick chat, which gets an auto-title from its
+    first message and an empty description) plus an optional real case link.
+    Reuses the exact same session/Cowork/message infrastructure -- no
+    parallel system, just a different creation path and a marker
+    (non-empty description) that GET /api/investigations filters on.
+    """
+    if not payload.title.strip():
+        raise HTTPException(status_code=400, detail="Title is required.")
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+
+    case_no = None
+    if payload.case_no:
+        case_check = catalyst_app.zql().execute_query(f"SELECT CrimeNo FROM CaseMaster WHERE CrimeNo = '{payload.case_no}' LIMIT 1")
+        if not case_check:
+            raise HTTPException(status_code=404, detail="That case number doesn't match any real case.")
+        case_no = payload.case_no
+
+    session_id = f"sess-{employee_id}-{int(datetime.utcnow().timestamp())}"
+    catalyst_app.datastore().table("ChatSession").insert_row({
+        "session_id": session_id,
+        "employee_id": employee_id,
+        "title": payload.title.strip()[:60],
+        "description": payload.description.strip()[:500],
+        "case_no": case_no or "",
+        "created_at": datetime.utcnow().isoformat(),
+        "last_active_at": datetime.utcnow().isoformat()
+    })
+    return {"session_id": session_id, "title": payload.title, "description": payload.description, "case_no": case_no}
+
+
+@app.get("/api/investigations")
+async def list_investigations(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Investigations the officer owns or is a Cowork participant in -- marked
+    by a non-empty description (see create_investigation), distinct from
+    GET /api/sessions' flat list of every quick chat. Excludes sessions with
+    no description, same as the original spec's "excludes sessions with no
+    case_no" idea, generalized: Investigations is deliberately "cases I've
+    named and organized," not "every chat I've ever had."
+    """
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not catalyst_app:
+        return []
+    try:
+        owned = catalyst_app.zql().execute_query(
+            f"SELECT session_id, title, description, case_no, last_active_at FROM ChatSession "
+            f"WHERE employee_id = {employee_id} AND description != '' ORDER BY last_active_at DESC LIMIT 50"
+        )
+        investigations = [{
+            "session_id": r["ChatSession"]["session_id"],
+            "title": r["ChatSession"]["title"],
+            "description": r["ChatSession"]["description"],
+            "case_no": r["ChatSession"].get("case_no") or None,
+            "last_active_at": r["ChatSession"]["last_active_at"],
+            "role": "owner"
+        } for r in owned]
+        # Track session_ids already listed as "owner" so a stray/self
+        # CoworkParticipant row (e.g. from testing an invite on one's own
+        # session) can't make the same investigation show up twice.
+        seen_session_ids = {inv["session_id"] for inv in investigations}
+
+        part_res = catalyst_app.zql().execute_query(
+            f"SELECT session_id, role FROM CoworkParticipant WHERE employee_id = {employee_id} LIMIT 100"
+        )
+        for p in part_res:
+            part = p.get("CoworkParticipant", {})
+            sid = part.get("session_id")
+            if not sid or sid in seen_session_ids:
+                continue
+            sess_res = catalyst_app.zql().execute_query(
+                f"SELECT title, description, case_no, last_active_at FROM ChatSession WHERE session_id = '{sid}' AND description != '' LIMIT 1"
+            )
+            if sess_res:
+                seen_session_ids.add(sid)
+                s = sess_res[0]["ChatSession"]
+                investigations.append({
+                    "session_id": sid, "title": s["title"], "description": s["description"],
+                    "case_no": s.get("case_no") or None, "last_active_at": s.get("last_active_at"),
+                    "role": part.get("role")
+                })
+        return investigations
+    except Exception as e:
+        logger.warning(f"Could not list investigations: {e}")
+        return []
+
+
 class AppletRequest(BaseModel):
-    query: str
-    response_text: str
+    response_type: str
     data: Dict[str, Any] = {}
 
 
@@ -1347,13 +1490,15 @@ async def generate_chat_applet(
     location_context: str = Depends(security_firewall)
 ):
     """
-    Second, independent call for the right-hand applet panel (Phase 7). Kept
-    as its own endpoint, called separately from /api/chat by the frontend
-    after the chat reply is already shown, so a slow or malformed applet
-    response never blocks or delays the answer itself. Returns null (not an
-    error) when nothing in the turn's data is genuinely visualizable.
+    Deterministic mapping of a turn's already-resolved data to the right-hand
+    applet panel spec (Phase 7) -- no LLM call, see generate_applet_spec's
+    docstring for why. Still its own endpoint/round-trip from the frontend
+    (called right after the chat reply is shown) so a slow network hiccup on
+    this call still can't delay the answer itself, even though the work
+    itself is now instant. Returns null (not an error) when nothing in the
+    turn's data is genuinely visualizable.
     """
-    spec = agent_loop.generate_applet_spec(payload.query, payload.response_text, payload.data)
+    spec = agent_loop.generate_applet_spec(payload.response_type, payload.data)
     return {"applet": spec}
 
 
@@ -1791,16 +1936,16 @@ async def export_pdf_endpoint(payload: PDFExportRequest):
         pdf.ln(5)
         
         for msg in payload.transcript:
-            sender = msg.get("sender", "unknown").upper()
-            text = msg.get("text", "")
+            sender = str(msg.get("role") or msg.get("sender") or "unknown").upper()
+            text = msg.get("content") or msg.get("text") or ""
             time_str = msg.get("timestamp", "")
-            
+
             pdf.set_font("helvetica", "B", 9)
             pdf.cell(0, 5, f"[{time_str}] {sender}:", new_x="LMARGIN", new_y="NEXT")
             pdf.set_font("helvetica", "", 9)
             # Remove non-latin characters for FPDF standard helvetica compatibility
-            clean_text = text.encode('ascii', 'ignore').decode('ascii')
-            pdf.multi_cell(0, 5, clean_text)
+            clean_text = str(text).encode('ascii', 'ignore').decode('ascii')
+            pdf.multi_cell(0, 5, clean_text if clean_text.strip() else "(non-text content / widget)")
             pdf.ln(3)
             
         pdf_bytes = pdf.output()
@@ -1812,46 +1957,6 @@ async def export_pdf_endpoint(payload: PDFExportRequest):
     except Exception as e:
         logger.error(f"Failed to generate PDF: {e}")
         raise HTTPException(status_code=500, detail=f"PDF generation error: {e}")
-
-
-@app.get("/api/alerts")
-async def get_proactive_alerts(request: Request, location_context: str = Depends(security_firewall)):
-    """
-    Retrieves proactive early warning alerts.
-    Falls back to dynamic synthetic alerts if the table is not yet created.
-    """
-    if not catalyst_app:
-        return []
-    try:
-        query = "SELECT alert_type, district_name, alert_message, timestamp FROM ProactiveAlerts ORDER BY ROWID DESC LIMIT 20"
-        res = catalyst_app.zql().execute_query(query)
-        alerts = []
-        for r in res:
-            a_data = r.get("ProactiveAlerts", {})
-            alerts.append({
-                "type": a_data.get("alert_type"),
-                "district": a_data.get("district_name"),
-                "message": a_data.get("alert_message"),
-                "timestamp": a_data.get("timestamp")
-            })
-        return alerts
-    except Exception as e:
-        logger.warning(f"ProactiveAlerts query failed: {e}. Returning dynamic fallback alerts.")
-        fallback_alerts = [
-            {
-                "type": "SPATIAL_SPIKE",
-                "district": "Bengaluru Urban",
-                "message": "Volume Spike Warning: Bengaluru Urban has logged 2000 incidents, exceeding normal threshold limits.",
-                "timestamp": pd.Timestamp.now().isoformat()
-            },
-            {
-                "type": "REPEAT_OFFENDER",
-                "district": "Multiple Districts",
-                "message": "Repeat Offender Alert: Suspect 'R Ramesh' detected in 3 separate cases.",
-                "timestamp": pd.Timestamp.now().isoformat()
-            }
-        ]
-        return fallback_alerts
 
 
 if __name__ == "__main__":

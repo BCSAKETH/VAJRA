@@ -18,6 +18,27 @@ session_memory = VajraSessionMemory()
 graph_rag = VajraGraphRAG()
 semantic_memory = VajraSemanticMemory()
 
+_real_districts_cache: Optional[List[str]] = None
+
+
+def get_real_districts() -> List[str]:
+    """
+    Real KSP district names from the District table, cached in-process since
+    they never change at runtime. Previously several call sites hardcoded an
+    8-item list mixing a few real districts with police-station/area names
+    ("Peenya", "Indiranagar") that aren't districts at all and excluding most
+    of the real 30 -- entity resolution silently failed to recognize the
+    other ~24 real districts a query might mention.
+    """
+    global _real_districts_cache
+    if _real_districts_cache is None and catalyst_app:
+        try:
+            res = catalyst_app.zql().execute_query("SELECT DistrictName FROM District")
+            _real_districts_cache = [r.get("District", {}).get("DistrictName") for r in res if r.get("District", {}).get("DistrictName")]
+        except Exception as e:
+            logger.warning(f"Could not load real district list: {e}")
+    return _real_districts_cache or ["Bengaluru Urban", "Bengaluru Rural", "Mysuru", "Belagavi"]
+
 class VajraAgentLoop:
     """
     Intelligent Agent Loop with Tool Registry, multi-turn session memory resolution,
@@ -198,6 +219,15 @@ class VajraAgentLoop:
         self.shap_explainer = shap_explainer
         self.label_encoders = label_encoders
         self.llm = CatalystLLM()
+        self._mo_profiler = None
+
+    def _get_mo_profiler(self) -> "MOBehavioralProfiler":
+        """Built once per process (queries ~250 real cases) rather than
+        re-fetching and re-normalizing the whole reference matrix on every
+        MO-match tool call."""
+        if self._mo_profiler is None:
+            self._mo_profiler = MOBehavioralProfiler(catalyst_app=catalyst_app)
+        return self._mo_profiler
 
     def sanitize_sql_input(self, val: str) -> str:
         """Strips quotes, semicolons, and dashes to prevent ZCQL/SQL injection."""
@@ -221,10 +251,9 @@ class VajraAgentLoop:
                 suspect_match = cand
                 break
 
-        # Check for districts
-        districts = ["Bagalkot", "Ballari", "Belagavi", "Bengaluru City", "Bidar", "Chamarajanagar", "Peenya", "Indiranagar"]
+        # Check for districts (real KSP district list, not a hardcoded guess)
         resolved_district = None
-        for dist in districts:
+        for dist in get_real_districts():
             if dist.lower() in query.lower():
                 resolved_district = dist
                 break
@@ -498,75 +527,100 @@ class VajraAgentLoop:
             "simulated_reason": simulated_reason
         }
 
-    # Only these component kinds are ever rendered -- anything else GLM emits
-    # is dropped server-side rather than passed through. No freeform/custom
-    # rendering path exists for widget specs, intentionally.
-    APPLET_COMPONENT_KINDS = {
-        "bar_chart", "line_chart", "map", "network_graph",
-        "stat_tile", "table", "timeline", "gauge"
-    }
-
-    def generate_applet_spec(self, query: str, response_text: str, data_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    def generate_applet_spec(self, response_type: str, data_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """
-        A second, independent GLM call that turns the data already resolved
-        for this turn into a bounded UI spec for the right-hand applet panel.
-        Called separately from run_agent_loop (a second HTTP round-trip from
-        the frontend, after the chat reply is already shown) so a slow or
-        malformed applet response never blocks or delays the chat answer
-        itself.
+        Maps a tool's already-resolved data directly to a bounded UI spec for
+        the right-hand applet panel -- no LLM call. This used to be a second,
+        independent GLM call that asked the model to re-describe the same
+        data it had already returned in the main turn as a chart spec: that
+        cost another 7-25s round-trip per turn and gave the model a second
+        chance to misdescribe its own data. The tool functions already return
+        clean, structured data (hotspots, nodes/edges, SHAP factors, etc.) --
+        mapping it here is instant, free, and can't hallucinate a mismatch
+        between what's shown and what's real.
         """
         if not data_payload:
             return None
 
-        # Softer framing throughout -- "emit ONLY X, nothing else" style
-        # instructions trigger this deployed model's baked-in guardrail
-        # against "expose protected instructions" style requests (confirmed
-        # live), the same issue fixed in catalyst_llm.py's main system prompt.
-        applet_prompt = (
-            "You help turn retrieved police case data into a UI widget specification for a dashboard panel. "
-            "Given the user's query and the data already retrieved for it, respond with a JSON object "
-            "in this shape:\n"
-            '{ "layout": "grid" or "single", "components": [ '
-            '{ "kind": one of ["bar_chart","line_chart","map","network_graph","stat_tile","table","timeline","gauge"], '
-            '...kind-specific fields such as "title", "data", "columns", "value", "label" } ] }\n'
-            "Only include components that are genuinely supported by the data provided -- do not invent fields. "
-            "If nothing in the data is visualizable, respond with {\"layout\": \"single\", \"components\": []}."
-        )
-        messages = [
-            {"role": "system", "content": applet_prompt},
-            {"role": "user", "content": json.dumps({
-                "query": query,
-                "response_text": response_text,
-                "data": data_payload
-            }, default=str)[:6000]}
-        ]
+        if response_type == "map":
+            hotspots = data_payload.get("hotspots", [])
+            if not hotspots:
+                return None
+            return {"layout": "single", "components": [
+                {"kind": "map", "title": "Crime Hotspots", "data": hotspots}
+            ]}
 
-        try:
-            llm_res = self.llm.chat(messages, use_agent_system_prompt=False)
-            content_str = llm_res["choices"][0]["message"]["content"]
-            content_str = self._extract_json(content_str)
-            spec = json.loads(content_str)
-        except Exception as e:
-            logger.warning(f"Applet spec generation failed or was unparsable: {e}")
-            return None
+        if response_type == "network":
+            nodes = data_payload.get("nodes", [])
+            edges = data_payload.get("edges", [])
+            if not nodes:
+                return None
+            components = [{
+                "kind": "network_graph",
+                "title": f"Syndicate Network: {data_payload.get('target_suspect', '')}",
+                "data": {"nodes": nodes, "edges": edges}
+            }]
+            fin_txns = data_payload.get("financial_transactions") or []
+            if fin_txns:
+                total = sum(t.get("amount") or 0 for t in fin_txns)
+                components.append({
+                    "kind": "stat_tile", "value": len(fin_txns),
+                    "label": f"Linked Transactions (Total ₹{total:,.0f})"
+                })
+            return {"layout": "grid", "components": components}
 
-        if not isinstance(spec, dict) or "components" not in spec:
-            return None
+        if response_type == "risk_breakdown":
+            components = [{
+                "kind": "gauge", "title": "Conviction Risk",
+                "value": data_payload.get("risk_score", 0),
+                "label": f"Suspect: {data_payload.get('suspect', '')}"
+            }]
+            shap = data_payload.get("shap_factors") or []
+            if shap:
+                components.append({
+                    "kind": "bar_chart", "title": "SHAP Feature Contributions",
+                    "data": [{"name": f["name"], "value": f["value"]} for f in shap]
+                })
+            return {"layout": "grid", "components": components}
 
-        # Drop any component whose "kind" isn't in the whitelist rather than
-        # passing it through -- this is the actual enforcement point, not
-        # just documentation.
-        valid_components = [
-            c for c in spec.get("components", [])
-            if isinstance(c, dict) and c.get("kind") in self.APPLET_COMPONENT_KINDS
-        ]
-        if not valid_components:
-            return None
+        if response_type == "forecast":
+            forecast = data_payload.get("forecast", [])
+            if not forecast:
+                return None
+            return {"layout": "single", "components": [{
+                "kind": "line_chart", "title": "Seasonal Forecast Trend",
+                "data": [{"name": f.get("period") or f.get("district", ""), "value": f.get("predicted", 0)} for f in forecast]
+            }]}
 
-        return {
-            "layout": spec.get("layout") if spec.get("layout") in ("grid", "single") else "single",
-            "components": valid_components
-        }
+        if response_type == "mo_match":
+            matches = data_payload.get("matches", [])
+            if not matches:
+                return None
+            return {"layout": "single", "components": [{
+                "kind": "table", "title": f"MO Matches for {data_payload.get('suspect', '')}",
+                "data": matches, "columns": ["suspect", "case_id", "station", "similarity_score"]
+            }]}
+
+        if response_type == "timeline":
+            timeline = data_payload.get("timeline", [])
+            if not timeline:
+                return None
+            return {"layout": "single", "components": [{
+                "kind": "timeline", "title": f"Case {data_payload.get('case_id', '')} Timeline",
+                "data": timeline
+            }]}
+
+        if response_type == "correlation":
+            profile = data_payload.get("profile") or {}
+            if not profile:
+                return None
+            return {"layout": "grid", "components": [
+                {"kind": "stat_tile", "value": f"{profile.get('literacy', '')}%", "label": f"Literacy — {profile.get('district', '')}"},
+                {"kind": "stat_tile", "value": f"{profile.get('unemployment', '')}%", "label": "Unemployment Rate"},
+                {"kind": "gauge", "title": "Economic Stress Index", "value": round((profile.get("stress") or 0) * 100, 1), "label": ""},
+            ]}
+
+        return None
 
     def _execute_tool(self, tool_name: str, params: Dict[str, Any], employee_id: int, session_id: str, user_unit_id: Optional[int]) -> Dict[str, Any]:
         """
@@ -767,7 +821,7 @@ class VajraAgentLoop:
 
         # 8. get_forecast
         elif tool_name == "get_forecast":
-            district = self.sanitize_sql_input(params.get("district", "Peenya"))
+            district = self.sanitize_sql_input(params.get("district", "Bengaluru Urban"))
             crime_type = self.sanitize_sql_input(params.get("crime_type", "THEFT"))
             response_type = "forecast"
             forecast_results = []
@@ -831,9 +885,15 @@ class VajraAgentLoop:
                         age = acc_data.get("AgeYear") or 32
                         
                         if cm_id:
-                            # Query CaseMaster for metadata
+                            # Query CaseMaster for metadata. Note: CaseMaster has neither
+                            # a DistrictID nor AccusedCount/VictimCount column (those used
+                            # to be selected here, which made ZCQL 400 the whole query and
+                            # silently fell back to hardcoded risk/SHAP defaults every
+                            # time). District is resolved via PoliceStationID ->
+                            # Unit.DistrictID; accused/victim counts via COUNT queries
+                            # against their own tables, keyed by CaseMasterID.
                             cm_res = catalyst_app.zql().execute_query(
-                                f"SELECT CrimeRegisteredDate, PoliceStationID, DistrictID, CaseCategoryID, CrimeMajorHeadID, AccusedCount, VictimCount "
+                                f"SELECT CrimeRegisteredDate, PoliceStationID, CaseCategoryID, CrimeMajorHeadID "
                                 f"FROM CaseMaster WHERE CaseMasterID = {cm_id} LIMIT 1"
                             )
                             if cm_res:
@@ -846,24 +906,32 @@ class VajraAgentLoop:
                                     fir_day = dt.day
                                 except Exception:
                                     pass
-                                
-                                victim_count = cm_data.get("VictimCount") or 1
-                                accused_count = cm_data.get("AccusedCount") or 1
-                                
-                                dist_id = cm_data.get("DistrictID")
+
+                                try:
+                                    va_res = catalyst_app.zql().execute_query(f"SELECT COUNT(ROWID) FROM Accused WHERE CaseMasterID = {cm_id}")
+                                    if va_res:
+                                        accused_count = va_res[0].get("Accused", {}).get("COUNT(ROWID)") or 1
+                                    vv_res = catalyst_app.zql().execute_query(f"SELECT COUNT(ROWID) FROM Victim WHERE CaseMasterID = {cm_id}")
+                                    if vv_res:
+                                        victim_count = vv_res[0].get("Victim", {}).get("COUNT(ROWID)") or 1
+                                except Exception:
+                                    pass
+
                                 unit_id = cm_data.get("PoliceStationID")
                                 cat_id = cm_data.get("CaseCategoryID")
                                 ch_id = cm_data.get("CrimeMajorHeadID")
-                                
+
                                 # Resolve names from referenced tables
-                                if dist_id:
-                                    d_res = catalyst_app.zql().execute_query(f"SELECT DistrictName FROM District WHERE DistrictID = {dist_id} LIMIT 1")
-                                    if d_res:
-                                        district_name = d_res[0].get("District", {}).get("DistrictName") or district_name
                                 if unit_id:
-                                    u_res = catalyst_app.zql().execute_query(f"SELECT UnitName FROM Unit WHERE UnitID = {unit_id} LIMIT 1")
+                                    u_res = catalyst_app.zql().execute_query(f"SELECT UnitName, DistrictID FROM Unit WHERE UnitID = {unit_id} LIMIT 1")
                                     if u_res:
-                                        unit_name = u_res[0].get("Unit", {}).get("UnitName") or unit_name
+                                        u_data = u_res[0].get("Unit", {})
+                                        unit_name = u_data.get("UnitName") or unit_name
+                                        dist_id = u_data.get("DistrictID")
+                                        if dist_id:
+                                            d_res = catalyst_app.zql().execute_query(f"SELECT DistrictName FROM District WHERE DistrictID = {dist_id} LIMIT 1")
+                                            if d_res:
+                                                district_name = d_res[0].get("District", {}).get("DistrictName") or district_name
                                 if ch_id:
                                     ch_res = catalyst_app.zql().execute_query(f"SELECT CrimeGroupName FROM CrimeHead WHERE CrimeHeadID = {ch_id} LIMIT 1")
                                     if ch_res:
@@ -967,17 +1035,26 @@ class VajraAgentLoop:
                     if acc_res:
                         cm_id = acc_res[0].get("Accused", {}).get("CaseMasterID")
                         if cm_id:
-                            # Query CaseMaster for actual MO characteristics
+                            # Query CaseMaster for actual MO characteristics. AccusedCount
+                            # isn't a real column here (same phantom-column bug as
+                            # get_offender_risk) -- computed via a COUNT query instead.
                             cm_res = catalyst_app.zql().execute_query(
-                                f"SELECT Latitude, GravityOffenceID, IncidentFromDate, AccusedCount, CrimeMajorHeadID "
+                                f"SELECT latitude, GravityOffenceID, IncidentFromDate, CrimeMajorHeadID "
                                 f"FROM CaseMaster WHERE CaseMasterID = {cm_id} LIMIT 1"
                             )
                             if cm_res:
                                 cm_data = cm_res[0].get("CaseMaster", {})
-                                latitude = cm_data.get("latitude") or 13.027
-                                gravity_id = cm_data.get("GravityOffenceID") or 4
-                                accused_count = cm_data.get("AccusedCount") or 1
-                                crime_head_id = cm_data.get("CrimeMajorHeadID") or 5
+                                # ZCQL returns numeric fields as strings -- cast explicitly,
+                                # since downstream min()/arithmetic assumes real numbers.
+                                latitude = float(cm_data.get("latitude") or 13.027)
+                                gravity_id = int(cm_data.get("GravityOffenceID") or 4)
+                                crime_head_id = int(cm_data.get("CrimeMajorHeadID") or 5)
+                                try:
+                                    va_res = catalyst_app.zql().execute_query(f"SELECT COUNT(ROWID) FROM Accused WHERE CaseMasterID = {cm_id}")
+                                    if va_res:
+                                        accused_count = int(va_res[0].get("Accused", {}).get("COUNT(ROWID)") or 1)
+                                except Exception:
+                                    pass
                                 
                                 raw_date = cm_data.get("IncidentFromDate") or "2026-06-25 12:00:00"
                                 try:
@@ -1000,8 +1077,8 @@ class VajraAgentLoop:
             target_vector = np.array([
                 lat_factor, gravity_factor, hour_factor, group_factor, type_factor
             ])
-            
-            profiler = MOBehavioralProfiler()
+
+            profiler = self._get_mo_profiler()
             matches = profiler.find_matches(target_vector, top_k=3)
             
             top_match = matches[0] if matches else {}
@@ -1013,7 +1090,8 @@ class VajraAgentLoop:
                 "profile_status": "Complete",
                 "mo_signature": mo_signature,
                 "match_rate": match_rate,
-                "matches": matches
+                "matches": matches,
+                "engine_mode": "Live CaseMaster/Accused MO Vectors" if profiler.data_source == "live_db" else "Reference Simulation (no live case data available)"
             }
             response_type = "mo_match"
             text_result = f"Behavioral MO Profile: Suspect {suspect} matches Modus Operandi '{mo_signature}' at a {match_rate}% similarity score."

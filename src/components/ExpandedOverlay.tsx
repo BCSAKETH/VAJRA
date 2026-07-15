@@ -1,9 +1,34 @@
-import React, { useEffect } from "react";
-import { X, MapPin, Network, ShieldAlert, TrendingUp, Clock, Fingerprint, Users } from "lucide-react";
+import React, { useEffect, useRef } from "react";
+import { X, MapPin, Network, ShieldAlert, TrendingUp, Clock, Fingerprint, Users, Download } from "lucide-react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, CartesianGrid } from "recharts";
-import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, Popup, useMap } from "react-leaflet";
 import { WatermarkOverlay } from "./WatermarkOverlay";
 import { NetworkGraph } from "./NetworkGraph";
+import { downloadJson, downloadHotspotsAsGeoJson, downloadSvgAsPng } from "../lib/widgetExport";
+
+// Leaflet measures its container's size at mount time. Inside a modal that
+// animates/expands in, the flex layout hasn't settled to its final size yet
+// when that measurement happens, so the tile grid renders as a handful of
+// small, disconnected tiles instead of one cohesive map. Forcing
+// invalidateSize() once the container has its real dimensions (and again on
+// any later resize) fixes it.
+const MapSizeFixer: React.FC = () => {
+  const map = useMap();
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => map.invalidateSize());
+    const t1 = setTimeout(() => map.invalidateSize(), 150);
+    const t2 = setTimeout(() => map.invalidateSize(), 400);
+    const onResize = () => map.invalidateSize();
+    window.addEventListener("resize", onResize);
+    return () => {
+      cancelAnimationFrame(raf);
+      clearTimeout(t1);
+      clearTimeout(t2);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [map]);
+  return null;
+};
 
 interface ExpandedOverlayProps {
   type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation";
@@ -12,6 +37,8 @@ interface ExpandedOverlayProps {
 }
 
 export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, onClose }) => {
+  const contentRef = useRef<HTMLDivElement>(null);
+
   // ESC key dismiss
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -20,6 +47,24 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
+
+  const handleDownload = () => {
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    if (type === "map") {
+      downloadHotspotsAsGeoJson(data.hotspots || [], `vajra_hotspots_${stamp}.geojson`);
+      return;
+    }
+    if (type === "network" || type === "risk" || type === "forecast") {
+      const svg = contentRef.current?.querySelector("svg");
+      if (svg) {
+        downloadSvgAsPng(svg as SVGSVGElement, `vajra_${type}_${stamp}.png`);
+        return;
+      }
+    }
+    // Timeline / mo_match / correlation (and any SVG-less fallback): the
+    // underlying structured data is the exportable artifact.
+    downloadJson(data, `vajra_${type}_${stamp}.json`);
+  };
 
   // Formulate SHAP factor data for recharts
   const shapData = (data.shap_factors || []).map((f: any) => ({
@@ -89,16 +134,26 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
             )}
           </div>
 
-          <button
-            onClick={onClose}
-            className="p-1.5 rounded-lg border border-slate-800 hover:border-slate-700 bg-slate-950/50 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-all cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleDownload}
+              title={type === "map" ? "Download hotspot coordinates (GeoJSON)" : "Download this view"}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-800 hover:border-[#00C6AD]/40 bg-slate-950/50 hover:bg-slate-800 text-slate-400 hover:text-[#00C6AD] text-xs font-semibold transition-all cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Download</span>
+            </button>
+            <button
+              onClick={onClose}
+              className="p-1.5 rounded-lg border border-slate-800 hover:border-slate-700 bg-slate-950/50 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-all cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         {/* Content Pane */}
-        <div className="flex-1 p-6 overflow-y-auto bg-slate-950/15">
+        <div ref={contentRef} className="flex-1 p-6 overflow-y-auto bg-slate-950/15">
           {type === "map" && (
             <div className="h-full flex flex-col gap-4">
               <p className="text-xs text-slate-400">
@@ -114,6 +169,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                   />
+                  <MapSizeFixer />
                   {(data.hotspots || []).map((marker: any, idx: number) => (
                     <Marker key={idx} position={[marker.lat, marker.lng]}>
                       <Popup>
@@ -274,7 +330,12 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
           {type === "mo_match" && (
             <div className="h-full flex flex-col gap-6">
               <div className="bg-slate-900/25 border border-slate-850 p-4 rounded-xl">
-                <h4 className="font-black text-slate-100 text-sm">Modus Operandi Behavior Profile ({data.suspect})</h4>
+                <h4 className="font-black text-slate-100 text-sm">
+                  Modus Operandi Behavior Profile ({data.suspect})
+                  {data.engine_mode && data.engine_mode.startsWith("Reference Simulation") && (
+                    <span className="ml-2 text-amber-500 normal-case font-normal text-[10px]">(simulated reference set — no live case data available)</span>
+                  )}
+                </h4>
                 <p className="text-xs text-slate-450 mt-1">
                   Cosine similarity ranking against primary historical incident profiles.
                 </p>

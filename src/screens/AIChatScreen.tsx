@@ -249,11 +249,12 @@ export const AIChatScreen: React.FC = () => {
     }
   };
 
-  // Second, independent request for the analysis panel (Phase 7). Never
-  // awaited by handleSend -- it resolves on its own timeline behind the
-  // panel's own loading skeleton, so a slow/failed applet call can't hold up
-  // or break the chat reply.
-  const fetchAppletSpec = async (query: string, responseText: string, data: any) => {
+  // Second request for the analysis panel (Phase 7) -- now a deterministic,
+  // no-LLM mapping server-side (see generate_applet_spec in agent_loop.py),
+  // so this resolves almost instantly. Still its own call/round-trip rather
+  // than inlined into the main response so a network hiccup here can't
+  // delay the chat reply itself.
+  const fetchAppletSpec = async (responseType: string, data: any) => {
     setIsAppletLoading(true);
     try {
       const response = await fetch(`${API_BASE}/api/chat/applet`, {
@@ -262,7 +263,7 @@ export const AIChatScreen: React.FC = () => {
           "Content-Type": "application/json",
           "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
         },
-        body: JSON.stringify({ query, response_text: responseText, data: data || {} }),
+        body: JSON.stringify({ response_type: responseType, data: data || {} }),
       });
       if (response.ok) {
         const result = await response.json();
@@ -443,7 +444,9 @@ export const AIChatScreen: React.FC = () => {
       // chat reply is already shown, so a slow or empty applet response
       // never delays the answer itself. The panel shows a loading skeleton
       // until this resolves.
-      fetchAppletSpec(textToSend, data.text, data.data);
+      if (data.ai_invoked !== false) {
+        fetchAppletSpec(data.response_type, data.data);
+      }
     } catch (err: any) {
       console.error(err);
       const errorMsg: ChatMessage = {
@@ -559,6 +562,7 @@ export const AIChatScreen: React.FC = () => {
           transcript: chatMessages.map((m) => ({
             role: m.sender,
             content: m.text,
+            timestamp: m.timestamp || "",
           })),
           badge_id: badgeNumber || "KSP-4003385",
         }),
