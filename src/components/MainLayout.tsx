@@ -123,7 +123,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
                   KG
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold text-slate-300 truncate">Investigator Profile</p>
+                  <p className="text-xs font-semibold text-slate-300 truncate">{t.profileLabel}</p>
                   <p className="text-[10px] text-slate-500 truncate">{badgeNumber || "KGID: 4003385"}</p>
                 </div>
               </div>
@@ -138,7 +138,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
               className="flex items-center gap-3 py-2 px-3 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/20 transition-all text-left"
             >
               <LogOut className="w-5 h-5 shrink-0 text-slate-400 hover:text-rose-400" />
-              {isExpanded && <span className="text-sm">Sign Out</span>}
+              {isExpanded && <span className="text-sm">{t.signOut}</span>}
             </button>
           </div>
         </aside>

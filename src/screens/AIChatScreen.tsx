@@ -38,8 +38,15 @@ export const AIChatScreen: React.FC = () => {
   const [voiceAvailable, setVoiceAvailable] = useState(true);
   const [isThinking, setIsThinking] = useState(false);
   const [thinkingType, setThinkingType] = useState<"standard" | "translation">("standard");
+  // The deployed GLM model is a "thinking" model that reasons at length
+  // before answering -- confirmed live, real turns commonly take 15-140s
+  // (longer when a tool call needs a second LLM round-trip for synthesis).
+  // A static "reasoning..." shimmer with no elapsed-time cue reads as a
+  // frozen UI well before that; a live counter makes the wait legible
+  // without needing to guess at (and risk understating) a fixed ETA.
+  const [thinkingSeconds, setThinkingSeconds] = useState(0);
 
-  const [expandedWidget, setExpandedWidget] = useState<{ type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation"; data: any } | null>(null);
+  const [expandedWidget, setExpandedWidget] = useState<{ type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups"; data: any } | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
 
@@ -56,8 +63,7 @@ export const AIChatScreen: React.FC = () => {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
   // Poll proactive alerts
@@ -101,13 +107,26 @@ export const AIChatScreen: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [chatMessages, isThinking]);
 
-  // Check whether voice/STT is actually configured before letting an officer record
-  // audio that would otherwise be recorded, uploaded, and thrown away on a 503.
+  // Elapsed-time ticker for the thinking indicator -- see thinkingSeconds decl.
   useEffect(() => {
-    fetch(`${API_BASE}/health`)
-      .then((res) => res.json())
-      .then((data) => setVoiceAvailable(Boolean(data.voice_service_available)))
-      .catch(() => setVoiceAvailable(false));
+    if (!isThinking) {
+      setThinkingSeconds(0);
+      return;
+    }
+    const interval = setInterval(() => setThinkingSeconds((s) => s + 1), 1000);
+    return () => clearInterval(interval);
+  }, [isThinking]);
+
+  // Voice input runs entirely client-side via the browser's own Web Speech
+  // API -- no server-side STT service exists (the backend's own
+  // /api/voice/process-stream is an honest, permanent 503; Zia has no
+  // speech service in its current catalog either, confirmed earlier this
+  // project). Availability is a browser-support question now, not a
+  // backend-config one: Chrome/Edge support SpeechRecognition, Firefox and
+  // most non-Chromium browsers as of this writing do not.
+  useEffect(() => {
+    const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    setVoiceAvailable(Boolean(SpeechRecognitionCtor));
   }, []);
 
   // Live message push for Cowork sessions -- a real WebSocket on the same
@@ -139,6 +158,8 @@ export const AIChatScreen: React.FC = () => {
             citations: payload.citations,
             senderName: payload.sender_name,
             senderEmployeeId: payload.sender_employee_id,
+            isSimulated: payload.is_simulated,
+            simulatedReason: payload.simulated_reason,
           };
           return [...prev, newMsg];
         });
@@ -173,79 +194,71 @@ export const AIChatScreen: React.FC = () => {
       .catch(() => setHasParticipants(false));
   }, [activeSessionId]);
 
-  // Start Mic Audio Recording
-  const startRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mediaRecorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = mediaRecorder;
-      audioChunksRef.current = [];
+  // Start voice recognition -- real browser STT (Web Speech API), not a
+  // record-then-upload-to-a-503 flow. Transcription streams into the input
+  // box live as the officer speaks; nothing is sent to the backend until
+  // they actually hit Send, same as typing.
+  const startRecording = () => {
+    const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+      addToast(
+        lang === "en" ? "Voice Input Unavailable" : "ಧ್ವನಿ ಇನ್‌ಪುಟ್ ಲಭ್ಯವಿಲ್ಲ",
+        lang === "en" ? "This browser does not support speech recognition." : "ಈ ಬ್ರೌಸರ್ ಸ್ಪೀಚ್ ರೆಕಗ್ನಿಷನ್ ಬೆಂಬಲಿಸುವುದಿಲ್ಲ.",
+        "Warning"
+      );
+      return;
+    }
+    const recognition = new SpeechRecognitionCtor();
+    recognition.lang = lang === "kn" ? "kn-IN" : "en-IN";
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognitionRef.current = recognition;
 
-      mediaRecorder.ondataavailable = (event) => {
-        if (event.data.size > 0) {
-          audioChunksRef.current.push(event.data);
+    let finalTranscript = "";
+
+    recognition.onresult = (event: SpeechRecognitionEvent) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const result = event.results[i] as unknown as { 0: { transcript: string }; isFinal: boolean };
+        if (result.isFinal) {
+          finalTranscript += result[0].transcript;
+        } else {
+          interim += result[0].transcript;
         }
-      };
-
-      mediaRecorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: "audio/webm" });
-        await uploadAudioPayload(audioBlob);
-        stream.getTracks().forEach((track) => track.stop());
-      };
-
-      mediaRecorder.start();
-      setIsRecording(true);
-      setRecordingStatus(lang === "en" ? "Recording audio..." : "ಧ್ವನಿ ರೆಕಾರ್ಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ...");
-    } catch (err) {
-      console.error("Failed to access audio devices:", err);
-      addToast("Audio Access Error", "Could not start microphone stream.", "Critical");
-    }
-  };
-
-  // Stop Mic Audio Recording
-  const stopRecording = () => {
-    if (mediaRecorderRef.current && isRecording) {
-      mediaRecorderRef.current.stop();
-      setIsRecording(false);
-      setRecordingStatus("");
-    }
-  };
-
-  // Upload Voice Blob to ASR Processing Pipeline
-  const uploadAudioPayload = async (blob: Blob) => {
-    try {
-      setThinkingType("translation");
-      setIsThinking(true);
-      
-      const formData = new FormData();
-      formData.append("audio", blob, "voice_inquest.webm");
-
-      const response = await fetch(`${API_BASE}/api/voice/process-stream`, {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error("ASR transcription pipeline returned an error.");
       }
+      setInputVal((finalTranscript + interim).trim());
+    };
 
-      const result = await response.json();
-      const transcribedText = lang === "kn" ? result.transcription : result.translation_english;
-      
-      if (transcribedText) {
-        setInputVal(transcribedText);
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
+      console.error("Speech recognition error:", event.error);
+      if (event.error !== "no-speech") {
         addToast(
-          lang === "en" ? "Speech Transcribed" : "ಧ್ವನಿಯನ್ನು ಅನುವಾದಿಸಲಾಗಿದೆ",
-          `Result: "${transcribedText}"`,
-          "Success"
+          lang === "en" ? "Voice Input Error" : "ಧ್ವನಿ ಇನ್‌ಪುಟ್ ದೋಷ",
+          lang === "en" ? `Speech recognition failed: ${event.error}` : `ಸ್ಪೀಚ್ ರೆಕಗ್ನಿಷನ್ ವಿಫಲವಾಗಿದೆ: ${event.error}`,
+          "Warning"
         );
       }
-    } catch (err: any) {
-      console.error(err);
-      addToast("Zia STT Failed", "Failed to parse speech input stream.", "Warning");
-    } finally {
-      setIsThinking(false);
-      setThinkingType("standard");
+      setIsRecording(false);
+      setRecordingStatus("");
+    };
+
+    recognition.onend = () => {
+      setIsRecording(false);
+      setRecordingStatus("");
+    };
+
+    recognition.start();
+    setIsRecording(true);
+    setRecordingStatus(lang === "en" ? "Listening..." : "ಆಲಿಸಲಾಗುತ್ತಿದೆ...");
+  };
+
+  // Stop voice recognition
+  const stopRecording = () => {
+    if (recognitionRef.current && isRecording) {
+      recognitionRef.current.stop();
+      recognitionRef.current = null;
+      setIsRecording(false);
+      setRecordingStatus("");
     }
   };
 
@@ -288,22 +301,38 @@ export const AIChatScreen: React.FC = () => {
     if (selected.length === 0) return;
 
     if (pendingAttachments.length + selected.length > MAX_ATTACHMENTS_PER_MESSAGE) {
-      addToast("Too Many Attachments", `Max ${MAX_ATTACHMENTS_PER_MESSAGE} files per message.`, "Warning");
+      addToast(
+        lang === "en" ? "Too Many Attachments" : "ಹಲವಾರು ಲಗತ್ತುಗಳು",
+        lang === "en" ? `Max ${MAX_ATTACHMENTS_PER_MESSAGE} files per message.` : `ಪ್ರತಿ ಸಂದೇಶಕ್ಕೆ ಗರಿಷ್ಠ ${MAX_ATTACHMENTS_PER_MESSAGE} ಫೈಲ್‌ಗಳು.`,
+        "Warning"
+      );
       return;
     }
     for (const f of selected) {
       if (!ALLOWED_ATTACHMENT_TYPES.includes(f.type)) {
-        addToast("Unsupported File Type", `'${f.name}' must be a PDF or JPEG.`, "Warning");
+        addToast(
+          lang === "en" ? "Unsupported File Type" : "ಬೆಂಬಲಿಸದ ಫೈಲ್ ಪ್ರಕಾರ",
+          lang === "en" ? `'${f.name}' must be a PDF or JPEG.` : `'${f.name}' PDF ಅಥವಾ JPEG ಆಗಿರಬೇಕು.`,
+          "Warning"
+        );
         return;
       }
       if (f.size > MAX_ATTACHMENT_BYTES) {
-        addToast("File Too Large", `'${f.name}' exceeds the 8 MB per-file limit.`, "Warning");
+        addToast(
+          lang === "en" ? "File Too Large" : "ಫೈಲ್ ತುಂಬಾ ದೊಡ್ಡದಾಗಿದೆ",
+          lang === "en" ? `'${f.name}' exceeds the 8 MB per-file limit.` : `'${f.name}' ೮ MB ಮಿತಿಯನ್ನು ಮೀರಿದೆ.`,
+          "Warning"
+        );
         return;
       }
     }
     const aggregate = [...pendingAttachments, ...selected].reduce((sum, f) => sum + f.size, 0);
     if (aggregate > MAX_AGGREGATE_BYTES) {
-      addToast("Attachments Too Large", "Total attachment size exceeds the 20 MB limit for this message.", "Warning");
+      addToast(
+        lang === "en" ? "Attachments Too Large" : "ಲಗತ್ತುಗಳು ತುಂಬಾ ದೊಡ್ಡದಾಗಿವೆ",
+        lang === "en" ? "Total attachment size exceeds the 20 MB limit for this message." : "ಒಟ್ಟು ಲಗತ್ತು ಗಾತ್ರ ಈ ಸಂದೇಶಕ್ಕೆ ೨೦ MB ಮಿತಿಯನ್ನು ಮೀರಿದೆ.",
+        "Warning"
+      );
       return;
     }
     setPendingAttachments((prev) => [...prev, ...selected]);
@@ -344,13 +373,21 @@ export const AIChatScreen: React.FC = () => {
           }
         } else {
           const errData = await uploadRes.json().catch(() => ({}));
-          addToast("Attachment Upload Failed", errData.detail || "Could not process attachments.", "Critical");
+          addToast(
+            lang === "en" ? "Attachment Upload Failed" : "ಲಗತ್ತು ಅಪ್‌ಲೋಡ್ ವಿಫಲವಾಗಿದೆ",
+            errData.detail || (lang === "en" ? "Could not process attachments." : "ಲಗತ್ತುಗಳನ್ನು ಪ್ರಕ್ರಿಯೆಗೊಳಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ."),
+            "Critical"
+          );
           setIsUploadingAttachments(false);
           return;
         }
       } catch (err) {
         console.error("Attachment upload failed:", err);
-        addToast("Attachment Upload Failed", "Could not reach the server to process attachments.", "Critical");
+        addToast(
+          lang === "en" ? "Attachment Upload Failed" : "ಲಗತ್ತು ಅಪ್‌ಲೋಡ್ ವಿಫಲವಾಗಿದೆ",
+          lang === "en" ? "Could not reach the server to process attachments." : "ಲಗತ್ತುಗಳನ್ನು ಪ್ರಕ್ರಿಯೆಗೊಳಿಸಲು ಸರ್ವರ್ ತಲುಪಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+          "Critical"
+        );
         setIsUploadingAttachments(false);
         return;
       }
@@ -452,7 +489,9 @@ export const AIChatScreen: React.FC = () => {
       const errorMsg: ChatMessage = {
         id: `msg-${Date.now()}-err`,
         sender: "assistant",
-        text: "I am unable to reach the VAJRA server. Please verify that your network connection is active and that backend services are running.",
+        text: lang === "en"
+          ? "I am unable to reach the VAJRA server. Please verify that your network connection is active and that backend services are running."
+          : "ವಜ್ರ ಸರ್ವರ್ ತಲುಪಲು ಸಾಧ್ಯವಾಗುತ್ತಿಲ್ಲ. ದಯವಿಟ್ಟು ನಿಮ್ಮ ನೆಟ್‌ವರ್ಕ್ ಸಂಪರ್ಕ ಸಕ್ರಿಯವಾಗಿದೆಯೇ ಮತ್ತು ಬ್ಯಾಕೆಂಡ್ ಸೇವೆಗಳು ಚಾಲನೆಯಲ್ಲಿವೆಯೇ ಎಂದು ಪರಿಶೀಲಿಸಿ.",
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         isSimulated: false,
       };
@@ -487,7 +526,11 @@ export const AIChatScreen: React.FC = () => {
   const handleSendInvite = async () => {
     if (!activeSessionId) return;
     if (!/^\d{7}$/.test(inviteBadge)) {
-      addToast("Invalid Badge Number", "Badge (KGID) must be exactly 7 digits.", "Warning");
+      addToast(
+        lang === "en" ? "Invalid Badge Number" : "ಅಮಾನ್ಯ ಬ್ಯಾಡ್ಜ್ ಸಂಖ್ಯೆ",
+        lang === "en" ? "Badge (KGID) must be exactly 7 digits." : "ಬ್ಯಾಡ್ಜ್ (KGID) ನಿಖರವಾಗಿ ೭ ಅಂಕಿಗಳಾಗಿರಬೇಕು.",
+        "Warning"
+      );
       return;
     }
     setIsInviting(true);
@@ -502,15 +545,27 @@ export const AIChatScreen: React.FC = () => {
       });
       const resData = await response.json().catch(() => ({}));
       if (!response.ok) {
-        addToast("Invite Failed", resData.detail || "Could not send invitation.", "Critical");
+        addToast(
+          lang === "en" ? "Invite Failed" : "ಆಹ್ವಾನ ವಿಫಲವಾಗಿದೆ",
+          resData.detail || (lang === "en" ? "Could not send invitation." : "ಆಹ್ವಾನ ಕಳುಹಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ."),
+          "Critical"
+        );
         return;
       }
-      addToast("Invitation Sent", `Badge ${inviteBadge} invited as ${inviteRole}.`, "Success");
+      addToast(
+        lang === "en" ? "Invitation Sent" : "ಆಹ್ವಾನ ಕಳುಹಿಸಲಾಗಿದೆ",
+        lang === "en" ? `Badge ${inviteBadge} invited as ${inviteRole}.` : `ಬ್ಯಾಡ್ಜ್ ${inviteBadge} ಅನ್ನು ${inviteRole === "viewer" ? "ವೀಕ್ಷಕ" : "ಸಹಯೋಗಿ"} ಆಗಿ ಆಹ್ವಾನಿಸಲಾಗಿದೆ.`,
+        "Success"
+      );
       setShowInvitePanel(false);
       setInviteBadge("");
     } catch (err) {
       console.error("Failed to send cowork invite:", err);
-      addToast("Invite Failed", "Could not reach the server.", "Critical");
+      addToast(
+        lang === "en" ? "Invite Failed" : "ಆಹ್ವಾನ ವಿಫಲವಾಗಿದೆ",
+        lang === "en" ? "Could not reach the server." : "ಸರ್ವರ್ ತಲುಪಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+        "Critical"
+      );
     } finally {
       setIsInviting(false);
     }
@@ -545,7 +600,11 @@ export const AIChatScreen: React.FC = () => {
       setAppletSpec(null);
     } catch (err) {
       console.error(err);
-      addToast("Failed to Load Session", "Could not retrieve past conversation history.", "Critical");
+      addToast(
+        lang === "en" ? "Failed to Load Session" : "ಅಧಿವೇಶನ ಲೋಡ್ ವಿಫಲವಾಗಿದೆ",
+        lang === "en" ? "Could not retrieve past conversation history." : "ಹಿಂದಿನ ಸಂಭಾಷಣೆ ಇತಿಹಾಸವನ್ನು ಪಡೆಯಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+        "Critical"
+      );
     }
   };
 
@@ -582,7 +641,11 @@ export const AIChatScreen: React.FC = () => {
       document.body.removeChild(a);
     } catch (err) {
       console.error(err);
-      addToast("Export Failed", "Could not generate PDF conversation transcript.", "Critical");
+      addToast(
+        lang === "en" ? "Export Failed" : "ರಫ್ತು ವಿಫಲವಾಗಿದೆ",
+        lang === "en" ? "Could not generate PDF conversation transcript." : "PDF ಸಂಭಾಷಣೆ ಪ್ರತಿಲಿಪಿಯನ್ನು ರಚಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+        "Critical"
+      );
     }
   };
 
@@ -610,7 +673,7 @@ export const AIChatScreen: React.FC = () => {
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-800 text-xs font-semibold text-slate-400 hover:text-white transition-all shadow-md cursor-pointer"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Export PDF</span>
+            <span>{t.exportPdf}</span>
           </button>
         )}
       </div>
@@ -624,10 +687,10 @@ export const AIChatScreen: React.FC = () => {
             </div>
             <div className="space-y-1.5">
               <h2 className="text-base font-bold text-slate-200 uppercase tracking-wider">
-                VAJRA Central Inquest Hub
+                {t.chatHubTitle}
               </h2>
               <p className="text-xs text-slate-500 leading-relaxed">
-                Log dialogues or speak in English/Kannada to query active CCTNS registers, analyze conviction risk indices, and plot spatial crime clusters.
+                {t.chatHubDesc}
               </p>
             </div>
           </div>
@@ -636,6 +699,7 @@ export const AIChatScreen: React.FC = () => {
             <ChatBubble
               key={msg.id}
               message={msg}
+              lang={lang}
               onExpandWidget={(widgetType, widgetData) => setExpandedWidget({ type: widgetType as any, data: widgetData })}
             />
           ))
@@ -648,11 +712,25 @@ export const AIChatScreen: React.FC = () => {
               <Sparkles className="w-4 h-4 text-[#00C6AD] animate-spin" />
             </div>
             <div className="space-y-2 flex-1">
-              <div className="text-[10px] font-mono text-slate-500 font-bold uppercase tracking-wider">
-                {thinkingType === "translation"
-                  ? "Translating Kannada Voice Data..."
-                  : t.thinkingIndicator}
+              <div className="text-[10px] font-mono text-slate-500 font-bold uppercase tracking-wider flex items-center gap-2">
+                <span>
+                  {thinkingType === "translation"
+                    ? t.translatingIndicator
+                    : t.thinkingIndicator}
+                </span>
+                <span className="text-[#00C6AD]">{thinkingSeconds}s</span>
               </div>
+              {/* GLM is a "thinking" model that reasons at length before
+                  answering -- confirmed live, 15-140s is normal, not stuck.
+                  Past 20s (well within one uneventful turn) this softens the
+                  wait instead of letting the officer assume it hung. */}
+              {thinkingSeconds > 20 && (
+                <div className="text-[9.5px] text-slate-600 font-mono">
+                  {lang === "en"
+                    ? "Complex queries can take over a minute — still working."
+                    : "ಸಂಕೀರ್ಣ ಪ್ರಶ್ನೆಗಳಿಗೆ ಒಂದು ನಿಮಿಷಕ್ಕಿಂತ ಹೆಚ್ಚು ಸಮಯ ಬೇಕಾಗಬಹುದು — ಇನ್ನೂ ಕೆಲಸ ಮಾಡುತ್ತಿದೆ."}
+                </div>
+              )}
               <div className="shimmer-bg h-10 w-full rounded-xl border border-slate-900" />
             </div>
           </div>
@@ -716,7 +794,7 @@ export const AIChatScreen: React.FC = () => {
                   ? "bg-rose-500/10 border-rose-500/30 text-rose-500 animate-pulse cursor-pointer"
                   : "bg-slate-900 border-slate-800 hover:border-[#00C6AD]/40 text-slate-400 hover:text-slate-200 cursor-pointer"
               }`}
-              title={voiceAvailable ? "Speak Kannada/English" : "Voice input is not available — speech-to-text service is not yet configured"}
+              title={voiceAvailable ? t.micTitleAvailable : t.micTitleUnavailable}
             >
               {isRecording ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
             </button>
@@ -734,7 +812,7 @@ export const AIChatScreen: React.FC = () => {
               onClick={() => fileInputRef.current?.click()}
               disabled={pendingAttachments.length >= MAX_ATTACHMENTS_PER_MESSAGE || isUploadingAttachments}
               className="p-3.5 rounded-xl border bg-slate-900 border-slate-800 hover:border-[#00C6AD]/40 text-slate-400 hover:text-slate-200 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-              title="Attach evidence (PDF or JPEG, max 3 files, 8MB each)"
+              title={t.attachTitle}
             >
               <Paperclip className="w-5 h-5" />
             </button>
@@ -748,7 +826,7 @@ export const AIChatScreen: React.FC = () => {
                 value={inputVal}
                 onChange={(e) => setInputVal(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && !isThinking && !isUploadingAttachments && handleSend(inputVal)}
-                placeholder={isUploadingAttachments ? "Uploading attachments..." : (recordingStatus || t.chatPlaceholder)}
+                placeholder={isUploadingAttachments ? t.uploadingAttachments : (recordingStatus || t.chatPlaceholder)}
                 disabled={isThinking || isUploadingAttachments}
                 className="w-full bg-slate-950/65 border border-slate-800 focus:border-[#00C6AD] rounded-xl py-3.5 px-4 text-sm text-slate-100 placeholder-slate-600 focus:outline-none transition-all pr-12 disabled:opacity-50"
               />
@@ -771,7 +849,7 @@ export const AIChatScreen: React.FC = () => {
                   chatMode === "chat" ? "bg-slate-800 text-slate-100" : "text-slate-500 hover:text-slate-300"
                 }`}
               >
-                Chat
+                {t.chatModeChat}
               </button>
               <button
                 onClick={() => handleToggleCowork("cowork")}
@@ -779,12 +857,12 @@ export const AIChatScreen: React.FC = () => {
                   chatMode === "cowork" ? "bg-[#00C6AD]/15 text-[#00C6AD]" : "text-slate-500 hover:text-slate-300"
                 }`}
               >
-                <Users className="w-3 h-3" /> Cowork
+                <Users className="w-3 h-3" /> {t.chatModeCowork}
               </button>
             </div>
             {hasParticipants && (
               <span className="text-[10px] text-[#00C6AD] font-mono">
-                Shared session — mention <strong>@vajra</strong> to ask the AI
+                {t.sharedSessionHint}
               </span>
             )}
           </div>
@@ -797,14 +875,14 @@ export const AIChatScreen: React.FC = () => {
           <div className="w-full max-w-sm glass-panel border border-[#00C6AD]/30 rounded-2xl p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-xs font-black text-slate-100 uppercase tracking-wider font-mono flex items-center gap-2">
-                <Users className="w-4 h-4 text-[#00C6AD]" /> Invite to Cowork
+                <Users className="w-4 h-4 text-[#00C6AD]" /> {t.inviteToCowork}
               </h3>
               <button onClick={() => setShowInvitePanel(false)} className="text-slate-500 hover:text-slate-200 cursor-pointer">
                 <X className="w-4 h-4" />
               </button>
             </div>
             <div className="space-y-1">
-              <label className="block text-[10px] font-black text-slate-450 uppercase font-mono">Badge Number (7-digit KGID)</label>
+              <label className="block text-[10px] font-black text-slate-450 uppercase font-mono">{t.badgeNumberKgidLabel}</label>
               <input
                 type="text"
                 value={inviteBadge}
@@ -814,7 +892,7 @@ export const AIChatScreen: React.FC = () => {
               />
             </div>
             <div className="space-y-1">
-              <label className="block text-[10px] font-black text-slate-450 uppercase font-mono">Access Level</label>
+              <label className="block text-[10px] font-black text-slate-450 uppercase font-mono">{t.accessLevelLabel}</label>
               <div className="flex gap-2">
                 <button
                   onClick={() => setInviteRole("viewer")}
@@ -822,7 +900,7 @@ export const AIChatScreen: React.FC = () => {
                     inviteRole === "viewer" ? "bg-slate-800 border-slate-700 text-slate-100" : "border-slate-850 text-slate-500 hover:text-slate-300"
                   }`}
                 >
-                  Viewer
+                  {t.viewerLabel}
                 </button>
                 <button
                   onClick={() => setInviteRole("collaborator")}
@@ -830,13 +908,11 @@ export const AIChatScreen: React.FC = () => {
                     inviteRole === "collaborator" ? "bg-[#00C6AD]/15 border-[#00C6AD]/40 text-[#00C6AD]" : "border-slate-850 text-slate-500 hover:text-slate-300"
                   }`}
                 >
-                  Collaborator
+                  {t.collaboratorLabel}
                 </button>
               </div>
               <p className="text-[10px] text-slate-550 pt-1">
-                {inviteRole === "viewer"
-                  ? "Can watch the thread, cannot send messages."
-                  : "Can post messages and @vajra the AI."}
+                {inviteRole === "viewer" ? t.viewerDesc : t.collaboratorDesc}
               </p>
             </div>
             <button
@@ -844,7 +920,7 @@ export const AIChatScreen: React.FC = () => {
               disabled={isInviting || !activeSessionId}
               className="w-full py-2.5 rounded-xl bg-[#00C6AD]/10 hover:bg-[#00C6AD]/20 border border-[#00C6AD]/30 text-[#00C6AD] text-xs font-black uppercase tracking-wider transition-all disabled:opacity-50 cursor-pointer"
             >
-              {isInviting ? "Sending..." : "Send Invitation"}
+              {isInviting ? t.sendingInvitation : t.sendInvitation}
             </button>
           </div>
         </div>

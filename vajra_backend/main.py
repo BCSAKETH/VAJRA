@@ -13,6 +13,7 @@ import pandas as pd
 import joblib
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, status, Request, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 import zcatalyst_sdk
 
@@ -22,9 +23,12 @@ from vajra_core import (
     MOBehavioralProfiler,
     VajraGraphRAG,
     VajraSemanticMemory,
-    catalyst_app
+    catalyst_app,
+    zcql_insert_row,
+    zcql_update_row
 )
 from agent_loop import VajraAgentLoop
+from catalyst_llm import CatalystLLM
 from fastapi.responses import Response
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -145,10 +149,11 @@ async def health_check():
     """
     Diagnostic checks for live Zoho Catalyst Datastore, local files, and machine learning components.
     """
-    # Reads the same cached "recently confirmed down" flag catalyst_llm.py
-    # sets after a failed call, rather than firing a live request on every
-    # /health poll (the frontend polls this every 30s) -- cheap and accurate
-    # within the flag's ~1hr granularity (Catalyst Cache's shortest expiry unit).
+    # Reads the same in-process "recently confirmed down" cooldown
+    # catalyst_llm.py sets after a failed call, rather than firing a live
+    # request on every /health poll (the frontend polls this every 30s) --
+    # cheap and self-heals within 45s-5min depending on the failure class
+    # (see catalyst_llm.py's _TRANSIENT_COOLDOWN_SECONDS/_DEFINITIVE_COOLDOWN_SECONDS).
     from catalyst_llm import _is_endpoint_marked_down
     llm_available = not _is_endpoint_marked_down()
 
@@ -867,10 +872,24 @@ async def get_accused_list(
 
 
 # Translation Layer
-class IndicTrans2Translator:
+class GLMTranslator:
+    """
+    Real Kannada<->English translation via CatalystLLM.translate() (the same
+    GLM endpoint used for chat). Previously named IndicTrans2Translator and
+    never actually translated anything -- both directions unconditionally
+    returned a canned "[Translation Unavailable]" string regardless of
+    input, now that a working GLM endpoint exists this is real. Keeps the
+    slang-normalization pre-pass (informal spoken-Kannada terms -> their
+    standard forms) since that genuinely helps translation quality
+    regardless of which model does the translating.
+    """
     DIALECT_MAP = {
         "ಮಂದಿ": "ಜನಗಳು", "ಗಳಿ": "ಸ್ನೇಹಿತರು", "ಖರಾಬ": "ಕೆಟ್ಟದಾಗಿದೆ", "ನಮೂನಿ": "ರೀತಿ", "ಕಳ್ಳ": "ಆರೋಪಿ"
     }
+
+    def __init__(self):
+        self.llm = CatalystLLM()
+
     @classmethod
     def normalize_slang(cls, text: str) -> str:
         words = text.split()
@@ -881,16 +900,22 @@ class IndicTrans2Translator:
             normalized_words.append(word.replace(clean_word, replaced))
         return " ".join(normalized_words)
 
-    @classmethod
-    def translate(cls, text: str, source_lang: str, target_lang: str) -> str:
-        normalized_text = cls.normalize_slang(text) if source_lang == "kn" else text
+    def translate(self, text: str, source_lang: str, target_lang: str) -> str:
+        if source_lang == target_lang:
+            return text
+        normalized_text = self.normalize_slang(text) if source_lang == "kn" else text
+        result = self.llm.translate(normalized_text, source_lang, target_lang)
+        if result["available"]:
+            return result["text"]
+        # Honest fallback -- still labeled as such, not silently passed
+        # through as if it were a real translation.
         if source_lang == "kn" and target_lang == "en":
-            return f"[Translation Unavailable: Zia Translation service offline for '{normalized_text}']"
+            return f"[Translation temporarily unavailable for: '{normalized_text}']"
         elif source_lang == "en" and target_lang == "kn":
-            return f"[ಅನುವಾದ ಲಭ್ಯವಿಲ್ಲ: Zia ಅನುವಾದ ಸೇವೆಗಳು ಆಫ್‌ಲೈನ್‌ನಲ್ಲಿವೆ] (Original: {text})"
+            return f"[ಅನುವಾದ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ] (Original: {text})"
         return normalized_text
 
-translator = IndicTrans2Translator()
+translator = GLMTranslator()
 
 class ChatRequest(BaseModel):
     message: str
@@ -923,14 +948,14 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
         }
         if sender_employee_id is not None:
             row["sender_employee_id"] = sender_employee_id
-        catalyst_app.datastore().table("ChatMessage").insert_row(row)
+        zcql_insert_row("ChatMessage", row)
     except Exception as e:
         logger.warning(f"Could not persist chat message (ChatMessage table may not exist yet): {e}")
 
     try:
         existing = catalyst_app.zql().execute_query(f"SELECT ROWID FROM ChatSession WHERE session_id = '{session_id}' LIMIT 1")
         if existing:
-            catalyst_app.datastore().table("ChatSession").update_row({
+            zcql_update_row("ChatSession", {
                 "ROWID": existing[0].get("ChatSession", {}).get("ROWID"),
                 "last_active_at": datetime.utcnow().isoformat()
             })
@@ -947,7 +972,7 @@ def _create_chat_session(employee_id: int, title: str = "New Conversation") -> s
     """
     session_id = f"sess-{employee_id}-{int(datetime.utcnow().timestamp())}"
     if catalyst_app:
-        catalyst_app.datastore().table("ChatSession").insert_row({
+        zcql_insert_row("ChatSession", {
             "session_id": session_id,
             "employee_id": employee_id,
             "title": title[:60],
@@ -1157,10 +1182,26 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
         logger.warning(f"Could not resolve investigation case context: {e}")
 
     # Run query through IndicTrans2 translation layer if Kannada
-    processed_query = translator.translate(query_for_agent, "kn", "en") if lang == "kn" else query_for_agent
+    # Every call below is synchronous, LLM-backed I/O (real response times
+    # 15-140s+, confirmed live) invoked directly inside this async route.
+    # FastAPI/Starlette never runs an `async def` route's body off the
+    # single event loop thread automatically -- unlike a plain `def` route,
+    # which it does offload -- so a synchronous call here blocks that one
+    # shared event loop for its entire duration. Confirmed live: this route
+    # also needs real `await`s of its own (the Cowork WebSocket broadcast
+    # below), so it can't just become `def`; wrapping only the blocking
+    # calls in run_in_threadpool is the fix that keeps both properties. Any
+    # other officer's request in flight during a slow query -- another
+    # chat turn, a login, an alerts poll -- would otherwise queue behind
+    # this one for its full duration on a single-process deployment.
+    processed_query = (
+        await run_in_threadpool(translator.translate, query_for_agent, "kn", "en")
+        if lang == "kn" else query_for_agent
+    )
 
     # Execute the central Agent Loop
-    result = agent_loop.run_agent_loop(
+    result = await run_in_threadpool(
+        agent_loop.run_agent_loop,
         query=processed_query,
         session_id=session_id,
         employee_id=employee_id,
@@ -1170,13 +1211,21 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     # Translate response back to Kannada if required
     text = result["text"]
     if lang == "kn":
-        text = translator.translate(text, "en", "kn")
+        text = await run_in_threadpool(translator.translate, text, "en", "kn")
 
     _persist_chat_message(session_id, "assistant", text, result["response_type"], result["data"], result["citations"])
     await connection_manager.broadcast(session_id, {
         "type": "message", "sender": "assistant", "sender_employee_id": None,
         "sender_name": "VAJRA.AI", "text": text, "response_type": result["response_type"],
-        "data": result["data"], "citations": result["citations"], "timestamp": datetime.utcnow().isoformat()
+        "data": result["data"], "citations": result["citations"], "timestamp": datetime.utcnow().isoformat(),
+        # Without these, an "AI unavailable" turn delivered via WebSocket
+        # (every message from the 2nd one onward in a session) rendered as an
+        # ordinary-looking assistant answer instead of the distinct amber
+        # warning card -- confirmed live: only the direct HTTP POST response
+        # (the first-turn code path) carried these fields, so the honest-
+        # unavailable notice silently stopped being honest from message 2 on.
+        "is_simulated": result.get("is_simulated", False),
+        "simulated_reason": result.get("simulated_reason", "")
     })
 
     return {
@@ -1241,7 +1290,7 @@ async def invite_to_cowork(payload: CoworkInviteRequest, request: Request, locat
     except Exception:
         pass
 
-    catalyst_app.datastore().table("CoworkInvitation").insert_row({
+    zcql_insert_row("CoworkInvitation", {
         "session_id": payload.session_id,
         "case_no": case_no or "",
         "inviter_employee_id": employee_id,
@@ -1313,7 +1362,7 @@ async def respond_to_cowork_invitation(invitation_rowid: str, payload: CoworkRes
         raise HTTPException(status_code=409, detail="This invitation has already been responded to.")
 
     new_status = "accepted" if payload.action == "accept" else "rejected"
-    catalyst_app.datastore().table("CoworkInvitation").update_row({
+    zcql_update_row("CoworkInvitation", {
         "ROWID": invitation_rowid,
         "status": new_status,
         "responded_at": datetime.utcnow().isoformat()
@@ -1321,7 +1370,7 @@ async def respond_to_cowork_invitation(invitation_rowid: str, payload: CoworkRes
 
     if payload.action == "accept":
         role = payload.role if payload.role in ("viewer", "collaborator") else "collaborator"
-        catalyst_app.datastore().table("CoworkParticipant").insert_row({
+        zcql_insert_row("CoworkParticipant", {
             "session_id": inv.get("session_id"),
             "employee_id": employee_id,
             "role": role,
@@ -1411,7 +1460,7 @@ async def create_investigation(payload: CreateInvestigationRequest, request: Req
         case_no = payload.case_no
 
     session_id = f"sess-{employee_id}-{int(datetime.utcnow().timestamp())}"
-    catalyst_app.datastore().table("ChatSession").insert_row({
+    zcql_insert_row("ChatSession", {
         "session_id": session_id,
         "employee_id": employee_id,
         "title": payload.title.strip()[:60],
@@ -1853,7 +1902,7 @@ async def review_consistency_flag(flag_id: int, payload: ReviewFlagRequest, requ
             "ROWID": flag_id,
             "reviewed": payload.reviewed
         }
-        catalyst_app.datastore().table("ConsistencyFlags").update_row(row)
+        zcql_update_row("ConsistencyFlags", row)
         return {"status": "Success"}
     except Exception as e:
         logger.error(f"Error updating consistency flag {flag_id}: {e}")
@@ -1917,37 +1966,48 @@ async def export_pdf_endpoint(payload: PDFExportRequest):
     try:
         from fpdf import FPDF
         from datetime import datetime
-        
+
         pdf = FPDF()
         pdf.add_page()
-        pdf.set_font("helvetica", "B", 16)
-        
+        # Standard "helvetica" (core PDF font) has no Kannada glyphs -- every
+        # Kannada character in a transcript used to be silently stripped via
+        # .encode('ascii', 'ignore') before reaching the PDF, so a Kannada
+        # conversation exported as almost entirely blank lines (or the
+        # misleading "(non-text content / widget)" placeholder, which implied
+        # the message was an image/widget rather than text that got mangled).
+        # Noto Sans Kannada (SIL Open Font License, bundled at
+        # assets/fonts/) covers both Kannada and Latin glyphs, so it's used
+        # for the whole document rather than switching fonts per-language.
+        font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "NotoSansKannada-Regular.ttf")
+        pdf.add_font("NotoKannada", "", font_path)
+        pdf.set_font("NotoKannada", size=16)
+
         # Header banner
         pdf.cell(0, 10, "KARNATAKA STATE POLICE", new_x="LMARGIN", new_y="NEXT", align="C")
-        pdf.set_font("helvetica", "I", 12)
+        pdf.set_font("NotoKannada", size=12)
         pdf.cell(0, 8, "VAJRA Cognitive Intelligence Console Report", new_x="LMARGIN", new_y="NEXT", align="C")
         pdf.ln(10)
-        
-        pdf.set_font("helvetica", "B", 10)
+
+        pdf.set_font("NotoKannada", size=10)
         pdf.cell(0, 6, f"Generated At (UTC): {datetime.utcnow().isoformat()}", new_x="LMARGIN", new_y="NEXT")
         pdf.cell(0, 6, f"Operator Badge No: {payload.badge_id}", new_x="LMARGIN", new_y="NEXT")
         pdf.ln(5)
         pdf.line(10, pdf.get_y(), 200, pdf.get_y())
         pdf.ln(5)
-        
+
         for msg in payload.transcript:
             sender = str(msg.get("role") or msg.get("sender") or "unknown").upper()
-            text = msg.get("content") or msg.get("text") or ""
+            text = str(msg.get("content") or msg.get("text") or "")
             time_str = msg.get("timestamp", "")
 
-            pdf.set_font("helvetica", "B", 9)
-            pdf.cell(0, 5, f"[{time_str}] {sender}:", new_x="LMARGIN", new_y="NEXT")
-            pdf.set_font("helvetica", "", 9)
-            # Remove non-latin characters for FPDF standard helvetica compatibility
-            clean_text = str(text).encode('ascii', 'ignore').decode('ascii')
-            pdf.multi_cell(0, 5, clean_text if clean_text.strip() else "(non-text content / widget)")
+            pdf.set_font("NotoKannada", size=9)
+            pdf.cell(0, 6, f"[{time_str}] {sender}:", new_x="LMARGIN", new_y="NEXT")
+            # Line height 6 (not 5) -- Kannada vowel signs/conjuncts extend
+            # above and below the Latin baseline this cell height was tuned
+            # for, and at 5 consecutive lines visibly overlapped.
+            pdf.multi_cell(0, 6, text if text.strip() else "(non-text content / widget)")
             pdf.ln(3)
-            
+
         pdf_bytes = pdf.output()
         return Response(
             content=bytes(pdf_bytes),

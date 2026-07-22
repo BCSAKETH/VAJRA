@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import { FolderPlus, X, Search } from "lucide-react";
 
@@ -13,6 +14,7 @@ interface NewInvestigationModalProps {
 }
 
 export const NewInvestigationModal: React.FC<NewInvestigationModalProps> = ({ onClose, onCreated }) => {
+  const { t } = useApp();
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [caseQuery, setCaseQuery] = useState("");
@@ -45,7 +47,7 @@ export const NewInvestigationModal: React.FC<NewInvestigationModalProps> = ({ on
 
   const handleCreate = async () => {
     if (!title.trim()) {
-      setError("Title is required.");
+      setError(t.newInvestigationTitleRequired);
       return;
     }
     setIsCreating(true);
@@ -61,13 +63,13 @@ export const NewInvestigationModal: React.FC<NewInvestigationModalProps> = ({ on
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(data.detail || "Could not create investigation.");
+        setError(data.detail || t.couldNotCreateInvestigation);
         return;
       }
       onCreated(data.session_id);
     } catch (err) {
       console.error("Failed to create investigation:", err);
-      setError("Could not reach the server.");
+      setError(t.couldNotReachServer);
     } finally {
       setIsCreating(false);
     }
@@ -78,7 +80,7 @@ export const NewInvestigationModal: React.FC<NewInvestigationModalProps> = ({ on
       <div className="w-full max-w-md glass-panel border border-[#00C6AD]/30 rounded-2xl p-6 space-y-4">
         <div className="flex items-center justify-between">
           <h3 className="text-xs font-black text-slate-100 uppercase tracking-wider font-mono flex items-center gap-2">
-            <FolderPlus className="w-4 h-4 text-[#00C6AD]" /> New Investigation
+            <FolderPlus className="w-4 h-4 text-[#00C6AD]" /> {t.newInvestigation}
           </h3>
           <button onClick={onClose} className="text-slate-500 hover:text-slate-200 cursor-pointer">
             <X className="w-4 h-4" />
@@ -92,29 +94,29 @@ export const NewInvestigationModal: React.FC<NewInvestigationModalProps> = ({ on
         )}
 
         <div className="space-y-1">
-          <label className="block text-[10px] font-black text-slate-450 uppercase font-mono">Title</label>
+          <label className="block text-[10px] font-black text-slate-450 uppercase font-mono">{t.titleLabel}</label>
           <input
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            placeholder="e.g. Bengaluru East Theft Ring"
+            placeholder={t.investigationTitlePlaceholder}
             className="w-full bg-slate-950/60 border border-slate-850 focus:border-[#00C6AD] rounded-xl py-2.5 px-3 text-xs text-slate-200 focus:outline-none transition-all"
           />
         </div>
 
         <div className="space-y-1">
-          <label className="block text-[10px] font-black text-slate-450 uppercase font-mono">Description (optional)</label>
+          <label className="block text-[10px] font-black text-slate-450 uppercase font-mono">{t.descOptionalLabel}</label>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
-            placeholder="Brief notes on what this investigation covers..."
+            placeholder={t.investigationDescPlaceholder}
             rows={2}
             className="w-full bg-slate-950/60 border border-slate-850 focus:border-[#00C6AD] rounded-xl py-2.5 px-3 text-xs text-slate-200 focus:outline-none transition-all resize-none"
           />
         </div>
 
         <div className="space-y-1">
-          <label className="block text-[10px] font-black text-slate-450 uppercase font-mono">Link a Case (optional)</label>
+          <label className="block text-[10px] font-black text-slate-450 uppercase font-mono">{t.linkCaseOptionalLabel}</label>
           {selectedCase ? (
             <div className="flex items-center justify-between bg-[#00C6AD]/10 border border-[#00C6AD]/30 rounded-xl py-2 px-3">
               <span className="text-xs font-bold text-[#00C6AD]">{selectedCase}</span>
@@ -130,7 +132,7 @@ export const NewInvestigationModal: React.FC<NewInvestigationModalProps> = ({ on
                   type="text"
                   value={caseQuery}
                   onChange={(e) => setCaseQuery(e.target.value)}
-                  placeholder="Search by case number (e.g. CR-2026)"
+                  placeholder={t.caseSearchPlaceholder}
                   className="w-full bg-slate-950/60 border border-slate-850 focus:border-[#00C6AD] rounded-xl py-2.5 pl-8 pr-3 text-xs text-slate-200 focus:outline-none transition-all"
                 />
               </div>
@@ -157,7 +159,7 @@ export const NewInvestigationModal: React.FC<NewInvestigationModalProps> = ({ on
           disabled={isCreating}
           className="w-full py-2.5 rounded-xl bg-[#00C6AD]/10 hover:bg-[#00C6AD]/20 border border-[#00C6AD]/30 text-[#00C6AD] text-xs font-black uppercase tracking-wider transition-all disabled:opacity-50 cursor-pointer"
         >
-          {isCreating ? "Creating..." : "Create Investigation"}
+          {isCreating ? t.creating : t.createInvestigation}
         </button>
       </div>
     </div>

@@ -133,11 +133,119 @@ try:
     
     # Add alias zql to CatalystApp for compatibility
     zcatalyst_sdk.CatalystApp.zql = zcatalyst_sdk.CatalystApp.zcql
-    
+
     logger.info("Successfully initialized Zoho Catalyst SDK connection with ZCQL monkeypatch.")
 except Exception as e:
     logger.critical(f"Zoho Catalyst SDK failed to initialize: {e}. Falling back to default settings.")
     catalyst_app = None
+
+
+def _zcql_escape_value(v) -> str:
+    if v is None:
+        return "NULL"
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (int, float)):
+        return str(v)
+    return "'" + str(v).replace("'", "''") + "'"
+
+
+def zcql_insert_row(table_name: str, row: Dict[str, Any]) -> None:
+    """
+    Replaces catalyst_app.datastore().table(X).insert_row(row) everywhere in
+    this codebase. That SDK method resolves its request base URL from
+    APP_DOMAIN (env var X_ZOHO_CATALYST_CONSOLE_URL -- the console UI host,
+    not the API host) whenever X_ZOHO_CATALYST_IS_LOCAL isn't set to 'true'.
+    Confirmed live: every insert_row/update_row call was silently POSTing to
+    console.catalyst.zoho.in instead of api.catalyst.zoho.in, getting an HTML
+    error page back, which the SDK's response_json property can't parse and
+    raises as CatalystAPIError('UNPARSABLE_RESPONSE', ...) -- caught by the
+    broad try/except at every call site, so every single one of these writes
+    (chat history, audit logs, cowork invitations, consistency flag reviews,
+    forecast results) was failing 100% of the time in this environment
+    without ever surfacing as a visible error. (This may not reproduce in an
+    actual Catalyst-hosted deployment if AppSail sets X_ZOHO_CATALYST_IS_LOCAL
+    itself -- but it reproduces every time locally, which is what matters for
+    development and testing.) ZCQL INSERT via the already-working
+    execute_query path hits the correct domain and works -- confirmed live.
+    """
+    if not catalyst_app:
+        return
+    cols = ", ".join(row.keys())
+    vals = ", ".join(_zcql_escape_value(v) for v in row.values())
+    catalyst_app.zql().execute_query(f"INSERT INTO {table_name} ({cols}) VALUES ({vals})")
+
+
+def zcql_update_row(table_name: str, row: Dict[str, Any]) -> None:
+    """Same fix as zcql_insert_row, for UPDATE. `row` must include ROWID."""
+    if not catalyst_app:
+        return
+    row = dict(row)
+    rowid = row.pop("ROWID", None)
+    if rowid is None:
+        raise ValueError("zcql_update_row requires a ROWID field")
+    set_clause = ", ".join(f"{k} = {_zcql_escape_value(v)}" for k, v in row.items())
+    catalyst_app.zql().execute_query(f"UPDATE {table_name} SET {set_clause} WHERE ROWID = {rowid}")
+
+
+def _cache_base_url() -> str:
+    project_id = os.getenv("CATALYST_PROJECT_ID")
+    domain = "in" if os.getenv("CATALYST_REGION") == "IN" else "com"
+    return f"https://api.catalyst.zoho.{domain}/baas/v1/project/{project_id}"
+
+
+def cache_put(segment_name: str, key: str, value: str, expiry_hours: int = 48) -> bool:
+    """
+    Replaces catalyst_app.cache().segment(X).put(...) -- confirmed live to be
+    the exact same wrong-domain bug as insert_row/update_row above (traced
+    the real HTTP call: POST console.catalyst.zoho.in\\baas/v1/.../segment/
+    Default/cache, an HTML error page back, CatalystAPIError('UNPARSABLE_
+    RESPONSE', ...)). This is why session_memory.py's multi-turn context
+    (last_case_id/last_offender_id/last_location AND the conversation
+    history list itself) has never actually persisted between chat turns in
+    this environment -- every get_session_context() silently returned an
+    empty default and every update_session_context() silently no-op'd,
+    regardless of the OAuth scope granted. Direct REST call to the correct
+    domain, mirroring zcql_insert_row/zcql_update_row's fix.
+    """
+    if not catalyst_app:
+        return False
+    try:
+        token = get_cached_access_token()
+        url = f"{_cache_base_url()}/segment/{segment_name}/cache"
+        headers = {
+            "Authorization": f"Zoho-oauthtoken {token}",
+            "Content-Type": "application/json",
+            "X-Catalyst-Environment": "Development",
+            "environment": "Development"
+        }
+        payload = {"cache_name": key, "cache_value": value, "expiry_in_hours": expiry_hours}
+        res = requests.post(url, headers=headers, json=payload, timeout=10)
+        return res.status_code in (200, 201)
+    except Exception as e:
+        logger.warning(f"cache_put failed for key '{key}': {e}")
+        return False
+
+
+def cache_get(segment_name: str, key: str) -> Optional[str]:
+    """Replaces catalyst_app.cache().segment(X).get_value(...) -- see cache_put."""
+    if not catalyst_app:
+        return None
+    try:
+        token = get_cached_access_token()
+        url = f"{_cache_base_url()}/segment/{segment_name}/cache"
+        headers = {
+            "Authorization": f"Zoho-oauthtoken {token}",
+            "X-Catalyst-Environment": "Development",
+            "environment": "Development"
+        }
+        res = requests.get(url, headers=headers, params={"cacheKey": key}, timeout=10)
+        if res.status_code == 200:
+            data = res.json().get("data") or {}
+            return data.get("cache_value")
+    except Exception as e:
+        logger.warning(f"cache_get failed for key '{key}': {e}")
+    return None
 
 
 SESSION_SECRET = os.getenv("SESSION_SECRET")
@@ -545,11 +653,32 @@ class VajraGraphRAG:
                     
                     # 3. Retrieve case details from CaseMaster
                     cases_query = f"""
-                        SELECT CrimeNo, PoliceStationID 
-                        FROM CaseMaster 
+                        SELECT CrimeNo, PoliceStationID
+                        FROM CaseMaster
                         WHERE CaseMasterID IN ({case_ids_str})
                     """
                     cases_res = catalyst_app.zql().execute_query(cases_query)
+
+                    # Batch-fetch every station name in one call instead of one
+                    # ZCQL round-trip per linked case -- a suspect with, say, 5
+                    # linked cases previously meant 5 sequential "SELECT
+                    # UnitName FROM Unit WHERE UnitID = X" calls (each its own
+                    # ~300-500ms HTTP round-trip on top of an already-slow GLM
+                    # turn), a real contributor to this tool occasionally
+                    # exceeding realistic response-time budgets. Unit is a
+                    # small, bounded table (~30 rows), so one unfiltered fetch
+                    # is always cheaper than N lookups for N >= 2.
+                    unit_name_map: Dict[Any, str] = {}
+                    try:
+                        all_units_res = catalyst_app.zql().execute_query("SELECT UnitID, UnitName FROM Unit")
+                        for u in all_units_res:
+                            u_data = u.get("Unit", {})
+                            u_id = u_data.get("UnitID")
+                            if u_id is not None:
+                                unit_name_map[str(u_id)] = u_data.get("UnitName") or "Unknown PS"
+                    except Exception as ex:
+                        logger.warning(f"Could not batch-fetch Unit names for network trace: {ex}")
+
                     linked_cases = []
                     # Structured graph data for a real node-link diagram, built
                     # alongside the existing human-readable strings (kept for
@@ -562,12 +691,7 @@ class VajraGraphRAG:
                         cm_data = c.get("CaseMaster", {})
                         crime_no = cm_data.get("CrimeNo")
                         station_id = cm_data.get("PoliceStationID")
-
-                        unit_name = "Unknown PS"
-                        if station_id:
-                            unit_res = catalyst_app.zql().execute_query(f"SELECT UnitName FROM Unit WHERE UnitID = {station_id}")
-                            if unit_res:
-                                unit_name = unit_res[0].get("Unit", {}).get("UnitName") or "Unknown PS"
+                        unit_name = unit_name_map.get(str(station_id), "Unknown PS") if station_id else "Unknown PS"
                         linked_cases.append(f"{crime_no} ({unit_name})")
 
                         case_node_id = f"case_{crime_no}"

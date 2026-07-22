@@ -6,7 +6,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
-from vajra_core import catalyst_app
+from vajra_core import catalyst_app, zcql_insert_row
 
 logger = logging.getLogger("flag_section_mismatches")
 logging.basicConfig(level=logging.INFO)
@@ -81,7 +81,7 @@ def run_consistency_check():
                             "reviewed": 0,
                             "flagged_at": datetime.utcnow().isoformat()
                         }
-                        catalyst_app.datastore().table("ConsistencyFlags").insert_row(row)
+                        zcql_insert_row("ConsistencyFlags", row)
                         logger.info(f"Flagged inconsistency for Case {crime_no} (CaseID: {case_id}): recorded={recorded_sections}, suggested={suggested_sec}")
                         flagged_count += 1
                 except Exception as ex:

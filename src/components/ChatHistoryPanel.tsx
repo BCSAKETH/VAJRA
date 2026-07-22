@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import { MessageSquarePlus, MessageSquare, FolderPlus, Folder, Users } from "lucide-react";
 import { NewInvestigationModal } from "./NewInvestigationModal";
@@ -31,6 +32,7 @@ export const ChatHistoryPanel: React.FC<ChatHistoryPanelProps> = ({
   onNewChat,
   refreshKey,
 }) => {
+  const { t } = useApp();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [investigations, setInvestigations] = useState<Investigation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -81,7 +83,7 @@ export const ChatHistoryPanel: React.FC<ChatHistoryPanelProps> = ({
           className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 text-xs font-bold uppercase tracking-wider transition-all cursor-pointer"
         >
           <FolderPlus className="w-3.5 h-3.5" />
-          New Investigation
+          {t.newInvestigation}
         </button>
         {investigations.length > 0 && (
           <div className="space-y-1 pt-1">
@@ -115,16 +117,16 @@ export const ChatHistoryPanel: React.FC<ChatHistoryPanelProps> = ({
           className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-[#00C6AD]/30 bg-[#00C6AD]/10 hover:bg-[#00C6AD]/20 text-[#00C6AD] text-xs font-bold uppercase tracking-wider transition-all cursor-pointer"
         >
           <MessageSquarePlus className="w-3.5 h-3.5" />
-          New Chat
+          {t.newChat}
         </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
         {isLoading ? (
-          <div className="text-[10px] text-slate-600 text-center py-4 font-mono">Loading...</div>
+          <div className="text-[10px] text-slate-600 text-center py-4 font-mono">{t.loadingLabel}</div>
         ) : sessions.length === 0 ? (
           <div className="text-[10px] text-slate-600 text-center py-4 font-mono px-2">
-            No past conversations yet.
+            {t.noPastConversations}
           </div>
         ) : (
           sessions.map((s) => (
@@ -138,7 +140,7 @@ export const ChatHistoryPanel: React.FC<ChatHistoryPanelProps> = ({
               }`}
             >
               <MessageSquare className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-500" />
-              <span className="truncate leading-tight">{s.title || "New Conversation"}</span>
+              <span className="truncate leading-tight">{s.title || t.newConversationFallback}</span>
             </button>
           ))
         )}

@@ -22,7 +22,7 @@ interface AuditLogRecord {
 }
 
 export const SupervisorDashboardScreen: React.FC = () => {
-  const { lang, addToast, setIsAuthenticated } = useApp();
+  const { lang, t, addToast, setIsAuthenticated } = useApp();
   const [flags, setFlags] = useState<ConsistencyFlag[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
   const [isLoadingFlags, setIsLoadingFlags] = useState(true);
@@ -127,11 +127,19 @@ export const SupervisorDashboardScreen: React.FC = () => {
           "Success"
         );
       } else {
-        addToast("Ledger Inconsistent", result.reason || "Hash chain verification failed.", "Critical");
+        addToast(
+          lang === "en" ? "Ledger Inconsistent" : "ಲೆಡ್ಜರ್ ಅಸಮಂಜಸ",
+          result.reason || (lang === "en" ? "Hash chain verification failed." : "ಹ್ಯಾಶ್ ಸರಪಳಿ ಪರಿಶೀಲನೆ ವಿಫಲವಾಗಿದೆ."),
+          "Critical"
+        );
       }
     } catch (err: any) {
       setLedgerVerified(false);
-      addToast("Verification Failed", err.message || "Could not reach the ledger verification service.", "Critical");
+      addToast(
+        lang === "en" ? "Verification Failed" : "ಪರಿಶೀಲನೆ ವಿಫಲವಾಗಿದೆ",
+        err.message || (lang === "en" ? "Could not reach the ledger verification service." : "ಲೆಡ್ಜರ್ ಪರಿಶೀಲನಾ ಸೇವೆಯನ್ನು ತಲುಪಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ."),
+        "Critical"
+      );
     } finally {
       setIsVerifyingLedger(false);
     }
@@ -164,13 +172,19 @@ export const SupervisorDashboardScreen: React.FC = () => {
 
       addToast(
         lang === "en" ? "Consistency Corrected" : "ಸ್ಥಿರತೆ ಸರಿಪಡಿಸಲಾಗಿದೆ",
-        `Reviewed by Supervisor KSP-${supervisorBadge}. Flag ID ${selectedFlagId} resolved successfully.`,
+        lang === "en"
+          ? `Reviewed by Supervisor KSP-${supervisorBadge}. Flag ID ${selectedFlagId} resolved successfully.`
+          : `ಮೇಲ್ವಿಚಾರಕ KSP-${supervisorBadge} ಪರಿಶೀಲಿಸಿದ್ದಾರೆ. ಫ್ಲ್ಯಾಗ್ ಐಡಿ ${selectedFlagId} ಯಶಸ್ವಿಯಾಗಿ ಬಗೆಹರಿಸಲಾಗಿದೆ.`,
         "Success"
       );
       fetchFlags();
     } catch (err: any) {
       console.error(err);
-      addToast("Update Error", err.message || "Failed to commit resolution.", "Critical");
+      addToast(
+        lang === "en" ? "Update Error" : "ಅಪ್‌ಡೇಟ್ ದೋಷ",
+        err.message || (lang === "en" ? "Failed to commit resolution." : "ಬಗೆಹರಿಕೆಯನ್ನು ಬದ್ಧಗೊಳಿಸಲು ವಿಫಲವಾಗಿದೆ."),
+        "Critical"
+      );
     }
   };
 
@@ -183,10 +197,10 @@ export const SupervisorDashboardScreen: React.FC = () => {
         <div className="space-y-1">
           <h2 className="text-base font-black text-slate-100 uppercase tracking-wider font-mono flex items-center gap-2">
             <UserCheck className="w-5 h-5 text-[#00C6AD]" />
-            <span>Supervisor Compliance Portal</span>
+            <span>{t.supervisorTitle}</span>
           </h2>
           <p className="text-[11px] text-slate-550 leading-relaxed font-mono">
-            Dual-control authorization & cryptographic ledger verification.
+            {t.supervisorDesc}
           </p>
         </div>
 
@@ -197,7 +211,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
           className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 hover:border-[#00C6AD]/40 text-xs font-black uppercase tracking-wider text-[#00C6AD] hover:text-white transition-all disabled:opacity-50 cursor-pointer shadow-md shadow-[#00C6AD]/5"
         >
           <ShieldCheck className="w-4 h-4" />
-          <span>{isVerifyingLedger ? "Verifying hashes..." : "Verify Ledger Chain"}</span>
+          <span>{isVerifyingLedger ? t.supervisorVerifyingHashes : t.supervisorVerifyLedger}</span>
         </button>
       </div>
 
@@ -214,11 +228,11 @@ export const SupervisorDashboardScreen: React.FC = () => {
           <div className="text-xs font-mono">
             {ledgerVerified ? (
               <span>
-                <strong>CRYPTOGRAPHIC INTEGRITY RESOLVED:</strong> AuditLog chain verified. All SHA-256 blocks are consistent.
+                <strong>{t.supervisorLedgerResolvedLabel}</strong> {t.supervisorLedgerResolvedBody}
               </span>
             ) : (
               <span>
-                <strong>SECURITY ALERT:</strong> AuditLog block hash verification failed. Tampering detected!
+                <strong>{t.supervisorLedgerAlertLabel}</strong> {t.supervisorLedgerAlertBody}
               </span>
             )}
           </div>
@@ -232,7 +246,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
           <div className="flex justify-between items-center border-b border-slate-850 pb-2">
             <h3 className="text-xs font-black text-slate-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
               <AlertTriangle className="w-4 h-4 text-amber-500 animate-pulse" />
-              <span>Legal Consistency Flags</span>
+              <span>{t.supervisorConsistencyFlagsTitle}</span>
             </h3>
             <button onClick={fetchFlags} className="text-slate-500 hover:text-[#00C6AD] transition-colors cursor-pointer">
               <RefreshCw className="w-3.5 h-3.5" />
@@ -249,7 +263,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
               ))}
             </div>
           ) : flags.length === 0 ? (
-            <div className="py-10 text-center text-xs font-mono text-slate-550">No unresolved consistency flags recorded.</div>
+            <div className="py-10 text-center text-xs font-mono text-slate-550">{t.supervisorNoFlags}</div>
           ) : (
             <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
               {flags.map((flag) => (
@@ -269,12 +283,12 @@ export const SupervisorDashboardScreen: React.FC = () => {
                         className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#00C6AD]/10 border border-[#00C6AD]/25 text-[#00C6AD] hover:text-white hover:bg-[#00C6AD]/20 font-bold font-mono text-[10px] uppercase cursor-pointer"
                       >
                         <Lock className="w-3 h-3" />
-                        <span>Resolve via Dual Control</span>
+                        <span>{t.supervisorResolveDualControl}</span>
                       </button>
                     </div>
                   ) : (
                     <div className="text-right text-[10px] font-mono text-slate-550 font-bold uppercase tracking-wider">
-                      ✓ Resolved by Supervisor
+                      {t.supervisorResolvedBySupervisor}
                     </div>
                   )}
                 </div>
@@ -288,7 +302,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
           <div className="flex justify-between items-center border-b border-slate-850 pb-2">
             <h3 className="text-xs font-black text-slate-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
               <FileSpreadsheet className="w-4 h-4 text-[#00C6AD]" />
-              <span>Cryptographic Audit Ledger</span>
+              <span>{t.supervisorAuditLedgerTitle}</span>
             </h3>
             <button onClick={fetchAuditLogs} className="text-slate-500 hover:text-[#00C6AD] transition-colors cursor-pointer">
               <RefreshCw className="w-3.5 h-3.5" />
@@ -305,7 +319,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
               ))}
             </div>
           ) : auditLogs.length === 0 ? (
-            <div className="py-10 text-center text-xs font-mono text-slate-550">No audit log records found.</div>
+            <div className="py-10 text-center text-xs font-mono text-slate-550">{t.supervisorNoAuditLogs}</div>
           ) : (
             <div className="space-y-2.5 max-h-[350px] overflow-y-auto pr-1 font-mono text-[10.5px]">
               {auditLogs.map((log, i) => (
@@ -314,8 +328,8 @@ export const SupervisorDashboardScreen: React.FC = () => {
                     <span>{log.badgeId} • {log.action}</span>
                     <span className="text-slate-500">{log.timestamp?.split(" ")[0]}</span>
                   </div>
-                  <p className="text-slate-350 truncate">Query: "{log.queryParam}"</p>
-                  <div className="text-[9px] text-[#00C6AD] truncate">Hash: {log.hash}</div>
+                  <p className="text-slate-350 truncate">{t.supervisorQueryLabel} "{log.queryParam}"</p>
+                  <div className="text-[9px] text-[#00C6AD] truncate">{t.supervisorHashLabel} {log.hash}</div>
                 </div>
               ))}
             </div>

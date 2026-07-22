@@ -8,7 +8,7 @@ from typing import Dict, Any, List, Tuple, Optional
 import numpy as np
 import pandas as pd
 
-from vajra_core import catalyst_app, VajraGraphRAG, VajraSemanticMemory, MOBehavioralProfiler
+from vajra_core import catalyst_app, VajraGraphRAG, VajraSemanticMemory, MOBehavioralProfiler, zcql_insert_row
 from session_memory import VajraSessionMemory
 from catalyst_llm import CatalystLLM
 
@@ -210,6 +210,25 @@ class VajraAgentLoop:
                 },
                 "required": ["district"]
             }
+        },
+        {
+            "name": "get_repeat_offenders",
+            "description": "List habitual/repeat offenders (accused persons appearing in multiple cases), optionally filtered by district. Use for questions like 'who are the repeat offenders' or 'habitual criminals in X'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "district": {"type": "string", "description": "Optional district name to filter by (e.g. Bengaluru Urban). Omit to list top repeat offenders across all districts."}
+                },
+                "required": []
+            }
+        },
+        {
+            "name": "detect_crime_groups",
+            "description": "Detect likely organized crime groups by finding accused persons who have repeatedly co-offended together across multiple separate cases (not just once). Use for questions like 'detect organized crime groups' or 'find criminal gangs/syndicates'.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
         }
     ]
 
@@ -230,10 +249,24 @@ class VajraAgentLoop:
         return self._mo_profiler
 
     def sanitize_sql_input(self, val: str) -> str:
-        """Strips quotes, semicolons, and dashes to prevent ZCQL/SQL injection."""
+        """
+        Strips quotes, semicolons, hashes, and SQL line-comment sequences
+        (--) to prevent ZCQL/SQL injection.
+
+        Previously stripped every single '-' character, not just the '--'
+        comment sequence. Every real CrimeNo is formatted "CR-YYYY-NNNNN"
+        (confirmed live, e.g. "CR-2024-81977") -- stripping single dashes
+        silently mangled it to "CR202481977" before it ever reached the
+        query, so `WHERE CrimeNo = '{case_no}'` could never match a real
+        row. query_case (and any other tool taking a dash-containing
+        identifier, e.g. a suspect's hyphenated surname) was broken for
+        every real value, not just malicious ones. A lone '-' isn't a
+        meaningful injection vector on its own -- only the '--' comment
+        sequence is worth stripping.
+        """
         if not val:
             return ""
-        return re.sub(r"[';\-#\"]", "", val).strip()
+        return re.sub(r"(--|['#\";])", "", val).strip()
 
     def _resolve_entities(self, query: str, session_id: str) -> Dict[str, Any]:
         """
@@ -241,8 +274,17 @@ class VajraAgentLoop:
         """
         context = session_memory.get_session_context(session_id)
         
-        # Regex matches for Case IDs (e.g. CrimeNo like FIR-2026-0814)
-        case_match = re.search(r'\b(FIR-\d{4}-\d{4}|\b\d{7}\b)', query, re.IGNORECASE)
+        # Regex match for Case IDs (real CrimeNo format, confirmed live: e.g.
+        # "CR-2024-81977" -- 2-4 letter prefix, 4-digit year, 4-6 digit
+        # sequence). The old pattern only matched "FIR-YYYY-NNNN" (4-digit
+        # suffix) or a bare 7-digit number; migrate_to_catalyst.py has always
+        # generated "CR-{year}-{5-digit}" (e.g. seed_table's
+        # f"CR-{reg_date.year}-{random.randint(10000, 99999)}"), and
+        # CaseMasterID is a small sequential int (never 7 digits) -- so
+        # neither branch of the old regex could ever match a real case
+        # number, meaning "show me case CR-2024-81977" always fell through
+        # to vague semantic search instead of a direct, exact lookup.
+        case_match = re.search(r'\b([A-Z]{2,4}-\d{4}-\d{4,6})\b', query, re.IGNORECASE)
         # Regex match for suspect names (Capitalized words like Ramesh Kumar)
         suspect_match = None
         suspect_candidates = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', query)
@@ -322,14 +364,14 @@ class VajraAgentLoop:
 
             serialized_content = f"{employee_id}|{action_type}|{target}|{query[:100]}|{response[:100]}|{session_id}|{logged_at}"
             row_hash = hashlib.sha256((prev_hash + serialized_content).encode('utf-8')).hexdigest()
-            catalyst_app.datastore().table("AuditLog").insert_row({**base_row, "prev_hash": prev_hash, "row_hash": row_hash})
+            zcql_insert_row("AuditLog", {**base_row, "prev_hash": prev_hash, "row_hash": row_hash})
             logger.info(f"Audit log hash-chained: {action_type} -> row_hash={row_hash[:10]}...")
             return
         except Exception as e:
             logger.warning(f"Hash-chained audit write failed (row_hash/prev_hash columns may not exist yet), falling back to plain write: {e}")
 
         try:
-            catalyst_app.datastore().table("AuditLog").insert_row(base_row)
+            zcql_insert_row("AuditLog", base_row)
             logger.info(f"Audit log written (no hash chain): {action_type} for session {session_id}")
         except Exception as e:
             logger.error(f"Failed to write to AuditLog table: {e}")
@@ -352,17 +394,34 @@ class VajraAgentLoop:
         if fence_matches:
             return fence_matches[-1]
 
-        start = content_str.rfind("{")
-        while start != -1:
+        # Match backward from the LAST '}' to its corresponding '{' via depth
+        # counting -- NOT forward from the last '{' (the previous approach).
+        # Every real decision object here is nested (`{"tool": ..., "parameters":
+        # {...}}`), and a nested object's OWN opening brace always appears later
+        # in the text than its parent's. Searching forward from the last '{'
+        # therefore finds the INNER object's start and returns only that
+        # fragment (e.g. bare `{"suspect_name": "Ramesh"}`, no "tool" key) --
+        # confirmed live: this silently truncated every tool-calling decision
+        # to its parameters sub-object, which run_agent_loop then correctly
+        # rejected as invalid (no "tool", no "text_response") and fell through
+        # to "Please clarify your request." on every single query, including
+        # ones where the LLM (or the local simulator) picked the right tool.
+        # It also stripped the sibling "is_simulated" key the simulator sets
+        # on the OUTER object, so degraded responses were misreported as real.
+        # The outer object's closing '}' is always the LAST '}' in the text
+        # (it closes after every object nested inside it), so anchoring there
+        # and matching backward reliably finds the true outermost object.
+        end = content_str.rfind("}")
+        while end != -1:
             depth = 0
-            for i in range(start, len(content_str)):
-                if content_str[i] == "{":
+            for i in range(end, -1, -1):
+                if content_str[i] == "}":
                     depth += 1
-                elif content_str[i] == "}":
+                elif content_str[i] == "{":
                     depth -= 1
                     if depth == 0:
-                        return content_str[start:i + 1]
-            start = content_str.rfind("{", 0, start)
+                        return content_str[i:end + 1]
+            end = content_str.rfind("}", 0, end)
         return content_str
 
     def run_agent_loop(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None) -> Dict[str, Any]:
@@ -371,54 +430,72 @@ class VajraAgentLoop:
         """
         # 1. Resolve Entities & Context
         entities = self._resolve_entities(query, session_id)
-        
+
         # Load conversation history from session memory
         context = session_memory.get_session_context(session_id)
         history = context.get("messages", [])
         if not history:
             history = []
-        
+
         # Append user message
         history.append({"role": "user", "content": query})
         history = history[-10:]  # Keep last 10 turns max to avoid token bloat
-        
+
         response_text = ""
         response_type = "text"
         data_payload = {}
         citations = []
+        # True the moment the real LLM endpoint is confirmed unreachable
+        # during this turn -- previously this fell back to a keyword-
+        # matching local simulator that still ran real tools and presented
+        # a "degraded" answer behind an amber banner. That's gone: on a
+        # police intelligence platform, an answer whose tool/suspect was
+        # picked by string-matching instead of real reasoning shouldn't be
+        # presented as an answer at all, even a clearly-labeled one.
+        ai_unavailable = False
+        # Tracks the most recent tool's own deterministic text_result (real
+        # DB query / DBSCAN clustering / SHAP computation output, never
+        # LLM-hallucinated) so that if the LLM successfully picks a tool via
+        # real reasoning but the LATER "write a polished narrative" step
+        # times out, the turn can fall back to the tool's own grounded
+        # output instead of discarding real, already-fetched, non-
+        # hallucinated data. Confirmed live this distinction matters: the
+        # synthesis-only call (offered no tools, see allow_tools below) has
+        # been timing out noticeably more often than the initial tool-
+        # selection call under sustained load, wasting an otherwise-correct
+        # answer every time.
+        last_tool_text_result = ""
 
         max_iterations = 4
         current_iteration = 0
-        consecutive_simulated = 0
-        is_simulated = False
-        simulated_reason = ""
 
         while current_iteration < max_iterations:
             current_iteration += 1
             logger.info(f"Agent loop iteration {current_iteration} for query: '{query}'")
-            llm_res = self.llm.chat(history, self.TOOLS)
+            # Every tool in TOOLS takes its parameters directly from the
+            # query/session context -- none depend on another tool's output --
+            # so genuine multi-hop chaining essentially never happens in
+            # practice. Originally tools stayed offered through iteration 2
+            # "in case a second tool genuinely helps," but confirmed live
+            # that iteration 2 (still carrying the full tool-catalog prompt,
+            # heavier for the model to process than the lean synthesis-only
+            # one) was itself timing out on some turns -- e.g. "who are the
+            # repeat offenders" correctly picked and ran get_repeat_offenders
+            # on iteration 1 in ~52s, then iteration 2 hit two consecutive
+            # 60s timeouts trying to re-consider the whole catalog before
+            # just answering. Restricting tools to iteration 1 only means
+            # every iteration after the first tool call gets the short,
+            # focused "write the answer" prompt with nothing to re-deliberate.
+            allow_tools = current_iteration == 1
+            llm_res = self.llm.chat(
+                history,
+                self.TOOLS if allow_tools else None,
+                max_tokens=(2500 if allow_tools else 3500)
+            )
 
-            # Check if this turn is simulated
-            is_turn_simulated = False
-            try:
-                content_str = llm_res["choices"][0]["message"]["content"]
-                desc = json.loads(content_str)
-                if desc.get("is_simulated"):
-                    is_turn_simulated = True
-                    is_simulated = True
-                    simulated_reason = desc.get("simulated_reason") or "Catalyst LLM generative endpoint offline"
-            except Exception:
-                pass
-
-            if is_turn_simulated:
-                consecutive_simulated += 1
-            else:
-                consecutive_simulated = 0
-
-            if consecutive_simulated >= 2:
-                logger.warning("Two consecutive simulated iterations detected. Exiting agent loop early with degraded response.")
-                is_simulated = True
-                response_text = "I have successfully retrieved the corresponding CCTNS records. However, secure AI reasoning is degraded due to endpoint offline status."
+            if llm_res.get("error"):
+                logger.warning(f"LLM unavailable, not answering (iteration {current_iteration}): {llm_res.get('error')}")
+                ai_unavailable = True
                 break
 
             try:
@@ -448,6 +525,8 @@ class VajraAgentLoop:
                             data_payload.update(tool_output["data"])
                         else:
                             data_payload = tool_output["data"]
+                    if tool_output.get("text_result"):
+                        last_tool_text_result = tool_output["text_result"]
 
                     # Append tool result to history and loop again
                     history.append({"role": "assistant", "content": json.dumps(decision)})
@@ -464,24 +543,50 @@ class VajraAgentLoop:
                     break
             except Exception as e:
                 logger.error(f"Error executing LLM agent loop choices on iteration {current_iteration}: {e}")
+                # Confirmed live against the real GLM endpoint: once this
+                # "thinking" model has a tool result in hand, it often just
+                # answers directly in plain prose after its </think> block
+                # instead of wrapping the answer in the requested JSON --
+                # e.g. "Based on the database query for suspect X: Offender
+                # Risk Score: 0.1%... Top Predictor: Year Temporal" with no
+                # JSON at all. That's a good, complete answer, not a broken
+                # one -- treating it as an error and either failing
+                # (iteration 1) or silently discarding it to pay for an
+                # entire extra synthesis call (iteration 2+, which then has
+                # no more information than this content already did, and
+                # was confirmed live to sometimes time out on its own,
+                # losing the answer entirely) wastes a real answer that was
+                # already sitting right here. Try it as plain prose first.
+                try:
+                    raw_content = llm_res["choices"][0]["message"]["content"]
+                    # No </think> means this response was cut off mid-reasoning
+                    # (confirmed live on a translation call -- the model always
+                    # emits </think> once it actually finishes thinking), not a
+                    # genuine plain-prose answer -- don't treat an unfinished
+                    # reasoning fragment as if the model had committed to it.
+                    if "</think>" in raw_content:
+                        fallback_text = raw_content.split("</think>")[-1].strip()
+                        if fallback_text and len(fallback_text) > 3:
+                            response_text = fallback_text
+                            break
+                except Exception:
+                    pass
                 if current_iteration == 1:
                     response_text = "I encountered an error processing your query. Please restate your request."
                 break
 
         # If the loop finished and we executed tools but never got a final text_response, do one final synthesis
-        if not response_text and citations:
+        if not response_text and citations and not ai_unavailable:
             try:
                 logger.info("Executing final LLM response synthesis turn...")
-                synthesis_res = self.llm.chat(history)
-                raw_response = synthesis_res["choices"][0]["message"]["content"]
-
-                try:
-                    desc = json.loads(self._extract_json(raw_response))
-                    if desc.get("is_simulated"):
-                        is_simulated = True
-                        simulated_reason = desc.get("simulated_reason") or "Catalyst LLM generative endpoint offline"
-                        response_text = desc.get("text_response") or "I have successfully retrieved the corresponding CCTNS records. However, secure AI reasoning is degraded due to endpoint offline status."
-                    else:
+                synthesis_res = self.llm.chat(history, max_tokens=3500)
+                if synthesis_res.get("error"):
+                    logger.warning(f"LLM unavailable during synthesis turn, not answering: {synthesis_res.get('error')}")
+                    ai_unavailable = True
+                else:
+                    raw_response = synthesis_res["choices"][0]["message"]["content"]
+                    try:
+                        desc = json.loads(self._extract_json(raw_response))
                         # desc parsed as valid JSON but had neither key (e.g.
                         # the model responded with another {"tool": ...}
                         # instead of a text_response, confirmed live) -- the
@@ -490,41 +595,53 @@ class VajraAgentLoop:
                         # model's full internal reasoning trace verbatim.
                         fallback = raw_response.split("</think>")[-1].strip() or raw_response
                         response_text = desc.get("text_response") or desc.get("text") or fallback
-                except Exception:
-                    # Not JSON at all (plain prose answer) -- still strip any
-                    # </think> preamble before using it as-is, so the model's
-                    # internal reasoning trace never leaks into what the
-                    # officer sees.
-                    response_text = raw_response.split("</think>")[-1].strip() or raw_response
+                    except Exception:
+                        # Not JSON at all (plain prose answer) -- still strip any
+                        # </think> preamble before using it as-is, so the model's
+                        # internal reasoning trace never leaks into what the
+                        # officer sees.
+                        response_text = raw_response.split("</think>")[-1].strip() or raw_response
             except Exception as e:
                 logger.error(f"Error on final synthesis turn: {e}")
                 response_text = "I have successfully retrieved the files. Let me know if you need specific details."
+
+        # A police intelligence platform should never present an answer
+        # picked by keyword-matching as if it were real reasoning -- but
+        # that's a different failure than this one. Here, a tool was
+        # already selected via a genuine, successful LLM reasoning call
+        # (iteration 1) and executed against real data (real ZCQL queries,
+        # real DBSCAN/SHAP computation) -- only the LATER, separate "write a
+        # polished narrative" step timed out. The tool's own text_result is
+        # grounded, deterministic, non-hallucinated output, not a guess, so
+        # discarding it here just because the prose-polish step failed would
+        # waste a real, correct answer the officer already paid the wait
+        # time for. Confirmed live this fallback path is common under
+        # sustained load: the synthesis-only call times out more often than
+        # the initial tool-selection call.
+        if ai_unavailable and last_tool_text_result and (citations or data_payload):
+            response_text = (
+                "[Automated data summary — AI narrative analysis timed out; showing retrieved results directly]\n\n"
+                + last_tool_text_result
+            )
+            ai_unavailable = False
+        elif ai_unavailable:
+            response_text = "AI reasoning is temporarily unavailable. Please try again in a few minutes, or contact your system administrator if this persists."
+            response_type = "text"
+            data_payload = {}
+            citations = []
 
         # Update cached history
         history.append({"role": "assistant", "content": response_text})
         context["messages"] = history
         session_memory.update_session_context(session_id, context)
 
-        # Detect if any turn was simulated
-        is_simulated = False
-        simulated_reason = ""
-        for msg in history:
-            if msg.get("role") == "assistant":
-                try:
-                    desc = json.loads(msg["content"])
-                    if desc.get("is_simulated"):
-                        is_simulated = True
-                        simulated_reason = desc.get("simulated_reason") or "Catalyst LLM generative endpoint offline"
-                except Exception:
-                    pass
-
         return {
             "text": response_text,
             "response_type": response_type,
             "data": data_payload,
             "citations": citations,
-            "is_simulated": is_simulated,
-            "simulated_reason": simulated_reason
+            "is_simulated": ai_unavailable,
+            "simulated_reason": "Catalyst LLM generative endpoint offline" if ai_unavailable else ""
         }
 
     def generate_applet_spec(self, response_type: str, data_payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -619,6 +736,25 @@ class VajraAgentLoop:
                 {"kind": "stat_tile", "value": f"{profile.get('unemployment', '')}%", "label": "Unemployment Rate"},
                 {"kind": "gauge", "title": "Economic Stress Index", "value": round((profile.get("stress") or 0) * 100, 1), "label": ""},
             ]}
+
+        if response_type == "repeat_offenders":
+            offenders = data_payload.get("offenders", [])
+            if not offenders:
+                return None
+            return {"layout": "single", "components": [{
+                "kind": "table", "title": "Repeat / Habitual Offenders",
+                "data": offenders, "columns": ["suspect", "case_count", "district", "severity"]
+            }]}
+
+        if response_type == "crime_groups":
+            groups = data_payload.get("groups", [])
+            if not groups:
+                return None
+            return {"layout": "single", "components": [{
+                "kind": "table", "title": "Detected Organized Crime Groups",
+                "data": [{"members": ", ".join(g["members"]), "shared_case_count": g["shared_case_count"]} for g in groups],
+                "columns": ["members", "shared_case_count"]
+            }]}
 
         return None
 
@@ -1211,6 +1347,155 @@ class VajraAgentLoop:
             text_result = f"Demographic Correlation for {district}:\n- Literacy Rate: {profile_data['literacy']}%\n- Unemployment: {profile_data['unemployment']}%\n- Economic Stress Index: {profile_data['stress']}\n\n{warning}"
             citations.append({"type": "DistrictSocioProfile Datastore", "id": district, "details": "Grounded district socio-demographics correlation"})
             self._write_audit_log(employee_id, "Demographic Correlation", district, f"Socio correlation for {district}", text_result, session_id)
+
+        # 16. get_repeat_offenders
+        elif tool_name == "get_repeat_offenders":
+            district = self.sanitize_sql_input(params.get("district", ""))
+            response_type = "repeat_offenders"
+            offenders = []
+            if catalyst_app:
+                try:
+                    dist_id = None
+                    if district:
+                        d_res = catalyst_app.zql().execute_query(f"SELECT DistrictID FROM District WHERE DistrictName LIKE '*{district}*' LIMIT 1")
+                        if d_res:
+                            dist_id = d_res[0].get("District", {}).get("DistrictID")
+                    # Reads from ProactiveAlerts (populated by the scheduled
+                    # repeat-offender detection job -- see
+                    # functions/proactive_alerts/index.py) rather than
+                    # recomputing at request time: the Accused table has
+                    # ~14,000 rows, needing ~47 paginated 300-row ZCQL calls to
+                    # scan in full, which is far too slow for an interactive
+                    # chat turn on top of an already-slow GLM round-trip.
+                    alert_res = catalyst_app.zql().execute_query(
+                        "SELECT DistrictID, AlertMessage, Severity, TriggerTime FROM ProactiveAlerts "
+                        "WHERE AlertType = 'REPEAT_OFFENDER' ORDER BY TriggerTime DESC LIMIT 100"
+                    )
+                    district_res = catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")
+                    district_names = {d.get("District", {}).get("DistrictID"): d.get("District", {}).get("DistrictName") for d in district_res}
+                    for r in alert_res:
+                        a = r.get("ProactiveAlerts", {})
+                        d_id = a.get("DistrictID")
+                        if dist_id and str(d_id) != str(dist_id):
+                            continue
+                        m = re.search(r"Suspect '(.+?)' detected in (\d+) separate cases", a.get("AlertMessage") or "")
+                        if m:
+                            offenders.append({
+                                "suspect": m.group(1),
+                                "case_count": int(m.group(2)),
+                                "district": district_names.get(d_id, "Unknown"),
+                                "severity": a.get("Severity")
+                            })
+                except Exception as ex:
+                    logger.warning(f"get_repeat_offenders query failed: {ex}")
+            offenders.sort(key=lambda x: x["case_count"], reverse=True)
+            offenders = offenders[:15]
+            data = {"offenders": offenders, "district_filter": district or None}
+            if offenders:
+                top_lines = "; ".join(f"{o['suspect']} ({o['case_count']} cases, {o['district']})" for o in offenders[:5])
+                text_result = (
+                    f"Identified {len(offenders)} repeat/habitual offender(s)"
+                    f"{' in ' + district if district else ' across all districts'} from the scheduled proactive-alerts "
+                    f"analysis. Top matches: {top_lines}."
+                )
+            else:
+                text_result = (
+                    f"No repeat-offender alerts are currently recorded"
+                    f"{' for ' + district if district else ''}. This reflects the last scheduled repeat-offender "
+                    f"analysis run, not a live per-request scan of the full Accused table."
+                )
+            citations.append({"type": "ProactiveAlerts Repeat-Offender Analysis", "id": district or "All Districts", "details": "Computed by the scheduled repeat-offender detection job"})
+            self._write_audit_log(employee_id, "Repeat Offender Query", district or "All Districts", f"Repeat offenders in {district or 'all districts'}", text_result, session_id)
+
+        # 17. detect_crime_groups
+        elif tool_name == "detect_crime_groups":
+            response_type = "crime_groups"
+            groups = []
+            if catalyst_app:
+                try:
+                    # A single shared case doesn't distinguish an organized
+                    # group from two strangers coincidentally co-accused once
+                    # (e.g. a bystander witness-turned-co-accused). Requiring
+                    # accused pairs to share >= 2 SEPARATE CaseMasterIDs is a
+                    # simple, honestly-grounded proxy for "these people
+                    # actually operate together repeatedly" -- computed
+                    # directly from real Accused rows, not fabricated.
+                    # Bounded to the first 300 rows (one ZCQL page) to stay
+                    # within interactive chat latency; a full-table sweep
+                    # would need the same ~47-page pagination as
+                    # get_repeat_offenders and belongs in a scheduled job, not
+                    # a live tool call.
+                    acc_res = catalyst_app.zql().execute_query("SELECT AccusedName, CaseMasterID FROM Accused LIMIT 300")
+                    cases_by_name: Dict[str, set] = {}
+                    for r in acc_res:
+                        a = r.get("Accused", {})
+                        name = a.get("AccusedName")
+                        cid = a.get("CaseMasterID")
+                        if name and name.strip() and "unknown" not in name.lower() and cid:
+                            cases_by_name.setdefault(name, set()).add(cid)
+
+                    names = [n for n, cids in cases_by_name.items() if len(cids) > 1]
+                    pair_overlap: Dict[Tuple[str, str], set] = {}
+                    for i in range(len(names)):
+                        for j in range(i + 1, len(names)):
+                            shared = cases_by_name[names[i]] & cases_by_name[names[j]]
+                            if len(shared) >= 2:
+                                pair_overlap[(names[i], names[j])] = shared
+
+                    # Merge overlapping pairs into groups via union-find, so
+                    # A-B and B-C sharing cases with B surface as one 3-person
+                    # group instead of two disconnected pairs.
+                    parent: Dict[str, str] = {}
+
+                    def find(x: str) -> str:
+                        while parent.get(x, x) != x:
+                            x = parent.get(x, x)
+                        return x
+
+                    def union(x: str, y: str):
+                        parent.setdefault(x, x)
+                        parent.setdefault(y, y)
+                        rx, ry = find(x), find(y)
+                        if rx != ry:
+                            parent[rx] = ry
+
+                    all_case_ids: Dict[str, set] = {}
+                    for (a, b), shared in pair_overlap.items():
+                        union(a, b)
+                        all_case_ids.setdefault(find(a), set()).update(shared)
+
+                    members_by_root: Dict[str, set] = {}
+                    for (a, b) in pair_overlap.keys():
+                        root = find(a)
+                        members_by_root.setdefault(root, set()).update([a, b])
+
+                    for root, members in members_by_root.items():
+                        groups.append({
+                            "members": sorted(members),
+                            "shared_case_count": len(all_case_ids.get(root, set())),
+                            "case_ids": sorted(all_case_ids.get(root, set()), key=str)[:10]
+                        })
+                    groups.sort(key=lambda g: (len(g["members"]), g["shared_case_count"]), reverse=True)
+                    groups = groups[:10]
+                except Exception as ex:
+                    logger.warning(f"detect_crime_groups query failed: {ex}")
+            data = {"groups": groups, "scan_scope": "First 300 Accused records (one database page)"}
+            if groups:
+                top = groups[0]
+                text_result = (
+                    f"Detected {len(groups)} likely organized-crime group(s) -- clusters of accused persons who "
+                    f"repeatedly co-offend together (sharing 2+ separate cases, not just one). Largest: "
+                    f"{', '.join(top['members'])} ({top['shared_case_count']} shared cases). This scan covers the "
+                    f"first 300 Accused records in the database, not the full table."
+                )
+            else:
+                text_result = (
+                    "No accused pairs sharing 2 or more separate cases were found in the scanned sample (first 300 "
+                    "Accused records) -- no repeated-co-offense pattern strong enough to call an organized group in "
+                    "this slice of the data."
+                )
+            citations.append({"type": "Co-Offense Pattern Analysis", "id": "Accused Table Sample", "details": "Repeated-co-accusal clustering (>=2 shared cases required)"})
+            self._write_audit_log(employee_id, "Organized Crime Group Detection", "Accused", "Detect organized crime groups", text_result, session_id)
 
         return {
             "text_result": text_result,

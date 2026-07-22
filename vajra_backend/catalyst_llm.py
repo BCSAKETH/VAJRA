@@ -4,42 +4,42 @@ import time
 import logging
 import requests
 from typing import Dict, Any, List, Optional
-from vajra_core import get_cached_access_token, catalyst_app
+from vajra_core import get_cached_access_token
 
 logger = logging.getLogger("catalyst_llm")
 
-_DOWN_FLAG_KEY = "catalyst_llm_endpoint_down"
-# Segment.put()'s real signature is put(key, value, expiry=None) where expiry
-# is whole hours (req_json sends it as expiry_in_hours) -- there's no
-# finer-grained TTL available, so 1 hour is the shortest real "recently
-# down" window this API can express.
-_DOWN_FLAG_EXPIRY_HOURS = 1
+# In-process cooldown timestamp -- deliberately NOT backed by Catalyst
+# Cache. Cache's expiry_in_hours is whole-hours-only (no finer TTL
+# granularity available), so the previous Cache-backed flag couldn't
+# express anything shorter than a 1-hour "assume down" window. Confirmed
+# live: this deployed model is a "thinking" model with real response times
+# ranging 15-140s+ (longer when a turn needs two sequential LLM calls), so
+# a single unlucky query timing out on both retry attempts is normal
+# variance, not proof the service is actually down -- but it still tripped
+# the old flag and made every OTHER officer's chat report "AI unavailable"
+# for up to an hour. An in-memory timestamp gives an exact, short cooldown
+# instead. The tradeoff (not shared across separate worker processes) is
+# free here: this backend runs as a single AppSail process.
+_down_until: float = 0.0
+# Retry-exhaustion on transient errors (timeout/429/5xx) -- the failure
+# class that's most likely to just be "this one request was slow," not a
+# real outage. Short enough that the next officer's query gets a fresh
+# real attempt within a minute rather than inheriting someone else's bad luck.
+_TRANSIENT_COOLDOWN_SECONDS = 45
+# Definitive errors (401/404 misconfiguration, other clean 4xx, connection
+# exceptions) -- these mean something is actually broken (bad credentials,
+# bad URL) and won't self-heal by just waiting a few seconds, so it's worth
+# skipping the retry budget for longer.
+_DEFINITIVE_COOLDOWN_SECONDS = 300
 
 
-def _mark_endpoint_down():
-    """
-    Short-lived flag in Catalyst Cache so repeated chat turns during a real
-    outage skip straight to the local fallback instead of each eating the
-    full retry-with-backoff + timeout budget. Degrades silently if Cache
-    itself is unreachable (same graceful-degradation pattern as
-    session_memory.py) -- this is a latency optimization, not a correctness
-    requirement, so a Cache failure here must never break the chat turn.
-    """
-    if not catalyst_app:
-        return
-    try:
-        catalyst_app.cache().segment("Default").put(_DOWN_FLAG_KEY, "1", _DOWN_FLAG_EXPIRY_HOURS)
-    except Exception:
-        pass
+def _mark_endpoint_down(cooldown_seconds: int = _DEFINITIVE_COOLDOWN_SECONDS):
+    global _down_until
+    _down_until = time.time() + cooldown_seconds
 
 
 def _is_endpoint_marked_down() -> bool:
-    if not catalyst_app:
-        return False
-    try:
-        return bool(catalyst_app.cache().segment("Default").get_value(_DOWN_FLAG_KEY))
-    except Exception:
-        return False
+    return time.time() < _down_until
 
 
 class CatalystLLM:
@@ -68,7 +68,8 @@ class CatalystLLM:
         self,
         messages: List[Dict[str, str]],
         tools: Optional[List[Dict[str, Any]]] = None,
-        use_agent_system_prompt: bool = True
+        use_agent_system_prompt: bool = True,
+        max_tokens: int = 2500
     ) -> Dict[str, Any]:
         """
         Sends chat payload to Catalyst LLM Serving.
@@ -130,6 +131,23 @@ class CatalystLLM:
                 "directly -- do not ask a clarifying question just because the wording was brief. Only ask for "
                 "clarification when the request could equally mean two or more different tools, or a required "
                 "parameter (like a name or case number) is completely missing. "
+                # Confirmed live: without this, a 'text_response' answer was
+                # often a single terse sentence restating the raw tool
+                # output (e.g. "No transactions found for X.") with no
+                # investigative context -- correct but not useful to an
+                # officer deciding what to do next. This is the one place in
+                # the whole pipeline where analytical depth actually gets
+                # added, since the tool functions themselves only return
+                # grounded facts, not interpretation.
+                "When you write a 'text_response' (not a clarifying question), make it thorough and useful, not a "
+                "one-line restatement: explain what the data shows, note any patterns or risk factors it points to, "
+                "and where genuinely relevant, connect it to criminological or sociological context (e.g. what a "
+                "repeat MO match, a district's economic-stress index, or a high SHAP-weighted feature implies for "
+                "the investigation) and suggest concrete next steps or leads. Use short paragraphs or bullet points "
+                "for multi-part answers. Only state what the tool result (or your own general knowledge, clearly "
+                "distinguished from case-specific facts) actually supports -- never invent names, numbers, or case "
+                "details that aren't in front of you. If a tool found nothing, say so plainly and suggest what the "
+                "officer could try next rather than just reporting the negative result. "
                 "Available tools:\n"
             )
             for t in tools:
@@ -144,8 +162,15 @@ class CatalystLLM:
             # at all, so there's nothing for it to imitate.
             system_prompt = (
                 "You are a helpful assistant for the Karnataka Police. A tool has already been run and its "
-                "result is in the conversation above. Write the officer a direct, final answer based on that "
-                "result -- respond with JSON containing only a 'text_response' field with your answer."
+                "result is in the conversation above. Write the officer a direct, detailed, well-organized final "
+                "answer based on that result -- not a one-line restatement of the raw figures. Explain what the "
+                "data means for the investigation: relevant patterns, risk factors, and where genuinely relevant, "
+                "criminological or sociological context (e.g. what a repeat MO match, an economic-stress index, or "
+                "a high-weighted risk feature implies). Suggest concrete next steps or investigative leads when the "
+                "data supports them. Use short paragraphs or bullet points for answers covering multiple points. "
+                "Only use facts actually present in the tool result above -- never invent names, numbers, or "
+                "details not shown there. If the result was empty or negative, say so plainly and suggest what to "
+                "try next. Respond with JSON containing only a 'text_response' field with your answer."
             )
         
         # Inject system prompt into messages if not already present
@@ -182,7 +207,7 @@ class CatalystLLM:
             "model": self.model_name,
             "messages": formatted_messages,
             "temperature": 0.1,
-            "max_tokens": 2500,
+            "max_tokens": max_tokens,
             "stream": False
         }
 
@@ -191,14 +216,30 @@ class CatalystLLM:
         # outage paying the full [1, 2, 4]s backoff + 25s timeout before
         # falling back, mirroring get_cached_access_token()'s own retry pattern.
         if _is_endpoint_marked_down():
-            logger.info("Catalyst LLM endpoint recently confirmed down (cached flag) -- skipping to fallback.")
+            logger.info("Catalyst LLM endpoint recently confirmed down (in-process cooldown) -- skipping to fallback.")
         else:
-            for attempt, delay in enumerate([0, 1, 2, 4]):
+            # Confirmed live: this is a "thinking" model that writes
+            # extensive step-by-step reasoning before answering -- real
+            # response times ranged 25-58s across early test calls. The old
+            # 25s timeout with 4 short-delay retries meant most calls timed
+            # out on attempts 1-2 before the model was even done thinking,
+            # then burned the whole retry budget re-asking the same slow
+            # question from scratch rather than just waiting for the one in
+            # flight. 60s helped, but a full session's worth of real timing
+            # data later showed EVERY successful call completed under 60s --
+            # several within a few seconds of that ceiling (47.9s, 54.3s,
+            # 55.5s observed) -- while every timeout was a genuine held-open
+            # connection past 60s, never a fast rejection (no 429 seen
+            # anywhere). That combination means some calls that would have
+            # succeeded at 65-90s were being killed right at the edge.
+            # Raised to 90s for real margin above the highest observed
+            # success, not an arbitrary guess.
+            for attempt, delay in enumerate([0, 3]):
                 if delay:
                     time.sleep(delay)
                 try:
                     logger.info(f"Posting to Catalyst LLM Serving endpoint (attempt {attempt + 1}): {self.endpoint_url}")
-                    res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=25)
+                    res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
 
                     if res.status_code == 200:
                         data = res.json()
@@ -206,10 +247,9 @@ class CatalystLLM:
                         # Real shape confirmed live: {"response": "...",
                         # "tool_calls": [...], "usage": {...}}, not the
                         # OpenAI-style {"choices": [...]} the rest of this
-                        # codebase (run_agent_loop, _local_agent_simulation)
-                        # is written against. Normalize here so nothing
-                        # downstream needs to know about this endpoint's
-                        # actual wire format.
+                        # codebase (run_agent_loop) is written against.
+                        # Normalize here so nothing downstream needs to know
+                        # about this endpoint's actual wire format.
                         if "choices" not in data and "response" in data:
                             return {
                                 "choices": [{
@@ -244,104 +284,80 @@ class CatalystLLM:
                     _mark_endpoint_down()
                     break
             else:
-                # Exhausted all retries on transient errors
-                _mark_endpoint_down()
+                # Exhausted all retries on transient errors (timeout/429/5xx)
+                # -- most likely this one query was just slow, not proof the
+                # service is down, so use the short cooldown.
+                _mark_endpoint_down(_TRANSIENT_COOLDOWN_SECONDS)
 
-        # Strict demo mode check: disable fallback completely
-        strict_demo = os.environ.get("STRICT_DEMO_MODE", "false").lower() == "true"
-        if strict_demo:
-            logger.critical("Strict demo mode active: LLM generative endpoint offline. Fallback simulation blocked.")
-            raise RuntimeError("Generative AI Service Unavailable - Local Simulation Blocked in Strict Demo Mode")
+        # The real endpoint is unreachable -- previously this fell back to a
+        # keyword-matching local simulator that still ran real tools and
+        # presented a "degraded" answer behind an amber banner. Removed: on
+        # a police intelligence platform, an answer whose tool/suspect was
+        # picked by string-matching instead of real reasoning shouldn't be
+        # presented as an answer at all, even a clearly-labeled one. Callers
+        # (run_agent_loop, translate) check for this "error" key and stop
+        # rather than trying to use any part of the response.
+        logger.warning("Catalyst LLM endpoint unavailable -- reporting unavailable rather than falling back to keyword simulation.")
+        return {"error": "llm_unavailable"}
 
-        # Fallback local mock simulation if live endpoint is unreachable (development fallback)
-        logger.warning("Reverting to local agent rule-parsing simulation due to endpoint unavailability.")
-        sim_res = self._local_agent_simulation(messages, tools)
-        if "choices" in sim_res and len(sim_res["choices"]) > 0:
-            msg = sim_res["choices"][0]["message"]
-            try:
-                content_json = json.loads(msg["content"])
-                content_json["is_simulated"] = True
-                content_json["simulated_reason"] = "Catalyst LLM generative endpoint offline"
-                msg["content"] = json.dumps(content_json)
-            except Exception:
-                pass
-        return sim_res
-
-    def _local_agent_simulation(self, messages: List[Dict[str, str]], tools: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    def translate(self, text: str, source_lang: str, target_lang: str) -> Dict[str, Any]:
         """
-        Grounded local LLM simulator mimicking the structured JSON tool decision format.
-        Used for local offline execution when Catalyst QuickML generative endpoints are offline.
+        Plain-text translation via the same GLM endpoint used for chat.
+        Reuses chat()'s retry/timeout/down-flag handling via
+        use_agent_system_prompt=False, which skips the tool-calling system
+        prompt entirely -- a translation request has nothing to do with tool
+        selection, and asking the model to also produce a JSON envelope for
+        a plain translation is another chance for it to fail for no benefit.
+        Replaces the old IndicTrans2Translator stub in main.py, which never
+        actually translated anything -- it always returned a canned
+        "[Translation Unavailable]" string regardless of input.
         """
-        last_user_message = ""
-        for m in reversed(messages):
-            content = m.get("content", "")
-            if m.get("role") == "user" and not content.startswith("Tool '"):
-                last_user_message = content.lower()
-                break
+        lang_names = {"en": "English", "kn": "Kannada"}
+        src_name = lang_names.get(source_lang, source_lang)
+        tgt_name = lang_names.get(target_lang, target_lang)
 
-        if not tools:
-            # Toolless synthesis turn
-            return {
-                "choices": [{
-                    "message": {
-                        "role": "assistant",
-                        "content": json.dumps({
-                            "thought": "Synthesizing final response based on retrieved data...",
-                            "text_response": "I have successfully compiled the CCTNS records and security indicators. Please review the details below.",
-                            "is_simulated": True,
-                            "simulated_reason": "Catalyst LLM generative endpoint offline"
-                        })
-                    }
-                }]
-            }
+        messages = [
+            {"role": "system", "content": (
+                f"You are a precise {src_name}-to-{tgt_name} translator for Karnataka Police "
+                f"investigative records. Translate the user's text faithfully, preserving names, "
+                f"case numbers, and technical/legal terms exactly as written. Respond with ONLY "
+                f"the translated {tgt_name} text -- no explanation, no quotes, no commentary."
+            )},
+            {"role": "user", "content": text}
+        ]
 
-        # Simulate agent tool selection reasoning
-        tool_name = "resolve_vague_query"
-        params = {"query": last_user_message}
+        # Confirmed live: this model's step-by-step reasoning for a
+        # translation task can run long enough to exhaust even 2500 tokens
+        # before it ever emits </think> -- a real correct translation was
+        # visible mid-reasoning ("Final Polish: ಡೇಟಾಬೇಸ್ ...") but got cut
+        # off before the model committed to it as the final answer. 4000
+        # gives it room to finish thinking on a task this simple.
+        res = self.chat(messages, tools=None, use_agent_system_prompt=False, max_tokens=4000)
+        if res.get("error"):
+            return {"available": False, "text": text}
+        try:
+            content = res["choices"][0]["message"]["content"]
+        except Exception:
+            return {"available": False, "text": text}
 
-        if "network" in last_user_message or "associate" in last_user_message or "connection" in last_user_message:
-            tool_name = "query_graph_network"
-            suspect_match = self._extract_suspect(last_user_message)
-            params = {"suspect_name": suspect_match if suspect_match else "Ramesh"}
-        elif "risk" in last_user_message or "reoffend" in last_user_message:
-            tool_name = "get_offender_risk"
-            suspect_match = self._extract_suspect(last_user_message)
-            params = {"suspect_name": suspect_match if suspect_match else "Ramesh"}
-        elif "map" in last_user_message or "hotspot" in last_user_message:
-            tool_name = "query_hotspots"
-            params = {}
-        elif "forecast" in last_user_message or "predict" in last_user_message:
-            tool_name = "get_forecast"
-            params = {"district": "Peenya", "crime_type": "THEFT"}
-        elif "summary" in last_user_message or "summarize" in last_user_message:
-            tool_name = "summarize_case"
-            params = {"case_id": 1}
-        elif "section" in last_user_message or "act" in last_user_message:
-            tool_name = "suggest_sections"
-            params = {"crime_description": last_user_message}
-        elif "mo" in last_user_message or "profile" in last_user_message:
-            tool_name = "get_mo_profile"
-            suspect_match = self._extract_suspect(last_user_message)
-            params = {"suspect_name": suspect_match if suspect_match else "Ramesh"}
+        # No </think> means the response was cut off mid-reasoning (this
+        # model always emits it once done thinking, confirmed across every
+        # successful call observed) -- content before that point is a
+        # reasoning draft, not a committed final answer, and returning it
+        # as if it were the translation risks showing an officer a garbled
+        # partial sentence instead of an honest "unavailable".
+        if "</think>" not in content:
+            logger.warning("Translation response truncated before </think> -- reporting unavailable rather than returning a partial reasoning fragment.")
+            return {"available": False, "text": text}
 
-        sim_response = {
-            "choices": [{
-                "message": {
-                    "role": "assistant",
-                    "content": json.dumps({
-                        "thought": f"Analyzed query '{last_user_message}' and decided to invoke '{tool_name}'",
-                        "tool": tool_name,
-                        "parameters": params
-                    })
-                }
-            }]
-        }
-        return sim_response
+        clean = content.split("</think>")[-1].strip()
+        return {"available": True, "text": clean} if clean else {"available": False, "text": text}
 
-    def _extract_suspect(self, query: str) -> Optional[str]:
-        import re
-        candidates = re.findall(r'\b[a-zA-Z]+\b', query)
-        for cand in candidates:
-            if cand.lower() not in ["show", "the", "network", "of", "risk", "profile", "reoffend", "peenya", "indiranagar", "assess", "conviction", "suspect"]:
-                return cand.capitalize()
-        return None
+    # _local_agent_simulation and _extract_suspect (keyword-matching fallback
+    # tool-selection when the real LLM was unreachable) were removed here.
+    # On a police intelligence platform, an answer whose tool/suspect was
+    # picked by string-matching instead of real reasoning shouldn't be
+    # presented as an answer at all, even a clearly-labeled "degraded" one --
+    # chat() now returns {"error": "llm_unavailable"} instead, and callers
+    # (run_agent_loop, translate) stop and say so plainly rather than trying
+    # to answer anyway.

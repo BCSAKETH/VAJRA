@@ -98,20 +98,21 @@ def handler(context, basic_val):
                 d_id = unit_to_dist[int(ps_id)]
                 dist_counts[d_id] = dist_counts.get(d_id, 0) + 1
                 
-        alerts_to_insert = []
+        spatial_alerts = []
         for d_id, count in dist_counts.items():
             d_name = dist_names.get(d_id, f"District {d_id}")
             if count > 250:
                 alert_msg = f"Volume Spike Warning: {d_name} has logged {count} incidents, exceeding normal threshold limits."
-                alerts_to_insert.append({
+                spatial_alerts.append({
                     "AlertType": "SPATIAL_SPIKE",
                     "DistrictID": d_id,
                     "AlertMessage": alert_msg,
                     "TriggerTime": datetime.now().isoformat(),
                     "Severity": "Critical",
-                    "IsRead": False
+                    "IsRead": False,
+                    "_sort_key": count
                 })
-                
+
         # 2. Repeat Offender Check (paginated -- Accused has ~14000 rows)
         acc_list = fetch_all(headers, "AccusedName, CaseMasterID", "Accused")
 
@@ -126,21 +127,38 @@ def handler(context, basic_val):
                 if ps_id and ps_id in unit_to_dist:
                     acc_last_district[name] = unit_to_dist[ps_id]
 
+        repeat_offender_alerts = []
         for name, count in acc_counts.items():
             if count > 1:
                 d_id = acc_last_district.get(name, 1)
                 alert_msg = f"Repeat Offender Alert: Suspect '{name}' detected in {count} separate cases."
-                alerts_to_insert.append({
+                repeat_offender_alerts.append({
                     "AlertType": "REPEAT_OFFENDER",
                     "DistrictID": d_id,
                     "AlertMessage": alert_msg,
                     "TriggerTime": datetime.now().isoformat(),
                     "Severity": "Critical" if count > 3 else "Warning",
-                    "IsRead": False
+                    "IsRead": False,
+                    "_sort_key": count
                 })
-                
+
+        # Cap each alert TYPE independently (most severe first within each
+        # type) rather than truncating one combined list -- confirmed live:
+        # with the old combined-then-slice[:20] approach, 21 real district
+        # volume spikes (a real, large district count in this dataset) filled
+        # every insert slot before the repeat-offender loop's alerts were
+        # ever reached, so REPEAT_OFFENDER rows were silently never written
+        # at all despite being correctly computed. get_repeat_offenders (the
+        # chat tool that reads this table) always reported "none found" as a
+        # result, not because no repeat offenders exist in the data, but
+        # because this truncation threw their alerts away before they were
+        # ever saved.
+        spatial_alerts.sort(key=lambda a: a["_sort_key"], reverse=True)
+        repeat_offender_alerts.sort(key=lambda a: a["_sort_key"], reverse=True)
+        alerts_to_insert = spatial_alerts[:20] + repeat_offender_alerts[:20]
+
         # Save alerts to ProactiveAlerts table (if it exists)
-        for alert in alerts_to_insert[:20]:
+        for alert in alerts_to_insert:
             insert_q = f"""
                 INSERT INTO ProactiveAlerts (AlertType, DistrictID, AlertMessage, TriggerTime, Severity, IsRead)
                 VALUES ('{alert["AlertType"]}', {alert["DistrictID"]}, '{alert["AlertMessage"].replace("'", "''")}', '{alert["TriggerTime"]}', '{alert["Severity"]}', false)
@@ -149,8 +167,9 @@ def handler(context, basic_val):
             if "No such Table" in res.text:
                 logger.warning("ProactiveAlerts table does not exist in Catalyst Console Datastore. Skipping insert.")
                 break
-                
-        logger.info(f"Proactive Alerts Job completed successfully. Generated {len(alerts_to_insert)} alerts.")
+
+        logger.info(f"Proactive Alerts Job completed successfully. Generated {len(alerts_to_insert)} alerts "
+                    f"({len(spatial_alerts[:20])} spatial spike, {len(repeat_offender_alerts[:20])} repeat offender).")
         return "Success"
     except Exception as e:
         logger.error(f"Error in Proactive Alerts Job: {e}")

@@ -1,4 +1,5 @@
 import React from "react";
+import { useApp } from "../AppContext";
 import {
   ResponsiveContainer,
   BarChart,
@@ -10,7 +11,8 @@ import {
   Line,
   CartesianGrid,
 } from "recharts";
-import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
+import L from "leaflet";
 import { Sparkles, Network, Gauge as GaugeIcon } from "lucide-react";
 
 export interface AppletComponentSpec {
@@ -50,6 +52,7 @@ const StatTile: React.FC<AppletComponentSpec> = ({ title, value, label }) => (
 );
 
 const DataTable: React.FC<AppletComponentSpec> = ({ title, columns, data }) => {
+  const { t } = useApp();
   const rows: any[] = Array.isArray(data) ? data : [];
   const cols: string[] = columns && columns.length > 0 ? columns : (rows[0] ? Object.keys(rows[0]) : []);
   return (
@@ -73,7 +76,7 @@ const DataTable: React.FC<AppletComponentSpec> = ({ title, columns, data }) => {
             ))}
           </tbody>
         </table>
-        {rows.length === 0 && <div className="text-slate-600 text-[10px] py-2">No rows.</div>}
+        {rows.length === 0 && <div className="text-slate-600 text-[10px] py-2">{t.noRows}</div>}
       </div>
     </CardShell>
   );
@@ -87,7 +90,7 @@ const BarChartCard: React.FC<AppletComponentSpec> = ({ title, data }) => (
           <XAxis dataKey="name" tick={{ fontSize: 9, fill: "#64748b" }} />
           <YAxis tick={{ fontSize: 9, fill: "#64748b" }} />
           <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 11 }} />
-          <Bar dataKey="value" fill="#00C6AD" radius={[3, 3, 0, 0]} />
+          <Bar dataKey="value" fill="#00C6AD" radius={[4, 4, 0, 0]} />
         </BarChart>
       </ResponsiveContainer>
     </div>
@@ -110,18 +113,58 @@ const LineChartCard: React.FC<AppletComponentSpec> = ({ title, data }) => (
   </CardShell>
 );
 
+// Same fix as ExpandedOverlay's map: a fixed center/zoom on point[0] left
+// most markers (and their tiles) never requested whenever hotspots span a
+// wide area, and the panel's own animated mount meant Leaflet sometimes
+// measured its container before the flex layout settled. fitBounds() + a
+// ResizeObserver fixes both at the source instead of guessing a zoom level
+// or a fixed delay.
+const MapFitter: React.FC<{ points: { lat: number; lng: number }[] }> = ({ points }) => {
+  const map = useMap();
+  React.useEffect(() => {
+    const fit = () => {
+      map.invalidateSize();
+      if (points.length > 0) {
+        map.fitBounds(L.latLngBounds(points.map((p) => [p.lat, p.lng] as [number, number])), { padding: [20, 20], maxZoom: 13 });
+      }
+    };
+    fit();
+    const t1 = setTimeout(fit, 150);
+    const t2 = setTimeout(fit, 500);
+    const container = map.getContainer();
+    let observer: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== "undefined") {
+      observer = new ResizeObserver(() => fit());
+      observer.observe(container);
+    }
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+      observer?.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, points.length]);
+  return null;
+};
+
 const MapCard: React.FC<AppletComponentSpec> = ({ title, data }) => {
-  const points: any[] = Array.isArray(data) ? data : [];
+  const points: { lat: number; lng: number; label?: string }[] = Array.isArray(data) ? data : [];
   const center: [number, number] = points.length > 0 ? [points[0].lat, points[0].lng] : [12.9716, 77.5946];
   return (
     <CardShell title={title}>
       <div className="h-48 rounded-lg overflow-hidden">
         <MapContainer center={center} zoom={10} style={{ height: "100%", width: "100%" }} scrollWheelZoom={false}>
           <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          <MapFitter points={points} />
           {points.map((p, idx) => (
-            <Marker key={idx} position={[p.lat, p.lng]}>
+            <CircleMarker
+              key={idx}
+              center={[p.lat, p.lng]}
+              radius={8}
+              pathOptions={{ color: "#00C6AD", weight: 2, fillColor: "#00C6AD", fillOpacity: 0.35 }}
+            >
               <Popup>{p.label || "Incident"}</Popup>
-            </Marker>
+            </CircleMarker>
           ))}
         </MapContainer>
       </div>
@@ -149,6 +192,7 @@ const NetworkGraphCard: React.FC<AppletComponentSpec> = ({ title, data }) => {
 };
 
 const TimelineCard: React.FC<AppletComponentSpec> = ({ title, data }) => {
+  const { t } = useApp();
   const events: any[] = Array.isArray(data) ? data : [];
   return (
     <CardShell title={title}>
@@ -159,7 +203,7 @@ const TimelineCard: React.FC<AppletComponentSpec> = ({ title, data }) => {
             <span className="text-slate-400 truncate">{e.event || e.description}</span>
           </div>
         ))}
-        {events.length === 0 && <div className="text-slate-600 text-[10px]">No timeline events.</div>}
+        {events.length === 0 && <div className="text-slate-600 text-[10px]">{t.noTimelineEvents}</div>}
       </div>
     </CardShell>
   );
@@ -193,11 +237,12 @@ const componentRenderers: Record<string, React.FC<AppletComponentSpec>> = {
 };
 
 export const AppletPanel: React.FC<AppletPanelProps> = ({ spec, isLoading }) => {
+  const { t } = useApp();
   return (
     <div className="w-80 shrink-0 border-l border-slate-850 bg-slate-950/30 flex flex-col h-full overflow-hidden">
       <div className="p-3 border-b border-slate-850 flex items-center gap-2">
         <Sparkles className="w-3.5 h-3.5 text-[#00C6AD]" />
-        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">Analysis Panel</span>
+        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">{t.analysisPanel}</span>
       </div>
 
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
@@ -210,7 +255,7 @@ export const AppletPanel: React.FC<AppletPanelProps> = ({ spec, isLoading }) => 
 
         {!isLoading && (!spec || spec.components.length === 0) && (
           <div className="text-[10px] text-slate-600 text-center py-8 font-mono px-2">
-            No visualizable data for this turn yet.
+            {t.noVisualizableData}
           </div>
         )}
 

@@ -7,7 +7,7 @@ from typing import Dict
 from dotenv import load_dotenv
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
-from vajra_core import catalyst_app
+from vajra_core import catalyst_app, zcql_insert_row
 
 logger = logging.getLogger("train_forecast_model")
 logging.basicConfig(level=logging.INFO)
@@ -114,7 +114,7 @@ def run_forecasting_job():
                     "confidence_score": confidence,
                     "generated_at": datetime.utcnow().isoformat()
                 }
-                catalyst_app.datastore().table("ForecastResults").insert_row(row)
+                zcql_insert_row("ForecastResults", row)
                 records_to_insert.append(row)
 
         logger.info(f"Forecasting job complete. Successfully inserted {len(records_to_insert)} forecasted rows into ForecastResults datastore (from {total_cases} real cases).")

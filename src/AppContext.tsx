@@ -23,7 +23,7 @@ export interface ChatMessage {
   sender: "user" | "assistant" | "system";
   text: string;
   timestamp: string;
-  responseType?: "text" | "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation";
+  responseType?: "text" | "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups";
   data?: any;
   isSimulated?: boolean;
   simulatedReason?: string;

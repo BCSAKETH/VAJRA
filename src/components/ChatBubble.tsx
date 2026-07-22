@@ -1,16 +1,54 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { ChatMessage } from "../AppContext";
-import { AlertTriangle, Tag, Paperclip } from "lucide-react";
+import { translations } from "../i18n";
+import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 
 interface ChatBubbleProps {
   message: ChatMessage;
+  lang: "en" | "kn";
   onExpandWidget: (type: string, data: any) => void;
 }
 
-export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onExpandWidget }) => {
+// Voice interaction, output half: reads an assistant response aloud via the
+// browser's own SpeechSynthesis -- no server-side TTS service exists (same
+// situation as STT; see the mic implementation in AIChatScreen.tsx), and
+// none is needed for this to work.
+const speakText = (text: string, lang: "en" | "kn", onEnd: () => void) => {
+  if (!("speechSynthesis" in window)) return false;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = lang === "kn" ? "kn-IN" : "en-IN";
+  utterance.onend = onEnd;
+  utterance.onerror = onEnd;
+  window.speechSynthesis.speak(utterance);
+  return true;
+};
+
+export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, lang, onExpandWidget }) => {
+  const t = translations[lang];
   const isAI = message.sender === "assistant";
-  
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
+
+  // Stop speaking if the component unmounts mid-utterance (e.g. switching sessions).
+  useEffect(() => {
+    return () => {
+      if (isSpeaking) window.speechSynthesis.cancel();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleToggleSpeak = () => {
+    if (isSpeaking) {
+      window.speechSynthesis.cancel();
+      setIsSpeaking(false);
+      return;
+    }
+    const started = speakText(message.text, lang, () => setIsSpeaking(false));
+    if (started) setIsSpeaking(true);
+  };
+
   return (
     <div className={`flex flex-col gap-1.5 w-full animate-fade-in ${isAI ? "items-start" : "items-end"}`}>
       {/* Sender Label -- shows the actual officer's name in a Cowork
@@ -18,25 +56,37 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onExpandWidget 
           messages, which is the only path used once a session has real
           participants) instead of a generic "INVESTIGATOR" label that gave
           no way to tell collaborators apart. */}
-      <span className="text-[10px] text-slate-500 font-semibold px-2 font-mono">
+      <span className="text-[10px] text-slate-500 font-semibold px-2 font-mono flex items-center gap-1.5">
         {isAI ? "VAJRA.AI" : (message.senderName ? message.senderName.toUpperCase() : "INVESTIGATOR")} • {message.timestamp}
+        {isAI && ttsSupported && (
+          <button
+            onClick={handleToggleSpeak}
+            title={isSpeaking ? t.ttsStop : t.ttsRead}
+            className={`p-0.5 rounded hover:bg-slate-800 transition-colors cursor-pointer ${isSpeaking ? "text-[#00C6AD]" : "text-slate-600 hover:text-slate-300"}`}
+          >
+            {isSpeaking ? <Volume2 className="w-3 h-3 animate-pulse" /> : <VolumeX className="w-3 h-3" />}
+          </button>
+        )}
       </span>
 
       {/* Bubble Container */}
       <div className="max-w-[85%] sm:max-w-[75%] flex flex-col gap-3">
-        {/* Amber Degradation Mode Banner */}
-        {isAI && message.isSimulated && (
-          <div className="degraded-banner rounded-xl p-3.5 flex items-start gap-2.5 max-w-full">
+        {/* AI Unavailable notice -- the backend does not answer at all when
+            the real LLM is unreachable (no keyword-matched guess presented
+            as if it were reasoning), so this replaces the normal answer
+            bubble entirely rather than sitting alongside one. */}
+        {isAI && message.isSimulated ? (
+          <div className="rounded-2xl p-4 border border-amber-500/30 bg-amber-500/10 flex items-start gap-2.5 max-w-full">
             <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
             <div className="text-xs leading-relaxed text-amber-350">
-              <span className="font-extrabold uppercase tracking-wider block mb-0.5 text-amber-500">
-                AI Reasoning Service Degraded
+              <span className="font-extrabold uppercase tracking-wider block mb-1 text-amber-500">
+                {t.aiUnavailableTitle}
               </span>
-              Showing a simplified, local rule-based response ({message.simulatedReason || "Grounded backup engine active"}).
+              <span className="text-slate-200">{message.text}</span>
             </div>
           </div>
-        )}
-
+        ) : (
+        <>
         {/* Message Bubble Card */}
         <div
           className={`rounded-2xl p-4 border text-sm leading-relaxed ${
@@ -89,6 +139,8 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, onExpandWidget 
               onExpand={() => onExpandWidget(message.responseType!, message.data)}
             />
           </div>
+        )}
+        </>
         )}
       </div>
     </div>

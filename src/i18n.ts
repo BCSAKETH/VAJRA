@@ -38,6 +38,109 @@ export interface Translations {
   voiceListening: string;
   thinkingIndicator: string;
   simulatedModeWarning: string;
+  // Global chrome
+  profileLabel: string;
+  signOut: string;
+  // Settings screen
+  settingsDesc: string;
+  settingsLangThemeTitle: string;
+  settingsAppLanguage: string;
+  settingsLangOptEn: string;
+  settingsLangOptKn: string;
+  settingsDisplayTheme: string;
+  settingsThemeDark: string;
+  settingsThemeLight: string;
+  settingsDbDiagTitle: string;
+  settingsZcqlLabel: string;
+  settingsOnline: string;
+  settingsOffline: string;
+  settingsSecurityPoliciesTitle: string;
+  settingsSessionTimeoutTitle: string;
+  settingsPolicyEnforced: string;
+  settingsTwoPersonTitle: string;
+  settingsTwoPersonDesc: string;
+  settingsControlEngaged: string;
+  // Supervisor dashboard
+  supervisorTitle: string;
+  supervisorDesc: string;
+  supervisorVerifyingHashes: string;
+  supervisorVerifyLedger: string;
+  supervisorLedgerResolvedLabel: string;
+  supervisorLedgerResolvedBody: string;
+  supervisorLedgerAlertLabel: string;
+  supervisorLedgerAlertBody: string;
+  supervisorConsistencyFlagsTitle: string;
+  supervisorNoFlags: string;
+  supervisorResolveDualControl: string;
+  supervisorResolvedBySupervisor: string;
+  supervisorAuditLedgerTitle: string;
+  supervisorNoAuditLogs: string;
+  supervisorQueryLabel: string;
+  supervisorHashLabel: string;
+  // Two-person approval modal
+  tpTitle: string;
+  tpActionLabel: string;
+  tpWarning: string;
+  tpSupervisorBadgeLabel: string;
+  tpSupervisorPasswordLabel: string;
+  tpCancel: string;
+  tpVerifyApprove: string;
+  tpVerifying: string;
+  // Chat bubble
+  aiUnavailableTitle: string;
+  ttsStop: string;
+  ttsRead: string;
+  // Chat history panel
+  newInvestigation: string;
+  newChat: string;
+  loadingLabel: string;
+  noPastConversations: string;
+  newConversationFallback: string;
+  // Applet panel
+  analysisPanel: string;
+  noVisualizableData: string;
+  noRows: string;
+  noTimelineEvents: string;
+  // Cowork invitations panel
+  coworkInvitationsTitle: string;
+  noPendingInvitations: string;
+  invitedYouOnCase: string;
+  onCaseLabel: string;
+  accept: string;
+  reject: string;
+  // New investigation modal
+  newInvestigationTitleRequired: string;
+  couldNotCreateInvestigation: string;
+  couldNotReachServer: string;
+  titleLabel: string;
+  descOptionalLabel: string;
+  linkCaseOptionalLabel: string;
+  creating: string;
+  createInvestigation: string;
+  investigationTitlePlaceholder: string;
+  investigationDescPlaceholder: string;
+  caseSearchPlaceholder: string;
+  // AI chat screen
+  chatHubTitle: string;
+  chatHubDesc: string;
+  exportPdf: string;
+  translatingIndicator: string;
+  micTitleAvailable: string;
+  micTitleUnavailable: string;
+  attachTitle: string;
+  uploadingAttachments: string;
+  chatModeChat: string;
+  chatModeCowork: string;
+  sharedSessionHint: string;
+  inviteToCowork: string;
+  badgeNumberKgidLabel: string;
+  accessLevelLabel: string;
+  viewerLabel: string;
+  collaboratorLabel: string;
+  viewerDesc: string;
+  collaboratorDesc: string;
+  sendInvitation: string;
+  sendingInvitation: string;
 }
 
 export const translations: Record<Language, Translations> = {
@@ -79,6 +182,99 @@ export const translations: Record<Language, Translations> = {
     voiceListening: "Listening to Karnataka voice feed...",
     thinkingIndicator: "VAJRA is reasoning over CCTNS registers...",
     simulatedModeWarning: "AI reasoning service degraded — showing offline simulated response",
+    profileLabel: "Investigator Profile",
+    signOut: "Sign Out",
+    settingsDesc: "System diagnostics, security policies, and localization preferences.",
+    settingsLangThemeTitle: "Language & Theme Preferences",
+    settingsAppLanguage: "Application Language",
+    settingsLangOptEn: "English (Bilingual)",
+    settingsLangOptKn: "ಕನ್ನಡ (Kannada)",
+    settingsDisplayTheme: "Display Theme",
+    settingsThemeDark: "High Contrast Dark Mode",
+    settingsThemeLight: "NIC Standard Light Mode",
+    settingsDbDiagTitle: "Database Client Diagnostics",
+    settingsZcqlLabel: "Zoho Catalyst ZCQL Client:",
+    settingsOnline: "ONLINE (Catalyst serverless)",
+    settingsOffline: "OFFLINE",
+    settingsSecurityPoliciesTitle: "Active Security Policies",
+    settingsSessionTimeoutTitle: "Session Timeout Limit",
+    settingsPolicyEnforced: "⚠️ POLICY ENFORCED — READ ONLY",
+    settingsTwoPersonTitle: "Two-Person Integrity (Dual-Control)",
+    settingsTwoPersonDesc: "Critical adjustments, legal suggestions, and ledger overrides must be co-signed by an independent Supervisor's credentials.",
+    settingsControlEngaged: "✓ CONTROL ENGAGED",
+    supervisorTitle: "Supervisor Compliance Portal",
+    supervisorDesc: "Dual-control authorization & cryptographic ledger verification.",
+    supervisorVerifyingHashes: "Verifying hashes...",
+    supervisorVerifyLedger: "Verify Ledger Chain",
+    supervisorLedgerResolvedLabel: "CRYPTOGRAPHIC INTEGRITY RESOLVED:",
+    supervisorLedgerResolvedBody: "AuditLog chain verified. All SHA-256 blocks are consistent.",
+    supervisorLedgerAlertLabel: "SECURITY ALERT:",
+    supervisorLedgerAlertBody: "AuditLog block hash verification failed. Tampering detected!",
+    supervisorConsistencyFlagsTitle: "Legal Consistency Flags",
+    supervisorNoFlags: "No unresolved consistency flags recorded.",
+    supervisorResolveDualControl: "Resolve via Dual Control",
+    supervisorResolvedBySupervisor: "✓ Resolved by Supervisor",
+    supervisorAuditLedgerTitle: "Cryptographic Audit Ledger",
+    supervisorNoAuditLogs: "No audit log records found.",
+    supervisorQueryLabel: "Query:",
+    supervisorHashLabel: "Hash:",
+    tpTitle: "Two-Person Integrity Verification",
+    tpActionLabel: "Action:",
+    tpWarning: "This action requires secondary authorization from an officer with Supervisor clearance. Co-signing supervisor must verify credentials below.",
+    tpSupervisorBadgeLabel: "Supervisor Badge No (7-Digit KGID)",
+    tpSupervisorPasswordLabel: "Supervisor Password",
+    tpCancel: "Cancel",
+    tpVerifyApprove: "Verify & Approve",
+    tpVerifying: "Verifying...",
+    aiUnavailableTitle: "AI Temporarily Unavailable",
+    ttsStop: "Stop reading aloud",
+    ttsRead: "Read response aloud",
+    newInvestigation: "New Investigation",
+    newChat: "New Chat",
+    loadingLabel: "Loading...",
+    noPastConversations: "No past conversations yet.",
+    newConversationFallback: "New Conversation",
+    analysisPanel: "Analysis Panel",
+    noVisualizableData: "No visualizable data for this turn yet.",
+    noRows: "No rows.",
+    noTimelineEvents: "No timeline events.",
+    coworkInvitationsTitle: "Cowork Invitations",
+    noPendingInvitations: "No pending invitations.",
+    invitedYouOnCase: "invited you to a shared session",
+    onCaseLabel: "on case",
+    accept: "Accept",
+    reject: "Reject",
+    newInvestigationTitleRequired: "Title is required.",
+    couldNotCreateInvestigation: "Could not create investigation.",
+    couldNotReachServer: "Could not reach the server.",
+    titleLabel: "Title",
+    descOptionalLabel: "Description (optional)",
+    linkCaseOptionalLabel: "Link a Case (optional)",
+    creating: "Creating...",
+    createInvestigation: "Create Investigation",
+    investigationTitlePlaceholder: "e.g. Bengaluru East Theft Ring",
+    investigationDescPlaceholder: "Brief notes on what this investigation covers...",
+    caseSearchPlaceholder: "Search by case number (e.g. CR-2026)",
+    chatHubTitle: "VAJRA Central Inquest Hub",
+    chatHubDesc: "Log dialogues or speak in English/Kannada to query active CCTNS registers, analyze conviction risk indices, and plot spatial crime clusters.",
+    exportPdf: "Export PDF",
+    translatingIndicator: "Translating Kannada Voice Data...",
+    micTitleAvailable: "Speak Kannada/English",
+    micTitleUnavailable: "Voice input is not available — speech-to-text service is not yet configured",
+    attachTitle: "Attach evidence (PDF or JPEG, max 3 files, 8MB each)",
+    uploadingAttachments: "Uploading attachments...",
+    chatModeChat: "Chat",
+    chatModeCowork: "Cowork",
+    sharedSessionHint: "Shared session — mention @vajra to ask the AI",
+    inviteToCowork: "Invite to Cowork",
+    badgeNumberKgidLabel: "Badge Number (7-digit KGID)",
+    accessLevelLabel: "Access Level",
+    viewerLabel: "Viewer",
+    collaboratorLabel: "Collaborator",
+    viewerDesc: "Can watch the thread, cannot send messages.",
+    collaboratorDesc: "Can post messages and @vajra the AI.",
+    sendInvitation: "Send Invitation",
+    sendingInvitation: "Sending...",
   },
   kn: {
     title: "ವಜ್ರ ಕೊಪೈಲಟ್ ಹಬ್",
@@ -118,5 +314,98 @@ export const translations: Record<Language, Translations> = {
     voiceListening: "ಕನ್ನಡ ಧ್ವನಿ ಸಂಜ್ಞೆ ಆಲಿಸಲಾಗುತ್ತಿದೆ...",
     thinkingIndicator: "ವಜ್ರ ಸಿಬ್ಬಂದಿ CCTNS ದಾಖಲೆಗಳನ್ನು ಹುಡುಕುತ್ತಿದ್ದಾರೆ...",
     simulatedModeWarning: "AI ತಾರ್ಕಿಕ ಸೇವೆ ನಿಷ್ಕ್ರಿಯವಾಗಿದೆ — ಸ್ಥಳೀಯ ಆಫ್‌ಲೈನ್ ಸಿಮ್ಯುಲೇಟೆಡ್ ಉತ್ತರ ತೋರಿಸಲಾಗುತ್ತಿದೆ",
+    profileLabel: "ತನಿಖಾಧಿಕಾರಿ ಪ್ರೊಫೈಲ್",
+    signOut: "ಸೈನ್ ಔಟ್",
+    settingsDesc: "ಸಿಸ್ಟಮ್ ಡಯಾಗ್ನೋಸ್ಟಿಕ್ಸ್, ಭದ್ರತಾ ನೀತಿಗಳು ಮತ್ತು ಸ್ಥಳೀಕರಣ ಆದ್ಯತೆಗಳು.",
+    settingsLangThemeTitle: "ಭಾಷೆ ಮತ್ತು ಥೀಮ್ ಆದ್ಯತೆಗಳು",
+    settingsAppLanguage: "ಅಪ್ಲಿಕೇಶನ್ ಭಾಷೆ",
+    settingsLangOptEn: "ಇಂಗ್ಲಿಷ್ (ದ್ವಿಭಾಷಾ)",
+    settingsLangOptKn: "ಕನ್ನಡ (Kannada)",
+    settingsDisplayTheme: "ಪ್ರದರ್ಶನ ಥೀಮ್",
+    settingsThemeDark: "ಹೈ ಕಾಂಟ್ರಾಸ್ಟ್ ಡಾರ್ಕ್ ಮೋಡ್",
+    settingsThemeLight: "NIC ಪ್ರಮಾಣಿತ ಲೈಟ್ ಮೋಡ್",
+    settingsDbDiagTitle: "ಡೇಟಾಬೇಸ್ ಕ್ಲೈಂಟ್ ಡಯಾಗ್ನೋಸ್ಟಿಕ್ಸ್",
+    settingsZcqlLabel: "Zoho Catalyst ZCQL ಕ್ಲೈಂಟ್:",
+    settingsOnline: "ಆನ್‌ಲೈನ್ (Catalyst serverless)",
+    settingsOffline: "ಆಫ್‌ಲೈನ್",
+    settingsSecurityPoliciesTitle: "ಸಕ್ರಿಯ ಭದ್ರತಾ ನೀತಿಗಳು",
+    settingsSessionTimeoutTitle: "ಅಧಿವೇಶನ ಅವಧಿ ಮಿತಿ",
+    settingsPolicyEnforced: "⚠️ ನೀತಿ ಜಾರಿಯಲ್ಲಿದೆ — ಓದಲು ಮಾತ್ರ",
+    settingsTwoPersonTitle: "ದ್ವಿ-ವ್ಯಕ್ತಿ ಸಮಗ್ರತೆ (ಡ್ಯುಯಲ್-ಕಂಟ್ರೋಲ್)",
+    settingsTwoPersonDesc: "ನಿರ್ಣಾಯಕ ಬದಲಾವಣೆಗಳು, ಕಾನೂನು ಸಲಹೆಗಳು ಮತ್ತು ಲೆಡ್ಜರ್ ಮೀರಿಕೆಗಳಿಗೆ ಸ್ವತಂತ್ರ ಮೇಲ್ವಿಚಾರಕರ ರುಜುವಾತುಗಳ ಸಹಿ ಅಗತ್ಯವಿದೆ.",
+    settingsControlEngaged: "✓ ನಿಯಂತ್ರಣ ಸಕ್ರಿಯವಾಗಿದೆ",
+    supervisorTitle: "ಮೇಲ್ವಿಚಾರಕರ ಅನುಸರಣೆ ಪೋರ್ಟಲ್",
+    supervisorDesc: "ಡ್ಯುಯಲ್-ಕಂಟ್ರೋಲ್ ಅನುಮತಿ ಮತ್ತು ಗುಪ್ತಲಿಪಿ ಲೆಡ್ಜರ್ ಪರಿಶೀಲನೆ.",
+    supervisorVerifyingHashes: "ಹ್ಯಾಶ್‌ಗಳನ್ನು ಪರಿಶೀಲಿಸಲಾಗುತ್ತಿದೆ...",
+    supervisorVerifyLedger: "ಲೆಡ್ಜರ್ ಸರಪಳಿ ಪರಿಶೀಲಿಸಿ",
+    supervisorLedgerResolvedLabel: "ಗುಪ್ತಲಿಪಿ ಸಮಗ್ರತೆ ಖಚಿತಪಡಿಸಲಾಗಿದೆ:",
+    supervisorLedgerResolvedBody: "ಆಡಿಟ್‌ಲಾಗ್ ಸರಪಳಿ ಪರಿಶೀಲಿಸಲಾಗಿದೆ. ಎಲ್ಲಾ SHA-256 ಬ್ಲಾಕ್‌ಗಳು ಸ್ಥಿರವಾಗಿವೆ.",
+    supervisorLedgerAlertLabel: "ಭದ್ರತಾ ಎಚ್ಚರಿಕೆ:",
+    supervisorLedgerAlertBody: "ಆಡಿಟ್‌ಲಾಗ್ ಬ್ಲಾಕ್ ಹ್ಯಾಶ್ ಪರಿಶೀಲನೆ ವಿಫಲವಾಗಿದೆ. ಮೋಸ ಪತ್ತೆಯಾಗಿದೆ!",
+    supervisorConsistencyFlagsTitle: "ಕಾನೂನು ಸ್ಥಿರತೆ ಫ್ಲ್ಯಾಗ್‌ಗಳು",
+    supervisorNoFlags: "ಬಗೆಹರಿಸದ ಸ್ಥಿರತೆ ಫ್ಲ್ಯಾಗ್‌ಗಳು ದಾಖಲಾಗಿಲ್ಲ.",
+    supervisorResolveDualControl: "ಡ್ಯುಯಲ್ ಕಂಟ್ರೋಲ್ ಮೂಲಕ ಬಗೆಹರಿಸಿ",
+    supervisorResolvedBySupervisor: "✓ ಮೇಲ್ವಿಚಾರಕರಿಂದ ಬಗೆಹರಿಸಲಾಗಿದೆ",
+    supervisorAuditLedgerTitle: "ಗುಪ್ತಲಿಪಿ ಆಡಿಟ್ ಲೆಡ್ಜರ್",
+    supervisorNoAuditLogs: "ಆಡಿಟ್ ಲಾಗ್ ದಾಖಲೆಗಳು ಕಂಡುಬಂದಿಲ್ಲ.",
+    supervisorQueryLabel: "ಪ್ರಶ್ನೆ:",
+    supervisorHashLabel: "ಹ್ಯಾಶ್:",
+    tpTitle: "ದ್ವಿ-ವ್ಯಕ್ತಿ ಸಮಗ್ರತೆ ಪರಿಶೀಲನೆ",
+    tpActionLabel: "ಕ್ರಿಯೆ:",
+    tpWarning: "ಈ ಕ್ರಿಯೆಗೆ ಮೇಲ್ವಿಚಾರಕ ಅನುಮತಿ ಹೊಂದಿರುವ ಅಧಿಕಾರಿಯ ದ್ವಿತೀಯ ಅನುಮೋದನೆ ಅಗತ್ಯವಿದೆ. ಸಹಿ ಮಾಡುವ ಮೇಲ್ವಿಚಾರಕರು ಕೆಳಗಿನ ರುಜುವಾತುಗಳನ್ನು ಪರಿಶೀಲಿಸಬೇಕು.",
+    tpSupervisorBadgeLabel: "ಮೇಲ್ವಿಚಾರಕರ ಬ್ಯಾಡ್ಜ್ ಸಂಖ್ಯೆ (೭-ಅಂಕಿ KGID)",
+    tpSupervisorPasswordLabel: "ಮೇಲ್ವಿಚಾರಕರ ಪಾಸ್‌ವರ್ಡ್",
+    tpCancel: "ರದ್ದುಮಾಡಿ",
+    tpVerifyApprove: "ಪರಿಶೀಲಿಸಿ ಮತ್ತು ಅನುಮೋದಿಸಿ",
+    tpVerifying: "ಪರಿಶೀಲಿಸಲಾಗುತ್ತಿದೆ...",
+    aiUnavailableTitle: "AI ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ",
+    ttsStop: "ಓದುವುದನ್ನು ನಿಲ್ಲಿಸಿ",
+    ttsRead: "ಪ್ರತಿಕ್ರಿಯೆಯನ್ನು ಗಟ್ಟಿಯಾಗಿ ಓದಿ",
+    newInvestigation: "ಹೊಸ ತನಿಖೆ",
+    newChat: "ಹೊಸ ಚಾಟ್",
+    loadingLabel: "ಲೋಡ್ ಆಗುತ್ತಿದೆ...",
+    noPastConversations: "ಇನ್ನೂ ಯಾವುದೇ ಹಿಂದಿನ ಸಂಭಾಷಣೆಗಳಿಲ್ಲ.",
+    newConversationFallback: "ಹೊಸ ಸಂಭಾಷಣೆ",
+    analysisPanel: "ವಿಶ್ಲೇಷಣಾ ಫಲಕ",
+    noVisualizableData: "ಈ ಸರದಿಗೆ ಇನ್ನೂ ದೃಶ್ಯೀಕರಿಸಬಹುದಾದ ಡೇಟಾ ಇಲ್ಲ.",
+    noRows: "ಸಾಲುಗಳಿಲ್ಲ.",
+    noTimelineEvents: "ಟೈಮ್‌ಲೈನ್ ಘಟನೆಗಳಿಲ್ಲ.",
+    coworkInvitationsTitle: "ಸಹಕಾರ್ಯ ಆಹ್ವಾನಗಳು",
+    noPendingInvitations: "ಬಾಕಿ ಇರುವ ಆಹ್ವಾನಗಳಿಲ್ಲ.",
+    invitedYouOnCase: "ನಿಮ್ಮನ್ನು ಹಂಚಿದ ಅಧಿವೇಶನಕ್ಕೆ ಆಹ್ವಾನಿಸಿದ್ದಾರೆ",
+    onCaseLabel: "ಪ್ರಕರಣದಲ್ಲಿ",
+    accept: "ಒಪ್ಪಿಕೊಳ್ಳಿ",
+    reject: "ತಿರಸ್ಕರಿಸಿ",
+    newInvestigationTitleRequired: "ಶೀರ್ಷಿಕೆ ಅಗತ್ಯವಿದೆ.",
+    couldNotCreateInvestigation: "ತನಿಖೆ ರಚಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+    couldNotReachServer: "ಸರ್ವರ್ ತಲುಪಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+    titleLabel: "ಶೀರ್ಷಿಕೆ",
+    descOptionalLabel: "ವಿವರಣೆ (ಐಚ್ಛಿಕ)",
+    linkCaseOptionalLabel: "ಪ್ರಕರಣ ಜೋಡಿಸಿ (ಐಚ್ಛಿಕ)",
+    creating: "ರಚಿಸಲಾಗುತ್ತಿದೆ...",
+    createInvestigation: "ತನಿಖೆ ರಚಿಸಿ",
+    investigationTitlePlaceholder: "ಉದಾ. ಬೆಂಗಳೂರು ಪೂರ್ವ ಕಳ್ಳತನ ಜಾಲ",
+    investigationDescPlaceholder: "ಈ ತನಿಖೆ ಒಳಗೊಂಡಿರುವ ವಿಷಯದ ಕುರಿತು ಸಂಕ್ಷಿಪ್ತ ಟಿಪ್ಪಣಿಗಳು...",
+    caseSearchPlaceholder: "ಪ್ರಕರಣ ಸಂಖ್ಯೆಯ ಮೂಲಕ ಹುಡುಕಿ (ಉದಾ. CR-2026)",
+    chatHubTitle: "ವಜ್ರ ಕೇಂದ್ರ ತನಿಖಾ ಕೇಂದ್ರ",
+    chatHubDesc: "ಸಕ್ರಿಯ CCTNS ನೋಂದಣಿಗಳನ್ನು ಪ್ರಶ್ನಿಸಲು, ಅಪರಾಧ ಅಪಾಯ ಸೂಚ್ಯಂಕಗಳನ್ನು ವಿಶ್ಲೇಷಿಸಲು ಮತ್ತು ಪ್ರಾದೇಶಿಕ ಅಪರಾಧ ಸಮೂಹಗಳನ್ನು ಗುರುತಿಸಲು ಇಂಗ್ಲಿಷ್/ಕನ್ನಡದಲ್ಲಿ ಟೈಪ್ ಮಾಡಿ ಅಥವಾ ಮಾತನಾಡಿ.",
+    exportPdf: "PDF ರಫ್ತು ಮಾಡಿ",
+    translatingIndicator: "ಕನ್ನಡ ಧ್ವನಿ ಡೇಟಾವನ್ನು ಅನುವಾದಿಸಲಾಗುತ್ತಿದೆ...",
+    micTitleAvailable: "ಕನ್ನಡ/ಇಂಗ್ಲಿಷ್‌ನಲ್ಲಿ ಮಾತನಾಡಿ",
+    micTitleUnavailable: "ಧ್ವನಿ ಇನ್‌ಪುಟ್ ಲಭ್ಯವಿಲ್ಲ — ಸ್ಪೀಚ್-ಟು-ಟೆಕ್ಸ್ಟ್ ಸೇವೆ ಇನ್ನೂ ಕಾನ್ಫಿಗರ್ ಆಗಿಲ್ಲ",
+    attachTitle: "ಸಾಕ್ಷ್ಯ ಲಗತ್ತಿಸಿ (PDF ಅಥವಾ JPEG, ಗರಿಷ್ಠ ೩ ಫೈಲ್‌ಗಳು, ತಲಾ ೮MB)",
+    uploadingAttachments: "ಲಗತ್ತುಗಳನ್ನು ಅಪ್‌ಲೋಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ...",
+    chatModeChat: "ಚಾಟ್",
+    chatModeCowork: "ಸಹಕಾರ್ಯ",
+    sharedSessionHint: "ಹಂಚಿದ ಅಧಿವೇಶನ — AI ಗೆ ಕೇಳಲು @vajra ಎಂದು ಉಲ್ಲೇಖಿಸಿ",
+    inviteToCowork: "ಸಹಕಾರ್ಯಕ್ಕೆ ಆಹ್ವಾನಿಸಿ",
+    badgeNumberKgidLabel: "ಬ್ಯಾಡ್ಜ್ ಸಂಖ್ಯೆ (೭-ಅಂಕಿ KGID)",
+    accessLevelLabel: "ಪ್ರವೇಶ ಮಟ್ಟ",
+    viewerLabel: "ವೀಕ್ಷಕ",
+    collaboratorLabel: "ಸಹಯೋಗಿ",
+    viewerDesc: "ಥ್ರೆಡ್ ವೀಕ್ಷಿಸಬಹುದು, ಸಂದೇಶಗಳನ್ನು ಕಳುಹಿಸಲಾಗುವುದಿಲ್ಲ.",
+    collaboratorDesc: "ಸಂದೇಶಗಳನ್ನು ಪೋಸ್ಟ್ ಮಾಡಬಹುದು ಮತ್ತು AI ಅನ್ನು @vajra ಮಾಡಬಹುದು.",
+    sendInvitation: "ಆಹ್ವಾನ ಕಳುಹಿಸಿ",
+    sendingInvitation: "ಕಳುಹಿಸಲಾಗುತ್ತಿದೆ...",
   }
 };

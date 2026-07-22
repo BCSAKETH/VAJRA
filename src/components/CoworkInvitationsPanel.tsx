@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import { Bell, Check, X } from "lucide-react";
 
@@ -11,6 +12,7 @@ interface CoworkInvitation {
 }
 
 export const CoworkInvitationsPanel: React.FC = () => {
+  const { t } = useApp();
   const [invitations, setInvitations] = useState<CoworkInvitation[]>([]);
   const [isOpen, setIsOpen] = useState(false);
 
@@ -70,30 +72,30 @@ export const CoworkInvitationsPanel: React.FC = () => {
       {isOpen && (
         <div className="absolute right-0 top-full mt-2 w-72 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl z-50 overflow-hidden">
           <div className="px-3 py-2 border-b border-slate-850 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
-            Cowork Invitations
+            {t.coworkInvitationsTitle}
           </div>
           <div className="max-h-72 overflow-y-auto">
             {invitations.length === 0 ? (
-              <div className="px-3 py-6 text-center text-[11px] text-slate-600">No pending invitations.</div>
+              <div className="px-3 py-6 text-center text-[11px] text-slate-600">{t.noPendingInvitations}</div>
             ) : (
               invitations.map((inv) => (
                 <div key={inv.invitation_id} className="px-3 py-2.5 border-b border-slate-850 last:border-0">
                   <p className="text-xs text-slate-300">
-                    <span className="font-bold text-[#00C6AD]">{inv.inviter_name}</span> invited you to a shared session
-                    {inv.case_no ? ` on case ${inv.case_no}` : ""}.
+                    <span className="font-bold text-[#00C6AD]">{inv.inviter_name}</span> {t.invitedYouOnCase}
+                    {inv.case_no ? ` ${t.onCaseLabel} ${inv.case_no}` : ""}.
                   </p>
                   <div className="flex gap-2 mt-2">
                     <button
                       onClick={() => respond(inv.invitation_id, "accept")}
                       className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg bg-[#00C6AD]/10 border border-[#00C6AD]/30 text-[#00C6AD] text-[11px] font-bold hover:bg-[#00C6AD]/20 transition-all cursor-pointer"
                     >
-                      <Check className="w-3 h-3" /> Accept
+                      <Check className="w-3 h-3" /> {t.accept}
                     </button>
                     <button
                       onClick={() => respond(inv.invitation_id, "reject")}
                       className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg bg-slate-800 border border-slate-700 text-slate-400 text-[11px] font-bold hover:bg-slate-750 transition-all cursor-pointer"
                     >
-                      <X className="w-3 h-3" /> Reject
+                      <X className="w-3 h-3" /> {t.reject}
                     </button>
                   </div>
                 </div>

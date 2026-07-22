@@ -16,7 +16,7 @@ export const TwoPersonApprovalModal: React.FC<TwoPersonApprovalModalProps> = ({
   onClose,
   onApprove,
 }) => {
-  const { badgeNumber, lang } = useApp();
+  const { badgeNumber, lang, t } = useApp();
   const [supBadge, setSupBadge] = useState("");
   const [supPassword, setSupPassword] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -111,10 +111,10 @@ export const TwoPersonApprovalModal: React.FC<TwoPersonApprovalModalProps> = ({
           </div>
           <div>
             <h3 className="text-xs font-black text-slate-100 uppercase tracking-wider font-mono">
-              Two-Person Integrity Verification
+              {t.tpTitle}
             </h3>
             <p className="text-[10px] text-slate-500 font-mono">
-              Action: {actionName}
+              {t.tpActionLabel} {actionName}
             </p>
           </div>
         </div>
@@ -122,7 +122,7 @@ export const TwoPersonApprovalModal: React.FC<TwoPersonApprovalModalProps> = ({
         <div className="flex gap-2.5 bg-amber-500/10 border border-amber-500/20 rounded-lg p-3 text-[11px] leading-relaxed text-amber-450">
           <ShieldAlert className="w-5 h-5 shrink-0 text-amber-500 mt-0.5" />
           <span>
-            This action requires secondary authorization from an officer with Supervisor clearance. Co-signing supervisor must verify credentials below.
+            {t.tpWarning}
           </span>
         </div>
 
@@ -136,7 +136,7 @@ export const TwoPersonApprovalModal: React.FC<TwoPersonApprovalModalProps> = ({
           {/* Supervisor Badge */}
           <div className="space-y-1">
             <label className="block text-[10px] font-black text-slate-450 uppercase font-mono">
-              Supervisor Badge No (7-Digit KGID)
+              {t.tpSupervisorBadgeLabel}
             </label>
             <input
               type="text"
@@ -151,7 +151,7 @@ export const TwoPersonApprovalModal: React.FC<TwoPersonApprovalModalProps> = ({
           {/* Supervisor Password */}
           <div className="space-y-1">
             <label className="block text-[10px] font-black text-slate-450 uppercase font-mono">
-              Supervisor Password
+              {t.tpSupervisorPasswordLabel}
             </label>
             <div className="relative">
               <input
@@ -173,14 +173,14 @@ export const TwoPersonApprovalModal: React.FC<TwoPersonApprovalModalProps> = ({
               onClick={onClose}
               className="flex-1 bg-slate-900 border border-slate-800 hover:border-slate-700 text-slate-400 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all"
             >
-              Cancel
+              {t.tpCancel}
             </button>
             <button
               type="submit"
               disabled={isLoading}
               className="flex-1 bg-[#00C6AD]/10 hover:bg-[#00C6AD]/20 border border-[#00C6AD]/30 text-[#00C6AD] py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all disabled:opacity-50"
             >
-              {isLoading ? "Verifying..." : "Verify & Approve"}
+              {isLoading ? t.tpVerifying : t.tpVerifyApprove}
             </button>
           </div>
         </form>
