@@ -19,3 +19,5 @@ __pycache__/
 .git/index.lock
 .token_cache
 *.joblib
+*.txt
+screenshots/
