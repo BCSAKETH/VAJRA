@@ -874,14 +874,16 @@ async def get_accused_list(
 # Translation Layer
 class GLMTranslator:
     """
-    Real Kannada<->English translation via CatalystLLM.translate() (the same
-    GLM endpoint used for chat). Previously named IndicTrans2Translator and
-    never actually translated anything -- both directions unconditionally
-    returned a canned "[Translation Unavailable]" string regardless of
-    input, now that a working GLM endpoint exists this is real. Keeps the
-    slang-normalization pre-pass (informal spoken-Kannada terms -> their
-    standard forms) since that genuinely helps translation quality
-    regardless of which model does the translating.
+    Kannada<->English translation, fast path first. Tries Zia's dedicated
+    Text Translation model (CatalystLLM.translate_fast() -- confirmed live
+    ~0.7-2s) before falling back to the GLM chat endpoint's translate()
+    (15-250s+, but tolerant of any input). Previously named
+    IndicTrans2Translator and never actually translated anything -- both
+    directions unconditionally returned a canned "[Translation Unavailable]"
+    string regardless of input; the GLM path made it real, this adds real
+    speed on top for the common case. Keeps the slang-normalization
+    pre-pass (informal spoken-Kannada terms -> their standard forms) since
+    that helps translation quality regardless of which model translates.
     """
     DIALECT_MAP = {
         "ಮಂದಿ": "ಜನಗಳು", "ಗಳಿ": "ಸ್ನೇಹಿತರು", "ಖರಾಬ": "ಕೆಟ್ಟದಾಗಿದೆ", "ನಮೂನಿ": "ರೀತಿ", "ಕಳ್ಳ": "ಆರೋಪಿ"
@@ -900,10 +902,64 @@ class GLMTranslator:
             normalized_words.append(word.replace(clean_word, replaced))
         return " ".join(normalized_words)
 
+    @staticmethod
+    def _sanitize_for_fast_translate(text: str) -> str:
+        """
+        Zia's fast translate endpoint 400s on '%', '*', '(', ')', '#', and
+        '+' -- confirmed live via direct testing (undocumented; the error
+        response gives no hint which character is the problem). VAJRA's
+        answers are markdown-formatted ("**Key Risk Factor:**") and full of
+        percentages and parenthetical citations ("(3 cases, Haveri)"), so
+        sending them unmodified would fail on most real answers. Only the
+        confirmed-bad characters are touched; anything else that trips the
+        validator (an untested character) still degrades safely since
+        translate_fast() falls back to GLM on ANY failure.
+        """
+        # Confirmed live: a residual single '*' (left behind by stripping
+        # only "**" pairs -- e.g. the leading bullet marker in "*   **Low
+        # Conviction Probability:**" still has one '*' after the bold
+        # markers are removed) is enough to trip the same PATTERN_NOT_MATCHED
+        # rejection as a full "**bold**" pair. Strip every '*', not just
+        # matched pairs -- markdown bullet lists use both.
+        cleaned = text.replace("*", "")
+        cleaned = cleaned.replace("%", " percent")
+        cleaned = cleaned.replace("(", ", ").replace(")", "")
+        cleaned = cleaned.replace("#", "")
+        cleaned = cleaned.replace("+", " plus ")
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    @staticmethod
+    def _numbers_match(source: str, translated: str) -> bool:
+        """
+        Confirmed live: on a longer, multi-sentence paragraph, Zia's fast
+        translate corrupted a decimal figure ("0.1 percent" -> "0.01
+        ಪ್ರತಿಶತ" -- a 10x error) even though the same number translated
+        correctly every time in isolated short-sentence retests. On a
+        platform reporting exact risk-score percentages, a silently wrong
+        statistic is a real problem, not a cosmetic one. Comparing the set
+        of numbers in the source vs. translated text is a cheap, targeted
+        safety net: a mismatch means don't trust this result, fall back to
+        the slower GLM path instead.
+        """
+        src_nums = set(re.findall(r"\d+\.?\d*", source))
+        tgt_nums = set(re.findall(r"\d+\.?\d*", translated))
+        return src_nums == tgt_nums
+
     def translate(self, text: str, source_lang: str, target_lang: str) -> str:
         if source_lang == target_lang:
             return text
         normalized_text = self.normalize_slang(text) if source_lang == "kn" else text
+
+        sanitized = self._sanitize_for_fast_translate(normalized_text)
+        fast_result = self.llm.translate_fast(sanitized, source_lang, target_lang)
+        if fast_result["available"] and self._numbers_match(sanitized, fast_result["text"]):
+            return fast_result["text"]
+        elif fast_result["available"]:
+            logger.warning(
+                f"Zia fast-translate returned mismatched numbers (source vs. translated) -- "
+                f"discarding it and falling back to GLM. Source: {sanitized[:100]!r}"
+            )
+
         result = self.llm.translate(normalized_text, source_lang, target_lang)
         if result["available"]:
             return result["text"]

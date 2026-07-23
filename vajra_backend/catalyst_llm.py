@@ -353,6 +353,49 @@ class CatalystLLM:
         clean = content.split("</think>")[-1].strip()
         return {"available": True, "text": clean} if clean else {"available": False, "text": text}
 
+    def translate_fast(self, text: str, source_lang: str, target_lang: str) -> Dict[str, Any]:
+        """
+        Fast-path translation via Zia's dedicated Text Translation model --
+        a completely separate deployment from the GLM chat endpoint, not the
+        "thinking" model at all. Confirmed live: ~0.7-2s round trip vs GLM's
+        15-250s+, correct fluent output for both en->kn and kn->en on clean
+        text. Supports en/hi/kn/ta/te/ml/mr/bn/gu/pa/or per the console.
+
+        Has an undocumented, strict input validator confirmed live to reject
+        '%', '*', '(', ')', '#', and '+' with a generic 400
+        PATTERN_NOT_MATCHED error that gives no hint which character caused
+        it. Callers translating VAJRA-generated text (markdown-formatted,
+        full of percentages and parenthetical citations) MUST sanitize
+        first -- see GLMTranslator._sanitize_for_fast_translate in main.py.
+        Any failure here (network, validation, unsupported language) must be
+        treated as "fall back to the slower GLM path", never surfaced to the
+        officer as a translation failure -- this is a speed optimization
+        layered in front of the existing translate(), not a replacement for
+        its correctness guarantees.
+        """
+        token = get_cached_access_token()
+        if not token:
+            return {"available": False, "text": text}
+        domain = "in" if self.region == "IN" else "com"
+        url = f"https://api.catalyst.zoho.{domain}/quickml/api/v1/models/zia/translate"
+        headers = {
+            "Authorization": f"Zoho-oauthtoken {token}",
+            "CATALYST-ORG": self.org_id,
+            "Content-Type": "application/json",
+        }
+        payload = {"text": text, "src_lang": source_lang, "tgt_lang": target_lang}
+        try:
+            res = requests.post(url, headers=headers, json=payload, timeout=15)
+            if res.status_code == 200:
+                data = res.json()
+                translated = data.get("translated_text")
+                if data.get("status") == "success" and translated:
+                    return {"available": True, "text": translated}
+            logger.info(f"Zia fast-translate declined ({res.status_code}), falling back to GLM: {res.text[:200]}")
+        except Exception as e:
+            logger.info(f"Zia fast-translate unreachable, falling back to GLM: {e}")
+        return {"available": False, "text": text}
+
     # _local_agent_simulation and _extract_suspect (keyword-matching fallback
     # tool-selection when the real LLM was unreachable) were removed here.
     # On a police intelligence platform, an answer whose tool/suspect was
