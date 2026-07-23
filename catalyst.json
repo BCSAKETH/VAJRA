@@ -6,13 +6,21 @@
   "client": {
     "source": "client"
   },
-  "appsail": {
-    "source": "vajra_backend"
-  },
-  "functions": [
+  "appsail": [
     {
-      "name": "proactive_alerts",
-      "source": "vajra_backend/functions/proactive_alerts"
+      "name": "vajra_backend",
+      "source": "vajra_backend",
+      "path": "vajra_backend",
+      "build_path": "."
     }
-  ]
+  ],
+  "functions": {
+    "targets": [
+      "proactive_alerts"
+    ],
+    "source": "vajra_backend/functions"
+  }
 }
+
+
+
