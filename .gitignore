@@ -20,4 +20,10 @@ __pycache__/
 .token_cache
 *.joblib
 *.txt
+Accounts.txt
+accounts.txt
+*accounts*
+*credentials*
+*.pem
+*.key
 screenshots/
