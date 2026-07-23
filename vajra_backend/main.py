@@ -917,6 +917,15 @@ class GLMTranslator:
 
 translator = GLMTranslator()
 
+# Fixed Kannada rendering of agent_loop.py's fixed English "AI unavailable"
+# string. Hardcoded rather than run through translator.translate() because
+# that call would hit the very GLM endpoint just confirmed unreachable, for
+# a string whose translation never changes.
+AI_UNAVAILABLE_TEXT_KN = (
+    "AI ತಾರ್ಕಿಕ ಪ್ರಕ್ರಿಯೆ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ. ದಯವಿಟ್ಟು ಕೆಲವು ನಿಮಿಷಗಳಲ್ಲಿ ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ, "
+    "ಅಥವಾ ಇದು ಮುಂದುವರಿದರೆ ನಿಮ್ಮ ಸಿಸ್ಟಮ್ ನಿರ್ವಾಹಕರನ್ನು ಸಂಪರ್ಕಿಸಿ."
+)
+
 class ChatRequest(BaseModel):
     message: str
     lang: str = "en"
@@ -1062,12 +1071,26 @@ async def get_session_messages(session_id: str, request: Request, location_conte
         messages = []
         for r in res:
             m = r.get("ChatMessage", {})
+            data = json.loads(m.get("data_json") or "{}")
+            stored_text = m.get("text")
+            # _text_en/_text_kn were packed into data_json (see chat_endpoint)
+            # since Catalyst Datastore rejects INSERTs referencing any column
+            # not already declared via the console. Pop them back out so they
+            # don't leak into the widget/visualization data the frontend
+            # otherwise expects in `data`. Messages persisted before this
+            # feature existed have neither key -- fall back to the single
+            # stored `text` for both, so old history still displays (just
+            # without instant language-toggle) instead of showing blank.
+            text_en = data.pop("_text_en", None) or stored_text
+            text_kn = data.pop("_text_kn", None) or stored_text
             messages.append({
                 "sender": m.get("sender"),
                 "sender_employee_id": m.get("sender_employee_id"),
-                "text": m.get("text"),
+                "text": stored_text,
+                "text_en": text_en,
+                "text_kn": text_kn,
                 "response_type": m.get("response_type"),
-                "data": json.loads(m.get("data_json") or "{}"),
+                "data": data,
                 "citations": json.loads(m.get("citations_json") or "[]"),
                 "timestamp": m.get("sent_at")
             })
@@ -1208,15 +1231,40 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
         user_unit_id=unit_id
     )
 
-    # Translate response back to Kannada if required
-    text = result["text"]
-    if lang == "kn":
-        text = await run_in_threadpool(translator.translate, text, "en", "kn")
+    # Generate BOTH language versions of the answer, always -- not just the
+    # currently-selected display language. run_agent_loop always reasons and
+    # answers in English internally (the tool-calling system prompts are
+    # English-only), so English is free; Kannada needs one more GLM call.
+    # Storing both means toggling the language switch can instantly re-render
+    # already-displayed messages in the other language client-side, with no
+    # new LLM call -- previously only one version of each answer ever
+    # existed, so old messages stayed frozen in whichever language they were
+    # first answered in regardless of later toggling.
+    text_en = result["text"]
+    if result.get("is_simulated"):
+        # The unavailable-AI notice is a fixed, known string, not a real
+        # answer -- translating it through GLM would be calling the very
+        # endpoint that was just confirmed unreachable, for a string that's
+        # cheaper and more reliable to just hardcode once.
+        text_kn = AI_UNAVAILABLE_TEXT_KN
+    else:
+        text_kn = await run_in_threadpool(translator.translate, text_en, "en", "kn")
+    text = text_kn if lang == "kn" else text_en
 
-    _persist_chat_message(session_id, "assistant", text, result["response_type"], result["data"], result["citations"])
+    # text_en/text_kn are packed into the data dict (not new dedicated
+    # columns) purely so they persist through the EXISTING data_json field --
+    # Catalyst Datastore rejects INSERTs referencing any column not already
+    # declared via the console (confirmed live: "Unknown column is given"),
+    # so a real text_kn column would need a manual console change first.
+    # Underscore-prefixed keys avoid colliding with real widget/visualization
+    # data fields already living in this same dict.
+    persisted_data = {**(result["data"] or {}), "_text_en": text_en, "_text_kn": text_kn}
+
+    _persist_chat_message(session_id, "assistant", text, result["response_type"], persisted_data, result["citations"])
     await connection_manager.broadcast(session_id, {
         "type": "message", "sender": "assistant", "sender_employee_id": None,
-        "sender_name": "VAJRA.AI", "text": text, "response_type": result["response_type"],
+        "sender_name": "VAJRA.AI", "text": text, "text_en": text_en, "text_kn": text_kn,
+        "response_type": result["response_type"],
         "data": result["data"], "citations": result["citations"], "timestamp": datetime.utcnow().isoformat(),
         # Without these, an "AI unavailable" turn delivered via WebSocket
         # (every message from the 2nd one onward in a session) rendered as an
@@ -1230,6 +1278,8 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
 
     return {
         "text": text,
+        "text_en": text_en,
+        "text_kn": text_kn,
         "session_id": session_id,
         "response_type": result["response_type"],
         "data": result["data"],

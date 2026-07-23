@@ -22,6 +22,15 @@ export interface ChatMessage {
   id: string;
   sender: "user" | "assistant" | "system";
   text: string;
+  // Both language versions of an assistant answer, stored together so
+  // toggling the language switch can instantly re-render this message in
+  // the other language -- no new LLM call needed. Only assistant messages
+  // carry these; `text` remains the source of truth for user messages
+  // (literally what the officer typed) and as a fallback for any assistant
+  // message that predates this feature (older persisted history has
+  // neither field).
+  textEn?: string;
+  textKn?: string;
   timestamp: string;
   responseType?: "text" | "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups";
   data?: any;

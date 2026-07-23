@@ -152,6 +152,8 @@ export const AIChatScreen: React.FC = () => {
             id: `ws-${Date.now()}-${Math.random()}`,
             sender: payload.sender === "user" ? "user" : "assistant",
             text: payload.text,
+            textEn: payload.text_en,
+            textKn: payload.text_kn,
             timestamp: new Date(payload.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
             responseType: payload.response_type,
             data: payload.data,
@@ -453,6 +455,8 @@ export const AIChatScreen: React.FC = () => {
           id: `msg-${Date.now()}-ai`,
           sender: "assistant",
           text: data.text,
+          textEn: data.text_en,
+          textKn: data.text_kn,
           timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           responseType: data.response_type,
           data: data.data,
@@ -585,6 +589,8 @@ export const AIChatScreen: React.FC = () => {
         id: `${sessionId}-${idx}`,
         sender: m.sender === "user" ? "user" : "assistant",
         text: m.text,
+        textEn: m.text_en,
+        textKn: m.text_kn,
         timestamp: m.timestamp
           ? new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
           : "",
@@ -620,7 +626,13 @@ export const AIChatScreen: React.FC = () => {
         body: JSON.stringify({
           transcript: chatMessages.map((m) => ({
             role: m.sender,
-            content: m.text,
+            // Respect the officer's CURRENTLY selected language, not
+            // whichever one was active when each message first came in --
+            // otherwise toggling language mid-conversation and exporting
+            // would produce a transcript mixing both languages per message.
+            content: m.sender === "assistant"
+              ? (lang === "kn" ? (m.textKn || m.text) : (m.textEn || m.text))
+              : m.text,
             timestamp: m.timestamp || "",
           })),
           badge_id: badgeNumber || "KSP-4003385",

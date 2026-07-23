@@ -31,6 +31,17 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, lang, onExpandW
   const [isSpeaking, setIsSpeaking] = useState(false);
   const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
 
+  // Both language versions of an assistant answer are stored on the message
+  // (see AppContext's ChatMessage type), so switching the language toggle
+  // re-renders this same message in the other language instantly -- no new
+  // request. User messages have no textEn/textKn (nothing to translate --
+  // it's literally what the officer typed), so they always just show
+  // `text`. Falls back to `text` for assistant messages persisted before
+  // this feature existed (neither field stored).
+  const displayText = isAI
+    ? (lang === "kn" ? (message.textKn || message.text) : (message.textEn || message.text))
+    : message.text;
+
   // Stop speaking if the component unmounts mid-utterance (e.g. switching sessions).
   useEffect(() => {
     return () => {
@@ -45,7 +56,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, lang, onExpandW
       setIsSpeaking(false);
       return;
     }
-    const started = speakText(message.text, lang, () => setIsSpeaking(false));
+    const started = speakText(displayText, lang, () => setIsSpeaking(false));
     if (started) setIsSpeaking(true);
   };
 
@@ -82,7 +93,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, lang, onExpandW
               <span className="font-extrabold uppercase tracking-wider block mb-1 text-amber-500">
                 {t.aiUnavailableTitle}
               </span>
-              <span className="text-slate-200">{message.text}</span>
+              <span className="text-slate-200">{displayText}</span>
             </div>
           </div>
         ) : (
@@ -96,7 +107,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, lang, onExpandW
           }`}
         >
           {/* Main Text Content */}
-          <div className="whitespace-pre-wrap font-sans text-slate-200">{message.text}</div>
+          <div className="whitespace-pre-wrap font-sans text-slate-200">{displayText}</div>
 
           {/* Attachment indicator */}
           {message.attachments && message.attachments.length > 0 && (

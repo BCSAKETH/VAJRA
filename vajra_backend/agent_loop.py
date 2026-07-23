@@ -686,7 +686,7 @@ class VajraAgentLoop:
                 })
             return {"layout": "grid", "components": components}
 
-        if response_type == "risk_breakdown":
+        if response_type == "risk":
             components = [{
                 "kind": "gauge", "title": "Conviction Risk",
                 "value": data_payload.get("risk_score", 0),
@@ -987,7 +987,16 @@ class VajraAgentLoop:
         # 9. get_offender_risk
         elif tool_name == "get_offender_risk":
             suspect = self.sanitize_sql_input(params.get("suspect_name", ""))
-            response_type = "risk_breakdown"
+            # Confirmed: the frontend's InlineWidget/ExpandedOverlay/AppContext
+            # type unions only ever checked for "risk", never "risk_breakdown"
+            # -- meaning the inline chat widget (and its "Open Detailed View"
+            # expansion) for every offender-risk answer this whole project has
+            # rendered as an empty shell (no gauge, no SHAP chart), even
+            # though the data was always computed correctly. Only the
+            # right-hand Analysis Panel's generate_applet_spec() checked the
+            # same "risk_breakdown" string this tool set, so that one path
+            # happened to work while the primary in-conversation widget never did.
+            response_type = "risk"
             
             # Default fallback values
             age = 32
