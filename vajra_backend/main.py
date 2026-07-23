@@ -902,30 +902,33 @@ class GLMTranslator:
             normalized_words.append(word.replace(clean_word, replaced))
         return " ".join(normalized_words)
 
-    @staticmethod
-    def _sanitize_for_fast_translate(text: str) -> str:
+    # Confirmed live via direct, repeated testing that Zia's fast translate
+    # endpoint 400s (undocumented, generic PATTERN_NOT_MATCHED error that
+    # gives no hint which character is the problem) on: % * ( ) # + [ ] ; < >
+    # { } ~. That list kept growing every time a new real answer hit an
+    # untested character -- e.g. the fallback label
+    # "[Automated data summary — ...]" this code itself generates contains
+    # square brackets, which failed 100% of the time until this was found.
+    # An allowlist is the only approach that stops this from being an
+    # ongoing chase: keep letters (any script, so Kannada text and English
+    # text both pass through untouched), digits, whitespace, and a small set
+    # of confirmed-safe punctuation; strip everything else by default rather
+    # than trusting each new character until it's proven to fail.
+    _ZIA_UNSAFE_CHARS = re.compile(r"[^\w\s.,:\-'\"!?&/@₹]", re.UNICODE)
+
+    @classmethod
+    def _sanitize_for_fast_translate(cls, text: str) -> str:
         """
-        Zia's fast translate endpoint 400s on '%', '*', '(', ')', '#', and
-        '+' -- confirmed live via direct testing (undocumented; the error
-        response gives no hint which character is the problem). VAJRA's
-        answers are markdown-formatted ("**Key Risk Factor:**") and full of
-        percentages and parenthetical citations ("(3 cases, Haveri)"), so
-        sending them unmodified would fail on most real answers. Only the
-        confirmed-bad characters are touched; anything else that trips the
-        validator (an untested character) still degrades safely since
-        translate_fast() falls back to GLM on ANY failure.
+        Prepares text for Zia's fast translate endpoint. Confirmed-safe
+        punctuation (period, comma, colon, hyphen, quotes, !?, ampersand,
+        slash, @, rupee sign) passes through; '%' and '+' are replaced with
+        their words (translatable content, not just noise); everything else
+        unrecognized is replaced with a space rather than deleted outright,
+        so words don't get jammed together.
         """
-        # Confirmed live: a residual single '*' (left behind by stripping
-        # only "**" pairs -- e.g. the leading bullet marker in "*   **Low
-        # Conviction Probability:**" still has one '*' after the bold
-        # markers are removed) is enough to trip the same PATTERN_NOT_MATCHED
-        # rejection as a full "**bold**" pair. Strip every '*', not just
-        # matched pairs -- markdown bullet lists use both.
-        cleaned = text.replace("*", "")
-        cleaned = cleaned.replace("%", " percent")
-        cleaned = cleaned.replace("(", ", ").replace(")", "")
-        cleaned = cleaned.replace("#", "")
+        cleaned = text.replace("%", " percent")
         cleaned = cleaned.replace("+", " plus ")
+        cleaned = cls._ZIA_UNSAFE_CHARS.sub(" ", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
 
     @staticmethod
@@ -1074,9 +1077,15 @@ async def list_sessions(request: Request, location_context: str = Depends(securi
         # Sessions with a non-empty description are Investigations, surfaced
         # separately by GET /api/investigations (pinned section) -- exclude
         # them here so they don't also show up in the flat history list.
+        # _create_chat_session() never sets description at all, so regular
+        # chat sessions store it as NULL, not '' -- confirmed live that
+        # `description = ''` matches zero rows against real data (ZCQL's
+        # NULL semantics: NULL never equals '' or anything else), which was
+        # silently hiding 100% of chat history. Must check both.
         res = catalyst_app.zql().execute_query(
             f"SELECT session_id, title, last_active_at FROM ChatSession "
-            f"WHERE employee_id = {employee_id} AND description = '' ORDER BY last_active_at DESC LIMIT 50"
+            f"WHERE employee_id = {employee_id} AND (description IS NULL OR description = '') "
+            f"ORDER BY last_active_at DESC LIMIT 50"
         )
         return [r.get("ChatSession", {}) for r in res]
     except Exception as e:

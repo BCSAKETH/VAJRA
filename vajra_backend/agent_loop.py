@@ -856,8 +856,22 @@ class VajraAgentLoop:
             
             network_info["financial_transactions"] = fin_txns
             data = network_info
-            text_result = f"Syndicate network links for suspect {suspect}: Traced phone logs and {len(fin_txns)} logged bank transaction trails."
-            citations.append({"type": "GraphRAG Syndicate Map", "id": suspect, "details": "Traversed co-accused links"})
+            if network_info.get("ambiguous_match"):
+                # Confirmed live: "ramesh" fuzzy-matched ~15 distinct real
+                # people and their cases got silently merged into one fake
+                # "syndicate" of ~50 unrelated cases. Say plainly that the
+                # name is ambiguous instead of fabricating a combined network.
+                candidates = network_info.get("candidate_names", [])
+                text_result = (
+                    f"'{suspect}' matches multiple different people in the database, not one suspect "
+                    f"(found {len(candidates)}+ others with this name or a name containing it: "
+                    f"{', '.join(candidates[:5])}{'...' if len(candidates) > 5 else ''}). "
+                    f"Please provide a fuller name (e.g. full first and last name) to trace a specific person's network."
+                )
+                citations.append({"type": "GraphRAG Syndicate Map", "id": suspect, "details": "Name matched multiple distinct accused records -- ambiguous, not traced"})
+            else:
+                text_result = f"Syndicate network links for suspect {suspect}: Traced phone logs and {len(fin_txns)} logged bank transaction trails."
+                citations.append({"type": "GraphRAG Syndicate Map", "id": suspect, "details": "Traversed co-accused links"})
             self._write_audit_log(employee_id, "Relational GraphRAG Traversal", suspect, f"Traced network of {suspect}", text_result, session_id)
 
         # 6. query_financial_links

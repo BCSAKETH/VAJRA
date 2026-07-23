@@ -636,14 +636,54 @@ class VajraGraphRAG:
                 # ZCQL's LIKE wildcard is '*', not SQL-standard '%' -- confirmed
                 # live that every '%...%' pattern anywhere in this codebase
                 # silently matched zero rows regardless of real data present.
-                accused_query = f"SELECT CaseMasterID FROM Accused WHERE AccusedName LIKE '*{suspect_name}*'"
+                accused_query = f"SELECT AccusedName, CaseMasterID FROM Accused WHERE AccusedName LIKE '*{suspect_name}*'"
                 accused_res = catalyst_app.zql().execute_query(accused_query)
-                
+
                 if accused_res:
-                    case_ids = [r.get("Accused", {}).get("CaseMasterID") for r in accused_res if r.get("Accused", {}).get("CaseMasterID")]
+                    # Confirmed live: a common first name ("ramesh") fuzzy-
+                    # matched ~15 genuinely different real people across the
+                    # database, and every one of their cases got merged into
+                    # a single fake "syndicate" -- a ~50-case, dozens-of-
+                    # co-accused network presented as if it belonged to one
+                    # suspect. LIKE '*x*' matching multiple DISTINCT accused
+                    # names is a name collision, not one prolific offender.
+                    # Prefer an exact (case-insensitive) match among the
+                    # candidates if one exists; otherwise this is genuinely
+                    # ambiguous and must say so rather than silently
+                    # presenting a fabricated combined network.
+                    distinct_names = {}
+                    for r in accused_res:
+                        a = r.get("Accused", {})
+                        name = a.get("AccusedName")
+                        cid = a.get("CaseMasterID")
+                        if name and cid:
+                            distinct_names.setdefault(name, []).append(cid)
+
+                    if len(distinct_names) > 1:
+                        exact = next((n for n in distinct_names if n.lower() == suspect_name.lower()), None)
+                        if exact:
+                            case_ids = distinct_names[exact]
+                            suspect_name = exact
+                        else:
+                            other_names = sorted(n for n in distinct_names if n.lower() != suspect_name.lower())
+                            return {
+                                "target_suspect": suspect_name,
+                                "engine_mode": "Ambiguous Name Match",
+                                "ambiguous_match": True,
+                                "candidate_names": other_names[:10],
+                                "1st_degree_connections": [],
+                                "2nd_degree_connections": [],
+                                "3rd_degree_connections": [],
+                                "nodes": [{"id": "suspect", "label": suspect_name, "type": "suspect"}],
+                                "edges": [],
+                                "case_ids": []
+                            }
+                    else:
+                        case_ids = list(distinct_names.values())[0] if distinct_names else []
+
                     if not case_ids:
                         return self._fallback_result(suspect_name)
-                        
+
                     case_ids_str = ",".join(map(str, case_ids))
                     
                     # 2. Find other accused persons linked to the same cases
