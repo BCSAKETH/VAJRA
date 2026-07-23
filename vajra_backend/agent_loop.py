@@ -11,6 +11,7 @@ import pandas as pd
 from vajra_core import catalyst_app, VajraGraphRAG, VajraSemanticMemory, MOBehavioralProfiler, zcql_insert_row
 from session_memory import VajraSessionMemory
 from catalyst_llm import CatalystLLM
+from catalyst_qwen import CatalystQwen
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +73,13 @@ class VajraAgentLoop:
         },
         {
             "name": "get_case_sections",
-            "description": "Retrieve legal sections and acts recorded for an existing case by Case Master ID.",
+            "description": "Retrieve legal sections and acts recorded for an existing case by Case Number.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "case_id": {"type": "integer", "description": "The integer ID of the case (CaseMasterID)"}
+                    "case_no": {"type": "string", "description": "The exact Case Number or CrimeNo of the case (e.g. 'CR-2024-81977')"}
                 },
-                "required": ["case_id"]
+                "required": ["case_no"]
             }
         },
         {
@@ -162,9 +163,9 @@ class VajraAgentLoop:
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "case_id": {"type": "integer", "description": "The integer ID of the case (CaseMasterID)"}
+                    "case_no": {"type": "string", "description": "The exact Case Number or CrimeNo of the case (e.g. 'CR-2024-81977')"}
                 },
-                "required": ["case_id"]
+                "required": ["case_no"]
             }
         },
         {
@@ -191,13 +192,13 @@ class VajraAgentLoop:
         },
         {
             "name": "get_case_timeline",
-            "description": "Retrieve chronological case milestones (Occurrence, FIR registration, Arrest, Chargesheet) by Case Master ID.",
+            "description": "Retrieve chronological case milestones (Occurrence, FIR registration, Arrest, Chargesheet) by Case Number.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "case_id": {"type": "integer", "description": "The integer ID of the case (CaseMasterID)"}
+                    "case_no": {"type": "string", "description": "The exact Case Number or CrimeNo of the case (e.g. 'CR-2024-81977')"}
                 },
-                "required": ["case_id"]
+                "required": ["case_no"]
             }
         },
         {
@@ -229,6 +230,19 @@ class VajraAgentLoop:
                 "type": "object",
                 "properties": {}
             }
+        },
+        {
+            "name": "get_crime_trends",
+            "description": "Real historical crime trend analysis: monthly incident counts over time, trend direction, seasonality/peak month, emerging spikes, and year-over-year comparison. Use for ANY question about crime trends, patterns over time, whether crime is increasing/decreasing, or seasonal analysis -- not for spatial hotspots (use query_hotspots) or forward-looking predictions (use get_forecast).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "district": {"type": "string", "description": "Optional district name to filter by (e.g. Bengaluru Urban). Omit for all districts."},
+                    "crime_group": {"type": "string", "description": "Optional crime category to filter by (e.g. THEFT, BURGLARY, CYBERCRIME, MURDER). Omit for all crime types."},
+                    "months": {"type": "integer", "description": "How many trailing months to analyze. Defaults to 12 if omitted. Use 24 for a two-year view or to enable year-over-year comparison."}
+                },
+                "required": []
+            }
         }
     ]
 
@@ -238,6 +252,7 @@ class VajraAgentLoop:
         self.shap_explainer = shap_explainer
         self.label_encoders = label_encoders
         self.llm = CatalystLLM()
+        self.qwen = CatalystQwen()
         self._mo_profiler = None
 
     def _get_mo_profiler(self) -> "MOBehavioralProfiler":
@@ -267,6 +282,142 @@ class VajraAgentLoop:
         if not val:
             return ""
         return re.sub(r"(--|['#\";])", "", val).strip()
+
+    def _resolve_case_no(self, case_no: str) -> Optional[int]:
+        """
+        Resolves a human-facing CrimeNo (e.g. 'CR-2024-81977' -- the only
+        case identifier an officer actually knows or types) to the internal
+        numeric CaseMasterID that get_case_sections/summarize_case/
+        get_case_timeline are keyed on. Confirmed live: those three tools
+        used to take `case_id: integer` directly with no such resolution --
+        an LLM asked to "summarize case CR-2024-81977" has no numeric ID to
+        supply, so it silently fell back to case_id=1 (whatever case that
+        happened to be) or a guessed number, and either returned the wrong
+        case's data or an honest-sounding but incorrect "not found" once it
+        noticed the CrimeNo didn't match. query_case already took the
+        CrimeNo string directly and worked fine; this brings the other
+        three in line with it instead of exposing the internal ID at all.
+        """
+        if not catalyst_app or not case_no:
+            return None
+        try:
+            res = catalyst_app.zql().execute_query(
+                f"SELECT CaseMasterID FROM CaseMaster WHERE CrimeNo = '{self.sanitize_sql_input(case_no)}' LIMIT 1"
+            )
+            if res:
+                return int(res[0].get("CaseMaster", {}).get("CaseMasterID"))
+        except Exception as e:
+            logger.error(f"Error resolving case_no '{case_no}' to CaseMasterID: {e}")
+        return None
+
+    # Real KSP crime-group names (from the CrimeHead table, see
+    # get_crime_trends) -- a fixed list here rather than a live query since
+    # this is a last-resort, zero-dependency fallback: it needs to work even
+    # if something else in the request pipeline is also struggling.
+    _KNOWN_CRIME_GROUPS = [
+        "MURDER", "SEXUAL OFFENCES", "ASSAULT", "ATTEMPT TO MURDER", "MOTOR VEHICLE THEFT",
+        "CHEATING", "DOWRY DEATH", "THEFT", "KIDNAPPING", "MOLESTATION", "CYBERCRIME",
+        "ARMS ACT", "BURGLARY", "ARSON", "NARCOTICS", "FRAUD", "DOMESTIC VIOLENCE", "RIOTS",
+        "DACOITY", "ROBBERY", "MISSING PERSON", "CHAIN SNATCHING", "PUBLIC SAFETY",
+    ]
+
+    def _keyword_route_tool(self, query: str) -> Optional[Dict[str, Any]]:
+        """
+        Deterministic, model-free last-resort tool picker for when BOTH GLM
+        and Qwen are unavailable to even decide which tool to call --
+        without this, that combination is a total dead end (no tool ever
+        runs, so there's no grounded data for the existing
+        last_tool_text_result fallback in run_agent_loop to show; the
+        officer waits out the full retry budget for a bare "AI
+        unavailable"). Intentionally blunt: keyword matching plus a couple
+        of simple regex/known-name lookups for parameters, nothing that
+        could pass for real reasoning. The caller MUST disclose whenever
+        this path is used (a citation, same as the Qwen fallback) -- see
+        the comment on ai_unavailable in run_agent_loop about never
+        presenting a keyword-matched answer as if it were full AI
+        reasoning; the difference from the simulator that was removed
+        entirely earlier in this project is that this is always disclosed,
+        never silently substituted.
+
+        Returns None (not a guess) when nothing matches confidently or a
+        required identifying parameter (a name/case number/district)
+        couldn't be found in the query -- an unfillable or wildly wrong
+        tool call is worse than admitting no match and falling through to
+        the honest "AI unavailable" message.
+        """
+        q = query.lower()
+
+        def guess_name() -> str:
+            # Prefer a full "First Last" capitalized match; fall back to a
+            # single word directly after "suspect"/"for"/"connected to",
+            # case-insensitive -- confirmed live that real officer queries
+            # often don't capitalize names ("what crimes is ramesh connected
+            # to"), and this only runs after BOTH GLM and Qwen have already
+            # failed, so a slightly looser match here is worth it.
+            m = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", query)
+            if m:
+                return m.group(1)
+            # "suspect X" checked before the more generic "for X"/"connected
+            # to X" -- otherwise "risk score for suspect Ramesh" matches on
+            # "for" first and captures "suspect" itself, never reaching the
+            # actual name after it.
+            for cue in (r"suspect", r"for", r"connected to"):
+                m2 = re.search(rf"\b{cue}\s+([a-zA-Z]+)\b", query, re.IGNORECASE)
+                if m2 and m2.group(1).lower() not in ("suspect",):
+                    return m2.group(1).title()
+            # Reversed word order ("is ramesh connected to") -- a word
+            # immediately BEFORE "connected"/"linked".
+            m3 = re.search(r"\b([a-zA-Z]+)\s+(?:connected|linked)\b", query, re.IGNORECASE)
+            if m3 and m3.group(1).lower() not in ("is", "who", "what", "crimes"):
+                return m3.group(1).title()
+            return ""
+
+        def guess_case_no() -> str:
+            m = re.search(r"\bCR-\d{4}-\d+\b", query, re.IGNORECASE)
+            return m.group(0).upper() if m else ""
+
+        def guess_district() -> str:
+            for d in sorted(get_real_districts(), key=len, reverse=True):
+                if d and d.lower() in q:
+                    return d
+            return ""
+
+        def guess_crime_group() -> str:
+            for g in self._KNOWN_CRIME_GROUPS:
+                if g.lower() in q:
+                    return g
+            return ""
+
+        name, case_no, district, crime_group = guess_name(), guess_case_no(), guess_district(), guess_crime_group()
+
+        # (keywords, tool_name, params, required_guess) -- required_guess is
+        # checked truthy before this pattern is allowed to match at all.
+        patterns: List[Tuple[List[str], str, Dict[str, Any], str]] = [
+            (["risk score", "conviction risk", "recidivism", "re-offend", "risk for", "risk of"], "get_offender_risk", {"suspect_name": name}, name),
+            (["network", "syndicate", "co-accused", "connections for", "connections of", "connected to", "crimes is", "crimes does"], "query_graph_network", {"suspect_name": name}, name),
+            (["financial", "money trail", "transaction", "bank account"], "query_financial_links", {"entity_id": name}, name),
+            (["mo profile", "modus operandi", "behavioral profile", "behaviour profile"], "get_mo_profile", {"suspect_name": name}, name),
+            (["timeline", "chronology", "milestones"], "get_case_timeline", {"case_no": case_no}, case_no),
+            (["summarize", "summary", "case dossier"], "summarize_case", {"case_no": case_no}, case_no),
+            (["section", "ipc", "bns ", "legal provision"], "get_case_sections", {"case_no": case_no}, case_no),
+            (["hotspot", "cluster map", "crime map", "dbscan"], "query_hotspots", {}, "yes"),
+            (["organized crime", "crime group", "gang", "criminal syndicate detect"], "detect_crime_groups", {}, "yes"),
+            (["trend", "over time", "increasing", "decreasing", "seasonal pattern"], "get_crime_trends",
+             {"district": district, "crime_group": crime_group}, "yes"),
+            (["demographic", "socio-economic", "socio economic", "correlation"], "get_demographic_correlation", {"district": district}, district),
+            (["repeat offender", "habitual"], "get_repeat_offenders", {"district": district}, "yes"),
+            (["forecast", "predict", "early warning"], "get_forecast",
+             {"district": district, "crime_type": crime_group}, district and crime_group),
+            (["similar case", "similar to", "past cases like"], "find_similar_cases", {"query": query}, "yes"),
+        ]
+
+        for keywords, tool_name, params, required in patterns:
+            if required and any(kw in q for kw in keywords):
+                clean_params = {k: v for k, v in params.items() if v}
+                logger.warning(f"Keyword-router fallback matched '{tool_name}' with params {clean_params} for query: {query!r}")
+                return {"tool": tool_name, "parameters": clean_params}
+
+        return None
 
     def _resolve_entities(self, query: str, session_id: str) -> Dict[str, Any]:
         """
@@ -445,13 +596,16 @@ class VajraAgentLoop:
         response_type = "text"
         data_payload = {}
         citations = []
-        # True the moment the real LLM endpoint is confirmed unreachable
-        # during this turn -- previously this fell back to a keyword-
-        # matching local simulator that still ran real tools and presented
-        # a "degraded" answer behind an amber banner. That's gone: on a
-        # police intelligence platform, an answer whose tool/suspect was
-        # picked by string-matching instead of real reasoning shouldn't be
-        # presented as an answer at all, even a clearly-labeled one.
+        # True only if GLM, Qwen, AND the keyword router all failed to even
+        # pick a tool (see the fallback ladder below), or a later synthesis
+        # step fails with nothing to fall back to. A police intelligence
+        # platform should never present a keyword-matched answer as if it
+        # were real reasoning -- an earlier version of this fallback did
+        # exactly that (a local simulator, silently substituted, no
+        # disclosure) and was removed outright for it. The ladder below is
+        # different in the one way that matters: every tier below GLM is
+        # always disclosed via a citation on the final answer, never passed
+        # off as full AI reasoning.
         ai_unavailable = False
         # Tracks the most recent tool's own deterministic text_result (real
         # DB query / DBSCAN clustering / SHAP computation output, never
@@ -494,9 +648,42 @@ class VajraAgentLoop:
             )
 
             if llm_res.get("error"):
-                logger.warning(f"LLM unavailable, not answering (iteration {current_iteration}): {llm_res.get('error')}")
-                ai_unavailable = True
-                break
+                logger.warning(f"GLM unavailable (iteration {current_iteration}): {llm_res.get('error')}")
+                fallback_decision = None
+                fallback_label = ""
+                if allow_tools:
+                    # The ONLY point in the loop where a genuine dead end can
+                    # happen: every other failure mode (the synthesis-only
+                    # call on iteration 2+, handled further below) still has
+                    # last_tool_text_result to fall back to once a tool has
+                    # actually run. Two more attempts at picking a tool
+                    # before giving up entirely -- Qwen first (a separate
+                    # QuickML deployment/model from GLM, so its uptime is
+                    # genuinely independent), then a deterministic keyword
+                    # match as a last resort.
+                    fallback_decision = self.qwen.decide_tool(query, self.TOOLS)
+                    fallback_label = "Qwen"
+                    if fallback_decision is None:
+                        fallback_decision = self._keyword_route_tool(query)
+                        fallback_label = "Keyword Match"
+                if fallback_decision is not None:
+                    logger.warning(f"Tool-selection fallback used ({fallback_label}, iteration {current_iteration}): {fallback_decision}")
+                    citations.append({
+                        "type": "Tool-Selection Fallback",
+                        "id": fallback_label,
+                        "details": (
+                            f"GLM reasoning was unavailable this turn; the tool was selected via {fallback_label} "
+                            "instead of full AI reasoning."
+                        )
+                    })
+                    # Splice the fallback decision into the exact shape
+                    # self.llm.chat() returns on success, so the parsing and
+                    # tool-execution logic below runs completely unchanged
+                    # regardless of which tier actually picked the tool.
+                    llm_res = {"choices": [{"message": {"content": json.dumps(fallback_decision)}}]}
+                else:
+                    ai_unavailable = True
+                    break
 
             try:
                 content_str = llm_res["choices"][0]["message"]["content"]
@@ -756,6 +943,29 @@ class VajraAgentLoop:
                 "columns": ["members", "shared_case_count"]
             }]}
 
+        if response_type == "trend":
+            series = data_payload.get("series", [])
+            if not series:
+                return None
+            scope = data_payload.get("district") or "All Districts"
+            trend = data_payload.get("trend") or {}
+            peak = data_payload.get("peak") or {}
+            components = [{
+                "kind": "line_chart", "title": f"Crime Trend — {scope}",
+                "data": [{"name": s["label"], "value": s["count"]} for s in series]
+            }, {
+                "kind": "stat_tile", "value": data_payload.get("total", 0),
+                "label": f"Total incidents ({data_payload.get('months', 12)} mo)"
+            }, {
+                "kind": "stat_tile", "value": trend.get("direction", "stable").title(),
+                "label": f"Trend ({trend.get('pct_per_month', 0):+.1f}%/mo)"
+            }]
+            if peak:
+                components.append({
+                    "kind": "stat_tile", "value": peak.get("count", 0), "label": f"Peak — {peak.get('label', '')}"
+                })
+            return {"layout": "grid", "components": components}
+
         return None
 
     def _execute_tool(self, tool_name: str, params: Dict[str, Any], employee_id: int, session_id: str, user_unit_id: Optional[int]) -> Dict[str, Any]:
@@ -809,11 +1019,16 @@ class VajraAgentLoop:
 
         # 3. get_case_sections
         elif tool_name == "get_case_sections":
-            case_id = params.get("case_id", 1)
-            sections = self.get_sections_for_case(case_id)
-            data = {"case_id": case_id, "sections": sections}
-            text_result = f"Recorded BNS/IPC sections for Case ID {case_id}: {', '.join(sections) if sections else 'None'}"
-            citations.append({"type": "Act Section Association Registry", "id": str(case_id), "details": "Legal sections lookup"})
+            case_no = params.get("case_no", "")
+            case_id = self._resolve_case_no(case_no)
+            if case_id is None:
+                text_result = f"Case {case_no or '(none given)'} was not found in the database."
+                data = {"case_no": case_no}
+            else:
+                sections = self.get_sections_for_case(case_id)
+                data = {"case_no": case_no, "case_id": case_id, "sections": sections}
+                text_result = f"Recorded BNS/IPC sections for Case {case_no}: {', '.join(sections) if sections else 'None'}"
+                citations.append({"type": "Act Section Association Registry", "id": case_no, "details": "Legal sections lookup"})
 
         # 4. suggest_sections
         elif tool_name == "suggest_sections":
@@ -1259,12 +1474,17 @@ class VajraAgentLoop:
 
         # 11. summarize_case
         elif tool_name == "summarize_case":
-            case_id = params.get("case_id", 1)
-            summary = self.summarize_case(case_id)
-            data = {"case_id": case_id, "summary": summary}
+            case_no = params.get("case_no", "")
+            case_id = self._resolve_case_no(case_no)
+            if case_id is None:
+                summary = f"Case {case_no or '(none given)'} was not found in the database."
+                data = {"case_no": case_no}
+            else:
+                summary = self.summarize_case(case_id)
+                data = {"case_no": case_no, "case_id": case_id, "summary": summary}
+                citations.append({"type": "CCTNS Grounded Summary", "id": case_no, "details": "Dynamically compiled case dossiers"})
             text_result = summary
-            citations.append({"type": "CCTNS Grounded Summary", "id": str(case_id), "details": "Dynamically compiled case dossiers"})
-            self._write_audit_log(employee_id, "Case Summarization Inquest", f"Case {case_id}", f"Summarize case {case_id}", text_result, session_id)
+            self._write_audit_log(employee_id, "Case Summarization Inquest", f"Case {case_no}", f"Summarize case {case_no}", text_result, session_id)
 
         # 12. find_similar_cases
         elif tool_name == "find_similar_cases":
@@ -1281,10 +1501,14 @@ class VajraAgentLoop:
 
         # 14. get_case_timeline
         elif tool_name == "get_case_timeline":
-            case_id = params.get("case_id", 1)
+            case_no = params.get("case_no", "")
+            case_id = self._resolve_case_no(case_no)
             response_type = "timeline"
             events = []
-            if catalyst_app:
+            if case_id is None:
+                text_result = f"Case {case_no or '(none given)'} was not found in the database."
+                data = {"case_no": case_no}
+            elif catalyst_app:
                 try:
                     # 1. Occurrence Date
                     occ_res = catalyst_app.zql().execute_query(f"SELECT OccurrenceDate FROM Inv_OccuranceTime WHERE CaseMasterID = {case_id} LIMIT 1")
@@ -1326,11 +1550,12 @@ class VajraAgentLoop:
                             events.append({"date": d_str.split()[0], "event": "Chargesheet Filed", "description": f"{c_type} chargesheet submitted to magistrate court."})
                 except Exception as ex:
                     logger.error(f"Error compiling case timeline: {ex}")
-            events.sort(key=lambda x: x["date"])
-            data = {"case_id": case_id, "timeline": events}
-            text_result = f"Chronological Timeline for Case ID {case_id}:\n" + "\n".join([f"- [{e['date']}] {e['event']}: {e['description']}" for e in events])
-            citations.append({"type": "ZCQL Joined Timeline", "id": str(case_id), "details": "Occurrence, FIR, Arrest, and Chargesheet logs merged"})
-            self._write_audit_log(employee_id, "Case Timeline Inquest", f"Case {case_id}", f"Get timeline for case {case_id}", text_result, session_id)
+            if case_id is not None:
+                events.sort(key=lambda x: x["date"])
+                data = {"case_no": case_no, "case_id": case_id, "timeline": events}
+                text_result = f"Chronological Timeline for Case {case_no}:\n" + "\n".join([f"- [{e['date']}] {e['event']}: {e['description']}" for e in events])
+                citations.append({"type": "ZCQL Joined Timeline", "id": case_no, "details": "Occurrence, FIR, Arrest, and Chargesheet logs merged"})
+            self._write_audit_log(employee_id, "Case Timeline Inquest", f"Case {case_no}", f"Get timeline for case {case_no}", text_result, session_id)
 
         # 15. get_demographic_correlation
         elif tool_name == "get_demographic_correlation":
@@ -1520,11 +1745,190 @@ class VajraAgentLoop:
             citations.append({"type": "Co-Offense Pattern Analysis", "id": "Accused Table Sample", "details": "Repeated-co-accusal clustering (>=2 shared cases required)"})
             self._write_audit_log(employee_id, "Organized Crime Group Detection", "Accused", "Detect organized crime groups", text_result, session_id)
 
+        # 18. get_crime_trends
+        elif tool_name == "get_crime_trends":
+            district = self.sanitize_sql_input(params.get("district", ""))
+            crime_group = self.sanitize_sql_input(params.get("crime_group", ""))
+            try:
+                months = max(3, min(24, int(params.get("months") or 12)))
+            except (TypeError, ValueError):
+                months = 12
+            response_type = "trend"
+            # No unit_filter_str here, unlike query_case: an explicit district
+            # is the officer deliberately asking about a specific place, which
+            # may legitimately be outside their own station -- confirmed live
+            # that combining both filters ANDs together two different
+            # PoliceStationID conditions that can never both be true unless
+            # the officer's own station happens to be in the requested
+            # district, silently zeroing every cross-district query. No other
+            # district-taking tool (get_repeat_offenders,
+            # get_demographic_correlation, query_hotspots) applies this
+            # filter either.
+            trend_result = self._compute_crime_trends(district, crime_group, months)
+            data = trend_result["data"]
+            text_result = trend_result["text_result"]
+            citations.append(trend_result["citation"])
+            self._write_audit_log(
+                employee_id, "Crime Trend Analysis", district or crime_group or "All Districts",
+                f"Crime trends: district={district or 'all'}, crime_group={crime_group or 'all'}, months={months}",
+                text_result, session_id
+            )
+
         return {
             "text_result": text_result,
             "response_type": response_type,
             "data": data,
             "citations": citations
+        }
+
+    def _compute_crime_trends(self, district: str, crime_group: str, months: int) -> Dict[str, Any]:
+        """
+        Real month-by-month incident counts via ZCQL COUNT() aggregation --
+        not a 300-row sample. ZCQL's SELECT results are hard-capped at 300
+        rows (see query_hotspots), but COUNT()/GROUP BY aggregates are NOT
+        subject to that cap -- confirmed live: `SELECT COUNT(CaseMasterID)
+        FROM CaseMaster` returns 20910 in one call against the full table.
+        One COUNT query per trailing month (typically 12, up to 24) stays
+        well within interactive latency while scanning every matching row,
+        not a sample of them -- this is the one tool in the whole toolset
+        where "how many incidents in month X" needs to be exactly right,
+        not GLM-estimated from a fragment.
+
+        Trend direction is a real least-squares slope over the monthly
+        series (not a first-vs-last comparison, which one noisy month could
+        flip either way). "Recent spike" flags the last 2 months against the
+        trailing 6-month baseline before them -- a cheap, explainable
+        stand-in for the brief's "emerging crime clusters" requirement.
+        Year-over-year only computes when the window covers 13+ months, so
+        it's comparing two real data points, not padding with a guess.
+        """
+        unit_ids: List[str] = []
+        if district and catalyst_app:
+            try:
+                d_res = catalyst_app.zql().execute_query(
+                    f"SELECT DistrictID FROM District WHERE DistrictName LIKE '*{district}*' LIMIT 1"
+                )
+                if d_res:
+                    dist_id = d_res[0].get("District", {}).get("DistrictID")
+                    u_res = catalyst_app.zql().execute_query(f"SELECT UnitID FROM Unit WHERE DistrictID = {dist_id}")
+                    unit_ids = [u.get("Unit", {}).get("UnitID") for u in u_res if u.get("Unit", {}).get("UnitID")]
+            except Exception as e:
+                logger.warning(f"Could not resolve district '{district}' for trend analysis: {e}")
+
+        crime_head_ids: List[str] = []
+        if crime_group and catalyst_app:
+            try:
+                ch_res = catalyst_app.zql().execute_query(
+                    f"SELECT CrimeHeadID FROM CrimeHead WHERE CrimeGroupName LIKE '*{crime_group}*'"
+                )
+                crime_head_ids = [c.get("CrimeHead", {}).get("CrimeHeadID") for c in ch_res if c.get("CrimeHead", {}).get("CrimeHeadID")]
+            except Exception as e:
+                logger.warning(f"Could not resolve crime_group '{crime_group}' for trend analysis: {e}")
+
+        extra_filters = ""
+        if unit_ids:
+            extra_filters += f" AND PoliceStationID IN ({','.join(map(str, unit_ids))})"
+        if crime_head_ids:
+            extra_filters += f" AND CrimeMajorHeadID IN ({','.join(map(str, crime_head_ids))})"
+
+        now = datetime.utcnow()
+        month_starts: List[Tuple[int, int]] = []
+        y, m = now.year, now.month
+        for _ in range(months):
+            month_starts.append((y, m))
+            m -= 1
+            if m == 0:
+                m = 12
+                y -= 1
+        month_starts.reverse()
+
+        series = []
+        if catalyst_app:
+            for (yy, mm) in month_starts:
+                start = f"{yy:04d}-{mm:02d}-01"
+                end = f"{yy+1:04d}-01-01" if mm == 12 else f"{yy:04d}-{mm+1:02d}-01"
+                q = (
+                    f"SELECT COUNT(CaseMasterID) FROM CaseMaster "
+                    f"WHERE CrimeRegisteredDate >= '{start}' AND CrimeRegisteredDate < '{end}'{extra_filters}"
+                )
+                count = 0
+                try:
+                    res = catalyst_app.zql().execute_query(q)
+                    if res:
+                        count = int(res[0].get("CaseMaster", {}).get("COUNT(CaseMasterID)") or 0)
+                except Exception as e:
+                    logger.warning(f"Trend month-count query failed for {start}: {e}")
+                series.append({"month": f"{yy:04d}-{mm:02d}", "label": datetime(yy, mm, 1).strftime("%b %Y"), "count": count})
+
+        total = sum(s["count"] for s in series)
+        avg = round(total / len(series), 1) if series else 0.0
+
+        trend_direction, pct_per_month = "stable", 0.0
+        if len(series) >= 3:
+            xs = list(range(len(series)))
+            ys = [s["count"] for s in series]
+            n = len(xs)
+            mean_x = sum(xs) / n
+            mean_y = sum(ys) / n
+            denom = sum((x - mean_x) ** 2 for x in xs)
+            slope = (sum((xs[i] - mean_x) * (ys[i] - mean_y) for i in range(n)) / denom) if denom else 0.0
+            baseline = mean_y if mean_y else 1.0
+            pct_per_month = round((slope / baseline) * 100, 1)
+            if pct_per_month > 3:
+                trend_direction = "increasing"
+            elif pct_per_month < -3:
+                trend_direction = "decreasing"
+
+        peak = max(series, key=lambda s: s["count"]) if series else None
+        trough = min(series, key=lambda s: s["count"]) if series else None
+
+        recent_spike = False
+        spike_pct = 0.0
+        if len(series) >= 8:
+            recent_avg = sum(s["count"] for s in series[-2:]) / 2
+            baseline_window = series[-8:-2]
+            baseline_avg = (sum(s["count"] for s in baseline_window) / len(baseline_window)) if baseline_window else 0
+            if baseline_avg > 0 and recent_avg >= baseline_avg * 1.4:
+                recent_spike = True
+                spike_pct = round((recent_avg / baseline_avg - 1) * 100)
+
+        yoy_change_pct = None
+        if len(series) >= 13:
+            last_count = series[-1]["count"]
+            year_ago_count = series[-13]["count"]
+            if year_ago_count > 0:
+                yoy_change_pct = round(((last_count - year_ago_count) / year_ago_count) * 100, 1)
+
+        scope_label = district or "all districts"
+        type_label = crime_group or "all crime types"
+        last_label = series[-1]["label"] if series else "now"
+        text_parts = [
+            f"Real monthly incident counts for {type_label} in {scope_label}, {months} months ending {last_label}: "
+            f"{total} total incidents, averaging {avg}/month.",
+            f"Trend: {trend_direction} ({pct_per_month:+.1f}%/month, least-squares slope over the full window)."
+        ]
+        if peak:
+            text_parts.append(f"Peak month: {peak['label']} with {peak['count']} incidents.")
+        if recent_spike:
+            text_parts.append(
+                f"The last two months are running {spike_pct}% above the prior 6-month baseline -- "
+                f"a possible emerging cluster worth flagging."
+            )
+        if yoy_change_pct is not None:
+            text_parts.append(f"Year-over-year: {yoy_change_pct:+.1f}% vs the same month last year.")
+
+        return {
+            "data": {
+                "district": district or None, "crime_group": crime_group or None, "months": months,
+                "series": series, "total": total, "avg_per_month": avg,
+                "trend": {"direction": trend_direction, "pct_per_month": pct_per_month},
+                "peak": peak, "trough": trough, "recent_spike": recent_spike, "yoy_change_pct": yoy_change_pct,
+            },
+            "text_result": " ".join(text_parts),
+            "citation": {
+                "type": "CaseMaster Aggregate Trend Analysis", "id": f"{scope_label} / {type_label}",
+                "details": f"Real COUNT aggregation over {months} months, full table scan (not a 300-row sample)"
+            }
         }
 
     def resolve_vague_query(self, text: str, user_unit_id: Optional[int] = None) -> List[Dict[str, Any]]:

@@ -32,7 +32,7 @@ export interface ChatMessage {
   textEn?: string;
   textKn?: string;
   timestamp: string;
-  responseType?: "text" | "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups";
+  responseType?: "text" | "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend";
   data?: any;
   isSimulated?: boolean;
   simulatedReason?: string;

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
 import { CoworkInvitationsPanel } from "./CoworkInvitationsPanel";
+import { ToastContainer } from "./ToastContainer";
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -197,6 +198,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
           </main>
         </div>
       </div>
+      <ToastContainer />
     </div>
   );
 };

@@ -29,6 +29,7 @@ from vajra_core import (
 )
 from agent_loop import VajraAgentLoop
 from catalyst_llm import CatalystLLM
+from catalyst_qwen import CatalystQwen
 from fastapi.responses import Response
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -891,6 +892,7 @@ class GLMTranslator:
 
     def __init__(self):
         self.llm = CatalystLLM()
+        self.qwen = CatalystQwen()
 
     @classmethod
     def normalize_slang(cls, text: str) -> str:
@@ -966,6 +968,22 @@ class GLMTranslator:
         result = self.llm.translate(normalized_text, source_lang, target_lang)
         if result["available"]:
             return result["text"]
+
+        # GLM unavailable -- try Qwen before giving up. Separate QuickML
+        # deployment/model from GLM (vlm/chat vs glm/chat), confirmed live
+        # to keep responding through three separate GLM outage windows this
+        # session, so its uptime genuinely doesn't track GLM's. Same
+        # numbers-match safety net as Zia's fast path, since Qwen is also a
+        # general-purpose model and not immune to the same kind of drift.
+        qwen_result = self.qwen.translate(normalized_text, source_lang, target_lang)
+        if qwen_result["available"] and self._numbers_match(normalized_text, qwen_result["text"]):
+            return qwen_result["text"]
+        elif qwen_result["available"]:
+            logger.warning(
+                f"Qwen fallback translate returned mismatched numbers -- discarding. "
+                f"Source: {normalized_text[:100]!r}"
+            )
+
         # Honest fallback -- still labeled as such, not silently passed
         # through as if it were a real translation.
         if source_lang == "kn" and target_lang == "en":
@@ -1068,7 +1086,15 @@ async def create_session(request: Request, location_context: str = Depends(secur
 @app.get("/api/sessions")
 async def list_sessions(request: Request, location_context: str = Depends(security_firewall)):
     """
-    Lists the authenticated officer's own chat sessions, most recent first.
+    Lists the authenticated officer's own chat sessions, most recent first,
+    plus any regular (non-Investigation) sessions they were Cowork-invited
+    into. Confirmed live: a Cowork invite on a plain chat used to leave the
+    invited officer with a working "Accept" button and then nowhere to
+    actually open the conversation -- GET /api/investigations already
+    surfaces shared sessions via CoworkParticipant, but only for sessions
+    with a non-empty description (Investigations); this endpoint never
+    checked CoworkParticipant at all, so a shared plain chat was invisible
+    to the invitee everywhere in the UI even after accepting.
     """
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
     if not catalyst_app:
@@ -1082,12 +1108,31 @@ async def list_sessions(request: Request, location_context: str = Depends(securi
         # `description = ''` matches zero rows against real data (ZCQL's
         # NULL semantics: NULL never equals '' or anything else), which was
         # silently hiding 100% of chat history. Must check both.
-        res = catalyst_app.zql().execute_query(
+        owned = catalyst_app.zql().execute_query(
             f"SELECT session_id, title, last_active_at FROM ChatSession "
             f"WHERE employee_id = {employee_id} AND (description IS NULL OR description = '') "
             f"ORDER BY last_active_at DESC LIMIT 50"
         )
-        return [r.get("ChatSession", {}) for r in res]
+        sessions = [r.get("ChatSession", {}) for r in owned]
+        seen_session_ids = {s["session_id"] for s in sessions}
+
+        part_res = catalyst_app.zql().execute_query(
+            f"SELECT session_id FROM CoworkParticipant WHERE employee_id = {employee_id} LIMIT 100"
+        )
+        for p in part_res:
+            sid = p.get("CoworkParticipant", {}).get("session_id")
+            if not sid or sid in seen_session_ids:
+                continue
+            sess_res = catalyst_app.zql().execute_query(
+                f"SELECT session_id, title, last_active_at FROM ChatSession "
+                f"WHERE session_id = '{sid}' AND (description IS NULL OR description = '') LIMIT 1"
+            )
+            if sess_res:
+                seen_session_ids.add(sid)
+                sessions.append(sess_res[0].get("ChatSession", {}))
+
+        sessions.sort(key=lambda s: s.get("last_active_at") or "", reverse=True)
+        return sessions[:50]
     except Exception as e:
         logger.warning(f"Could not list sessions (ChatSession table may not exist yet): {e}")
         return []
@@ -1720,7 +1765,6 @@ async def upload_chat_attachments(
     Frontend calls this BEFORE /api/chat when a message has attachments,
     then prepends attachment_analysis to the query text as context.
     """
-    from catalyst_qwen import CatalystQwen
     from catalyst_stratus import store_attachment
 
     if len(files) > MAX_ATTACHMENTS_PER_MESSAGE:

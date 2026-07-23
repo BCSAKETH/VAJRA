@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import { useApp } from "../AppContext";
-import { X, MapPin, Network, ShieldAlert, TrendingUp, Clock, Fingerprint, Users, Download, Repeat, Link2 } from "lucide-react";
+import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2 } from "lucide-react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, CartesianGrid } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
@@ -64,7 +64,7 @@ const MapSizeAndBoundsFixer: React.FC<{ points: { lat: number; lng: number }[] }
 };
 
 interface ExpandedOverlayProps {
-  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups";
+  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend";
   data: any;
   onClose: () => void;
 }
@@ -88,7 +88,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
       downloadHotspotsAsGeoJson(data.hotspots || [], `vajra_hotspots_${stamp}.geojson`);
       return;
     }
-    if (type === "network" || type === "risk" || type === "forecast") {
+    if (type === "network" || type === "risk" || type === "forecast" || type === "trend") {
       const svg = contentRef.current?.querySelector("svg");
       if (svg) {
         downloadSvgAsPng(svg as SVGSVGElement, `vajra_${type}_${stamp}.png`);
@@ -112,6 +112,12 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
     name: f.period || `P-${idx + 1}`,
     Predicted: f.predicted,
     Baseline: f.historical_avg || 10.0,
+  }));
+
+  // Formulate crime-trend series for recharts
+  const trendData = (data.series || []).map((s: any) => ({
+    name: s.label,
+    Incidents: s.count,
   }));
 
   return (
@@ -176,6 +182,12 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
               <>
                 <Link2 className="w-5 h-5 text-amber-500" />
                 <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Detected Organized Crime Groups" : "ಪತ್ತೆಯಾದ ಸಂಘಟಿತ ಅಪರಾಧ ಗುಂಪುಗಳು"}</h3>
+              </>
+            )}
+            {type === "trend" && (
+              <>
+                <Activity className="w-5 h-5 text-[#00C6AD]" />
+                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Crime Trend Analysis" : "ಅಪರಾಧ ಪ್ರವೃತ್ತಿ ವಿಶ್ಲೇಷಣೆ"}</h3>
               </>
             )}
           </div>
@@ -382,6 +394,83 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                     />
                     <Line type="monotone" dataKey="Predicted" stroke="#F59E0B" strokeWidth={2.5} activeDot={{ r: 6 }} />
                     <Line type="monotone" dataKey="Baseline" stroke="#00C6AD" strokeWidth={2} strokeDasharray="5 5" />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {type === "trend" && (
+            <div className="h-full flex flex-col gap-5">
+              <div className="bg-slate-900/25 border border-slate-850 p-4 rounded-xl">
+                <h4 className="font-black text-slate-100 text-sm">
+                  {lang === "en"
+                    ? `Real Monthly Incident Counts — ${data.district || "All Districts"}${data.crime_group ? ` · ${data.crime_group}` : ""}`
+                    : `ನೈಜ ಮಾಸಿಕ ಘಟನಾ ಎಣಿಕೆಗಳು — ${data.district || "ಎಲ್ಲಾ ಜಿಲ್ಲೆಗಳು"}${data.crime_group ? ` · ${data.crime_group}` : ""}`}
+                </h4>
+                <p className="text-xs text-slate-450 mt-1">
+                  {lang === "en"
+                    ? `Full-table COUNT aggregation across ${data.months || 12} months — every matching case, not a sample.`
+                    : `${data.months || 12} ತಿಂಗಳುಗಳಲ್ಲಿ ಪೂರ್ಣ-ಕೋಷ್ಟಕ COUNT ಒಟ್ಟುಗೂಡಿಸುವಿಕೆ — ಒಂದು ಮಾದರಿಯಲ್ಲ, ಪ್ರತಿ ಹೊಂದಾಣಿಕೆಯ ಪ್ರಕರಣ.`}
+                </p>
+              </div>
+
+              {/* Stat cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 shrink-0">
+                <div className="bg-slate-900/40 border border-slate-850 rounded-xl p-3">
+                  <div className="text-[10px] text-slate-500 uppercase font-mono tracking-wide">{lang === "en" ? "Total Incidents" : "ಒಟ್ಟು ಘಟನೆಗಳು"}</div>
+                  <div className="text-xl font-black text-slate-100 mt-1">{data.total ?? 0}</div>
+                </div>
+                <div className="bg-slate-900/40 border border-slate-850 rounded-xl p-3">
+                  <div className="text-[10px] text-slate-500 uppercase font-mono tracking-wide">{lang === "en" ? "Avg / Month" : "ಸರಾಸರಿ/ತಿಂಗಳು"}</div>
+                  <div className="text-xl font-black text-slate-100 mt-1">{data.avg_per_month ?? 0}</div>
+                </div>
+                <div className="bg-slate-900/40 border border-slate-850 rounded-xl p-3">
+                  <div className="text-[10px] text-slate-500 uppercase font-mono tracking-wide">{lang === "en" ? "Trend" : "ಪ್ರವೃತ್ತಿ"}</div>
+                  <div className={`text-xl font-black mt-1 capitalize ${data.trend?.direction === "increasing" ? "text-rose-450" : data.trend?.direction === "decreasing" ? "text-[#00C6AD]" : "text-slate-100"}`}>
+                    {data.trend?.direction || "stable"}
+                    <span className="text-xs font-mono ml-1.5 opacity-70">
+                      ({data.trend?.pct_per_month > 0 ? "+" : ""}{data.trend?.pct_per_month ?? 0}%/mo)
+                    </span>
+                  </div>
+                </div>
+                <div className="bg-slate-900/40 border border-slate-850 rounded-xl p-3">
+                  <div className="text-[10px] text-slate-500 uppercase font-mono tracking-wide">{lang === "en" ? "Peak Month" : "ಗರಿಷ್ಠ ತಿಂಗಳು"}</div>
+                  <div className="text-xl font-black text-amber-500 mt-1">{data.peak ? data.peak.count : "—"}</div>
+                  <div className="text-[10px] text-slate-500 font-mono">{data.peak?.label || ""}</div>
+                </div>
+              </div>
+
+              {data.recent_spike && (
+                <div className="flex items-center gap-2 bg-amber-500/10 border border-amber-500/25 text-amber-450 rounded-lg px-3.5 py-2.5 text-xs shrink-0">
+                  <AlertTriangle className="w-4 h-4 shrink-0" />
+                  <span>
+                    {lang === "en"
+                      ? "The last two months are running well above the prior 6-month baseline — a possible emerging cluster worth investigating."
+                      : "ಕಳೆದ ಎರಡು ತಿಂಗಳುಗಳು ಹಿಂದಿನ 6 ತಿಂಗಳ ಆಧಾರರೇಖೆಗಿಂತ ಗಣನೀಯವಾಗಿ ಹೆಚ್ಚಿವೆ — ತನಿಖೆಗೆ ಅರ್ಹವಾದ ಸಂಭಾವ್ಯ ಉದಯೋನ್ಮುಖ ಸಮೂಹ."}
+                  </span>
+                </div>
+              )}
+
+              {data.yoy_change_pct !== null && data.yoy_change_pct !== undefined && (
+                <div className="text-xs text-slate-400 shrink-0">
+                  {lang === "en" ? "Year-over-year: " : "ವರ್ಷದಿಂದ ವರ್ಷಕ್ಕೆ: "}
+                  <span className={`font-bold ${data.yoy_change_pct > 0 ? "text-rose-450" : "text-[#00C6AD]"}`}>
+                    {data.yoy_change_pct > 0 ? "+" : ""}{data.yoy_change_pct}%
+                  </span>
+                  {lang === "en" ? " vs the same month last year" : " ಕಳೆದ ವರ್ಷದ ಅದೇ ತಿಂಗಳಿಗೆ ಹೋಲಿಸಿದರೆ"}
+                </div>
+              )}
+
+              {/* Line Chart */}
+              <div className="flex-1 min-h-[240px]">
+                <ResponsiveContainer width="100%" height={240}>
+                  <LineChart data={trendData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
+                    <XAxis dataKey="name" stroke="#94A3B8" fontSize={10} />
+                    <YAxis stroke="#94A3B8" fontSize={10} allowDecimals={false} />
+                    <Tooltip contentStyle={{ background: "rgba(10, 22, 40, 0.95)", border: "1px solid #1e293b" }} />
+                    <Line type="monotone" dataKey="Incidents" stroke="#00C6AD" strokeWidth={2.5} activeDot={{ r: 6 }} dot={{ r: 3 }} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>

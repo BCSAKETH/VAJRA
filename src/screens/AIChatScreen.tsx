@@ -46,7 +46,7 @@ export const AIChatScreen: React.FC = () => {
   // without needing to guess at (and risk understating) a fixed ETA.
   const [thinkingSeconds, setThinkingSeconds] = useState(0);
 
-  const [expandedWidget, setExpandedWidget] = useState<{ type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups"; data: any } | null>(null);
+  const [expandedWidget, setExpandedWidget] = useState<{ type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend"; data: any } | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
 
@@ -80,13 +80,13 @@ export const AIChatScreen: React.FC = () => {
         if (response.ok) {
           const alerts = await response.json();
           alerts.forEach((alert: any) => {
-            const alertKey = `${alert.type}-${alert.timestamp}-${alert.message}`;
+            const alertKey = `${alert.type}-${alert.timestamp}-${alert.details}`;
             if (!seenAlerts.has(alertKey)) {
               seenAlerts.add(alertKey);
               // Pop toast
               addToast(
                 alert.type === "SPATIAL_SPIKE" ? "🚨 Spatial Crime Spike" : "👤 Repeat Offender Alert",
-                alert.message,
+                alert.details,
                 "Warning"
               );
             }

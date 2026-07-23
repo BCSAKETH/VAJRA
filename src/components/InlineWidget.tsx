@@ -1,9 +1,9 @@
 import React from "react";
 import { useApp } from "../AppContext";
-import { Maximize2, ShieldAlert, MapPin, Network, TrendingUp, AlertTriangle, Clock, Fingerprint, Users, Repeat, Link2 } from "lucide-react";
+import { Maximize2, ShieldAlert, MapPin, Network, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Repeat, Link2 } from "lucide-react";
 
 interface InlineWidgetProps {
-  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups";
+  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend";
   data: any;
   onExpand: () => void;
 }
@@ -67,6 +67,12 @@ export const InlineWidget: React.FC<InlineWidgetProps> = ({ type, data, onExpand
             <>
               <Link2 className="w-4 h-4 text-amber-500" />
               <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "Organized Crime Groups" : "ಸಂಘಟಿತ ಅಪರಾಧ ಗುಂಪುಗಳು"}</span>
+            </>
+          )}
+          {type === "trend" && (
+            <>
+              <Activity className="w-4 h-4 text-[#00C6AD]" />
+              <span className="text-xs font-bold text-[#00C6AD] tracking-wider uppercase font-mono">{lang === "en" ? "Crime Trend Analysis" : "ಅಪರಾಧ ಪ್ರವೃತ್ತಿ ವಿಶ್ಲೇಷಣೆ"}</span>
             </>
           )}
         </div>
@@ -286,6 +292,38 @@ export const InlineWidget: React.FC<InlineWidgetProps> = ({ type, data, onExpand
               ))}
               {(data.groups || []).length === 0 && (
                 <div className="text-slate-600">{lang === "en" ? "No repeated co-offense clusters found." : "ಯಾವುದೇ ಪುನರಾವರ್ತಿತ ಸಹ-ಅಪರಾಧ ಸಮೂಹಗಳು ಕಂಡುಬಂದಿಲ್ಲ."}</div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {type === "trend" && (
+          <div className="space-y-2">
+            <p className="text-slate-400">
+              {lang === "en" ? (
+                <>{data.total ?? 0} incidents over {data.months ?? 12} months{data.district ? ` in ${data.district}` : ""}{data.crime_group ? ` (${data.crime_group})` : ""}:</>
+              ) : (
+                <>{data.months ?? 12} ತಿಂಗಳುಗಳಲ್ಲಿ {data.total ?? 0} ಘಟನೆಗಳು{data.district ? ` (${data.district})` : ""}{data.crime_group ? ` — ${data.crime_group}` : ""}:</>
+              )}
+            </p>
+            <div className="bg-slate-950/65 rounded-lg p-2.5 font-mono text-[10px] space-y-1 border border-slate-900">
+              <div className="flex justify-between text-slate-300">
+                <span>{lang === "en" ? "Trend:" : "ಪ್ರವೃತ್ತಿ:"}</span>
+                <span className={`font-black ${data.trend?.direction === "increasing" ? "text-rose-450" : data.trend?.direction === "decreasing" ? "text-[#00C6AD]" : "text-slate-300"}`}>
+                  {data.trend?.direction || "stable"} ({data.trend?.pct_per_month > 0 ? "+" : ""}{data.trend?.pct_per_month ?? 0}%/mo)
+                </span>
+              </div>
+              {data.peak && (
+                <div className="flex justify-between text-slate-400">
+                  <span>{lang === "en" ? "Peak month:" : "ಗರಿಷ್ಠ ತಿಂಗಳು:"}</span>
+                  <span className="font-bold text-amber-500">{data.peak.label} ({data.peak.count})</span>
+                </div>
+              )}
+              {data.recent_spike && (
+                <div className="flex items-center gap-1 text-amber-500 pt-1">
+                  <AlertTriangle className="w-3 h-3 shrink-0" />
+                  <span>{lang === "en" ? "Recent spike above baseline" : "ಆಧಾರರೇಖೆಗಿಂತ ಇತ್ತೀಚಿನ ಏರಿಕೆ"}</span>
+                </div>
               )}
             </div>
           </div>
