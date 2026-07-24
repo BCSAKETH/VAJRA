@@ -4,6 +4,7 @@ import React, {
   useState,
   ReactNode,
   useEffect,
+  useCallback,
 } from "react";
 import { Language, Translations, translations } from "./i18n";
 import { API_BASE } from "./config";
@@ -70,6 +71,7 @@ interface AppContextType {
     title: string,
     message: string,
     severity: "Critical" | "Warning" | "Info" | "Success",
+    realTimestamp?: string,
   ) => void;
   removeToast: (id: string) => void;
   theme: "light" | "high-contrast-dark";
@@ -182,24 +184,42 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     setSelectedFirNoState(firNo);
   };
 
-  const addToast = (
+  // useCallback with an empty dependency array so this function's identity
+  // is stable across renders -- confirmed live this was the root cause of a
+  // runaway toast loop: AIChatScreen's alert-polling useEffect depends on
+  // [addToast], and every unmemoized addToast() call triggered setToasts(),
+  // which re-rendered AppProvider, which created a NEW addToast reference,
+  // which re-ran that useEffect (tearing down and recreating its
+  // now-empty seenAlerts Set), which immediately re-polled and re-toasted
+  // every alert as if it were new -- thousands of duplicate toasts and a
+  // wildly over-frequent /api/alerts poll rate, confirmed live via a
+  // screenshot showing "+2826 more notifications". Both setters here only
+  // use the functional updater form, so neither needs anything in its
+  // dependency array to stay correct.
+  const addToast = useCallback((
     title: string,
     message: string,
     severity: "Critical" | "Warning" | "Info" | "Success",
+    realTimestamp?: string,
   ) => {
     const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-    const timestamp = new Date().toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
+    // realTimestamp is when the underlying event actually happened (e.g. a
+    // proactive alert's real TriggerTime from the database) -- confirmed
+    // live that without this, every toast showed new Date() (when it
+    // rendered), so a two-day-old alert re-surfaced on every page load
+    // looked like it had just happened seconds ago. Falls back to render
+    // time for toasts with no real backing event (login confirmations,
+    // form-save errors, etc.), unchanged from before.
+    const timestamp = realTimestamp
+      ? new Date(realTimestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+      : new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     const newToast: ToastMessage = { id, title, message, severity, timestamp };
     setToasts((prev) => [...prev, newToast]);
-  };
+  }, []);
 
-  const removeToast = (id: string) => {
+  const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
-  };
+  }, []);
 
   useEffect(() => {
     localStorage.setItem("vajra_lang", lang);

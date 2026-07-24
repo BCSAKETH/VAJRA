@@ -8,7 +8,7 @@
   },
   "appsail": [
     {
-      "name": "vajra_backend",
+      "name": "vajra-backend",
       "source": "vajra_backend",
       "path": "vajra_backend",
       "build_path": "."

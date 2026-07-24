@@ -66,10 +66,14 @@ export const AIChatScreen: React.FC = () => {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Poll proactive alerts
+  // Poll proactive alerts. seenAlerts lives in a ref (not a local variable
+  // inside the effect) so it survives if this effect ever re-runs for any
+  // reason -- confirmed live that an unmemoized addToast() reference used
+  // to cause exactly that (see the fix in AppContext.tsx), and a
+  // effect-scoped Set silently resetting to empty on every re-run was what
+  // turned "an alert popped up again" into thousands of duplicate toasts.
+  const seenAlertsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    const seenAlerts = new Set<string>();
-    
     const pollAlerts = async () => {
       try {
         const response = await fetch(`${API_BASE}/api/alerts`, {
@@ -81,13 +85,15 @@ export const AIChatScreen: React.FC = () => {
           const alerts = await response.json();
           alerts.forEach((alert: any) => {
             const alertKey = `${alert.type}-${alert.timestamp}-${alert.details}`;
-            if (!seenAlerts.has(alertKey)) {
-              seenAlerts.add(alertKey);
-              // Pop toast
+            if (!seenAlertsRef.current.has(alertKey)) {
+              seenAlertsRef.current.add(alertKey);
+              // Pop toast -- alert.timestamp is the real TriggerTime from
+              // ProactiveAlerts, not "now", so old alerts read as old.
               addToast(
                 alert.type === "SPATIAL_SPIKE" ? "🚨 Spatial Crime Spike" : "👤 Repeat Offender Alert",
                 alert.details,
-                "Warning"
+                "Warning",
+                alert.timestamp
               );
             }
           });

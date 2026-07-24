@@ -1,8 +1,5 @@
 {
   "command": "uvicorn main:app --host 0.0.0.0 --port $PORT",
-  "stack": "python3.12",
-  "env_variables": {
-    "CATALYST_PROJECT_ID": "50212000000025002",
-    "CATALYST_REGION": "IN"
-  }
+  "stack": "python_3_12",
+  "build_path": "."
 }
