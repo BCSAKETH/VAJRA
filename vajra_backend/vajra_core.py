@@ -1,5 +1,6 @@
+import os as _os
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".env"))
 
 import os
 import json
@@ -93,21 +94,28 @@ try:
         
     RefreshTokenCredential.token = patched_token
 
-    cred = RefreshTokenCredential({
-        'client_id': os.getenv("CATALYST_CLIENT_ID"),
-        'client_secret': os.getenv("CATALYST_CLIENT_SECRET"),
-        'refresh_token': os.getenv("CATALYST_REFRESH_TOKEN")
-    })
-    
-    # Initialize using AppOptions mapped from environment variables
-    catalyst_app = zcatalyst_sdk.initialize_app(
-        credential=cred,
-        options={
-            'project_id': os.getenv("CATALYST_PROJECT_ID"),
-            'project_key': os.getenv("CATALYST_PROJECT_KEY"),
-            'project_domain': "zoho.in" if os.getenv("CATALYST_REGION") == "IN" else "zoho.com"
-        }
-    )
+    client_id = os.getenv("CATALYST_CLIENT_ID")
+    if os.getenv("PORT") and not os.getenv("X_ZOHO_CATALYST_IS_LOCAL") == "true":
+        logger.info("Initializing Zoho Catalyst SDK with container credentials (AppSail environment).")
+        catalyst_app = zcatalyst_sdk.initialize_app()
+    elif client_id:
+        logger.info("Initializing Zoho Catalyst SDK with OAuth refresh token (Local environment).")
+        cred = RefreshTokenCredential({
+            'client_id': client_id,
+            'client_secret': os.getenv("CATALYST_CLIENT_SECRET"),
+            'refresh_token': os.getenv("CATALYST_REFRESH_TOKEN")
+        })
+        catalyst_app = zcatalyst_sdk.initialize_app(
+            credential=cred,
+            options={
+                'project_id': os.getenv("CATALYST_PROJECT_ID"),
+                'project_key': os.getenv("CATALYST_PROJECT_KEY"),
+                'project_domain': "zoho.in" if os.getenv("CATALYST_REGION") == "IN" else "zoho.com"
+            }
+        )
+    else:
+        logger.info("Initializing Zoho Catalyst SDK with no arguments (Fallback).")
+        catalyst_app = zcatalyst_sdk.initialize_app()
     
     # Monkeypatch execute_query to bypass SDK Accept header bug in India region
     def patched_execute_query(self, query: str):
