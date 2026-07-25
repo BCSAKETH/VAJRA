@@ -1,3 +1,3 @@
 // VAJRA 3.0 Central Configuration
 // Point this to your live AppSail backend URL in production (e.g. "https://vajra-backend-xxxxx.catalystserverless.in")
-export const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "" : "http://localhost:8000");
+export const API_BASE = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? "https://vajra-backend-50043584602.development.catalystappsail.in" : "http://localhost:8000");
