@@ -27,3 +27,7 @@ accounts.txt
 *.pem
 *.key
 screenshots/
+
+# Vendored deploy dependencies (pre-installed Linux wheels for AppSail,
+# regenerate via: pip install --target=vajra_backend/vendor --platform=...)
+vajra_backend/vendor/

@@ -1,12 +1,13 @@
-import subprocess
 import sys
 import os
 
-# Catalyst's Python AppSail buildpack provisions a bare python3 interpreter
-# but does not automatically run `pip install -r requirements.txt` (confirmed
-# live: main.py crashed with ModuleNotFoundError on its very first import).
-# The "command" in app-config.json is exec'd directly with no shell, so it
-# can't be a chained "pip install && python3 main.py" -- this wrapper does
-# both steps in a single program invocation instead.
-subprocess.check_call([sys.executable, "-m", "pip", "install", "--no-cache-dir", "-r", "requirements.txt"])
+# All third-party dependencies are pre-installed for Linux/cp312 into
+# vendor/ (shipped as part of this deploy's source, not installed at
+# runtime) -- Catalyst's Python AppSail runtime disk is hard-capped at
+# 1024MB, which this app's real ML dependency footprint (xgboost, shap,
+# scipy, pandas, scikit-learn, pymupdf...) doesn't fit inside once
+# downloaded and unpacked live. Prepending vendor/ to sys.path means
+# `pip install` never has to run inside the constrained runtime container
+# at all -- everything needed is already on disk from the archive itself.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor"))
 os.execv(sys.executable, [sys.executable, "main.py"])
