@@ -9,7 +9,7 @@ import os as _os
 _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "vendor"))
 
 from dotenv import load_dotenv
-load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+load_dotenv(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".env"))
 
 import os
 import re
