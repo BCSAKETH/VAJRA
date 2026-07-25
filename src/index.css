@@ -121,6 +121,13 @@ html.light .glass-card {
   to { transform: translateY(0); opacity: 1; }
 }
 
+/* Login hero entrance: the crest fades in from a slight scale + settle,
+   used as the first beat of the staged login intro (crest -> wordmark -> card). */
+@keyframes crestIn {
+  from { opacity: 0; transform: scale(0.86) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
 @keyframes pulseGlow {
   0%, 100% { box-shadow: 0 0 10px rgba(199,154,78, 0.15); }
   50% { box-shadow: 0 0 25px rgba(199,154,78, 0.4); }
@@ -132,11 +139,25 @@ html.light .glass-card {
 }
 
 .animate-fade-in {
-  animation: fadeIn 0.4s ease forwards;
+  /* both (not forwards-only): holds the from-state during animation-delay so
+     staggered entrances don't flash at full opacity before the delay elapses. */
+  animation: fadeIn 0.4s ease both;
 }
 
 .animate-slide-up {
-  animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: slideUp 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-crest-in {
+  opacity: 0;
+  animation: crestIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-crest-in {
+    animation: fadeIn 0.3s ease forwards;
+    transform: none;
+  }
 }
 
 .glow-teal {

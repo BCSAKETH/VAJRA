@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useApp, ChatMessage } from "../AppContext";
 import { API_BASE } from "../config";
 import { ChatBubble } from "../components/ChatBubble";
 import { ExpandedOverlay } from "../components/ExpandedOverlay";
 import { ChatHistoryPanel } from "../components/ChatHistoryPanel";
-import { AppletPanel, AppletSpec } from "../components/AppletPanel";
-import { Mic, MicOff, Send, Download, Sparkles, Paperclip, X, FileText, Image as ImageIcon, Users } from "lucide-react";
+import { ChatInput } from "../components/ChatInput";
+import { Download, Sparkles, X, Users } from "lucide-react";
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 3;
@@ -40,8 +40,6 @@ export const AIChatScreen: React.FC = () => {
   // after the officer has already clicked a different session (or "new
   // chat") while the first request was still in flight.
   const selectSessionRequestRef = useRef(0);
-  const [appletSpec, setAppletSpec] = useState<AppletSpec | null>(null);
-  const [isAppletLoading, setIsAppletLoading] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState("");
   const [voiceAvailable, setVoiceAvailable] = useState(true);
@@ -212,177 +210,20 @@ export const AIChatScreen: React.FC = () => {
       .catch(() => setHasParticipants(false));
   }, [activeSessionId]);
 
-  // Start voice recognition -- real browser STT (Web Speech API), not a
-  // record-then-upload-to-a-503 flow. Transcription streams into the input
-  // box live as the officer speaks; nothing is sent to the backend until
-  // they actually hit Send, same as typing.
-  const startRecording = () => {
-    const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognitionCtor) {
-      addToast(
-        lang === "en" ? "Voice Input Unavailable" : "ಧ್ವನಿ ಇನ್‌ಪುಟ್ ಲಭ್ಯವಿಲ್ಲ",
-        lang === "en" ? "This browser does not support speech recognition." : "ಈ ಬ್ರೌಸರ್ ಸ್ಪೀಚ್ ರೆಕಗ್ನಿಷನ್ ಬೆಂಬಲಿಸುವುದಿಲ್ಲ.",
-        "Warning"
-      );
-      return;
-    }
-    const recognition = new SpeechRecognitionCtor();
-    // en-US instead of en-IN: kn-IN is the only real option for Kannada, but
-    // en-IN speech-recognition models are inconsistently supported across
-    // browsers/OSes (see the matching note on the TTS side in ChatBubble.tsx)
-    // -- confirmed live that this silently failed to recognize English while
-    // Kannada worked. en-US is near-universally supported.
-    recognition.lang = lang === "kn" ? "kn-IN" : "en-US";
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognitionRef.current = recognition;
 
-    let finalTranscript = "";
-
-    recognition.onresult = (event: SpeechRecognitionEvent) => {
-      let interim = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const result = event.results[i] as unknown as { 0: { transcript: string }; isFinal: boolean };
-        if (result.isFinal) {
-          finalTranscript += result[0].transcript;
-        } else {
-          interim += result[0].transcript;
-        }
-      }
-      setInputVal((finalTranscript + interim).trim());
-    };
-
-    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-      console.error("Speech recognition error:", event.error);
-      if (event.error !== "no-speech") {
-        addToast(
-          lang === "en" ? "Voice Input Error" : "ಧ್ವನಿ ಇನ್‌ಪುಟ್ ದೋಷ",
-          lang === "en" ? `Speech recognition failed: ${event.error}` : `ಸ್ಪೀಚ್ ರೆಕಗ್ನಿಷನ್ ವಿಫಲವಾಗಿದೆ: ${event.error}`,
-          "Warning"
-        );
-      }
-      setIsRecording(false);
-      setRecordingStatus("");
-    };
-
-    recognition.onend = () => {
-      setIsRecording(false);
-      setRecordingStatus("");
-    };
-
-    recognition.start();
-    setIsRecording(true);
-    setRecordingStatus(lang === "en" ? "Listening..." : "ಆಲಿಸಲಾಗುತ್ತಿದೆ...");
-  };
-
-  // Stop voice recognition
-  const stopRecording = () => {
-    if (recognitionRef.current && isRecording) {
-      recognitionRef.current.stop();
-      recognitionRef.current = null;
-      setIsRecording(false);
-      setRecordingStatus("");
-    }
-  };
-
-  // Second request for the analysis panel (Phase 7) -- now a deterministic,
-  // no-LLM mapping server-side (see generate_applet_spec in agent_loop.py),
-  // so this resolves almost instantly. Still its own call/round-trip rather
-  // than inlined into the main response so a network hiccup here can't
-  // delay the chat reply itself.
-  const fetchAppletSpec = async (responseType: string, data: any) => {
-    setIsAppletLoading(true);
-    try {
-      const response = await fetch(`${API_BASE}/api/chat/applet`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
-        },
-        body: JSON.stringify({ response_type: responseType, data: data || {} }),
-      });
-      if (response.ok) {
-        const result = await response.json();
-        setAppletSpec(result.applet || null);
-      } else {
-        setAppletSpec(null);
-      }
-    } catch (err) {
-      console.error("Applet spec fetch failed:", err);
-      setAppletSpec(null);
-    } finally {
-      setIsAppletLoading(false);
-    }
-  };
-
-  // Client-side validation mirrors the backend's real limits (8MB/file, 3
-  // files, 20MB aggregate, PDF/JPEG only) so a rejection is instant and
-  // specific instead of a generic failure after an upload round-trip.
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const selected: File[] = Array.from(e.target.files || []);
-    e.target.value = "";
-    if (selected.length === 0) return;
-
-    if (pendingAttachments.length + selected.length > MAX_ATTACHMENTS_PER_MESSAGE) {
-      addToast(
-        lang === "en" ? "Too Many Attachments" : "ಹಲವಾರು ಲಗತ್ತುಗಳು",
-        lang === "en" ? `Max ${MAX_ATTACHMENTS_PER_MESSAGE} files per message.` : `ಪ್ರತಿ ಸಂದೇಶಕ್ಕೆ ಗರಿಷ್ಠ ${MAX_ATTACHMENTS_PER_MESSAGE} ಫೈಲ್‌ಗಳು.`,
-        "Warning"
-      );
-      return;
-    }
-    for (const f of selected) {
-      if (!ALLOWED_ATTACHMENT_TYPES.includes(f.type)) {
-        addToast(
-          lang === "en" ? "Unsupported File Type" : "ಬೆಂಬಲಿಸದ ಫೈಲ್ ಪ್ರಕಾರ",
-          lang === "en" ? `'${f.name}' must be a PDF or JPEG.` : `'${f.name}' PDF ಅಥವಾ JPEG ಆಗಿರಬೇಕು.`,
-          "Warning"
-        );
-        return;
-      }
-      if (f.size > MAX_ATTACHMENT_BYTES) {
-        addToast(
-          lang === "en" ? "File Too Large" : "ಫೈಲ್ ತುಂಬಾ ದೊಡ್ಡದಾಗಿದೆ",
-          lang === "en" ? `'${f.name}' exceeds the 8 MB per-file limit.` : `'${f.name}' ೮ MB ಮಿತಿಯನ್ನು ಮೀರಿದೆ.`,
-          "Warning"
-        );
-        return;
-      }
-    }
-    const aggregate = [...pendingAttachments, ...selected].reduce((sum, f) => sum + f.size, 0);
-    if (aggregate > MAX_AGGREGATE_BYTES) {
-      addToast(
-        lang === "en" ? "Attachments Too Large" : "ಲಗತ್ತುಗಳು ತುಂಬಾ ದೊಡ್ಡದಾಗಿವೆ",
-        lang === "en" ? "Total attachment size exceeds the 20 MB limit for this message." : "ಒಟ್ಟು ಲಗತ್ತು ಗಾತ್ರ ಈ ಸಂದೇಶಕ್ಕೆ ೨೦ MB ಮಿತಿಯನ್ನು ಮೀರಿದೆ.",
-        "Warning"
-      );
-      return;
-    }
-    setPendingAttachments((prev) => [...prev, ...selected]);
-  };
-
-  const removeAttachment = (index: number) => {
-    setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
-  };
 
   // Submit Text Query to Copilot Agent Loop
-  const handleSend = async (textToSend: string) => {
-    // Guards against duplicate sends -- e.g. the Enter keydown handler and
-    // a rapid double-click on Send both firing before the first request
-    // resolves, which previously queued multiple identical messages.
+  const handleSend = useCallback(async (textToSend: string, filesToSend: File[] = []) => {
     if (isThinking || isUploadingAttachments) return;
-    if (!textToSend.trim() && pendingAttachments.length === 0) return;
+    if (!textToSend.trim() && filesToSend.length === 0) return;
 
-    // If there are attachments, upload+analyze them first, then prepend the
-    // analysis to the query as context before it reaches the normal GLM
-    // agent loop -- Qwen reads the evidence, GLM reasons over the combined text.
     let queryForAgent = textToSend;
     let uploadedAttachmentRefs: { file_name: string; type: string; page_count: number }[] = [];
-    if (pendingAttachments.length > 0) {
+    if (filesToSend.length > 0) {
       setIsUploadingAttachments(true);
       try {
         const formData = new FormData();
-        pendingAttachments.forEach((f) => formData.append("files", f));
+        filesToSend.forEach((f) => formData.append("files", f));
         const uploadRes = await fetch(`${API_BASE}/api/chat/attachments`, {
           method: "POST",
           headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
@@ -415,7 +256,6 @@ export const AIChatScreen: React.FC = () => {
         return;
       }
       setIsUploadingAttachments(false);
-      setPendingAttachments([]);
     }
 
     // Once a session exists, the WebSocket is connected and delivers every
@@ -501,14 +341,6 @@ export const AIChatScreen: React.FC = () => {
           setShowInvitePanel(true);
         }
       }
-
-      // Second, independent call for the analysis panel -- fired after the
-      // chat reply is already shown, so a slow or empty applet response
-      // never delays the answer itself. The panel shows a loading skeleton
-      // until this resolves.
-      if (data.ai_invoked !== false) {
-        fetchAppletSpec(data.response_type, data.data);
-      }
     } catch (err: any) {
       console.error(err);
       const errorMsg: ChatMessage = {
@@ -525,7 +357,7 @@ export const AIChatScreen: React.FC = () => {
       setIsThinking(false);
       setThinkingType("standard");
     }
-  };
+  }, [isThinking, isUploadingAttachments, activeSessionId, lang, addToast, setIsAuthenticated, chatMode]);
 
   // Start a fresh conversation -- clears the transcript and drops the active
   // session id, so the next message sent auto-creates a brand new ChatSession.
@@ -536,7 +368,6 @@ export const AIChatScreen: React.FC = () => {
     setLoadingSessionId(null);
     setChatMessages([]);
     setActiveSessionId(null);
-    setAppletSpec(null);
     setChatMode("chat");
     setHasParticipants(false);
   };
@@ -634,9 +465,6 @@ export const AIChatScreen: React.FC = () => {
       }));
       setChatMessages(loaded);
       setActiveSessionId(sessionId);
-      // Applet specs aren't persisted per-turn, so there's nothing honest to
-      // show for a resumed conversation's past turns until a new message is sent.
-      setAppletSpec(null);
     } catch (err) {
       if (requestId !== selectSessionRequestRef.current) return; // superseded
       console.error(err);
@@ -823,87 +651,14 @@ export const AIChatScreen: React.FC = () => {
           )}
 
           {/* Pending attachment preview chips */}
-          {pendingAttachments.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {pendingAttachments.map((f, idx) => (
-                <div
-                  key={idx}
-                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-[#C79A4E]/25 bg-[#C79A4E]/5 text-[11px] text-stone-300"
-                >
-                  {f.type === "application/pdf" ? (
-                    <FileText className="w-3.5 h-3.5 text-[#C79A4E]" />
-                  ) : (
-                    <ImageIcon className="w-3.5 h-3.5 text-[#C79A4E]" />
-                  )}
-                  <span className="max-w-[140px] truncate">{f.name}</span>
-                  <button onClick={() => removeAttachment(idx)} className="text-stone-500 hover:text-rose-500 cursor-pointer">
-                    <X className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-
           {/* Input controls block */}
-          <div className="flex items-center gap-3">
-            {/* Microphone Toggle — disabled honestly when voice/STT isn't actually
-                configured, instead of letting an officer record audio that would
-                just be uploaded and discarded on a guaranteed 503. */}
-            <button
-              onClick={isRecording ? stopRecording : startRecording}
-              disabled={!voiceAvailable}
-              className={`p-3.5 rounded-xl border transition-all ${
-                !voiceAvailable
-                  ? "bg-stone-950/40 border-stone-900 text-stone-700 cursor-not-allowed"
-                  : isRecording
-                  ? "bg-rose-500/10 border-rose-500/30 text-rose-500 animate-pulse cursor-pointer"
-                  : "bg-stone-900 border-stone-800 hover:border-[#C79A4E]/40 text-stone-400 hover:text-stone-200 cursor-pointer"
-              }`}
-              title={voiceAvailable ? t.micTitleAvailable : t.micTitleUnavailable}
-            >
-              {isRecording ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-            </button>
-
-            {/* Attach evidence (PDF/JPEG) */}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="application/pdf,image/jpeg"
-              multiple
-              className="hidden"
-              onChange={handleFileSelect}
-            />
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              disabled={pendingAttachments.length >= MAX_ATTACHMENTS_PER_MESSAGE || isUploadingAttachments}
-              className="p-3.5 rounded-xl border bg-stone-900 border-stone-800 hover:border-[#C79A4E]/40 text-stone-400 hover:text-stone-200 transition-all disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-              title={t.attachTitle}
-            >
-              <Paperclip className="w-5 h-5" />
-            </button>
-
-            {/* Main Text Input -- disabled while a send is in flight so an
-                impatient re-click/re-Enter during a slow GLM round-trip
-                can't queue up duplicate messages. */}
-            <div className="flex-1 relative">
-              <input
-                type="text"
-                value={inputVal}
-                onChange={(e) => setInputVal(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && !isThinking && !isUploadingAttachments && handleSend(inputVal)}
-                placeholder={isUploadingAttachments ? t.uploadingAttachments : (recordingStatus || t.chatPlaceholder)}
-                disabled={isThinking || isUploadingAttachments}
-                className="w-full bg-stone-950/65 border border-stone-800 focus:border-[#C79A4E] rounded-xl py-3.5 px-4 text-sm text-stone-100 placeholder-stone-600 focus:outline-none transition-all pr-12 disabled:opacity-50"
-              />
-              <button
-                onClick={() => handleSend(inputVal)}
-                disabled={isThinking || isUploadingAttachments}
-                className="absolute right-2 top-2 p-2 rounded-lg bg-stone-900 border border-stone-800 hover:border-[#C79A4E]/40 text-stone-400 hover:text-[#C79A4E] transition-all cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                <Send className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
+          <ChatInput
+            onSend={handleSend}
+            isThinking={isThinking}
+            isUploading={isUploadingAttachments}
+            lang={lang}
+            addToast={addToast}
+          />
 
           {/* Chat / Cowork mode toggle */}
           <div className="flex items-center gap-2">
@@ -1000,8 +755,6 @@ export const AIChatScreen: React.FC = () => {
         />
       )}
       </div>
-
-      <AppletPanel spec={appletSpec} isLoading={isAppletLoading} />
     </div>
   );
 };

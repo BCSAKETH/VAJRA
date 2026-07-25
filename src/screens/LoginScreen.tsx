@@ -19,10 +19,13 @@ export const LoginScreen: React.FC = () => {
   const [badgeInput, setBadgeInput] = useState("");
   const [passwordInput, setPasswordInput] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSubmitting) return;
     setErrorMsg(null);
+    setIsSubmitting(true);
 
     // Front-end Validation: 7-digit numeric KGID
     const kgidPattern = /^\d{7}$/;
@@ -33,6 +36,7 @@ export const LoginScreen: React.FC = () => {
           ? "Badge ID (KGID) must be exactly 7 numeric digits (e.g., 4003385)"
           : "ಬ್ಯಾಡ್ಜ್ ಐಡಿ (KGID) ನಿಖರವಾಗಿ ೭ ಅಂಕಿಗಳಾಗಿರಬೇಕು (ಉದಾ. ೪೦೦೩೩೮೫)",
       );
+      setIsSubmitting(false);
       return;
     }
 
@@ -42,6 +46,7 @@ export const LoginScreen: React.FC = () => {
           ? "Password must be at least 4 characters long"
           : "ರಹಸ್ಯಪದ ಕನಿಷ್ಠ ೪ ಅಕ್ಷರಗಳಾಗಿರಬೇಕು",
       );
+      setIsSubmitting(false);
       return;
     }
 
@@ -87,6 +92,7 @@ export const LoginScreen: React.FC = () => {
       setErrorMsg(err.message || "Logon gateway unresponsive. Check backend server.");
     } finally {
       setGlobalLoading(false);
+      setIsSubmitting(false);
     }
   };
 
@@ -106,13 +112,16 @@ export const LoginScreen: React.FC = () => {
         </button>
       </div>
 
-      <div className="w-full max-w-md space-y-6 animate-slide-up">
+      {/* Staged entrance: crest settles in first, then the wordmark, then the
+          auth card -- a deliberate sequence rather than one flat fade,
+          each beat holding its pre-animation state via fill-mode:both. */}
+      <div className="w-full max-w-md space-y-6">
         {/* State Seal and Headers */}
         <div className="text-center space-y-3">
-          <div className="flex justify-center mx-auto pb-1">
+          <div className="flex justify-center mx-auto pb-1 animate-crest-in">
             <VajraLogo animated={true} size={64} />
           </div>
-          <div>
+          <div className="animate-fade-in" style={{ animationDelay: "280ms" }}>
             <h2 className="text-2xl font-black text-white tracking-tight">
               VAJRA / ವಜ್ರ
             </h2>
@@ -125,7 +134,10 @@ export const LoginScreen: React.FC = () => {
         </div>
 
         {/* Central Auth Container */}
-        <div className="glass-panel border border-stone-800 rounded-2xl p-8 shadow-2xl relative overflow-hidden w-full">
+        <div
+          className="glass-panel border border-stone-800 rounded-2xl p-8 shadow-2xl relative overflow-hidden w-full animate-slide-up"
+          style={{ animationDelay: "420ms" }}
+        >
           <div className="absolute top-0 right-0 p-4">
             <div className="w-12 h-12 bg-stone-900/40 rounded-full flex items-center justify-center">
               <VajraLogo animated={false} size={24} className="opacity-30" />
@@ -182,18 +194,26 @@ export const LoginScreen: React.FC = () => {
               </div>
             </div>
 
-            {/* Submit Button */}
+            {/* Submit Button -- solid gold fill so the one primary action on
+                this screen reads as primary, not another bordered ghost
+                control indistinguishable from the language toggle. */}
             <button
               type="submit"
-              className="w-full bg-stone-900 border border-stone-800 hover:border-[#C79A4E]/40 text-stone-100 hover:bg-[#C79A4E]/10 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all duration-200 cursor-pointer shadow-md shadow-[#C79A4E]/5"
+              disabled={isSubmitting}
+              className="w-full bg-[#C79A4E] hover:bg-[#d4ab5c] text-[#211F1D] py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all duration-200 cursor-pointer disabled:opacity-60 disabled:cursor-wait shadow-md shadow-[#C79A4E]/20"
             >
-              {t.loginButton}
+              {isSubmitting
+                ? (lang === "en" ? "Authenticating…" : "ದೃಢೀಕರಿಸಲಾಗುತ್ತಿದೆ…")
+                : t.loginButton}
             </button>
           </form>
         </div>
 
         {/* Footer info */}
-        <p className="text-center text-[10px] text-stone-600 leading-relaxed max-w-sm mx-auto">
+        <p
+          className="text-center text-[10px] text-stone-600 leading-relaxed max-w-sm mx-auto animate-fade-in"
+          style={{ animationDelay: "560ms" }}
+        >
           {t.footerRights}
         </p>
       </div>

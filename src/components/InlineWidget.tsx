@@ -8,7 +8,7 @@ interface InlineWidgetProps {
   onExpand: () => void;
 }
 
-export const InlineWidget: React.FC<InlineWidgetProps> = ({ type, data, onExpand }) => {
+const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpand }) => {
   const { lang } = useApp();
   return (
     <div className="glass-card rounded-xl border border-stone-800 p-4 shadow-lg animate-fade-in relative overflow-hidden">
@@ -368,3 +368,6 @@ export const InlineWidget: React.FC<InlineWidgetProps> = ({ type, data, onExpand
     </div>
   );
 };
+
+export const InlineWidget = React.memo(InlineWidgetComponent);
+

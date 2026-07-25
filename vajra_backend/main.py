@@ -6,7 +6,8 @@ import os as _os
 # actually got invoked). Vendored Linux dependencies live in vendor/ next to
 # this file; without this, every import below fails since nothing is
 # pip-installed in the runtime container itself.
-_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "vendor"))
+if _os.name != 'nt':
+    _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "vendor"))
 
 from dotenv import load_dotenv
 load_dotenv(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".env"))

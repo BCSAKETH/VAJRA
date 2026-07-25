@@ -29,7 +29,7 @@ interface ChatHistoryPanelProps {
   loadingSessionId?: string | null;
 }
 
-export const ChatHistoryPanel: React.FC<ChatHistoryPanelProps> = ({
+const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
   activeSessionId,
   onSelectSession,
   onNewChat,
@@ -185,3 +185,6 @@ export const ChatHistoryPanel: React.FC<ChatHistoryPanelProps> = ({
     </div>
   );
 };
+
+export const ChatHistoryPanel = React.memo(ChatHistoryPanelComponent);
+

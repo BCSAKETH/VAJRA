@@ -85,9 +85,14 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
               ) : (
                 <VajraLogo animated={false} size={24} className="mx-auto" />
               )}
+              {/* No longer hidden below md: hover-to-expand doesn't exist on
+                  touch devices, so this click toggle was the only way to
+                  ever open the sidebar on mobile -- hiding it left touch
+                  users permanently stuck with icon-only nav and no labels. */}
               <button
                 onClick={() => setIsSidebarExpanded(!isSidebarExpanded)}
-                className="hidden md:flex p-1 rounded-md border border-stone-800 hover:border-stone-700 bg-stone-900/50 hover:bg-stone-800 text-stone-400 hover:text-stone-200 transition-colors"
+                aria-label={isSidebarExpanded ? "Collapse sidebar" : "Expand sidebar"}
+                className="flex p-1 rounded-md border border-stone-800 hover:border-stone-700 bg-stone-900/50 hover:bg-stone-800 text-stone-400 hover:text-stone-200 transition-colors"
               >
                 {isSidebarExpanded ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
               </button>
