@@ -26,7 +26,8 @@ export const LoginScreen: React.FC = () => {
 
     // Front-end Validation: 7-digit numeric KGID
     const kgidPattern = /^\d{7}$/;
-    if (!kgidPattern.test(badgeInput)) {
+    const trimmedBadge = badgeInput.trim();
+    if (!kgidPattern.test(trimmedBadge)) {
       setErrorMsg(
         lang === "en"
           ? "Badge ID (KGID) must be exactly 7 numeric digits (e.g., 4003385)"
@@ -53,8 +54,8 @@ export const LoginScreen: React.FC = () => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          badge_no: badgeInput,
-          password: passwordInput,
+          badge_no: trimmedBadge,
+          password: passwordInput.trim(),
         }),
       });
 

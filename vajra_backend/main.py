@@ -52,19 +52,13 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# Enable CORS for frontend integrations
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://vajra-60074806366.development.catalystserverless.in",
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://localhost:8000",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# NOTE: CORSMiddleware intentionally removed.
+# Zoho ZGS (the AppSail reverse-proxy gateway) already injects CORS headers
+# on every response. Adding FastAPI's CORSMiddleware on top causes duplicate
+# Access-Control-Allow-Origin headers, which browsers reject as invalid CORS
+# (resulting in "Failed to fetch"). ZGS is configured to allow the Catalyst
+# web client origin at the project level.
+
 
 # Load serialized ML artifacts
 try:
