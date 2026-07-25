@@ -18,7 +18,11 @@ const speakText = (text: string, lang: "en" | "kn", onEnd: () => void) => {
   if (!("speechSynthesis" in window)) return false;
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(text);
-  utterance.lang = lang === "kn" ? "kn-IN" : "en-IN";
+  // en-US instead of en-IN: kn-IN is the only real option for Kannada, but
+  // en-IN voice packs are inconsistently bundled across browsers/OSes --
+  // confirmed live that this silently produced no audio for English while
+  // Kannada worked. en-US is near-universally available.
+  utterance.lang = lang === "kn" ? "kn-IN" : "en-US";
   utterance.onend = onEnd;
   utterance.onerror = onEnd;
   window.speechSynthesis.speak(utterance);

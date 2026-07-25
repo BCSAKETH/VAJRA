@@ -654,10 +654,21 @@ class VajraAgentLoop:
             # every iteration after the first tool call gets the short,
             # focused "write the answer" prompt with nothing to re-deliberate.
             allow_tools = current_iteration == 1
+            # Iteration 1 previously got LESS output budget (2500) than the
+            # synthesis-only iterations (3500) despite being the heaviest
+            # reasoning step for this "thinking" model -- it has to think
+            # through tool selection AND, when the query carries a large
+            # attachment analysis or long conversation history, produce a
+            # correspondingly long reasoning trace before its JSON decision.
+            # Confirmed live: that left too little room to finish the JSON,
+            # truncating mid-reasoning (no closing </think>) and falling
+            # through to the generic "I encountered an error" text. Matching
+            # iteration 1's budget to iteration 2+ gives it the same room to
+            # actually finish thinking before running out of tokens.
             llm_res = self.llm.chat(
                 history,
                 self.TOOLS if allow_tools else None,
-                max_tokens=(2500 if allow_tools else 3500)
+                max_tokens=3500
             )
 
             if llm_res.get("error"):

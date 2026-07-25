@@ -31,6 +31,15 @@ export const AIChatScreen: React.FC = () => {
   // synthetic per-request ids.
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [sessionsRefreshKey, setSessionsRefreshKey] = useState(0);
+  // Which session (if any) is currently being fetched from the history
+  // sidebar. Surfaced as an immediate spinner on the clicked row and a
+  // skeleton in the thread -- previously a click gave zero feedback until
+  // the fetch resolved, which reads as "not loading" even when it's working.
+  const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
+  // Guards against a slow, now-stale session fetch overwriting the thread
+  // after the officer has already clicked a different session (or "new
+  // chat") while the first request was still in flight.
+  const selectSessionRequestRef = useRef(0);
   const [appletSpec, setAppletSpec] = useState<AppletSpec | null>(null);
   const [isAppletLoading, setIsAppletLoading] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -49,6 +58,7 @@ export const AIChatScreen: React.FC = () => {
   const [expandedWidget, setExpandedWidget] = useState<{ type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend"; data: any } | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
 
   // Cowork mode: "chat" is today's solo behavior, unchanged. "cowork" shows
   // an invite prompt (once a session exists) and switches message delivery
@@ -217,7 +227,12 @@ export const AIChatScreen: React.FC = () => {
       return;
     }
     const recognition = new SpeechRecognitionCtor();
-    recognition.lang = lang === "kn" ? "kn-IN" : "en-IN";
+    // en-US instead of en-IN: kn-IN is the only real option for Kannada, but
+    // en-IN speech-recognition models are inconsistently supported across
+    // browsers/OSes (see the matching note on the TTS side in ChatBubble.tsx)
+    // -- confirmed live that this silently failed to recognize English while
+    // Kannada worked. en-US is near-universally supported.
+    recognition.lang = lang === "kn" ? "kn-IN" : "en-US";
     recognition.continuous = true;
     recognition.interimResults = true;
     recognitionRef.current = recognition;
@@ -515,6 +530,10 @@ export const AIChatScreen: React.FC = () => {
   // Start a fresh conversation -- clears the transcript and drops the active
   // session id, so the next message sent auto-creates a brand new ChatSession.
   const handleNewChat = () => {
+    // Invalidate any in-flight handleSelectSession fetch so it can't land
+    // after this and clobber the fresh blank thread.
+    selectSessionRequestRef.current++;
+    setLoadingSessionId(null);
     setChatMessages([]);
     setActiveSessionId(null);
     setAppletSpec(null);
@@ -581,8 +600,14 @@ export const AIChatScreen: React.FC = () => {
     }
   };
 
-  // Resume a past conversation from the history sidebar.
+  // Resume a past conversation from the history sidebar. Gives immediate
+  // visual feedback (spinner on the clicked row + thread skeleton) instead
+  // of appearing frozen while the fetch is in flight, and ignores its own
+  // response if a newer session-select/new-chat has since superseded it.
   const handleSelectSession = async (sessionId: string) => {
+    if (sessionId === activeSessionId && !loadingSessionId) return;
+    const requestId = ++selectSessionRequestRef.current;
+    setLoadingSessionId(sessionId);
     try {
       const response = await fetch(`${API_BASE}/api/sessions/${sessionId}/messages`, {
         headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
@@ -591,6 +616,8 @@ export const AIChatScreen: React.FC = () => {
         throw new Error("Failed to load session history.");
       }
       const messages = await response.json();
+      if (requestId !== selectSessionRequestRef.current) return; // superseded
+
       const loaded: ChatMessage[] = messages.map((m: any, idx: number) => ({
         id: `${sessionId}-${idx}`,
         sender: m.sender === "user" ? "user" : "assistant",
@@ -611,17 +638,22 @@ export const AIChatScreen: React.FC = () => {
       // show for a resumed conversation's past turns until a new message is sent.
       setAppletSpec(null);
     } catch (err) {
+      if (requestId !== selectSessionRequestRef.current) return; // superseded
       console.error(err);
       addToast(
         lang === "en" ? "Failed to Load Session" : "ಅಧಿವೇಶನ ಲೋಡ್ ವಿಫಲವಾಗಿದೆ",
         lang === "en" ? "Could not retrieve past conversation history." : "ಹಿಂದಿನ ಸಂಭಾಷಣೆ ಇತಿಹಾಸವನ್ನು ಪಡೆಯಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
         "Critical"
       );
+    } finally {
+      if (requestId === selectSessionRequestRef.current) setLoadingSessionId(null);
     }
   };
 
   // Export Transcript to PDF
   const handleExportPDF = async () => {
+    if (isExportingPdf) return;
+    setIsExportingPdf(true);
     try {
       const response = await fetch(`${API_BASE}/api/chat/export-pdf`, {
         method: "POST",
@@ -664,6 +696,8 @@ export const AIChatScreen: React.FC = () => {
         lang === "en" ? "Could not generate PDF conversation transcript." : "PDF ಸಂಭಾಷಣೆ ಪ್ರತಿಲಿಪಿಯನ್ನು ರಚಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
         "Critical"
       );
+    } finally {
+      setIsExportingPdf(false);
     }
   };
 
@@ -680,6 +714,7 @@ export const AIChatScreen: React.FC = () => {
         onSelectSession={handleSelectSession}
         onNewChat={handleNewChat}
         refreshKey={sessionsRefreshKey}
+        loadingSessionId={loadingSessionId}
       />
 
       <div className="flex-1 flex flex-col relative overflow-hidden">
@@ -688,17 +723,29 @@ export const AIChatScreen: React.FC = () => {
         {chatMessages.length > 0 && (
           <button
             onClick={handleExportPDF}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-white transition-all shadow-md cursor-pointer"
+            disabled={isExportingPdf}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-white transition-all shadow-md cursor-pointer disabled:opacity-50 disabled:cursor-wait"
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>{t.exportPdf}</span>
+            <Download className={`w-3.5 h-3.5 ${isExportingPdf ? "animate-bounce" : ""}`} />
+            <span>{isExportingPdf ? (lang === "en" ? "Exporting…" : "ರಫ್ತು ಮಾಡಲಾಗುತ್ತಿದೆ…") : t.exportPdf}</span>
           </button>
         )}
       </div>
 
       {/* Messages Thread Container */}
       <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
-        {chatMessages.length === 0 ? (
+        {loadingSessionId ? (
+          <div className="max-w-3xl mx-auto space-y-6 animate-fade-in" aria-live="polite" aria-busy="true">
+            {[1, 2, 3].map((n) => (
+              <div key={n} className={`flex ${n % 2 === 0 ? "justify-end" : "justify-start"}`}>
+                <div className="space-y-2 w-2/3">
+                  <div className={`h-4 rounded-lg shimmer-bg ${n % 2 === 0 ? "w-1/2 ml-auto" : "w-3/4"}`} />
+                  <div className={`h-3 rounded-lg shimmer-bg ${n % 2 === 0 ? "w-1/3 ml-auto" : "w-1/2"}`} />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : chatMessages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center max-w-lg mx-auto space-y-4 animate-fade-in">
             <div className="w-16 h-16 rounded-full bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[#C79A4E] flex items-center justify-center glow-teal">
               <Sparkles className="w-8 h-8" />

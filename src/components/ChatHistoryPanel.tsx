@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { MessageSquarePlus, MessageSquare, FolderPlus, Folder, Users } from "lucide-react";
+import { MessageSquarePlus, MessageSquare, FolderPlus, Folder, Users, Loader2 } from "lucide-react";
 import { NewInvestigationModal } from "./NewInvestigationModal";
 
 interface SessionSummary {
@@ -24,6 +24,9 @@ interface ChatHistoryPanelProps {
   onSelectSession: (sessionId: string) => void;
   onNewChat: () => void;
   refreshKey: number;
+  // Session id currently being fetched (see AIChatScreen.handleSelectSession).
+  // Drives an immediate per-row spinner so a click never reads as "did nothing".
+  loadingSessionId?: string | null;
 }
 
 export const ChatHistoryPanel: React.FC<ChatHistoryPanelProps> = ({
@@ -31,6 +34,7 @@ export const ChatHistoryPanel: React.FC<ChatHistoryPanelProps> = ({
   onSelectSession,
   onNewChat,
   refreshKey,
+  loadingSessionId = null,
 }) => {
   const { t } = useApp();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -87,26 +91,37 @@ export const ChatHistoryPanel: React.FC<ChatHistoryPanelProps> = ({
         </button>
         {investigations.length > 0 && (
           <div className="space-y-1 pt-1">
-            {investigations.map((inv) => (
-              <button
-                key={inv.session_id}
-                onClick={() => onSelectSession(inv.session_id)}
-                className={`w-full text-left flex items-start gap-2 px-2.5 py-2 rounded-lg text-xs transition-all cursor-pointer ${
-                  inv.session_id === activeSessionId
-                    ? "bg-amber-500/10 border border-amber-500/25 text-stone-100"
-                    : "border border-transparent hover:bg-stone-900/60 text-stone-400 hover:text-stone-200"
-                }`}
-              >
-                <Folder className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500" />
-                <div className="min-w-0 flex-1">
-                  <div className="truncate leading-tight">{inv.title}</div>
-                  {inv.case_no && (
-                    <div className="text-[9px] text-stone-550 font-mono truncate">{inv.case_no}</div>
+            {investigations.map((inv) => {
+              const isLoadingThis = loadingSessionId === inv.session_id;
+              return (
+                <button
+                  key={inv.session_id}
+                  onClick={() => onSelectSession(inv.session_id)}
+                  disabled={!!loadingSessionId}
+                  aria-busy={isLoadingThis}
+                  className={`w-full text-left flex items-start gap-2 px-2.5 py-2 rounded-lg text-xs transition-all cursor-pointer disabled:cursor-wait ${
+                    loadingSessionId && !isLoadingThis ? "opacity-50" : ""
+                  } ${
+                    inv.session_id === activeSessionId
+                      ? "bg-amber-500/10 border border-amber-500/25 text-stone-100"
+                      : "border border-transparent hover:bg-stone-900/60 text-stone-400 hover:text-stone-200"
+                  }`}
+                >
+                  {isLoadingThis ? (
+                    <Loader2 className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500 animate-spin" />
+                  ) : (
+                    <Folder className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500" />
                   )}
-                </div>
-                {inv.role !== "owner" && <Users className="w-3 h-3 shrink-0 text-stone-500 mt-0.5" />}
-              </button>
-            ))}
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate leading-tight">{inv.title}</div>
+                    {inv.case_no && (
+                      <div className="text-[9px] text-stone-550 font-mono truncate">{inv.case_no}</div>
+                    )}
+                  </div>
+                  {inv.role !== "owner" && <Users className="w-3 h-3 shrink-0 text-stone-500 mt-0.5" />}
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
@@ -129,20 +144,31 @@ export const ChatHistoryPanel: React.FC<ChatHistoryPanelProps> = ({
             {t.noPastConversations}
           </div>
         ) : (
-          sessions.map((s) => (
-            <button
-              key={s.session_id}
-              onClick={() => onSelectSession(s.session_id)}
-              className={`w-full text-left flex items-start gap-2 px-2.5 py-2 rounded-lg text-xs transition-all cursor-pointer ${
-                s.session_id === activeSessionId
-                  ? "bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-stone-100"
-                  : "border border-transparent hover:bg-stone-900/60 text-stone-400 hover:text-stone-200"
-              }`}
-            >
-              <MessageSquare className="w-3.5 h-3.5 shrink-0 mt-0.5 text-stone-500" />
-              <span className="truncate leading-tight">{s.title || t.newConversationFallback}</span>
-            </button>
-          ))
+          sessions.map((s) => {
+            const isLoadingThis = loadingSessionId === s.session_id;
+            return (
+              <button
+                key={s.session_id}
+                onClick={() => onSelectSession(s.session_id)}
+                disabled={!!loadingSessionId}
+                aria-busy={isLoadingThis}
+                className={`w-full text-left flex items-start gap-2 px-2.5 py-2 rounded-lg text-xs transition-all cursor-pointer disabled:cursor-wait ${
+                  loadingSessionId && !isLoadingThis ? "opacity-50" : ""
+                } ${
+                  s.session_id === activeSessionId
+                    ? "bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-stone-100"
+                    : "border border-transparent hover:bg-stone-900/60 text-stone-400 hover:text-stone-200"
+                }`}
+              >
+                {isLoadingThis ? (
+                  <Loader2 className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[#C79A4E] animate-spin" />
+                ) : (
+                  <MessageSquare className="w-3.5 h-3.5 shrink-0 mt-0.5 text-stone-500" />
+                )}
+                <span className="truncate leading-tight">{s.title || t.newConversationFallback}</span>
+              </button>
+            );
+          })
         )}
       </div>
 
