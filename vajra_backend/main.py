@@ -1,3 +1,13 @@
+import sys as _sys
+import os as _os
+# Catalyst's AppSail runtime executes main.py directly regardless of the
+# configured "Startup Command" (confirmed live -- start.py, which was meant
+# to do this same sys.path setup before handing off to main.py, never
+# actually got invoked). Vendored Linux dependencies live in vendor/ next to
+# this file; without this, every import below fails since nothing is
+# pip-installed in the runtime container itself.
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "vendor"))
+
 from dotenv import load_dotenv
 load_dotenv()
 
