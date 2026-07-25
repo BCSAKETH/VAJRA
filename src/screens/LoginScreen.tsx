@@ -90,7 +90,7 @@ export const LoginScreen: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#070F1E] flex flex-col items-center justify-center relative p-4 overflow-hidden">
+    <div className="min-h-screen bg-[#161412] flex flex-col items-center justify-center relative p-4 overflow-hidden">
       {/* Indian Tricolour Top Accent Strip */}
       <div className="tricolour-strip absolute top-0 left-0 right-0 z-50" />
 
@@ -98,7 +98,7 @@ export const LoginScreen: React.FC = () => {
       <div className="absolute top-6 right-6">
         <button
           onClick={() => setLang(lang === "en" ? "kn" : "en")}
-          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-slate-800 bg-slate-900/60 hover:bg-slate-850/80 text-xs font-semibold text-[#00C6AD] hover:text-white transition-all shadow-lg"
+          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-850/80 text-xs font-semibold text-[#C79A4E] hover:text-white transition-all shadow-lg"
         >
           <Languages className="w-3.5 h-3.5" />
           <span>{lang === "en" ? "ಕನ್ನಡ" : "English"}</span>
@@ -115,7 +115,7 @@ export const LoginScreen: React.FC = () => {
             <h2 className="text-2xl font-black text-white tracking-tight">
               VAJRA / ವಜ್ರ
             </h2>
-            <p className="text-[10px] font-mono tracking-widest text-[#00C6AD] uppercase font-bold mt-1.5">
+            <p className="text-[10px] font-mono tracking-widest text-[#C79A4E] uppercase font-bold mt-1.5">
               {lang === "en"
                 ? "CCTNS SECURE CENTRAL SHELL"
                 : "ಸಿಐಎಸ್ ಸುರಕ್ಷಿತ ಕೇಂದ್ರ ಶೆಲ್"}
@@ -124,16 +124,16 @@ export const LoginScreen: React.FC = () => {
         </div>
 
         {/* Central Auth Container */}
-        <div className="glass-panel border border-slate-800 rounded-2xl p-8 shadow-2xl relative overflow-hidden w-full">
+        <div className="glass-panel border border-stone-800 rounded-2xl p-8 shadow-2xl relative overflow-hidden w-full">
           <div className="absolute top-0 right-0 p-4">
-            <div className="w-12 h-12 bg-slate-900/40 rounded-full flex items-center justify-center">
+            <div className="w-12 h-12 bg-stone-900/40 rounded-full flex items-center justify-center">
               <VajraLogo animated={false} size={24} className="opacity-30" />
             </div>
           </div>
 
-          <div className="border-b border-slate-850 pb-4 mb-6">
-            <h3 className="text-xs font-black text-slate-350 uppercase tracking-wider flex items-center space-x-2">
-              <Lock className="w-4 h-4 text-[#00C6AD]" />
+          <div className="border-b border-stone-850 pb-4 mb-6">
+            <h3 className="text-xs font-black text-stone-350 uppercase tracking-wider flex items-center space-x-2">
+              <Lock className="w-4 h-4 text-[#C79A4E]" />
               <span>{t.loginHeader}</span>
             </h3>
           </div>
@@ -147,7 +147,7 @@ export const LoginScreen: React.FC = () => {
 
             {/* Badge ID Input */}
             <div className="space-y-1.5">
-              <label className="block text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">
+              <label className="block text-[11px] font-extrabold text-stone-400 uppercase tracking-wider">
                 {t.badgeNo}
               </label>
               <div className="relative">
@@ -156,16 +156,16 @@ export const LoginScreen: React.FC = () => {
                   value={badgeInput}
                   onChange={(e) => setBadgeInput(e.target.value)}
                   placeholder="e.g. 4003385"
-                  className="w-full bg-slate-950/60 border border-slate-800 focus:border-[#00C6AD] rounded-xl py-3 px-10 text-sm text-slate-100 placeholder-slate-600 focus:outline-none transition-all"
+                  className="w-full bg-stone-950/60 border border-stone-800 focus:border-[#C79A4E] rounded-xl py-3 px-10 text-sm text-stone-100 placeholder-stone-600 focus:outline-none transition-all"
                   required
                 />
-                <Key className="w-4 h-4 text-slate-600 absolute left-3.5 top-3.5" />
+                <Key className="w-4 h-4 text-stone-600 absolute left-3.5 top-3.5" />
               </div>
             </div>
 
             {/* Password Input */}
             <div className="space-y-1.5">
-              <label className="block text-[11px] font-extrabold text-slate-400 uppercase tracking-wider">
+              <label className="block text-[11px] font-extrabold text-stone-400 uppercase tracking-wider">
                 {t.password}
               </label>
               <div className="relative">
@@ -174,17 +174,17 @@ export const LoginScreen: React.FC = () => {
                   value={passwordInput}
                   onChange={(e) => setPasswordInput(e.target.value)}
                   placeholder="••••••••"
-                  className="w-full bg-slate-950/60 border border-slate-800 focus:border-[#00C6AD] rounded-xl py-3 px-10 text-sm text-slate-100 placeholder-slate-600 focus:outline-none transition-all"
+                  className="w-full bg-stone-950/60 border border-stone-800 focus:border-[#C79A4E] rounded-xl py-3 px-10 text-sm text-stone-100 placeholder-stone-600 focus:outline-none transition-all"
                   required
                 />
-                <Lock className="w-4 h-4 text-slate-600 absolute left-3.5 top-3.5" />
+                <Lock className="w-4 h-4 text-stone-600 absolute left-3.5 top-3.5" />
               </div>
             </div>
 
             {/* Submit Button */}
             <button
               type="submit"
-              className="w-full bg-slate-900 border border-slate-800 hover:border-[#00C6AD]/40 text-slate-100 hover:bg-[#00C6AD]/10 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all duration-200 cursor-pointer shadow-md shadow-[#00C6AD]/5"
+              className="w-full bg-stone-900 border border-stone-800 hover:border-[#C79A4E]/40 text-stone-100 hover:bg-[#C79A4E]/10 py-3 rounded-xl font-bold text-xs uppercase tracking-wider transition-all duration-200 cursor-pointer shadow-md shadow-[#C79A4E]/5"
             >
               {t.loginButton}
             </button>
@@ -192,7 +192,7 @@ export const LoginScreen: React.FC = () => {
         </div>
 
         {/* Footer info */}
-        <p className="text-center text-[10px] text-slate-600 leading-relaxed max-w-sm mx-auto">
+        <p className="text-center text-[10px] text-stone-600 leading-relaxed max-w-sm mx-auto">
           {t.footerRights}
         </p>
       </div>

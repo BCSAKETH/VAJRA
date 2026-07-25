@@ -82,9 +82,9 @@ export const NotificationBellPanel: React.FC = () => {
         };
       case "Success":
         return {
-          bg: "bg-[#00C6AD]/10 border-[#00C6AD]/30",
-          text: "text-[#00C6AD]",
-          icon: <CheckCircle className="w-3.5 h-3.5 text-[#00C6AD] shrink-0" />,
+          bg: "bg-[#C79A4E]/10 border-[#C79A4E]/30",
+          text: "text-[#C79A4E]",
+          icon: <CheckCircle className="w-3.5 h-3.5 text-[#C79A4E] shrink-0" />,
         };
       default:
         return {
@@ -102,28 +102,28 @@ export const NotificationBellPanel: React.FC = () => {
         onClick={() => setIsOpen((v) => !v)}
         className={`relative p-2 rounded-lg border transition-all cursor-pointer ${
           isOpen
-            ? "border-[#00C6AD]/40 bg-slate-800 text-[#00C6AD]"
-            : "border-slate-800 hover:border-slate-700 bg-slate-900/60 hover:bg-slate-850/80 text-slate-400 hover:text-slate-200"
+            ? "border-[#C79A4E]/40 bg-stone-800 text-[#C79A4E]"
+            : "border-stone-800 hover:border-stone-700 bg-stone-900/60 hover:bg-stone-850/80 text-stone-400 hover:text-stone-200"
         }`}
       >
         <Bell className="w-4 h-4" />
         {totalCount > 0 && (
-          <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-[9px] font-black text-white ring-2 ring-slate-950 animate-pulse">
+          <span className="absolute -top-1 -right-1 flex h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-[9px] font-black text-white ring-2 ring-stone-950 animate-pulse">
             {totalCount}
           </span>
         )}
       </button>
 
       {isOpen && (
-        <div className="absolute right-0 top-full mt-2 w-80 bg-slate-900 border border-slate-800 rounded-xl shadow-2xl z-50 overflow-hidden">
+        <div className="absolute right-0 top-full mt-2 w-80 bg-stone-900 border border-stone-800 rounded-xl shadow-2xl z-50 overflow-hidden">
           {/* Header Tabs */}
-          <div className="flex border-b border-slate-850">
+          <div className="flex border-b border-stone-850">
             <button
               onClick={() => setActiveTab("alerts")}
               className={`flex-1 py-2 text-center text-[10px] font-extrabold uppercase tracking-wider transition-colors cursor-pointer border-b-2 ${
                 activeTab === "alerts"
-                  ? "text-[#00C6AD] border-[#00C6AD] bg-slate-850/30"
-                  : "text-slate-500 border-transparent hover:text-slate-350"
+                  ? "text-[#C79A4E] border-[#C79A4E] bg-stone-850/30"
+                  : "text-stone-500 border-transparent hover:text-stone-350"
               }`}
             >
               {lang === "en" ? "System Alerts" : "ಸಿಸ್ಟಮ್ ಎಚ್ಚರಿಕೆಗಳು"}{" "}
@@ -133,8 +133,8 @@ export const NotificationBellPanel: React.FC = () => {
               onClick={() => setActiveTab("cowork")}
               className={`flex-1 py-2 text-center text-[10px] font-extrabold uppercase tracking-wider transition-colors cursor-pointer border-b-2 ${
                 activeTab === "cowork"
-                  ? "text-[#00C6AD] border-[#00C6AD] bg-slate-850/30"
-                  : "text-slate-500 border-transparent hover:text-slate-350"
+                  ? "text-[#C79A4E] border-[#C79A4E] bg-stone-850/30"
+                  : "text-stone-500 border-transparent hover:text-stone-350"
               }`}
             >
               {t.coworkInvitationsTitle || (lang === "en" ? "Cowork Invites" : "ಸಹೋದ್ಯೋಗ ಆಹ್ವಾನಗಳು")}{" "}
@@ -148,10 +148,10 @@ export const NotificationBellPanel: React.FC = () => {
               <div className="flex flex-col h-full">
                 {/* System Alerts Header Actions */}
                 {notifications.length > 0 && (
-                  <div className="flex justify-between items-center px-3 py-1.5 bg-slate-950/40 border-b border-slate-850 text-[9px] font-mono text-slate-450 font-black">
+                  <div className="flex justify-between items-center px-3 py-1.5 bg-stone-950/40 border-b border-stone-850 text-[9px] font-mono text-stone-450 font-black">
                     <button
                       onClick={markAllAsRead}
-                      className="flex items-center gap-1 hover:text-[#00C6AD] transition-colors cursor-pointer"
+                      className="flex items-center gap-1 hover:text-[#C79A4E] transition-colors cursor-pointer"
                     >
                       <CheckSquare className="w-3 h-3" />
                       {lang === "en" ? "Mark all read" : "ಎಲ್ಲವನ್ನೂ ಓದಿದ್ದು ಎಂದು ಗುರುತಿಸಿ"}
@@ -168,18 +168,18 @@ export const NotificationBellPanel: React.FC = () => {
 
                 {/* System Alerts List */}
                 {notifications.length === 0 ? (
-                  <div className="px-3 py-8 text-center text-[11px] text-slate-500 font-mono">
+                  <div className="px-3 py-8 text-center text-[11px] text-stone-500 font-mono">
                     {lang === "en" ? "No system alerts" : "ಯಾವುದೇ ಸಿಸ್ಟಮ್ ಎಚ್ಚರಿಕೆಗಳಿಲ್ಲ"}
                   </div>
                 ) : (
-                  <div className="divide-y divide-slate-850">
+                  <div className="divide-y divide-stone-850">
                     {notifications.map((notif) => {
                       const style = getSeverityStyles(notif.severity);
                       return (
                         <div
                           key={notif.id}
                           className={`p-3 transition-colors flex gap-2.5 items-start group relative ${
-                            notif.read ? "opacity-60 bg-slate-900/10" : "bg-slate-850/15"
+                            notif.read ? "opacity-60 bg-stone-900/10" : "bg-stone-850/15"
                           }`}
                         >
                           {style.icon}
@@ -188,11 +188,11 @@ export const NotificationBellPanel: React.FC = () => {
                               <span className={`text-[10px] font-black uppercase tracking-wider font-mono ${style.text}`}>
                                 {notif.title}
                               </span>
-                              <span className="text-[9px] text-slate-500 font-mono shrink-0">
+                              <span className="text-[9px] text-stone-500 font-mono shrink-0">
                                 {notif.timestamp}
                               </span>
                             </div>
-                            <p className="text-[11px] text-slate-350 leading-relaxed font-sans break-words">
+                            <p className="text-[11px] text-stone-350 leading-relaxed font-sans break-words">
                               {notif.message}
                             </p>
                           </div>
@@ -200,7 +200,7 @@ export const NotificationBellPanel: React.FC = () => {
                           {/* Individual Delete / Dismiss Button */}
                           <button
                             onClick={() => removeNotification(notif.id)}
-                            className="absolute right-2 top-2 p-1 rounded hover:bg-slate-800 text-slate-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
+                            className="absolute right-2 top-2 p-1 rounded hover:bg-stone-800 text-stone-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-all cursor-pointer"
                             title={lang === "en" ? "Dismiss" : "ತೆಗೆದುಹಾಕಿ"}
                           >
                             <Trash2 className="w-3 h-3" />
@@ -215,29 +215,29 @@ export const NotificationBellPanel: React.FC = () => {
               /* Cowork Invitations */
               <div>
                 {invitations.length === 0 ? (
-                  <div className="px-3 py-8 text-center text-[11px] text-slate-500 font-mono">
+                  <div className="px-3 py-8 text-center text-[11px] text-stone-500 font-mono">
                     {t.noPendingInvitations || (lang === "en" ? "No pending invitations" : "ಯಾವುದೇ ಸಹೋದ್ಯೋಗ ಆಹ್ವಾನಗಳಿಲ್ಲ")}
                   </div>
                 ) : (
-                  <div className="divide-y divide-slate-850">
+                  <div className="divide-y divide-stone-850">
                     {invitations.map((inv) => (
-                      <div key={inv.invitation_id} className="p-3 bg-slate-850/10">
-                        <p className="text-[11px] text-slate-300 font-sans leading-relaxed">
-                          <span className="font-bold text-[#00C6AD]">{inv.inviter_name}</span>{" "}
+                      <div key={inv.invitation_id} className="p-3 bg-stone-850/10">
+                        <p className="text-[11px] text-stone-300 font-sans leading-relaxed">
+                          <span className="font-bold text-[#C79A4E]">{inv.inviter_name}</span>{" "}
                           {t.invitedYouOnCase || (lang === "en" ? "invited you on Case" : "ಪ್ರಕರಣದಲ್ಲಿ ನಿಮ್ಮನ್ನು ಆಹ್ವಾನಿಸಿದ್ದಾರೆ")}
                           {inv.case_no ? ` #${inv.case_no}` : ""}.
                         </p>
                         <div className="flex gap-2 mt-2.5">
                           <button
                             onClick={() => respond(inv.invitation_id, "accept")}
-                            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1 rounded bg-[#00C6AD]/10 border border-[#00C6AD]/20 hover:border-[#00C6AD]/40 text-[#00C6AD] text-[10px] font-black uppercase tracking-wider hover:bg-[#00C6AD]/20 transition-all cursor-pointer"
+                            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1 rounded bg-[#C79A4E]/10 border border-[#C79A4E]/20 hover:border-[#C79A4E]/40 text-[#C79A4E] text-[10px] font-black uppercase tracking-wider hover:bg-[#C79A4E]/20 transition-all cursor-pointer"
                           >
                             <Check className="w-3.5 h-3.5" />
                             {t.accept || (lang === "en" ? "Accept" : "ಸ್ವೀಕರಿಸಿ")}
                           </button>
                           <button
                             onClick={() => respond(inv.invitation_id, "reject")}
-                            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1 rounded bg-slate-800 border border-slate-700 text-slate-400 text-[10px] font-black uppercase tracking-wider hover:bg-slate-750 transition-all cursor-pointer"
+                            className="flex-1 flex items-center justify-center gap-1.5 px-2 py-1 rounded bg-stone-800 border border-stone-700 text-stone-400 text-[10px] font-black uppercase tracking-wider hover:bg-stone-750 transition-all cursor-pointer"
                           >
                             <X className="w-3.5 h-3.5" />
                             {t.reject || (lang === "en" ? "Reject" : "ತಿರಸ್ಕರಿಸಿ")}

@@ -42,7 +42,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const [isSidebarHovered, setIsSidebarHovered] = useState(false);
 
   if (!isAuthenticated || currentScreen === "login") {
-    return <div className="min-h-screen bg-[#070F1E] flex flex-col">{children}</div>;
+    return <div className="min-h-screen bg-[#161412] flex flex-col">{children}</div>;
   }
 
   const isExpanded = isSidebarExpanded || isSidebarHovered;
@@ -60,7 +60,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   ];
 
   return (
-    <div className="min-h-screen bg-[#070F1E] text-slate-100 flex flex-col font-sans transition-colors duration-300">
+    <div className="min-h-screen bg-[#161412] text-stone-100 flex flex-col font-sans transition-colors duration-300">
       {/* Indian Tricolour Top Accent Strip */}
       <div className="tricolour-strip shrink-0" />
 
@@ -70,7 +70,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
         <aside
           onMouseEnter={() => setIsSidebarHovered(true)}
           onMouseLeave={() => setIsSidebarHovered(false)}
-          className={`glass-panel border-r border-slate-800 flex flex-col justify-between transition-all duration-300 shrink-0 select-none ${
+          className={`glass-panel border-r border-stone-800 flex flex-col justify-between transition-all duration-300 shrink-0 select-none ${
             isExpanded ? "w-64" : "w-16"
           }`}
         >
@@ -80,14 +80,14 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
               {isExpanded ? (
                 <div className="flex items-center gap-2">
                   <VajraLogo animated={false} size={24} />
-                  <span className="font-black text-sm tracking-widest text-[#00C6AD]">VAJRA 3.0</span>
+                  <span className="font-black text-sm tracking-widest text-[#C79A4E]">VAJRA 3.0</span>
                 </div>
               ) : (
                 <VajraLogo animated={false} size={24} className="mx-auto" />
               )}
               <button
                 onClick={() => setIsSidebarExpanded(!isSidebarExpanded)}
-                className="hidden md:flex p-1 rounded-md border border-slate-800 hover:border-slate-700 bg-slate-900/50 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-colors"
+                className="hidden md:flex p-1 rounded-md border border-stone-800 hover:border-stone-700 bg-stone-900/50 hover:bg-stone-800 text-stone-400 hover:text-stone-200 transition-colors"
               >
                 {isSidebarExpanded ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
               </button>
@@ -104,8 +104,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
                     onClick={() => setCurrentScreen(item.id)}
                     className={`flex items-center gap-3 py-2.5 px-3 rounded-lg border text-left transition-all duration-200 ${
                       isActive
-                        ? "bg-[#00C6AD]/10 border-[#00C6AD]/30 text-[#00C6AD] font-semibold"
-                        : "border-transparent hover:bg-slate-800/35 hover:text-slate-200 text-slate-400"
+                        ? "bg-[#C79A4E]/10 border-[#C79A4E]/30 text-[#C79A4E] font-semibold"
+                        : "border-transparent hover:bg-stone-800/35 hover:text-stone-200 text-stone-400"
                     }`}
                   >
                     <Icon className="w-5 h-5 shrink-0" />
@@ -117,28 +117,28 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
           </div>
 
           {/* Bottom Sidebar Controls */}
-          <div className="p-4 border-t border-slate-800 flex flex-col gap-4 bg-slate-950/20">
+          <div className="p-4 border-t border-stone-800 flex flex-col gap-4 bg-stone-950/20">
             {isExpanded ? (
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-750 flex items-center justify-center font-bold text-xs text-[#00C6AD]">
+                <div className="w-8 h-8 rounded-full bg-stone-800 border border-stone-750 flex items-center justify-center font-bold text-xs text-[#C79A4E]">
                   KG
                 </div>
                 <div className="flex-1 min-w-0">
-                  <p className="text-xs font-semibold text-slate-300 truncate">{t.profileLabel}</p>
-                  <p className="text-[10px] text-slate-500 truncate">{badgeNumber || "KGID: 4003385"}</p>
+                  <p className="text-xs font-semibold text-stone-300 truncate">{t.profileLabel}</p>
+                  <p className="text-[10px] text-stone-500 truncate">{badgeNumber || "KGID: 4003385"}</p>
                 </div>
               </div>
             ) : (
-              <div className="w-8 h-8 rounded-full bg-slate-800 border border-slate-750 flex items-center justify-center font-bold text-xs text-[#00C6AD] mx-auto">
+              <div className="w-8 h-8 rounded-full bg-stone-800 border border-stone-750 flex items-center justify-center font-bold text-xs text-[#C79A4E] mx-auto">
                 KG
               </div>
             )}
 
             <button
               onClick={() => setIsAuthenticated(false)}
-              className="flex items-center gap-3 py-2 px-3 rounded-lg text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/20 transition-all text-left"
+              className="flex items-center gap-3 py-2 px-3 rounded-lg text-stone-400 hover:text-rose-400 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/20 transition-all text-left"
             >
-              <LogOut className="w-5 h-5 shrink-0 text-slate-400 hover:text-rose-400" />
+              <LogOut className="w-5 h-5 shrink-0 text-stone-400 hover:text-rose-400" />
               {isExpanded && <span className="text-sm">{t.signOut}</span>}
             </button>
           </div>
@@ -147,14 +147,14 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
         {/* Content Shell */}
         <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
           {/* Header Bar */}
-          <header className="glass-panel border-b border-slate-800 py-3.5 px-6 flex items-center justify-between z-10 shrink-0">
+          <header className="glass-panel border-b border-stone-800 py-3.5 px-6 flex items-center justify-between z-10 shrink-0">
             <div className="flex items-center gap-3">
               <VajraLogo animated={false} size={20} className="md:hidden" />
               <div className="min-w-0">
-                <h1 className="text-sm font-bold text-slate-200 tracking-wide truncate">
+                <h1 className="text-sm font-bold text-stone-200 tracking-wide truncate">
                   {t.title}
                 </h1>
-                <p className="text-[10.5px] text-slate-500 truncate hidden sm:block">
+                <p className="text-[10.5px] text-stone-500 truncate hidden sm:block">
                   {t.ksp} • {t.scrb}
                 </p>
               </div>
@@ -165,7 +165,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
               {/* Language Selection Toggle */}
               <button
                 onClick={() => setLang(lang === "en" ? "kn" : "en")}
-                className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-800 hover:border-slate-700 bg-slate-900/60 hover:bg-slate-850/80 font-bold transition-all text-[#00C6AD] flex items-center gap-1.5"
+                className="text-xs px-2.5 py-1.5 rounded-lg border border-stone-800 hover:border-stone-700 bg-stone-900/60 hover:bg-stone-850/80 font-bold transition-all text-[#C79A4E] flex items-center gap-1.5"
               >
                 <span>{lang === "en" ? "ಕನ್ನಡ" : "English"}</span>
               </button>
@@ -173,7 +173,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
               {/* Theme Selector Toggle */}
               <button
                 onClick={() => setTheme(theme === "light" ? "high-contrast-dark" : "light")}
-                className="p-2 rounded-lg border border-slate-800 hover:border-slate-700 bg-slate-900/60 hover:bg-slate-850/80 text-slate-400 hover:text-slate-200 transition-all"
+                className="p-2 rounded-lg border border-stone-800 hover:border-stone-700 bg-stone-900/60 hover:bg-stone-850/80 text-stone-400 hover:text-stone-200 transition-all"
               >
                 {theme === "light" ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
               </button>
@@ -182,8 +182,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
               <NotificationBellPanel />
 
               {/* Operator Badge Display */}
-              <div className="hidden md:flex items-center gap-2 border-l border-slate-850 pl-3.5">
-                <span className="text-[10px] font-mono bg-[#00C6AD]/10 text-[#00C6AD] border border-[#00C6AD]/25 px-2 py-0.5 rounded font-black tracking-wide">
+              <div className="hidden md:flex items-center gap-2 border-l border-stone-850 pl-3.5">
+                <span className="text-[10px] font-mono bg-[#C79A4E]/10 text-[#C79A4E] border border-[#C79A4E]/25 px-2 py-0.5 rounded font-black tracking-wide">
                   {badgeNumber || "KSP-4003385"}
                 </span>
               </div>
@@ -191,7 +191,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
           </header>
 
           {/* Core Content Display Pane */}
-          <main className="flex-1 overflow-y-auto relative bg-[#070F1E]">
+          <main className="flex-1 overflow-y-auto relative bg-[#161412]">
             {children}
           </main>
         </div>

@@ -1,34 +1,37 @@
 @import "tailwindcss";
 
 @layer base {
+  /* VAJRA warm-charcoal + gold identity.
+     --color-teal is kept as the token *name* app-wide but now resolves to the
+     gold accent, so every existing var(--color-teal) reference re-skins in place. */
   :root {
-    --color-navy-dark: #0A1628;
-    --color-navy-medium: #112240;
-    --color-navy-light: #1D3557;
-    --color-teal: #00C6AD;
-    --color-teal-glow: rgba(0, 198, 173, 0.15);
+    --color-navy-dark: #211F1D;
+    --color-navy-medium: #242220;
+    --color-navy-light: #3A3835;
+    --color-teal: #C79A4E;
+    --color-teal-glow: rgba(199, 154, 78, 0.18);
     --color-blue: #1D4ED8;
-    --color-amber: #F59E0B;
-    --color-amber-glow: rgba(245, 158, 11, 0.15);
-    --color-background-dark: #070F1E;
-    --color-text-primary: #F8FAFC;
-    --color-text-secondary: #94A3B8;
+    --color-amber: #E0A94B;
+    --color-amber-glow: rgba(224, 169, 75, 0.15);
+    --color-background-dark: #161412;
+    --color-text-primary: #F2F0EA;
+    --color-text-secondary: #A8A49C;
     --font-sans: 'Inter', 'Noto Sans Kannada', system-ui, -apple-system, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
   }
 
   html.light {
-    --color-navy-dark: #F1F5F9;
-    --color-navy-medium: #FFFFFF;
-    --color-navy-light: #E2E8F0;
-    --color-teal: #0D9488;
-    --color-teal-glow: rgba(13, 148, 136, 0.15);
+    --color-navy-dark: #EFECE5;
+    --color-navy-medium: #FBF9F4;
+    --color-navy-light: #E5E0D6;
+    --color-teal: #9A6F27;
+    --color-teal-glow: rgba(154, 111, 39, 0.15);
     --color-blue: #2563EB;
-    --color-amber: #D97706;
-    --color-amber-glow: rgba(217, 119, 6, 0.15);
-    --color-background-dark: #F8FAFC;
-    --color-text-primary: #0F172A;
-    --color-text-secondary: #475569;
+    --color-amber: #B4791A;
+    --color-amber-glow: rgba(180, 121, 26, 0.15);
+    --color-background-dark: #F5F2EA;
+    --color-text-primary: #211F1D;
+    --color-text-secondary: #6B655C;
   }
 
   body {
@@ -47,32 +50,32 @@
   }
 }
 
-/* Glassmorphism Styles */
+/* Glassmorphism Styles — warm charcoal */
 .glass-panel {
-  background: rgba(17, 34, 64, 0.7);
+  background: rgba(28, 26, 24, 0.72);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(233, 227, 214, 0.08);
 }
 
 html.light .glass-panel {
-  background: rgba(255, 255, 255, 0.75);
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(251, 249, 244, 0.78);
+  border: 1px solid rgba(33, 31, 29, 0.08);
 }
 
 .glass-card {
-  background: rgba(29, 53, 87, 0.35);
+  background: rgba(36, 34, 32, 0.55);
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
-  border: 1px solid rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(233, 227, 214, 0.06);
   border-radius: 12px;
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.28);
   transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
 html.light .glass-card {
-  background: rgba(241, 245, 249, 0.75);
-  border: 1px solid rgba(0, 0, 0, 0.05);
+  background: rgba(245, 242, 234, 0.8);
+  border: 1px solid rgba(33, 31, 29, 0.06);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
 }
 
@@ -119,8 +122,8 @@ html.light .glass-card {
 }
 
 @keyframes pulseGlow {
-  0%, 100% { box-shadow: 0 0 10px rgba(0, 198, 173, 0.15); }
-  50% { box-shadow: 0 0 25px rgba(0, 198, 173, 0.4); }
+  0%, 100% { box-shadow: 0 0 10px rgba(199,154,78, 0.15); }
+  50% { box-shadow: 0 0 25px rgba(199,154,78, 0.4); }
 }
 
 @keyframes shimmer {
@@ -141,7 +144,7 @@ html.light .glass-card {
 }
 
 .shimmer-bg {
-  background: linear-gradient(90deg, rgba(17,34,64,0.1) 25%, rgba(0,198,173,0.15) 50%, rgba(17,34,64,0.1) 75%);
+  background: linear-gradient(90deg, rgba(36,34,32,0.1) 25%, rgba(199,154,78,0.15) 50%, rgba(36,34,32,0.1) 75%);
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite linear;
 }

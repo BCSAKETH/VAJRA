@@ -121,24 +121,24 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
   }));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 md:p-10 bg-slate-950/80 backdrop-blur-md animate-fade-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 md:p-10 bg-stone-950/80 backdrop-blur-md animate-fade-in">
       {/* Repeating Diagonal Security Watermark Overlay */}
       <WatermarkOverlay />
 
       {/* Modal Container */}
-      <div className="w-full max-w-5xl h-[85vh] glass-panel border border-slate-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden relative">
+      <div className="w-full max-w-5xl h-[85vh] glass-panel border border-stone-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden relative">
         {/* Top Header */}
-        <div className="p-4 border-b border-slate-800 flex items-center justify-between shrink-0 bg-slate-900/40">
+        <div className="p-4 border-b border-stone-800 flex items-center justify-between shrink-0 bg-stone-900/40">
           <div className="flex items-center gap-2">
             {type === "map" && (
               <>
-                <MapPin className="w-5 h-5 text-[#00C6AD]" />
+                <MapPin className="w-5 h-5 text-[#C79A4E]" />
                 <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Geospatial Hotspots Exploration" : "ಭೌಗೋಳಿಕ ಹಾಟ್‌ಸ್ಪಾಟ್ ಪರಿಶೋಧನೆ"}</h3>
               </>
             )}
             {type === "network" && (
               <>
-                <Network className="w-5 h-5 text-[#00C6AD]" />
+                <Network className="w-5 h-5 text-[#C79A4E]" />
                 <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Relational Intelligence Network" : "ಸಂಬಂಧಾತ್ಮಕ ಗುಪ್ತಚಾರ ಜಾಲ"}</h3>
               </>
             )}
@@ -150,13 +150,13 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
             )}
             {type === "forecast" && (
               <>
-                <TrendingUp className="w-5 h-5 text-[#00C6AD]" />
+                <TrendingUp className="w-5 h-5 text-[#C79A4E]" />
                 <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Seasonal Early Warning Predictions" : "ಋತುಮಾನ ಮುಂಚಿತ ಎಚ್ಚರಿಕೆ ಮುನ್ಸೂಚನೆಗಳು"}</h3>
               </>
             )}
             {type === "timeline" && (
               <>
-                <Clock className="w-5 h-5 text-[#00C6AD]" />
+                <Clock className="w-5 h-5 text-[#C79A4E]" />
                 <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Investigation Chronology" : "ಪ್ರಕರಣ ತನಿಖಾ ಕಾಲಾನುಕ್ರಮ"}</h3>
               </>
             )}
@@ -168,7 +168,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
             )}
             {type === "correlation" && (
               <>
-                <Users className="w-5 h-5 text-[#00C6AD]" />
+                <Users className="w-5 h-5 text-[#C79A4E]" />
                 <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "District Socio-demographic Dashboard" : "ಜಿಲ್ಲಾ ಸಾಮಾಜಿಕ-ಜನಸಂಖ್ಯಾ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್"}</h3>
               </>
             )}
@@ -186,13 +186,13 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
             )}
             {type === "trend" && (
               <>
-                <Activity className="w-5 h-5 text-[#00C6AD]" />
+                <Activity className="w-5 h-5 text-[#C79A4E]" />
                 <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Crime Trend Analysis" : "ಅಪರಾಧ ಪ್ರವೃತ್ತಿ ವಿಶ್ಲೇಷಣೆ"}</h3>
               </>
             )}
             {type === "case_distribution" && (
               <>
-                <PieChartIcon className="w-5 h-5 text-[#00C6AD]" />
+                <PieChartIcon className="w-5 h-5 text-[#C79A4E]" />
                 <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Types Distribution" : "ಪ್ರಕರಣಗಳ ಪ್ರಕಾರ ವಿತರಣೆ"}</h3>
               </>
             )}
@@ -202,14 +202,14 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
             <button
               onClick={handleDownload}
               title={type === "map" ? (lang === "en" ? "Download hotspot coordinates (GeoJSON)" : "ಹಾಟ್‌ಸ್ಪಾಟ್ ನಿರ್ದೇಶಾಂಕಗಳನ್ನು ಡೌನ್‌ಲೋಡ್ ಮಾಡಿ (GeoJSON)") : (lang === "en" ? "Download this view" : "ಈ ನೋಟವನ್ನು ಡೌನ್‌ಲೋಡ್ ಮಾಡಿ")}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-800 hover:border-[#00C6AD]/40 bg-slate-950/50 hover:bg-slate-800 text-slate-400 hover:text-[#00C6AD] text-xs font-semibold transition-all cursor-pointer"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-800 hover:border-[#C79A4E]/40 bg-stone-950/50 hover:bg-stone-800 text-stone-400 hover:text-[#C79A4E] text-xs font-semibold transition-all cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">{lang === "en" ? "Download" : "ಡೌನ್‌ಲೋಡ್"}</span>
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 rounded-lg border border-slate-800 hover:border-slate-700 bg-slate-950/50 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition-all cursor-pointer"
+              className="p-1.5 rounded-lg border border-stone-800 hover:border-stone-700 bg-stone-950/50 hover:bg-stone-800 text-stone-400 hover:text-stone-200 transition-all cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
@@ -217,15 +217,15 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
         </div>
 
         {/* Content Pane */}
-        <div ref={contentRef} className="flex-1 p-6 overflow-y-auto bg-slate-950/15">
+        <div ref={contentRef} className="flex-1 p-6 overflow-y-auto bg-stone-950/15">
           {type === "map" && (() => {
             const hotspots: { lat: number; lng: number; label?: string }[] = data.hotspots || [];
             return (
               <div className="h-full flex flex-col gap-4">
-                <p className="text-xs text-slate-400">
+                <p className="text-xs text-stone-400">
                   {lang === "en" ? "Interactive DBSCAN/KDE Map showing clusters of past cases in selected district." : "ಆಯ್ದ ಜಿಲ್ಲೆಯಲ್ಲಿನ ಹಿಂದಿನ ಪ್ರಕರಣಗಳ ಸಮೂಹಗಳನ್ನು ತೋರಿಸುವ ಇಂಟರಾಕ್ಟಿವ್ DBSCAN/KDE ನಕ್ಷೆ."}
                 </p>
-                <div className="flex-1 rounded-xl overflow-hidden border border-slate-800 min-h-[300px] relative z-0">
+                <div className="flex-1 rounded-xl overflow-hidden border border-stone-800 min-h-[300px] relative z-0">
                   <MapContainer
                     center={hotspots[0] ? [hotspots[0].lat, hotspots[0].lng] : [12.9716, 77.5946]}
                     zoom={12}
@@ -250,14 +250,14 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                           center={[marker.lat, marker.lng]}
                           radius={radius}
                           pathOptions={{
-                            color: "#00C6AD",
+                            color: "#C79A4E",
                             weight: 2,
-                            fillColor: "#00C6AD",
+                            fillColor: "#C79A4E",
                             fillOpacity: 0.35,
                           }}
                         >
                           <Popup>
-                            <div className="text-xs font-sans text-slate-900">
+                            <div className="text-xs font-sans text-stone-900">
                               <span className="font-bold block">{marker.label}</span>
                               Location: {marker.lat.toFixed(5)}, {marker.lng.toFixed(5)}
                             </div>
@@ -279,39 +279,39 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                   panel read data.phones/data.vehicles/data.co_accused, fields
                   the backend never actually populated, always showing "None". */}
               <div className="flex-1 flex flex-col gap-3 min-w-0">
-                <h4 className="font-bold text-slate-200 uppercase tracking-wide text-xs">
+                <h4 className="font-bold text-stone-200 uppercase tracking-wide text-xs">
                   {lang === "en" ? "Syndicate Graph:" : "ಜಾಲ ಗ್ರಾಫ್:"} {data.target_suspect || data.suspect}
                   {data.engine_mode === "Static Fallback Simulation" && (
                     <span className="ml-2 text-amber-500 normal-case font-normal text-[10px]">{lang === "en" ? "(simulated — suspect not found in database)" : "(ಸಿಮ್ಯುಲೇಟೆಡ್ — ಶಂಕಿತರು ಡೇಟಾಬೇಸ್‌ನಲ್ಲಿ ಕಂಡುಬಂದಿಲ್ಲ)"}</span>
                   )}
                 </h4>
-                <div className="flex-1 bg-slate-950/60 border border-slate-900 rounded-xl p-2 min-h-[320px]">
+                <div className="flex-1 bg-stone-950/60 border border-stone-900 rounded-xl p-2 min-h-[320px]">
                   <NetworkGraph nodes={data.nodes || []} edges={data.edges || []} />
                 </div>
               </div>
 
               {/* Right Transaction Ledger Flow */}
               <div className="md:w-1/3 flex flex-col gap-3">
-                <h4 className="font-bold text-slate-200 uppercase tracking-wide text-xs">{lang === "en" ? "Linked Financial Transaction Nodes" : "ಜೋಡಿಸಲಾದ ಹಣಕಾಸು ವಹಿವಾಟು ನೋಡ್‌ಗಳು"}</h4>
-                <div className="flex-1 bg-slate-950/60 border border-slate-900 rounded-xl p-4 overflow-y-auto max-h-[350px]">
+                <h4 className="font-bold text-stone-200 uppercase tracking-wide text-xs">{lang === "en" ? "Linked Financial Transaction Nodes" : "ಜೋಡಿಸಲಾದ ಹಣಕಾಸು ವಹಿವಾಟು ನೋಡ್‌ಗಳು"}</h4>
+                <div className="flex-1 bg-stone-950/60 border border-stone-900 rounded-xl p-4 overflow-y-auto max-h-[350px]">
                   {data.financial_transactions && data.financial_transactions.length > 0 ? (
                     <div className="space-y-2">
                       {data.financial_transactions.map((tx: any, idx: number) => (
-                        <div key={idx} className="flex justify-between items-center bg-slate-900/50 p-2.5 rounded border border-slate-850 font-mono text-[11px]">
+                        <div key={idx} className="flex justify-between items-center bg-stone-900/50 p-2.5 rounded border border-stone-850 font-mono text-[11px]">
                           <div>
-                            <span className="text-[#00C6AD] font-bold">{tx.sender}</span>
-                            <span className="text-slate-500 mx-1">&rarr;</span>
-                            <span className="text-slate-350">{tx.receiver}</span>
+                            <span className="text-[#C79A4E] font-bold">{tx.sender}</span>
+                            <span className="text-stone-500 mx-1">&rarr;</span>
+                            <span className="text-stone-350">{tx.receiver}</span>
                           </div>
                           <div className="text-right">
                             <span className="text-amber-500 font-extrabold">₹{tx.amount?.toLocaleString() || "0"}</span>
-                            <span className="block text-[9px] text-slate-500">{tx.txn_time || "N/A"}</span>
+                            <span className="block text-[9px] text-stone-500">{tx.txn_time || "N/A"}</span>
                           </div>
                         </div>
                       ))}
                     </div>
                   ) : (
-                    <div className="text-center py-10 text-slate-550">{lang === "en" ? "No transaction logs linked to this profile." : "ಈ ಪ್ರೊಫೈಲ್‌ಗೆ ಯಾವುದೇ ವಹಿವಾಟು ದಾಖಲೆಗಳು ಜೋಡಣೆಯಾಗಿಲ್ಲ."}</div>
+                    <div className="text-center py-10 text-stone-550">{lang === "en" ? "No transaction logs linked to this profile." : "ಈ ಪ್ರೊಫೈಲ್‌ಗೆ ಯಾವುದೇ ವಹಿವಾಟು ದಾಖಲೆಗಳು ಜೋಡಣೆಯಾಗಿಲ್ಲ."}</div>
                   )}
                 </div>
               </div>
@@ -321,14 +321,14 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
           {type === "risk" && (
             <div className="h-full flex flex-col gap-6">
               {/* Risk Gauge Header */}
-              <div className="flex flex-col sm:flex-row items-center justify-between bg-slate-900/25 border border-slate-850 p-4 rounded-xl gap-4">
+              <div className="flex flex-col sm:flex-row items-center justify-between bg-stone-900/25 border border-stone-850 p-4 rounded-xl gap-4">
                 <div>
-                  <h4 className="font-black text-slate-100 text-lg">{lang === "en" ? "Calibrated Conviction Probability:" : "ಪರಿಷ್ಕೃತ ಅಪರಾಧ ಸಾಧ್ಯತೆ:"} {data.risk_score || 0}%</h4>
-                  <p className="text-xs text-slate-450 mt-1">
+                  <h4 className="font-black text-stone-100 text-lg">{lang === "en" ? "Calibrated Conviction Probability:" : "ಪರಿಷ್ಕೃತ ಅಪರಾಧ ಸಾಧ್ಯತೆ:"} {data.risk_score || 0}%</h4>
+                  <p className="text-xs text-stone-450 mt-1">
                     {lang === "en" ? "Computed via calibrated XGBoost risk estimator. SHAP factors indicate localized contributions to final model log-odds." : "ಪರಿಷ್ಕೃತ XGBoost ಅಪಾಯ ಅಂದಾಜುದಾರ ಮೂಲಕ ಲೆಕ್ಕಹಾಕಲಾಗಿದೆ. SHAP ಅಂಶಗಳು ಅಂತಿಮ ಮಾದರಿ ಫಲಿತಾಂಶಕ್ಕೆ ಸ್ಥಳೀಯ ಕೊಡುಗೆಗಳನ್ನು ಸೂಚಿಸುತ್ತವೆ."}
                   </p>
                 </div>
-                <div className="px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-[#00C6AD] font-mono font-bold text-sm tracking-wide shrink-0">
+                <div className="px-4 py-2 rounded-xl bg-stone-900 border border-stone-800 text-[#C79A4E] font-mono font-bold text-sm tracking-wide shrink-0">
                   {lang === "en" ? "Suspect:" : "ಶಂಕಿತ:"} {data.suspect || (lang === "en" ? "Unknown" : "ಅಜ್ಞಾತ")}
                 </div>
               </div>
@@ -336,18 +336,18 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
               {/* Horizontal SHAP Explainer Chart */}
               <div className="flex-1 min-h-[300px]">
                 <div className="flex items-center justify-between mb-3">
-                  <h5 className="font-extrabold text-slate-300 text-xs font-mono">{lang === "en" ? "SHAP Contribution Waterfall (Descending Impact)" : "SHAP ಕೊಡುಗೆ ಜಲಪಾತ (ಇಳಿಕೆ ಪರಿಣಾಮ)"}</h5>
+                  <h5 className="font-extrabold text-stone-300 text-xs font-mono">{lang === "en" ? "SHAP Contribution Waterfall (Descending Impact)" : "SHAP ಕೊಡುಗೆ ಜಲಪಾತ (ಇಳಿಕೆ ಪರಿಣಾಮ)"}</h5>
                   {/* Legend -- two-color diverging encoding (raises vs lowers
                       risk) needs its meaning stated explicitly; color alone
                       doesn't say which direction is "worse". */}
                   <div className="flex items-center gap-3">
                     <div className="flex items-center gap-1.5">
                       <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: "#F59E0B" }} />
-                      <span className="text-[9.5px] font-mono text-slate-400">{lang === "en" ? "Increases risk" : "ಅಪಾಯ ಹೆಚ್ಚಿಸುತ್ತದೆ"}</span>
+                      <span className="text-[9.5px] font-mono text-stone-400">{lang === "en" ? "Increases risk" : "ಅಪಾಯ ಹೆಚ್ಚಿಸುತ್ತದೆ"}</span>
                     </div>
                     <div className="flex items-center gap-1.5">
-                      <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: "#00C6AD" }} />
-                      <span className="text-[9.5px] font-mono text-slate-400">{lang === "en" ? "Decreases risk" : "ಅಪಾಯ ಕಡಿಮೆಗೊಳಿಸುತ್ತದೆ"}</span>
+                      <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: "#C79A4E" }} />
+                      <span className="text-[9.5px] font-mono text-stone-400">{lang === "en" ? "Decreases risk" : "ಅಪಾಯ ಕಡಿಮೆಗೊಳಿಸುತ್ತದೆ"}</span>
                     </div>
                   </div>
                 </div>
@@ -361,7 +361,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                     <XAxis type="number" stroke="#475569" fontSize={10} />
                     <YAxis dataKey="name" type="category" stroke="#94A3B8" fontSize={9.5} />
                     <Tooltip
-                      contentStyle={{ background: "rgba(10, 22, 40, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }}
+                      contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }}
                       formatter={(value: number, _name, item: any) => [
                         `${value} (${item?.payload?.contribution === "positive" ? (lang === "en" ? "increases risk" : "ಅಪಾಯ ಹೆಚ್ಚಿಸುತ್ತದೆ") : (lang === "en" ? "decreases risk" : "ಅಪಾಯ ಕಡಿಮೆಗೊಳಿಸುತ್ತದೆ")})`,
                         lang === "en" ? "SHAP Contribution" : "SHAP ಕೊಡುಗೆ",
@@ -370,7 +370,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                     <Bar dataKey="value" name="SHAP Contribution" radius={[0, 4, 4, 0]}>
                       {shapData.map((entry: any, index: number) => {
                         const isPos = entry.contribution === "positive";
-                        return <Cell key={`cell-${index}`} fill={isPos ? "#F59E0B" : "#00C6AD"} />;
+                        return <Cell key={`cell-${index}`} fill={isPos ? "#F59E0B" : "#C79A4E"} />;
                       })}
                     </Bar>
                   </BarChart>
@@ -381,9 +381,9 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
 
           {type === "forecast" && (
             <div className="h-full flex flex-col gap-6">
-              <div className="bg-slate-900/25 border border-slate-850 p-4 rounded-xl">
-                <h4 className="font-black text-slate-100 text-sm">{lang === "en" ? "Target Area Trends & Predictive Projection" : "ಗುರಿ ಪ್ರದೇಶ ಪ್ರವೃತ್ತಿಗಳು ಮತ್ತು ಮುನ್ಸೂಚನಾ ಪ್ರೊಜೆಕ್ಷನ್"}</h4>
-                <p className="text-xs text-slate-450 mt-1">
+              <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl">
+                <h4 className="font-black text-stone-100 text-sm">{lang === "en" ? "Target Area Trends & Predictive Projection" : "ಗುರಿ ಪ್ರದೇಶ ಪ್ರವೃತ್ತಿಗಳು ಮತ್ತು ಮುನ್ಸೂಚನಾ ಪ್ರೊಜೆಕ್ಷನ್"}</h4>
+                <p className="text-xs text-stone-450 mt-1">
                   {lang === "en" ? "Time-series model forecasts. Evaluates seasonal trends, cyclical variables, and rolling baselines." : "ಟೈಮ್-ಸೀರೀಸ್ ಮಾದರಿ ಮುನ್ಸೂಚನೆಗಳು. ಋತುಮಾನ ಪ್ರವೃತ್ತಿಗಳು, ಆವರ್ತಕ ಅಸ್ಥಿರಗಳು ಮತ್ತು ರೋಲಿಂಗ್ ಬೇಸ್‌ಲೈನ್‌ಗಳನ್ನು ಮೌಲ್ಯಮಾಪನ ಮಾಡುತ್ತದೆ."}
                 </p>
               </div>
@@ -396,10 +396,10 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                     <XAxis dataKey="name" stroke="#94A3B8" fontSize={10} />
                     <YAxis stroke="#94A3B8" fontSize={10} />
                     <Tooltip
-                      contentStyle={{ background: "rgba(10, 22, 40, 0.95)", border: "1px solid #1e293b" }}
+                      contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b" }}
                     />
                     <Line type="monotone" dataKey="Predicted" stroke="#F59E0B" strokeWidth={2.5} activeDot={{ r: 6 }} />
-                    <Line type="monotone" dataKey="Baseline" stroke="#00C6AD" strokeWidth={2} strokeDasharray="5 5" />
+                    <Line type="monotone" dataKey="Baseline" stroke="#C79A4E" strokeWidth={2} strokeDasharray="5 5" />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -408,13 +408,13 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
 
           {type === "trend" && (
             <div className="h-full flex flex-col gap-5">
-              <div className="bg-slate-900/25 border border-slate-850 p-4 rounded-xl">
-                <h4 className="font-black text-slate-100 text-sm">
+              <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl">
+                <h4 className="font-black text-stone-100 text-sm">
                   {lang === "en"
                     ? `Real Monthly Incident Counts — ${data.district || "All Districts"}${data.crime_group ? ` · ${data.crime_group}` : ""}`
                     : `ನೈಜ ಮಾಸಿಕ ಘಟನಾ ಎಣಿಕೆಗಳು — ${data.district || "ಎಲ್ಲಾ ಜಿಲ್ಲೆಗಳು"}${data.crime_group ? ` · ${data.crime_group}` : ""}`}
                 </h4>
-                <p className="text-xs text-slate-450 mt-1">
+                <p className="text-xs text-stone-450 mt-1">
                   {lang === "en"
                     ? `Full-table COUNT aggregation across ${data.months || 12} months — every matching case, not a sample.`
                     : `${data.months || 12} ತಿಂಗಳುಗಳಲ್ಲಿ ಪೂರ್ಣ-ಕೋಷ್ಟಕ COUNT ಒಟ್ಟುಗೂಡಿಸುವಿಕೆ — ಒಂದು ಮಾದರಿಯಲ್ಲ, ಪ್ರತಿ ಹೊಂದಾಣಿಕೆಯ ಪ್ರಕರಣ.`}
@@ -423,27 +423,27 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
 
               {/* Stat cards */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 shrink-0">
-                <div className="bg-slate-900/40 border border-slate-850 rounded-xl p-3">
-                  <div className="text-[10px] text-slate-500 uppercase font-mono tracking-wide">{lang === "en" ? "Total Incidents" : "ಒಟ್ಟು ಘಟನೆಗಳು"}</div>
-                  <div className="text-xl font-black text-slate-100 mt-1">{data.total ?? 0}</div>
+                <div className="bg-stone-900/40 border border-stone-850 rounded-xl p-3">
+                  <div className="text-[10px] text-stone-500 uppercase font-mono tracking-wide">{lang === "en" ? "Total Incidents" : "ಒಟ್ಟು ಘಟನೆಗಳು"}</div>
+                  <div className="text-xl font-black text-stone-100 mt-1">{data.total ?? 0}</div>
                 </div>
-                <div className="bg-slate-900/40 border border-slate-850 rounded-xl p-3">
-                  <div className="text-[10px] text-slate-500 uppercase font-mono tracking-wide">{lang === "en" ? "Avg / Month" : "ಸರಾಸರಿ/ತಿಂಗಳು"}</div>
-                  <div className="text-xl font-black text-slate-100 mt-1">{data.avg_per_month ?? 0}</div>
+                <div className="bg-stone-900/40 border border-stone-850 rounded-xl p-3">
+                  <div className="text-[10px] text-stone-500 uppercase font-mono tracking-wide">{lang === "en" ? "Avg / Month" : "ಸರಾಸರಿ/ತಿಂಗಳು"}</div>
+                  <div className="text-xl font-black text-stone-100 mt-1">{data.avg_per_month ?? 0}</div>
                 </div>
-                <div className="bg-slate-900/40 border border-slate-850 rounded-xl p-3">
-                  <div className="text-[10px] text-slate-500 uppercase font-mono tracking-wide">{lang === "en" ? "Trend" : "ಪ್ರವೃತ್ತಿ"}</div>
-                  <div className={`text-xl font-black mt-1 capitalize ${data.trend?.direction === "increasing" ? "text-rose-450" : data.trend?.direction === "decreasing" ? "text-[#00C6AD]" : "text-slate-100"}`}>
+                <div className="bg-stone-900/40 border border-stone-850 rounded-xl p-3">
+                  <div className="text-[10px] text-stone-500 uppercase font-mono tracking-wide">{lang === "en" ? "Trend" : "ಪ್ರವೃತ್ತಿ"}</div>
+                  <div className={`text-xl font-black mt-1 capitalize ${data.trend?.direction === "increasing" ? "text-rose-450" : data.trend?.direction === "decreasing" ? "text-[#C79A4E]" : "text-stone-100"}`}>
                     {data.trend?.direction || "stable"}
                     <span className="text-xs font-mono ml-1.5 opacity-70">
                       ({data.trend?.pct_per_month > 0 ? "+" : ""}{data.trend?.pct_per_month ?? 0}%/mo)
                     </span>
                   </div>
                 </div>
-                <div className="bg-slate-900/40 border border-slate-850 rounded-xl p-3">
-                  <div className="text-[10px] text-slate-500 uppercase font-mono tracking-wide">{lang === "en" ? "Peak Month" : "ಗರಿಷ್ಠ ತಿಂಗಳು"}</div>
+                <div className="bg-stone-900/40 border border-stone-850 rounded-xl p-3">
+                  <div className="text-[10px] text-stone-500 uppercase font-mono tracking-wide">{lang === "en" ? "Peak Month" : "ಗರಿಷ್ಠ ತಿಂಗಳು"}</div>
                   <div className="text-xl font-black text-amber-500 mt-1">{data.peak ? data.peak.count : "—"}</div>
-                  <div className="text-[10px] text-slate-500 font-mono">{data.peak?.label || ""}</div>
+                  <div className="text-[10px] text-stone-500 font-mono">{data.peak?.label || ""}</div>
                 </div>
               </div>
 
@@ -459,9 +459,9 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
               )}
 
               {data.yoy_change_pct !== null && data.yoy_change_pct !== undefined && (
-                <div className="text-xs text-slate-400 shrink-0">
+                <div className="text-xs text-stone-400 shrink-0">
                   {lang === "en" ? "Year-over-year: " : "ವರ್ಷದಿಂದ ವರ್ಷಕ್ಕೆ: "}
-                  <span className={`font-bold ${data.yoy_change_pct > 0 ? "text-rose-450" : "text-[#00C6AD]"}`}>
+                  <span className={`font-bold ${data.yoy_change_pct > 0 ? "text-rose-450" : "text-[#C79A4E]"}`}>
                     {data.yoy_change_pct > 0 ? "+" : ""}{data.yoy_change_pct}%
                   </span>
                   {lang === "en" ? " vs the same month last year" : " ಕಳೆದ ವರ್ಷದ ಅದೇ ತಿಂಗಳಿಗೆ ಹೋಲಿಸಿದರೆ"}
@@ -475,8 +475,8 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                     <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
                     <XAxis dataKey="name" stroke="#94A3B8" fontSize={10} />
                     <YAxis stroke="#94A3B8" fontSize={10} allowDecimals={false} />
-                    <Tooltip contentStyle={{ background: "rgba(10, 22, 40, 0.95)", border: "1px solid #1e293b" }} />
-                    <Line type="monotone" dataKey="Incidents" stroke="#00C6AD" strokeWidth={2.5} activeDot={{ r: 6 }} dot={{ r: 3 }} />
+                    <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b" }} />
+                    <Line type="monotone" dataKey="Incidents" stroke="#C79A4E" strokeWidth={2.5} activeDot={{ r: 6 }} dot={{ r: 3 }} />
                   </LineChart>
                 </ResponsiveContainer>
               </div>
@@ -485,16 +485,16 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
 
           {type === "case_distribution" && (
             <div className="h-full flex flex-col gap-6">
-              <div className="bg-slate-900/25 border border-slate-850 p-4 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                 <div>
-                  <h4 className="font-black text-slate-100 text-lg">
+                  <h4 className="font-black text-stone-100 text-lg">
                     {lang === "en" ? "Case Types Distribution" : "ಪ್ರಕರಣಗಳ ವಿಧಗಳ ವಿತರಣೆ"}
                   </h4>
-                  <p className="text-xs text-slate-450 mt-1">
+                  <p className="text-xs text-stone-450 mt-1">
                     {lang === "en" ? "Distribution of incidents grouped by major crime classification categories." : "ಪ್ರಮುಖ ಅಪರಾಧ ವರ್ಗೀಕರಣ ವಿಭಾಗಗಳಿಂದ ಗುಂಪು ಮಾಡಲಾದ ಘಟನೆಗಳ ವಿತರಣೆ."}
                   </p>
                 </div>
-                <div className="px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-[#00C6AD] font-mono font-bold text-sm tracking-wide shrink-0">
+                <div className="px-4 py-2 rounded-xl bg-stone-900 border border-stone-800 text-[#C79A4E] font-mono font-bold text-sm tracking-wide shrink-0">
                   {lang === "en" ? "Total Cases: " : "ಒಟ್ಟು ಪ್ರಕರಣಗಳು: "}{data.total ?? 0}
                 </div>
               </div>
@@ -516,11 +516,11 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                         labelLine={true}
                       >
                         {(data.series || []).map((entry: any, index: number) => {
-                          const COLORS = ["#00C6AD", "#00A896", "#028090", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#3B82F6", "#10B981", "#6B7280"];
+                          const COLORS = ["#C79A4E", "#00A896", "#028090", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#3B82F6", "#10B981", "#6B7280"];
                           return <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />;
                         })}
                       </Pie>
-                      <Tooltip contentStyle={{ background: "rgba(10, 22, 40, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }} />
+                      <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }} />
                     </PieChart>
                   </ResponsiveContainer>
                 </div>
@@ -529,18 +529,18 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                 <div className="w-full md:w-1/2 overflow-y-auto max-h-[280px] pr-2">
                   <div className="space-y-2">
                     {(data.series || []).map((item: any, idx: number) => {
-                      const COLORS = ["#00C6AD", "#00A896", "#028090", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#3B82F6", "#10B981", "#6B7280"];
+                      const COLORS = ["#C79A4E", "#00A896", "#028090", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#3B82F6", "#10B981", "#6B7280"];
                       const color = COLORS[idx % COLORS.length];
                       const pct = ((item.value / (data.total || 1)) * 100).toFixed(1);
                       return (
-                        <div key={idx} className="flex justify-between items-center bg-slate-900/40 p-2.5 rounded border border-slate-850 font-mono text-[11px]">
+                        <div key={idx} className="flex justify-between items-center bg-stone-900/40 p-2.5 rounded border border-stone-850 font-mono text-[11px]">
                           <div className="flex items-center gap-2">
                             <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: color }} />
-                            <span className="text-slate-200 font-bold">{item.name}</span>
+                            <span className="text-stone-200 font-bold">{item.name}</span>
                           </div>
                           <div className="text-right">
-                            <span className="text-[#00C6AD] font-extrabold">{item.value} {lang === "en" ? "cases" : "ಪ್ರಕರಣಗಳು"}</span>
-                            <span className="block text-[9px] text-slate-500">{pct}%</span>
+                            <span className="text-[#C79A4E] font-extrabold">{item.value} {lang === "en" ? "cases" : "ಪ್ರಕರಣಗಳು"}</span>
+                            <span className="block text-[9px] text-stone-500">{pct}%</span>
                           </div>
                         </div>
                       );
@@ -553,21 +553,21 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
 
           {type === "timeline" && (
             <div className="h-full flex flex-col gap-6">
-              <div className="bg-slate-900/25 border border-slate-850 p-4 rounded-xl">
-                <h4 className="font-black text-slate-100 text-sm">{lang === "en" ? `Chronological Milestones (Case ID ${data.case_id})` : `ಕಾಲಾನುಕ್ರಮ ಮೈಲಿಗಲ್ಲುಗಳು (ಪ್ರಕರಣ ID ${data.case_id})`}</h4>
-                <p className="text-xs text-slate-450 mt-1">
+              <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl">
+                <h4 className="font-black text-stone-100 text-sm">{lang === "en" ? `Chronological Milestones (Case ID ${data.case_id})` : `ಕಾಲಾನುಕ್ರಮ ಮೈಲಿಗಲ್ಲುಗಳು (ಪ್ರಕರಣ ID ${data.case_id})`}</h4>
+                <p className="text-xs text-stone-450 mt-1">
                   {lang === "en" ? "Dynamic trace compiled from occurrence, registry, surrender, and chargesheet archives." : "ಘಟನೆ, ನೋಂದಣಿ, ಶರಣಾಗತಿ ಮತ್ತು ಚಾರ್ಜ್‌ಶೀಟ್ ದಾಖಲೆಗಳಿಂದ ಸಂಗ್ರಹಿಸಲಾದ ಕ್ರಿಯಾತ್ಮಕ ಜಾಡು."}
                 </p>
               </div>
               <div className="flex-1 overflow-y-auto pr-2">
-                <div className="relative border-l border-[#00C6AD]/30 ml-4 space-y-6 py-2">
+                <div className="relative border-l border-[#C79A4E]/30 ml-4 space-y-6 py-2">
                   {(data.timeline || []).map((e: any, idx: number) => (
                     <div key={idx} className="relative pl-6">
-                      <div className="absolute -left-[5px] top-1.5 w-2.5 h-2.5 rounded-full bg-[#00C6AD]" />
-                      <div className="bg-slate-900/60 border border-slate-850 p-3 rounded-lg">
-                        <span className="text-[10px] font-mono text-[#00C6AD] font-bold block">{e.date}</span>
-                        <span className="text-xs font-extrabold text-slate-200 block mt-0.5">{e.event}</span>
-                        <p className="text-xs text-slate-400 mt-1">{e.description}</p>
+                      <div className="absolute -left-[5px] top-1.5 w-2.5 h-2.5 rounded-full bg-[#C79A4E]" />
+                      <div className="bg-stone-900/60 border border-stone-850 p-3 rounded-lg">
+                        <span className="text-[10px] font-mono text-[#C79A4E] font-bold block">{e.date}</span>
+                        <span className="text-xs font-extrabold text-stone-200 block mt-0.5">{e.event}</span>
+                        <p className="text-xs text-stone-400 mt-1">{e.description}</p>
                       </div>
                     </div>
                   ))}
@@ -578,28 +578,28 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
 
           {type === "mo_match" && (
             <div className="h-full flex flex-col gap-6">
-              <div className="bg-slate-900/25 border border-slate-850 p-4 rounded-xl">
-                <h4 className="font-black text-slate-100 text-sm">
+              <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl">
+                <h4 className="font-black text-stone-100 text-sm">
                   {lang === "en" ? `Modus Operandi Behavior Profile (${data.suspect})` : `ಕಾರ್ಯವಿಧಾನ ವರ್ತನೆಯ ಪ್ರೊಫೈಲ್ (${data.suspect})`}
                   {data.engine_mode && data.engine_mode.startsWith("Reference Simulation") && (
                     <span className="ml-2 text-amber-500 normal-case font-normal text-[10px]">{lang === "en" ? "(simulated reference set — no live case data available)" : "(ಸಿಮ್ಯುಲೇಟೆಡ್ ಉಲ್ಲೇಖ ಸೆಟ್ — ನೈಜ ಪ್ರಕರಣ ಡೇಟಾ ಲಭ್ಯವಿಲ್ಲ)"}</span>
                   )}
                 </h4>
-                <p className="text-xs text-slate-450 mt-1">
+                <p className="text-xs text-stone-450 mt-1">
                   {lang === "en" ? "Cosine similarity ranking against primary historical incident profiles." : "ಪ್ರಾಥಮಿಕ ಐತಿಹಾಸಿಕ ಘಟನಾ ಪ್ರೊಫೈಲ್‌ಗಳ ವಿರುದ್ಧ ಕೊಸೈನ್ ಸಾಮ್ಯತೆ ಶ್ರೇಣಿ."}
                 </p>
               </div>
               <div className="flex-1 overflow-y-auto space-y-3">
                 {(data.matches || []).map((m: any, idx: number) => (
-                  <div key={idx} className="bg-slate-900/60 border border-slate-850 p-4 rounded-lg flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                  <div key={idx} className="bg-stone-900/60 border border-stone-850 p-4 rounded-lg flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                     <div className="space-y-1">
-                      <span className="text-xs font-black text-slate-250">{lang === "en" ? "Suspect:" : "ಶಂಕಿತ:"} {m.suspect || (lang === "en" ? "Unknown" : "ಅಜ್ಞಾತ")}</span>
-                      <p className="text-xs text-slate-400">{lang === "en" ? "Incident ID:" : "ಘಟನೆ ID:"} {m.case_id} | {lang === "en" ? "Precinct:" : "ಠಾಣೆ:"} {m.station}</p>
-                      <p className="text-[11px] text-slate-500 italic mt-1 font-mono">MO: {m.mo_signature || m.signature_narrative || (lang === "en" ? "No narrative details" : "ವಿವರಣೆ ಲಭ್ಯವಿಲ್ಲ")}</p>
+                      <span className="text-xs font-black text-stone-250">{lang === "en" ? "Suspect:" : "ಶಂಕಿತ:"} {m.suspect || (lang === "en" ? "Unknown" : "ಅಜ್ಞಾತ")}</span>
+                      <p className="text-xs text-stone-400">{lang === "en" ? "Incident ID:" : "ಘಟನೆ ID:"} {m.case_id} | {lang === "en" ? "Precinct:" : "ಠಾಣೆ:"} {m.station}</p>
+                      <p className="text-[11px] text-stone-500 italic mt-1 font-mono">MO: {m.mo_signature || m.signature_narrative || (lang === "en" ? "No narrative details" : "ವಿವರಣೆ ಲಭ್ಯವಿಲ್ಲ")}</p>
                     </div>
                     <div className="shrink-0 text-right w-full sm:w-auto">
                       <div className="text-xs font-bold text-amber-500 mb-1">{Math.round((m.similarity_score || 0.84) * 100)}% {lang === "en" ? "Match Rate" : "ಹೊಂದಾಣಿಕೆ ದರ"}</div>
-                      <div className="w-32 bg-slate-850 h-1.5 rounded-full overflow-hidden">
+                      <div className="w-32 bg-stone-850 h-1.5 rounded-full overflow-hidden">
                         <div className="bg-amber-500 h-full" style={{ width: `${(m.similarity_score || 0.84) * 100}%` }} />
                       </div>
                     </div>
@@ -611,57 +611,57 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
 
           {type === "correlation" && (
             <div className="h-full flex flex-col gap-6">
-              <div className="bg-slate-900/25 border border-slate-850 p-4 rounded-xl">
-                <h4 className="font-black text-slate-100 text-sm">{lang === "en" ? "Socio-demographic Profile:" : "ಸಾಮಾಜಿಕ-ಜನಸಂಖ್ಯಾ ಪ್ರೊಫೈಲ್:"} {data.profile?.district}</h4>
-                <p className="text-xs text-slate-450 mt-1">
+              <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl">
+                <h4 className="font-black text-stone-100 text-sm">{lang === "en" ? "Socio-demographic Profile:" : "ಸಾಮಾಜಿಕ-ಜನಸಂಖ್ಯಾ ಪ್ರೊಫೈಲ್:"} {data.profile?.district}</h4>
+                <p className="text-xs text-stone-450 mt-1">
                   {lang === "en" ? "Correlation indices compiled from socio-economic, literacy, and census registers." : "ಸಾಮಾಜಿಕ-ಆರ್ಥಿಕ, ಸಾಕ್ಷರತೆ ಮತ್ತು ಜನಗಣತಿ ದಾಖಲೆಗಳಿಂದ ಸಂಗ್ರಹಿಸಿದ ಸಂಬಂಧ ಸೂಚ್ಯಂಕಗಳು."}
                 </p>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 flex-1">
-                <div className="bg-slate-900/40 border border-slate-850 p-4 rounded-xl space-y-4">
-                  <h5 className="text-xs font-bold text-slate-350 tracking-wider uppercase font-mono border-b border-slate-800 pb-1.5">{lang === "en" ? "Education & Employment" : "ಶಿಕ್ಷಣ ಮತ್ತು ಉದ್ಯೋಗ"}</h5>
+                <div className="bg-stone-900/40 border border-stone-850 p-4 rounded-xl space-y-4">
+                  <h5 className="text-xs font-bold text-stone-350 tracking-wider uppercase font-mono border-b border-stone-800 pb-1.5">{lang === "en" ? "Education & Employment" : "ಶಿಕ್ಷಣ ಮತ್ತು ಉದ್ಯೋಗ"}</h5>
 
                   <div className="space-y-1">
-                    <div className="flex justify-between text-xs text-slate-400">
+                    <div className="flex justify-between text-xs text-stone-400">
                       <span>{lang === "en" ? "Literacy Rate" : "ಸಾಕ್ಷರತಾ ಪ್ರಮಾಣ"}</span>
-                      <span className="font-bold text-[#00C6AD]">{data.profile?.literacy}%</span>
+                      <span className="font-bold text-[#C79A4E]">{data.profile?.literacy}%</span>
                     </div>
-                    <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-                      <div className="bg-[#00C6AD] h-full" style={{ width: `${data.profile?.literacy}%` }} />
+                    <div className="w-full bg-stone-800 h-2 rounded-full overflow-hidden">
+                      <div className="bg-[#C79A4E] h-full" style={{ width: `${data.profile?.literacy}%` }} />
                     </div>
                   </div>
 
                   <div className="space-y-1">
-                    <div className="flex justify-between text-xs text-slate-400">
+                    <div className="flex justify-between text-xs text-stone-400">
                       <span>{lang === "en" ? "Unemployment Rate" : "ನಿರುದ್ಯೋಗ ಪ್ರಮಾಣ"}</span>
                       <span className="font-bold text-amber-500">{data.profile?.unemployment}%</span>
                     </div>
-                    <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                    <div className="w-full bg-stone-800 h-2 rounded-full overflow-hidden">
                       <div className="bg-amber-500 h-full" style={{ width: `${data.profile?.unemployment * 5}%` }} />
                     </div>
                   </div>
                 </div>
 
-                <div className="bg-slate-900/40 border border-slate-850 p-4 rounded-xl space-y-4">
-                  <h5 className="text-xs font-bold text-slate-350 tracking-wider uppercase font-mono border-b border-slate-800 pb-1.5">{lang === "en" ? "Development Indices" : "ಅಭಿವೃದ್ಧಿ ಸೂಚ್ಯಂಕಗಳು"}</h5>
+                <div className="bg-stone-900/40 border border-stone-850 p-4 rounded-xl space-y-4">
+                  <h5 className="text-xs font-bold text-stone-350 tracking-wider uppercase font-mono border-b border-stone-800 pb-1.5">{lang === "en" ? "Development Indices" : "ಅಭಿವೃದ್ಧಿ ಸೂಚ್ಯಂಕಗಳು"}</h5>
 
                   <div className="space-y-1">
-                    <div className="flex justify-between text-xs text-slate-400">
+                    <div className="flex justify-between text-xs text-stone-400">
                       <span>{lang === "en" ? "Economic Stress Index" : "ಆರ್ಥಿಕ ಒತ್ತಡ ಸೂಚ್ಯಂಕ"}</span>
                       <span className="font-bold text-rose-450">{data.profile?.stress}</span>
                     </div>
-                    <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
+                    <div className="w-full bg-stone-800 h-2 rounded-full overflow-hidden">
                       <div className="bg-rose-500 h-full" style={{ width: `${data.profile?.stress * 100}%` }} />
                     </div>
                   </div>
 
                   <div className="space-y-1">
-                    <div className="flex justify-between text-xs text-slate-400">
+                    <div className="flex justify-between text-xs text-stone-400">
                       <span>{lang === "en" ? "Urbanization Index" : "ನಗರೀಕರಣ ಸೂಚ್ಯಂಕ"}</span>
-                      <span className="font-bold text-[#00C6AD]">{data.profile?.urbanization}</span>
+                      <span className="font-bold text-[#C79A4E]">{data.profile?.urbanization}</span>
                     </div>
-                    <div className="w-full bg-slate-800 h-2 rounded-full overflow-hidden">
-                      <div className="bg-[#00C6AD] h-full" style={{ width: `${data.profile?.urbanization * 100}%` }} />
+                    <div className="w-full bg-stone-800 h-2 rounded-full overflow-hidden">
+                      <div className="bg-[#C79A4E] h-full" style={{ width: `${data.profile?.urbanization * 100}%` }} />
                     </div>
                   </div>
                 </div>
@@ -671,13 +671,13 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
 
           {type === "repeat_offenders" && (
             <div className="h-full flex flex-col gap-4">
-              <div className="bg-slate-900/25 border border-slate-850 p-4 rounded-xl">
-                <h4 className="font-black text-slate-100 text-sm">
+              <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl">
+                <h4 className="font-black text-stone-100 text-sm">
                   {lang === "en"
                     ? `${(data.offenders || []).length} Repeat Offender(s)${data.district_filter ? ` — ${data.district_filter}` : ""}`
                     : `${(data.offenders || []).length} ಪುನರಾವರ್ತಿತ ಅಪರಾಧಿಗಳು${data.district_filter ? ` — ${data.district_filter}` : ""}`}
                 </h4>
-                <p className="text-xs text-slate-450 mt-1">
+                <p className="text-xs text-stone-450 mt-1">
                   {lang === "en"
                     ? "Accused persons appearing in multiple separate cases, per the scheduled repeat-offender detection job."
                     : "ನಿಗದಿತ ಪುನರಾವರ್ತಿತ-ಅಪರಾಧಿ ಪತ್ತೆ ಕೆಲಸದ ಪ್ರಕಾರ ಹಲವಾರು ಪ್ರತ್ಯೇಕ ಪ್ರಕರಣಗಳಲ್ಲಿ ಕಾಣಿಸಿಕೊಂಡ ಆರೋಪಿಗಳು."}
@@ -685,19 +685,19 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
               </div>
               <div className="flex-1 overflow-y-auto space-y-2">
                 {(data.offenders || []).map((o: any, idx: number) => (
-                  <div key={idx} className="bg-slate-900/60 border border-slate-850 p-3.5 rounded-lg flex justify-between items-center gap-3">
+                  <div key={idx} className="bg-stone-900/60 border border-stone-850 p-3.5 rounded-lg flex justify-between items-center gap-3">
                     <div className="space-y-0.5 min-w-0">
-                      <span className="text-xs font-black text-slate-250 block truncate">{o.suspect}</span>
-                      <span className="text-[11px] text-slate-450">{o.district}</span>
+                      <span className="text-xs font-black text-stone-250 block truncate">{o.suspect}</span>
+                      <span className="text-[11px] text-stone-450">{o.district}</span>
                     </div>
                     <div className="shrink-0 text-right">
                       <div className="text-sm font-black text-amber-500">{o.case_count}</div>
-                      <div className="text-[9px] text-slate-500 uppercase tracking-wider">{lang === "en" ? "cases" : "ಪ್ರಕರಣಗಳು"}</div>
+                      <div className="text-[9px] text-stone-500 uppercase tracking-wider">{lang === "en" ? "cases" : "ಪ್ರಕರಣಗಳು"}</div>
                     </div>
                   </div>
                 ))}
                 {(data.offenders || []).length === 0 && (
-                  <div className="text-center py-10 text-slate-550">{lang === "en" ? "No repeat offenders on record." : "ಯಾವುದೇ ಪುನರಾವರ್ತಿತ ಅಪರಾಧಿಗಳ ದಾಖಲೆ ಇಲ್ಲ."}</div>
+                  <div className="text-center py-10 text-stone-550">{lang === "en" ? "No repeat offenders on record." : "ಯಾವುದೇ ಪುನರಾವರ್ತಿತ ಅಪರಾಧಿಗಳ ದಾಖಲೆ ಇಲ್ಲ."}</div>
                 )}
               </div>
             </div>
@@ -705,16 +705,16 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
 
           {type === "crime_groups" && (
             <div className="h-full flex flex-col gap-4">
-              <div className="bg-slate-900/25 border border-slate-850 p-4 rounded-xl">
-                <h4 className="font-black text-slate-100 text-sm">
+              <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl">
+                <h4 className="font-black text-stone-100 text-sm">
                   {lang === "en" ? `${(data.groups || []).length} Likely Organized Group(s)` : `${(data.groups || []).length} ಸಂಭವನೀಯ ಸಂಘಟಿತ ಗುಂಪುಗಳು`}
                 </h4>
-                <p className="text-xs text-slate-450 mt-1">
+                <p className="text-xs text-stone-450 mt-1">
                   {lang === "en"
                     ? "Clusters of accused persons sharing 2 or more separate cases together — a repeated co-offense pattern, not a one-off coincidence."
                     : "2 ಅಥವಾ ಹೆಚ್ಚು ಪ್ರತ್ಯೇಕ ಪ್ರಕರಣಗಳನ್ನು ಒಟ್ಟಿಗೆ ಹಂಚಿಕೊಂಡ ಆರೋಪಿಗಳ ಸಮೂಹಗಳು — ಪುನರಾವರ್ತಿತ ಸಹ-ಅಪರಾಧ ಮಾದರಿ, ಒಂದೇ ಬಾರಿಯ ಕಾಕತಾಳೀಯವಲ್ಲ."}
                   {data.scan_scope && (
-                    <span className="block mt-1 text-slate-550 italic">
+                    <span className="block mt-1 text-stone-550 italic">
                       {lang === "en" ? `Scope: ${data.scan_scope}.` : `ವ್ಯಾಪ್ತಿ: ${data.scan_scope}.`}
                     </span>
                   )}
@@ -722,7 +722,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
               </div>
               <div className="flex-1 overflow-y-auto space-y-3">
                 {(data.groups || []).map((g: any, idx: number) => (
-                  <div key={idx} className="bg-slate-900/60 border border-slate-850 p-4 rounded-lg space-y-2">
+                  <div key={idx} className="bg-stone-900/60 border border-stone-850 p-4 rounded-lg space-y-2">
                     <div className="flex justify-between items-start gap-3">
                       <div className="flex flex-wrap gap-1.5">
                         {(g.members || []).map((m: string, mi: number) => (
@@ -730,19 +730,19 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                         ))}
                       </div>
                       <div className="shrink-0 text-right">
-                        <div className="text-sm font-black text-[#00C6AD]">{g.shared_case_count}</div>
-                        <div className="text-[9px] text-slate-500 uppercase tracking-wider">{lang === "en" ? "shared cases" : "ಹಂಚಿದ ಪ್ರಕರಣಗಳು"}</div>
+                        <div className="text-sm font-black text-[#C79A4E]">{g.shared_case_count}</div>
+                        <div className="text-[9px] text-stone-500 uppercase tracking-wider">{lang === "en" ? "shared cases" : "ಹಂಚಿದ ಪ್ರಕರಣಗಳು"}</div>
                       </div>
                     </div>
                     {g.case_ids && g.case_ids.length > 0 && (
-                      <div className="text-[10px] text-slate-500 font-mono truncate">
+                      <div className="text-[10px] text-stone-500 font-mono truncate">
                         {lang === "en" ? "Case IDs: " : "ಪ್ರಕರಣ ID: "}{g.case_ids.join(", ")}
                       </div>
                     )}
                   </div>
                 ))}
                 {(data.groups || []).length === 0 && (
-                  <div className="text-center py-10 text-slate-550">{lang === "en" ? "No repeated co-offense clusters found." : "ಯಾವುದೇ ಪುನರಾವರ್ತಿತ ಸಹ-ಅಪರಾಧ ಸಮೂಹಗಳು ಕಂಡುಬಂದಿಲ್ಲ."}</div>
+                  <div className="text-center py-10 text-stone-550">{lang === "en" ? "No repeated co-offense clusters found." : "ಯಾವುದೇ ಪುನರಾವರ್ತಿತ ಸಹ-ಅಪರಾಧ ಸಮೂಹಗಳು ಕಂಡುಬಂದಿಲ್ಲ."}</div>
                 )}
               </div>
             </div>

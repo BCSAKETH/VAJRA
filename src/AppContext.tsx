@@ -170,7 +170,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
 
   const [theme, setThemeState] = useState<"light" | "high-contrast-dark">(( ) => {
     const saved = localStorage.getItem("vajra_theme");
-    return saved === "light" || saved === "high-contrast-dark" ? saved : "light";
+    return saved === "light" || saved === "high-contrast-dark" ? saved : "high-contrast-dark";
   });
 
   const [selectedFirNo, setSelectedFirNoState] = useState<string | null>(() => {

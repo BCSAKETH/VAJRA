@@ -14,7 +14,7 @@ export const WatermarkOverlay: React.FC = () => {
       {Array.from({ length: 12 }).map((_, rowIndex) => (
         <div
           key={rowIndex}
-          className="whitespace-nowrap flex justify-around text-xs font-mono font-black tracking-widest text-[#00C6AD]"
+          className="whitespace-nowrap flex justify-around text-xs font-mono font-black tracking-widest text-[#C79A4E]"
           style={{
             transform: rowIndex % 2 === 0 ? "rotate(-18deg) translateX(-5%)" : "rotate(-18deg) translateX(5%)",
           }}

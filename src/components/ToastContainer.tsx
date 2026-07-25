@@ -5,8 +5,8 @@ import { AlertTriangle, AlertOctagon, Info, CheckCircle2, X } from "lucide-react
 const SEVERITY_STYLES: Record<string, { border: string; bg: string; text: string; icon: React.ElementType }> = {
   Critical: { border: "border-rose-500/40", bg: "bg-rose-500/10", text: "text-rose-400", icon: AlertOctagon },
   Warning: { border: "border-amber-500/40", bg: "bg-amber-500/10", text: "text-amber-400", icon: AlertTriangle },
-  Info: { border: "border-slate-600/40", bg: "bg-slate-800/40", text: "text-slate-300", icon: Info },
-  Success: { border: "border-[#00C6AD]/40", bg: "bg-[#00C6AD]/10", text: "text-[#00C6AD]", icon: CheckCircle2 },
+  Info: { border: "border-stone-600/40", bg: "bg-stone-800/40", text: "text-stone-300", icon: Info },
+  Success: { border: "border-[#C79A4E]/40", bg: "bg-[#C79A4E]/10", text: "text-[#C79A4E]", icon: CheckCircle2 },
 };
 
 const AUTO_DISMISS_MS = 8000;
@@ -37,13 +37,13 @@ const ToastItem: React.FC<{
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
             <p className={`text-xs font-black uppercase tracking-wider ${style.text}`}>{title}</p>
-            <span className="text-[9px] text-slate-550 font-mono shrink-0">{timestamp}</span>
+            <span className="text-[9px] text-stone-550 font-mono shrink-0">{timestamp}</span>
           </div>
-          {message && <p className="text-[11px] text-slate-300 mt-1 leading-relaxed break-words">{message}</p>}
+          {message && <p className="text-[11px] text-stone-300 mt-1 leading-relaxed break-words">{message}</p>}
         </div>
         <button
           onClick={() => onDismiss(id)}
-          className="text-slate-500 hover:text-slate-200 transition-colors shrink-0 cursor-pointer"
+          className="text-stone-500 hover:text-stone-200 transition-colors shrink-0 cursor-pointer"
         >
           <X className="w-3.5 h-3.5" />
         </button>
@@ -83,7 +83,7 @@ export const ToastContainer: React.FC = () => {
         <ToastItem key={toast.id} {...toast} onDismiss={removeToast} />
       ))}
       {visible.length < toasts.length && (
-        <div className="text-[10px] text-slate-400 font-mono text-right pr-1 pointer-events-none">
+        <div className="text-[10px] text-stone-400 font-mono text-right pr-1 pointer-events-none">
           +{toasts.length - visible.length} more notifications
         </div>
       )}

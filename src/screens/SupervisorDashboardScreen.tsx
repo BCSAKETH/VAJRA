@@ -189,17 +189,17 @@ export const SupervisorDashboardScreen: React.FC = () => {
   };
 
   return (
-    <div className="h-full flex flex-col p-6 space-y-6 bg-slate-950/20 overflow-y-auto">
+    <div className="h-full flex flex-col p-6 space-y-6 bg-stone-950/20 overflow-y-auto">
       {/* Security watermark overlay */}
       <WatermarkOverlay />
 
-      <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center border-b border-slate-850 pb-4 shrink-0">
+      <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center border-b border-stone-850 pb-4 shrink-0">
         <div className="space-y-1">
-          <h2 className="text-base font-black text-slate-100 uppercase tracking-wider font-mono flex items-center gap-2">
-            <UserCheck className="w-5 h-5 text-[#00C6AD]" />
+          <h2 className="text-base font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">
+            <UserCheck className="w-5 h-5 text-[#C79A4E]" />
             <span>{t.supervisorTitle}</span>
           </h2>
-          <p className="text-[11px] text-slate-550 leading-relaxed font-mono">
+          <p className="text-[11px] text-stone-550 leading-relaxed font-mono">
             {t.supervisorDesc}
           </p>
         </div>
@@ -208,7 +208,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
         <button
           onClick={handleVerifyLedger}
           disabled={isVerifyingLedger || isLoadingAudit}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 hover:border-[#00C6AD]/40 text-xs font-black uppercase tracking-wider text-[#00C6AD] hover:text-white transition-all disabled:opacity-50 cursor-pointer shadow-md shadow-[#00C6AD]/5"
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-stone-900 border border-stone-800 hover:border-[#C79A4E]/40 text-xs font-black uppercase tracking-wider text-[#C79A4E] hover:text-white transition-all disabled:opacity-50 cursor-pointer shadow-md shadow-[#C79A4E]/5"
         >
           <ShieldCheck className="w-4 h-4" />
           <span>{isVerifyingLedger ? t.supervisorVerifyingHashes : t.supervisorVerifyLedger}</span>
@@ -220,7 +220,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
         <div
           className={`p-4 rounded-xl border flex items-center gap-3 animate-fade-in ${
             ledgerVerified
-              ? "bg-emerald-500/10 border-emerald-500/20 text-[#00C6AD]"
+              ? "bg-emerald-500/10 border-emerald-500/20 text-[#C79A4E]"
               : "bg-rose-500/10 border-rose-500/20 text-rose-450"
           }`}
         >
@@ -242,13 +242,13 @@ export const SupervisorDashboardScreen: React.FC = () => {
       {/* Main Sections */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
         {/* Left Side: Consistency Flags */}
-        <div className="glass-card p-5 border border-slate-850 space-y-4">
-          <div className="flex justify-between items-center border-b border-slate-850 pb-2">
-            <h3 className="text-xs font-black text-slate-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
+        <div className="glass-card p-5 border border-stone-850 space-y-4">
+          <div className="flex justify-between items-center border-b border-stone-850 pb-2">
+            <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
               <AlertTriangle className="w-4 h-4 text-amber-500 animate-pulse" />
               <span>{t.supervisorConsistencyFlagsTitle}</span>
             </h3>
-            <button onClick={fetchFlags} className="text-slate-500 hover:text-[#00C6AD] transition-colors cursor-pointer">
+            <button onClick={fetchFlags} className="text-stone-500 hover:text-[#C79A4E] transition-colors cursor-pointer">
               <RefreshCw className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -256,38 +256,38 @@ export const SupervisorDashboardScreen: React.FC = () => {
           {isLoadingFlags ? (
             <div className="space-y-3">
               {[1, 2, 3].map((n) => (
-                <div key={n} className="bg-slate-900/50 p-3 rounded-lg border border-slate-850/30 space-y-2">
-                  <div className="h-4 w-1/3 bg-slate-800 rounded shimmer-bg" />
-                  <div className="h-3 w-3/4 bg-slate-850/40 rounded shimmer-bg" />
+                <div key={n} className="bg-stone-900/50 p-3 rounded-lg border border-stone-850/30 space-y-2">
+                  <div className="h-4 w-1/3 bg-stone-800 rounded shimmer-bg" />
+                  <div className="h-3 w-3/4 bg-stone-850/40 rounded shimmer-bg" />
                 </div>
               ))}
             </div>
           ) : flags.length === 0 ? (
-            <div className="py-10 text-center text-xs font-mono text-slate-550">{t.supervisorNoFlags}</div>
+            <div className="py-10 text-center text-xs font-mono text-stone-550">{t.supervisorNoFlags}</div>
           ) : (
             <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
               {flags.map((flag) => (
-                <div key={flag.ROWID} className="bg-slate-950/45 p-3 rounded-lg border border-slate-900 space-y-2 text-xs">
+                <div key={flag.ROWID} className="bg-stone-950/45 p-3 rounded-lg border border-stone-900 space-y-2 text-xs">
                   <div className="flex justify-between items-center">
-                    <span className="font-bold text-slate-200 font-mono">{flag.CrimeNo}</span>
+                    <span className="font-bold text-stone-200 font-mono">{flag.CrimeNo}</span>
                     <span className="text-[10px] bg-amber-500/10 text-amber-450 border border-amber-500/25 px-1.5 py-0.2 rounded font-mono uppercase">
                       {flag.flag_type}
                     </span>
                   </div>
-                  <p className="text-slate-400 font-sans leading-relaxed">{flag.flag_details}</p>
+                  <p className="text-stone-400 font-sans leading-relaxed">{flag.flag_details}</p>
                   
                   {flag.reviewed === 0 ? (
                     <div className="text-right">
                       <button
                         onClick={() => handleReviewFlag(flag.ROWID)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#00C6AD]/10 border border-[#00C6AD]/25 text-[#00C6AD] hover:text-white hover:bg-[#00C6AD]/20 font-bold font-mono text-[10px] uppercase cursor-pointer"
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[#C79A4E] hover:text-white hover:bg-[#C79A4E]/20 font-bold font-mono text-[10px] uppercase cursor-pointer"
                       >
                         <Lock className="w-3 h-3" />
                         <span>{t.supervisorResolveDualControl}</span>
                       </button>
                     </div>
                   ) : (
-                    <div className="text-right text-[10px] font-mono text-slate-550 font-bold uppercase tracking-wider">
+                    <div className="text-right text-[10px] font-mono text-stone-550 font-bold uppercase tracking-wider">
                       {t.supervisorResolvedBySupervisor}
                     </div>
                   )}
@@ -298,13 +298,13 @@ export const SupervisorDashboardScreen: React.FC = () => {
         </div>
 
         {/* Right Side: Audit Ledger Explorer */}
-        <div className="glass-card p-5 border border-slate-850 space-y-4">
-          <div className="flex justify-between items-center border-b border-slate-850 pb-2">
-            <h3 className="text-xs font-black text-slate-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
-              <FileSpreadsheet className="w-4 h-4 text-[#00C6AD]" />
+        <div className="glass-card p-5 border border-stone-850 space-y-4">
+          <div className="flex justify-between items-center border-b border-stone-850 pb-2">
+            <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
+              <FileSpreadsheet className="w-4 h-4 text-[#C79A4E]" />
               <span>{t.supervisorAuditLedgerTitle}</span>
             </h3>
-            <button onClick={fetchAuditLogs} className="text-slate-500 hover:text-[#00C6AD] transition-colors cursor-pointer">
+            <button onClick={fetchAuditLogs} className="text-stone-500 hover:text-[#C79A4E] transition-colors cursor-pointer">
               <RefreshCw className="w-3.5 h-3.5" />
             </button>
           </div>
@@ -312,24 +312,24 @@ export const SupervisorDashboardScreen: React.FC = () => {
           {isLoadingAudit ? (
             <div className="space-y-2.5">
               {[1, 2, 3, 4].map((n) => (
-                <div key={n} className="bg-slate-900/30 p-2.5 rounded border border-slate-850/30 space-y-2">
-                  <div className="h-3.5 w-1/2 bg-slate-800 rounded shimmer-bg" />
-                  <div className="h-3 w-5/6 bg-slate-850/40 rounded shimmer-bg" />
+                <div key={n} className="bg-stone-900/30 p-2.5 rounded border border-stone-850/30 space-y-2">
+                  <div className="h-3.5 w-1/2 bg-stone-800 rounded shimmer-bg" />
+                  <div className="h-3 w-5/6 bg-stone-850/40 rounded shimmer-bg" />
                 </div>
               ))}
             </div>
           ) : auditLogs.length === 0 ? (
-            <div className="py-10 text-center text-xs font-mono text-slate-550">{t.supervisorNoAuditLogs}</div>
+            <div className="py-10 text-center text-xs font-mono text-stone-550">{t.supervisorNoAuditLogs}</div>
           ) : (
             <div className="space-y-2.5 max-h-[350px] overflow-y-auto pr-1 font-mono text-[10.5px]">
               {auditLogs.map((log, i) => (
-                <div key={i} className="bg-slate-950/20 p-2.5 rounded border border-slate-900 flex flex-col gap-1">
-                  <div className="flex justify-between text-slate-400">
+                <div key={i} className="bg-stone-950/20 p-2.5 rounded border border-stone-900 flex flex-col gap-1">
+                  <div className="flex justify-between text-stone-400">
                     <span>{log.badgeId} • {log.action}</span>
-                    <span className="text-slate-500">{log.timestamp?.split(" ")[0]}</span>
+                    <span className="text-stone-500">{log.timestamp?.split(" ")[0]}</span>
                   </div>
-                  <p className="text-slate-350 truncate">{t.supervisorQueryLabel} "{log.queryParam}"</p>
-                  <div className="text-[9px] text-[#00C6AD] truncate">{t.supervisorHashLabel} {log.hash}</div>
+                  <p className="text-stone-350 truncate">{t.supervisorQueryLabel} "{log.queryParam}"</p>
+                  <div className="text-[9px] text-[#C79A4E] truncate">{t.supervisorHashLabel} {log.hash}</div>
                 </div>
               ))}
             </div>

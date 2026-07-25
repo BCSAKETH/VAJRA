@@ -18,10 +18,10 @@ interface NetworkGraphProps {
   height?: number;
 }
 
-// Categorical palette validated against the app's dark surface (#070F1E) via
+// Categorical palette validated against the app's dark surface (#161412) via
 // the dataviz skill's validator: passing lightness band (OKLCH L 0.48-0.67),
 // chroma floor, adjacent-pair CVD separation, and normal-vision floor in this
-// exact order. The previous colors (brighter #00C6AD/#818cf8/#38bdf8 family)
+// exact order. The previous colors (brighter #C79A4E/#818cf8/#38bdf8 family)
 // failed the lightness band entirely and had a sub-15 normal-vision-floor
 // pair (indigo/sky, dE 13.5) -- confirmed via `validate_palette.js`, not
 // eyeballed. Every node also carries a text label, satisfying the
@@ -157,7 +157,7 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
 
   if (nodes.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-slate-600 text-xs">
+      <div className="flex items-center justify-center h-full text-stone-600 text-xs">
         No network data to visualize.
       </div>
     );
@@ -192,7 +192,7 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
           {presentTypes.map((t) => (
             <div key={t} className="flex items-center gap-1.5">
               <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: NODE_COLORS[t] }} />
-              <span className="text-[9.5px] font-mono text-slate-400">{NODE_TYPE_LABELS[t] || t}</span>
+              <span className="text-[9.5px] font-mono text-stone-400">{NODE_TYPE_LABELS[t] || t}</span>
             </div>
           ))}
         </div>

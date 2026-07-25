@@ -94,17 +94,17 @@ export const SessionTimeoutGuard: React.FC = () => {
   if (!isAuthenticated || !isWarningVisible) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/80 backdrop-blur-sm animate-fade-in">
       <div className="w-full max-w-sm glass-panel border border-amber-500/30 rounded-2xl p-6 shadow-2xl space-y-4 text-center">
         <div className="mx-auto w-12 h-12 bg-amber-500/10 border border-amber-500/25 text-amber-500 rounded-full flex items-center justify-center animate-bounce">
           <ShieldAlert className="w-6 h-6" />
         </div>
         
         <div className="space-y-1.5">
-          <h3 className="text-sm font-extrabold text-slate-100 uppercase tracking-wider font-mono">
+          <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">
             {lang === "en" ? "Security Timeout Advisory" : "ಭದ್ರತಾ ಅವಧಿ ಮುಕ್ತಾಯದ ಎಚ್ಚರಿಕೆ"}
           </h3>
-          <p className="text-xs text-slate-400 leading-relaxed">
+          <p className="text-xs text-stone-400 leading-relaxed">
             {lang === "en"
               ? "Your session has been idle. You will be automatically logged out in:"
               : "ನಿಮ್ಮ ಅಧಿವೇಶನವು ನಿಷ್ಕ್ರಿಯವಾಗಿದೆ. ನೀವು ಸ್ವಯಂಚಾಲಿತವಾಗಿ ಲಾಗ್ ಔಟ್ ಆಗುತ್ತೀರಿ:"}
@@ -112,7 +112,7 @@ export const SessionTimeoutGuard: React.FC = () => {
         </div>
 
         {/* Countdown Timer Display */}
-        <div className="flex items-center justify-center gap-2 text-xl font-black font-mono text-amber-500 bg-slate-950/40 py-2.5 rounded-xl border border-slate-900">
+        <div className="flex items-center justify-center gap-2 text-xl font-black font-mono text-amber-500 bg-stone-950/40 py-2.5 rounded-xl border border-stone-900">
           <Clock className="w-5 h-5 animate-pulse" />
           <span>00:{secondsRemaining < 10 ? `0${secondsRemaining}` : secondsRemaining}</span>
         </div>
@@ -120,7 +120,7 @@ export const SessionTimeoutGuard: React.FC = () => {
         {/* Action Button */}
         <button
           onClick={handleKeepActive}
-          className="w-full bg-[#00C6AD]/10 hover:bg-[#00C6AD]/20 border border-[#00C6AD]/30 text-[#00C6AD] hover:text-white py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer"
+          className="w-full bg-[#C79A4E]/10 hover:bg-[#C79A4E]/20 border border-[#C79A4E]/30 text-[#C79A4E] hover:text-white py-2.5 rounded-xl text-xs font-black uppercase tracking-wider transition-all cursor-pointer"
         >
           {lang === "en" ? "Keep Session Active" : "ಅಧಿವೇಶನ ಮುಂದುವರಿಸಿ"}
         </button>

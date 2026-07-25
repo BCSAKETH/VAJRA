@@ -67,13 +67,13 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, lang, onExpandW
           messages, which is the only path used once a session has real
           participants) instead of a generic "INVESTIGATOR" label that gave
           no way to tell collaborators apart. */}
-      <span className="text-[10px] text-slate-500 font-semibold px-2 font-mono flex items-center gap-1.5">
+      <span className="text-[10px] text-stone-500 font-semibold px-2 font-mono flex items-center gap-1.5">
         {isAI ? "VAJRA.AI" : (message.senderName ? message.senderName.toUpperCase() : "INVESTIGATOR")} • {message.timestamp}
         {isAI && ttsSupported && (
           <button
             onClick={handleToggleSpeak}
             title={isSpeaking ? t.ttsStop : t.ttsRead}
-            className={`p-0.5 rounded hover:bg-slate-800 transition-colors cursor-pointer ${isSpeaking ? "text-[#00C6AD]" : "text-slate-600 hover:text-slate-300"}`}
+            className={`p-0.5 rounded hover:bg-stone-800 transition-colors cursor-pointer ${isSpeaking ? "text-[#C79A4E]" : "text-stone-600 hover:text-stone-300"}`}
           >
             {isSpeaking ? <Volume2 className="w-3 h-3 animate-pulse" /> : <VolumeX className="w-3 h-3" />}
           </button>
@@ -93,7 +93,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, lang, onExpandW
               <span className="font-extrabold uppercase tracking-wider block mb-1 text-amber-500">
                 {t.aiUnavailableTitle}
               </span>
-              <span className="text-slate-200">{displayText}</span>
+              <span className="text-stone-200">{displayText}</span>
             </div>
           </div>
         ) : (
@@ -102,12 +102,12 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, lang, onExpandW
         <div
           className={`rounded-2xl p-4 border text-sm leading-relaxed ${
             isAI
-              ? "glass-panel border-slate-800 text-slate-200 shadow-md"
-              : "bg-slate-900 border-[#00C6AD]/20 text-slate-100 shadow-sm"
+              ? "glass-panel border-stone-800 text-stone-200 shadow-md"
+              : "bg-stone-900 border-[#C79A4E]/20 text-stone-100 shadow-sm"
           }`}
         >
           {/* Main Text Content */}
-          <div className="whitespace-pre-wrap font-sans text-slate-200">{displayText}</div>
+          <div className="whitespace-pre-wrap font-sans text-stone-200">{displayText}</div>
 
           {/* Attachment indicator */}
           {message.attachments && message.attachments.length > 0 && (
@@ -115,7 +115,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, lang, onExpandW
               {message.attachments.map((a, i) => (
                 <span
                   key={i}
-                  className="flex items-center gap-1 px-2 py-1 rounded-md bg-slate-950/40 border border-slate-800 text-[10px] text-slate-400 font-mono"
+                  className="flex items-center gap-1 px-2 py-1 rounded-md bg-stone-950/40 border border-stone-800 text-[10px] text-stone-400 font-mono"
                 >
                   <Paperclip className="w-3 h-3" />
                   {a.file_name}{a.page_count > 1 ? ` (${a.page_count}p)` : ""}
@@ -126,11 +126,11 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({ message, lang, onExpandW
 
           {/* Citation Pills */}
           {isAI && message.citations && message.citations.length > 0 && (
-            <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-slate-850">
+            <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-stone-850">
               {message.citations.map((c, i) => (
                 <div
                   key={i}
-                  className="flex items-center gap-1 text-[10px] font-mono bg-[#00C6AD]/5 text-[#00C6AD] border border-[#00C6AD]/20 px-2 py-0.5 rounded"
+                  className="flex items-center gap-1 text-[10px] font-mono bg-[#C79A4E]/5 text-[#C79A4E] border border-[#C79A4E]/20 px-2 py-0.5 rounded"
                   title={c.details}
                 >
                   <Tag className="w-2.5 h-2.5 shrink-0" />
