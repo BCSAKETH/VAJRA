@@ -1,9 +1,9 @@
 import React from "react";
 import { useApp } from "../AppContext";
-import { Maximize2, ShieldAlert, MapPin, Network, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Repeat, Link2 } from "lucide-react";
+import { Maximize2, ShieldAlert, MapPin, Network, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Repeat, Link2, PieChart } from "lucide-react";
 
 interface InlineWidgetProps {
-  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend";
+  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution";
   data: any;
   onExpand: () => void;
 }
@@ -73,6 +73,12 @@ export const InlineWidget: React.FC<InlineWidgetProps> = ({ type, data, onExpand
             <>
               <Activity className="w-4 h-4 text-[#00C6AD]" />
               <span className="text-xs font-bold text-[#00C6AD] tracking-wider uppercase font-mono">{lang === "en" ? "Crime Trend Analysis" : "ಅಪರಾಧ ಪ್ರವೃತ್ತಿ ವಿಶ್ಲೇಷಣೆ"}</span>
+            </>
+          )}
+          {type === "case_distribution" && (
+            <>
+              <PieChart className="w-4 h-4 text-[#00C6AD]" />
+              <span className="text-xs font-bold text-[#00C6AD] tracking-wider uppercase font-mono">{lang === "en" ? "Case Types Distribution" : "ಪ್ರಕರಣಗಳ ಪ್ರಕಾರ ವಿತರಣೆ"}</span>
             </>
           )}
         </div>
@@ -325,6 +331,26 @@ export const InlineWidget: React.FC<InlineWidgetProps> = ({ type, data, onExpand
                   <span>{lang === "en" ? "Recent spike above baseline" : "ಆಧಾರರೇಖೆಗಿಂತ ಇತ್ತೀಚಿನ ಏರಿಕೆ"}</span>
                 </div>
               )}
+            </div>
+          </div>
+        )}
+
+        {type === "case_distribution" && (
+          <div className="space-y-2">
+            <p className="text-slate-400">
+              {lang === "en" ? (
+                <>Distribution of <span className="font-bold text-slate-200">{data.total ?? 0}</span> cases by type{data.district ? ` in ${data.district}` : ""}:</>
+              ) : (
+                <>ಪ್ರಕಾರದ ಪ್ರಕಾರ <span className="font-bold text-slate-200">{data.total ?? 0}</span> ಪ್ರಕರಣಗಳ ವಿತರಣೆ{data.district ? ` (${data.district})` : ""}:</>
+              )}
+            </p>
+            <div className="bg-slate-950/65 rounded-lg p-2.5 space-y-1.5 font-mono text-[10px] border border-slate-900">
+              {(data.series || []).slice(0, 3).map((s: any, idx: number) => (
+                <div key={idx} className="flex justify-between text-slate-350">
+                  <span className="truncate mr-2">{s.name}</span>
+                  <span className="font-bold text-[#00C6AD] shrink-0">{s.value} {lang === "en" ? "cases" : "ಪ್ರಕರಣಗಳು"}</span>
+                </div>
+              ))}
             </div>
           </div>
         )}

@@ -16,7 +16,7 @@ import {
   Moon,
 } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
-import { CoworkInvitationsPanel } from "./CoworkInvitationsPanel";
+import { NotificationBellPanel } from "./NotificationBellPanel";
 import { ToastContainer } from "./ToastContainer";
 
 interface MainLayoutProps {
@@ -178,10 +178,8 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
                 {theme === "light" ? <Moon className="w-4 h-4" /> : <Sun className="w-4 h-4" />}
               </button>
 
-              {/* Real pending Cowork invitations -- previously just a
-                  decorative icon with a permanently-on ping dot regardless
-                  of whether anything was actually pending. */}
-              <CoworkInvitationsPanel />
+              {/* Persistent Notification Bell Dropdown -- housing Cowork invitations and System Alerts */}
+              <NotificationBellPanel />
 
               {/* Operator Badge Display */}
               <div className="hidden md:flex items-center gap-2 border-l border-slate-850 pl-3.5">

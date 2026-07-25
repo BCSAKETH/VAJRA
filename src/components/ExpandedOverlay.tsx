@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import { useApp } from "../AppContext";
-import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2 } from "lucide-react";
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, CartesianGrid } from "recharts";
+import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2, PieChart as PieChartIcon } from "lucide-react";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, CartesianGrid, PieChart, Pie } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { WatermarkOverlay } from "./WatermarkOverlay";
@@ -188,6 +188,12 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
               <>
                 <Activity className="w-5 h-5 text-[#00C6AD]" />
                 <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Crime Trend Analysis" : "ಅಪರಾಧ ಪ್ರವೃತ್ತಿ ವಿಶ್ಲೇಷಣೆ"}</h3>
+              </>
+            )}
+            {type === "case_distribution" && (
+              <>
+                <PieChartIcon className="w-5 h-5 text-[#00C6AD]" />
+                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Types Distribution" : "ಪ್ರಕರಣಗಳ ಪ್ರಕಾರ ವಿತರಣೆ"}</h3>
               </>
             )}
           </div>
@@ -473,6 +479,74 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                     <Line type="monotone" dataKey="Incidents" stroke="#00C6AD" strokeWidth={2.5} activeDot={{ r: 6 }} dot={{ r: 3 }} />
                   </LineChart>
                 </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {type === "case_distribution" && (
+            <div className="h-full flex flex-col gap-6">
+              <div className="bg-slate-900/25 border border-slate-850 p-4 rounded-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                <div>
+                  <h4 className="font-black text-slate-100 text-lg">
+                    {lang === "en" ? "Case Types Distribution" : "ಪ್ರಕರಣಗಳ ವಿಧಗಳ ವಿತರಣೆ"}
+                  </h4>
+                  <p className="text-xs text-slate-450 mt-1">
+                    {lang === "en" ? "Distribution of incidents grouped by major crime classification categories." : "ಪ್ರಮುಖ ಅಪರಾಧ ವರ್ಗೀಕರಣ ವಿಭಾಗಗಳಿಂದ ಗುಂಪು ಮಾಡಲಾದ ಘಟನೆಗಳ ವಿತರಣೆ."}
+                  </p>
+                </div>
+                <div className="px-4 py-2 rounded-xl bg-slate-900 border border-slate-800 text-[#00C6AD] font-mono font-bold text-sm tracking-wide shrink-0">
+                  {lang === "en" ? "Total Cases: " : "ಒಟ್ಟು ಪ್ರಕರಣಗಳು: "}{data.total ?? 0}
+                </div>
+              </div>
+
+              <div className="flex-1 flex flex-col md:flex-row items-center justify-center gap-8 min-h-[280px]">
+                {/* Pie Chart */}
+                <div className="w-full md:w-1/2 h-[280px] flex items-center justify-center">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={data.series || []}
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={60}
+                        outerRadius={90}
+                        paddingAngle={3}
+                        dataKey="value"
+                        label={({ name, percent }) => `${name} (${(percent * 100).toFixed(0)}%)`}
+                        labelLine={true}
+                      >
+                        {(data.series || []).map((entry: any, index: number) => {
+                          const COLORS = ["#00C6AD", "#00A896", "#028090", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#3B82F6", "#10B981", "#6B7280"];
+                          return <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />;
+                        })}
+                      </Pie>
+                      <Tooltip contentStyle={{ background: "rgba(10, 22, 40, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+
+                {/* Ledger / Table Legend */}
+                <div className="w-full md:w-1/2 overflow-y-auto max-h-[280px] pr-2">
+                  <div className="space-y-2">
+                    {(data.series || []).map((item: any, idx: number) => {
+                      const COLORS = ["#00C6AD", "#00A896", "#028090", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#3B82F6", "#10B981", "#6B7280"];
+                      const color = COLORS[idx % COLORS.length];
+                      const pct = ((item.value / (data.total || 1)) * 100).toFixed(1);
+                      return (
+                        <div key={idx} className="flex justify-between items-center bg-slate-900/40 p-2.5 rounded border border-slate-850 font-mono text-[11px]">
+                          <div className="flex items-center gap-2">
+                            <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                            <span className="text-slate-200 font-bold">{item.name}</span>
+                          </div>
+                          <div className="text-right">
+                            <span className="text-[#00C6AD] font-extrabold">{item.value} {lang === "en" ? "cases" : "ಪ್ರಕರಣಗಳು"}</span>
+                            <span className="block text-[9px] text-slate-500">{pct}%</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               </div>
             </div>
           )}

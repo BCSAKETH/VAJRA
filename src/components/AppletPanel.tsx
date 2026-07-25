@@ -10,13 +10,16 @@ import {
   LineChart,
   Line,
   CartesianGrid,
+  PieChart,
+  Pie,
+  Cell,
 } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { Sparkles, Network, Gauge as GaugeIcon } from "lucide-react";
 
 export interface AppletComponentSpec {
-  kind: "bar_chart" | "line_chart" | "map" | "network_graph" | "stat_tile" | "table" | "timeline" | "gauge";
+  kind: "bar_chart" | "line_chart" | "pie_chart" | "map" | "network_graph" | "stat_tile" | "table" | "timeline" | "gauge";
   title?: string;
   data?: any;
   columns?: string[];
@@ -108,6 +111,32 @@ const LineChartCard: React.FC<AppletComponentSpec> = ({ title, data }) => (
           <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 11 }} />
           <Line type="monotone" dataKey="value" stroke="#00C6AD" strokeWidth={2} dot={false} />
         </LineChart>
+      </ResponsiveContainer>
+    </div>
+  </CardShell>
+);
+
+const PieChartCard: React.FC<AppletComponentSpec> = ({ title, data }) => (
+  <CardShell title={title}>
+    <div className="h-40 flex items-center justify-center">
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie
+            data={Array.isArray(data) ? data : []}
+            cx="50%"
+            cy="50%"
+            innerRadius={25}
+            outerRadius={45}
+            paddingAngle={2}
+            dataKey="value"
+          >
+            {(Array.isArray(data) ? data : []).map((entry: any, index: number) => {
+              const COLORS = ["#00C6AD", "#00A896", "#028090", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#3B82F6", "#10B981", "#6B7280"];
+              return <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />;
+            })}
+          </Pie>
+          <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 9 }} />
+        </PieChart>
       </ResponsiveContainer>
     </div>
   </CardShell>
@@ -228,6 +257,7 @@ const GaugeCard: React.FC<AppletComponentSpec> = ({ title, value, label }) => {
 const componentRenderers: Record<string, React.FC<AppletComponentSpec>> = {
   bar_chart: BarChartCard,
   line_chart: LineChartCard,
+  pie_chart: PieChartCard,
   map: MapCard,
   network_graph: NetworkGraphCard,
   stat_tile: StatTile,

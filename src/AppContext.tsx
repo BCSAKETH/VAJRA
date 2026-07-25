@@ -33,7 +33,7 @@ export interface ChatMessage {
   textEn?: string;
   textKn?: string;
   timestamp: string;
-  responseType?: "text" | "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend";
+  responseType?: "text" | "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution";
   data?: any;
   isSimulated?: boolean;
   simulatedReason?: string;
@@ -50,6 +50,7 @@ export interface ToastMessage {
   message: string;
   severity: "Critical" | "Warning" | "Info" | "Success";
   timestamp: string;
+  read?: boolean;
 }
 
 interface AppContextType {
@@ -74,6 +75,10 @@ interface AppContextType {
     realTimestamp?: string,
   ) => void;
   removeToast: (id: string) => void;
+  notifications: ToastMessage[];
+  clearNotifications: () => void;
+  markAllAsRead: () => void;
+  removeNotification: (id: string) => void;
   theme: "light" | "high-contrast-dark";
   setTheme: (theme: "light" | "high-contrast-dark") => void;
   selectedFirNo: string | null;
@@ -136,6 +141,15 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
 
   const [isDbConnected, setIsDbConnected] = useState<boolean>(true);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  
+  const [notifications, setNotifications] = useState<ToastMessage[]>(() => {
+    const saved = localStorage.getItem("vajra_notifications");
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem("vajra_notifications", JSON.stringify(notifications));
+  }, [notifications]);
 
   // Poll the real /health endpoint instead of hardcoding "connected" forever —
   // this used to never reflect reality. Also drops isNeo4jConnected entirely:
@@ -144,7 +158,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
   // graph-tracing path that ever ran.
   useEffect(() => {
     const checkHealth = () => {
-      fetch(`${API_BASE}/health`)
+      fetch(`${API_BASE}/api/health`)
         .then((res) => res.json())
         .then((data) => setIsDbConnected(Boolean(data.database_connected)))
         .catch(() => setIsDbConnected(false));
@@ -202,23 +216,36 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     severity: "Critical" | "Warning" | "Info" | "Success",
     realTimestamp?: string,
   ) => {
-    const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
-    // realTimestamp is when the underlying event actually happened (e.g. a
-    // proactive alert's real TriggerTime from the database) -- confirmed
-    // live that without this, every toast showed new Date() (when it
-    // rendered), so a two-day-old alert re-surfaced on every page load
-    // looked like it had just happened seconds ago. Falls back to render
-    // time for toasts with no real backing event (login confirmations,
-    // form-save errors, etc.), unchanged from before.
-    const timestamp = realTimestamp
-      ? new Date(realTimestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-      : new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-    const newToast: ToastMessage = { id, title, message, severity, timestamp };
-    setToasts((prev) => [...prev, newToast]);
+    setNotifications((prev) => {
+      // Deduplicate to prevent spam on remount / rapid polling
+      const isDuplicate = prev.some((n) => n.title === title && n.message === message);
+      if (isDuplicate) return prev;
+
+      const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+      const timestamp = realTimestamp
+        ? new Date(realTimestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+        : new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+
+      const newToast: ToastMessage = { id, title, message, severity, timestamp, read: false };
+      setToasts((t) => [...t, newToast]);
+      return [newToast, ...prev];
+    });
   }, []);
 
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  const clearNotifications = useCallback(() => {
+    setNotifications([]);
+  }, []);
+
+  const markAllAsRead = useCallback(() => {
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+  }, []);
+
+  const removeNotification = useCallback((id: string) => {
+    setNotifications((prev) => prev.filter((n) => n.id !== id));
   }, []);
 
   useEffect(() => {
@@ -333,6 +360,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         toasts,
         addToast,
         removeToast,
+        notifications,
+        clearNotifications,
+        markAllAsRead,
+        removeNotification,
         theme,
         setTheme,
         selectedFirNo,

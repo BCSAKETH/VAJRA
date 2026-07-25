@@ -155,7 +155,7 @@ class CaseAnalysisRequest(BaseModel):
     accused_count: int = Field(1, ge=0)
 
 
-@app.get("/health")
+@app.get("/api/health")
 async def health_check():
     """
     Diagnostic checks for live Zoho Catalyst Datastore, local files, and machine learning components.
