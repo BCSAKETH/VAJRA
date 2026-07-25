@@ -2180,4 +2180,10 @@ async def export_pdf_endpoint(payload: PDFExportRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # Catalyst AppSail's process launcher execs the app-config.json "command"
+    # without a shell, so "$X_ZOHO_CATALYST_LISTEN_PORT" in that string never
+    # gets expanded (confirmed live: the literal unexpanded string showed up
+    # in the exec-failure log). Reading the real port from the environment
+    # here instead means the command string never needs shell syntax at all.
+    port = int(os.getenv("X_ZOHO_CATALYST_LISTEN_PORT", "8000"))
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)

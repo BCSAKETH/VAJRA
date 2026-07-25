@@ -1,0 +1,9 @@
+vajra_backend/.venv/
+vajra_backend/__pycache__/
+vajra_backend/*.log
+vajra_backend/.token_cache
+node_modules/
+scratch/
+screenshots/
+docs/
+dist/

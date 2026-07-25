@@ -1,5 +1,6 @@
 {
-  "command": "uvicorn main:app --host 0.0.0.0 --port $PORT",
+  "command": "python3 start.py",
   "stack": "python_3_12",
-  "build_path": "."
+  "build_path": ".",
+  "memory": 2048
 }
