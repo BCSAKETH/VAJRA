@@ -428,6 +428,7 @@ export const AIChatScreen: React.FC = () => {
     setActiveSessionId(null);
     setChatMode("chat");
     setHasParticipants(false);
+    fetchSuggestionSeeds();
   };
 
   // Toggling to Cowork on a session that already exists but has no
@@ -608,11 +609,42 @@ export const AIChatScreen: React.FC = () => {
     }
   };
 
-  const suggestionChips = [
-    { label: lang === "en" ? "Assess conviction risk for suspect Ramesh" : "ರಮೇಶ್ ಅಪರಾಧದ ಅಪಾಯ ವಿಶ್ಲೇಷಿಸು", text: "Assess conviction risk for suspect Ramesh" },
-    { label: lang === "en" ? "Find similar burglary cases" : " burglary ಪ್ರಕರಣಗಳನ್ನು ಹುಡುಕಿ", text: "Find similar burglary cases" },
-    { label: lang === "en" ? "Plot crime hotspot coordinates" : "ಅಪರಾಧದ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳನ್ನು ತೋರಿಸಿ", text: "Plot crime hotspot coordinates" },
-  ];
+  // Built from real accused/district/crime-type values fetched fresh from
+  // /api/chat/suggestions -- previously a static array that always said
+  // "suspect Ramesh" on every single load, regardless of what's actually in
+  // the database. Re-fetched on New Chat too (see handleNewChat) so the
+  // chips don't just go stale after the first turn.
+  const [suggestionSeeds, setSuggestionSeeds] = useState<{ suspect: string; district: string; crime_type: string } | null>(null);
+  const fetchSuggestionSeeds = useCallback(() => {
+    fetch(`${API_BASE}/api/chat/suggestions`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => { if (data) setSuggestionSeeds(data); })
+      .catch(() => {});
+  }, []);
+  useEffect(() => { fetchSuggestionSeeds(); }, [fetchSuggestionSeeds]);
+
+  const suggestionChips = suggestionSeeds
+    ? [
+        {
+          label: lang === "en" ? `Assess conviction risk for suspect ${suggestionSeeds.suspect}` : `${suggestionSeeds.suspect} ಅಪರಾಧದ ಅಪಾಯ ವಿಶ್ಲೇಷಿಸು`,
+          text: `Assess conviction risk for suspect ${suggestionSeeds.suspect}`,
+        },
+        {
+          label: lang === "en" ? `Find similar ${suggestionSeeds.crime_type.toLowerCase()} cases` : `${suggestionSeeds.crime_type} ಪ್ರಕರಣಗಳನ್ನು ಹುಡುಕಿ`,
+          text: `Find similar ${suggestionSeeds.crime_type.toLowerCase()} cases`,
+        },
+        {
+          label: lang === "en" ? `Plot crime hotspots in ${suggestionSeeds.district}` : `${suggestionSeeds.district} ಅಪರಾಧದ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳನ್ನು ತೋರಿಸಿ`,
+          text: `Plot crime hotspots in ${suggestionSeeds.district}`,
+        },
+      ]
+    : [
+        { label: lang === "en" ? "Assess conviction risk for a suspect" : "ಶಂಕಿತ ಅಪರಾಧದ ಅಪಾಯ ವಿಶ್ಲೇಷಿಸು", text: "Assess conviction risk for a suspect" },
+        { label: lang === "en" ? "Find similar burglary cases" : " burglary ಪ್ರಕರಣಗಳನ್ನು ಹುಡುಕಿ", text: "Find similar burglary cases" },
+        { label: lang === "en" ? "Plot crime hotspot coordinates" : "ಅಪರಾಧದ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳನ್ನು ತೋರಿಸಿ", text: "Plot crime hotspot coordinates" },
+      ];
 
   return (
     <div className="h-full flex overflow-hidden bg-stone-950/20">

@@ -17,6 +17,7 @@ import re
 import json
 import hashlib
 import logging
+import random
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
@@ -752,6 +753,55 @@ async def get_district_dashboard_detail(district_id: int, request: Request, loca
             for r in emp_res if r.get("Employee", {}).get("UnitID") in unit_id_set
         )
 
+        # 6. Most-wanted -- same GROUP BY the district summary card already
+        # uses for its hover tooltip, but that number never carried through
+        # into the drill-down panel itself. Recomputed here scoped to this
+        # one district's units instead of threading it through as a param.
+        most_wanted = None
+        try:
+            # ZCQL has no nested-subquery support (confirmed by the same
+            # bounded-sample + literal IN-clause pattern the district summary
+            # endpoint above already uses) -- resolve this district's own
+            # CaseMasterIDs first, then look up Accused rows against that
+            # literal list, never a subquery.
+            cid_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID FROM CaseMaster{unit_filter} LIMIT 500")
+            case_ids = [r.get("CaseMaster", {}).get("CaseMasterID") for r in cid_res if r.get("CaseMaster", {}).get("CaseMasterID")]
+            if case_ids:
+                acc_res = catalyst_app.zql().execute_query(
+                    f"SELECT AccusedName, CaseMasterID FROM Accused WHERE CaseMasterID IN ({','.join(str(c) for c in case_ids)})"
+                )
+                tally: Dict[str, int] = {}
+                for r in acc_res:
+                    name = (r.get("Accused", {}).get("AccusedName") or "").strip()
+                    if name and "unknown" not in name.lower():
+                        tally[name] = tally.get(name, 0) + 1
+                if tally:
+                    top_name, top_count = max(tally.items(), key=lambda kv: kv[1])
+                    if top_count > 1:
+                        most_wanted = {"suspect": top_name, "case_count": top_count}
+        except Exception as ex:
+            logger.warning(f"Could not resolve most-wanted for district {district_id}: {ex}")
+
+        # 7. Recent case activity -- last 5 registered cases in this
+        # district, for a genuine "what's actually happening here" feed
+        # instead of only aggregate charts.
+        recent_cases = []
+        try:
+            recent_res = catalyst_app.zql().execute_query(
+                f"SELECT CrimeNo, CrimeRegisteredDate, BriefFacts FROM CaseMaster{unit_filter} "
+                f"ORDER BY CrimeRegisteredDate DESC LIMIT 5"
+            )
+            for r in recent_res:
+                cm = r.get("CaseMaster", {})
+                facts = (cm.get("BriefFacts") or "")[:120]
+                recent_cases.append({
+                    "crime_no": cm.get("CrimeNo"),
+                    "registered_date": cm.get("CrimeRegisteredDate"),
+                    "brief_facts": facts,
+                })
+        except Exception as ex:
+            logger.warning(f"Could not fetch recent cases for district {district_id}: {ex}")
+
         return {
             "district_id": district_id,
             "district": district_name,
@@ -763,6 +813,8 @@ async def get_district_dashboard_detail(district_id: int, request: Request, loca
                 {"name": "Unsolved", "value": outcome_buckets["unsolved"]},
             ] + ([{"name": "Unclassified", "value": outcome_buckets["unclassified"]}] if outcome_buckets["unclassified"] else []),
             "police_presence": {"employee_headcount": headcount, "station_count": len(unit_ids)},
+            "most_wanted": most_wanted,
+            "recent_cases": recent_cases,
         }
     except HTTPException:
         raise
@@ -1640,6 +1692,48 @@ async def get_attachment(stratus_key: str, request: Request, location_context: s
 
 VAJRA_MENTION_RE = re.compile(r"@vajra\b", re.IGNORECASE)
 
+# Confirmed-real crime categories actually present in this dataset (visible
+# in the Crime Types Breakdown legend on the District Dashboard) -- kept as a
+# fixed list rather than a fresh lookup-table query so a suggestion chip can
+# never reference a category that doesn't really exist in CaseMaster.
+_REAL_CRIME_TYPES = [
+    "BURGLARY", "THEFT", "CYBERCRIME", "ASSAULT", "ROBBERY", "NARCOTICS",
+    "KIDNAPPING", "CHEATING", "DACOITY", "CHAIN SNATCHING", "MOTOR VEHICLE THEFT",
+]
+
+
+@app.get("/api/chat/suggestions")
+async def get_chat_suggestions(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Real-data seeds for the composer's suggestion chips -- previously a
+    static, hardcoded array (always "suspect Ramesh", every session, forever).
+    Picks one real accused name and one real district from small bounded
+    samples (ZCQL has no ORDER BY RANDOM(), so randomize in Python over a
+    fetched sample instead) plus a category from the dataset's own confirmed
+    crime types, so chips point at data that actually exists to query.
+    """
+    suspect = "Ramesh"
+    district = "Bengaluru Urban"
+    if catalyst_app:
+        try:
+            acc_res = catalyst_app.zql().execute_query("SELECT AccusedName FROM Accused LIMIT 60")
+            names = [r.get("Accused", {}).get("AccusedName") for r in acc_res]
+            names = [n.strip() for n in names if n and "unknown" not in n.lower()]
+            if names:
+                suspect = random.choice(names)
+        except Exception as e:
+            logger.warning(f"Could not sample a real suspect for suggestions: {e}")
+        try:
+            d_res = catalyst_app.zql().execute_query("SELECT DistrictName FROM District")
+            dnames = [r.get("District", {}).get("DistrictName") for r in d_res if r.get("District", {}).get("DistrictName")]
+            if dnames:
+                district = random.choice(dnames)
+        except Exception as e:
+            logger.warning(f"Could not sample a real district for suggestions: {e}")
+
+    crime_type = random.choice(_REAL_CRIME_TYPES)
+    return {"suspect": suspect, "district": district, "crime_type": crime_type}
+
 
 def _is_cowork_session(session_id: str) -> bool:
     """True once at least one officer has accepted an invite into this session."""
@@ -2084,63 +2178,83 @@ async def create_investigation(payload: CreateInvestigationRequest, request: Req
 
     case_row = None
     case_no = None
-    if payload.case_no:
-        case_check = catalyst_app.zql().execute_query(
-            f"SELECT CaseMasterID, CrimeNo, CrimeRegisteredDate, AccusedCount, VictimCount, BriefFacts "
-            f"FROM CaseMaster WHERE CrimeNo = '{payload.case_no}' LIMIT 1"
+    try:
+        if payload.case_no:
+            # CaseMaster has neither an AccusedCount nor a VictimCount column
+            # in the live console (docs/SCHEMA.md documents them, but they
+            # don't actually exist -- ZCQL 400s the whole SELECT the moment
+            # an unknown column is referenced, same failure mode already
+            # documented and fixed once before for this exact table in
+            # agent_loop.py's get_offender_risk). Accused/victim counts, if
+            # ever needed, require their own COUNT query against the Accused/
+            # Victim tables keyed by CaseMasterID -- not selected here.
+            case_check = catalyst_app.zql().execute_query(
+                f"SELECT CaseMasterID, CrimeNo, CrimeRegisteredDate, BriefFacts "
+                f"FROM CaseMaster WHERE CrimeNo = '{payload.case_no}' LIMIT 1"
+            )
+            if not case_check:
+                raise HTTPException(status_code=404, detail="That case number doesn't match any real case.")
+            case_row = case_check[0].get("CaseMaster", {})
+            case_no = payload.case_no
+
+        # description drives whether this session is classified as an
+        # Investigation (GET /api/investigations) vs a plain quick chat (GET
+        # /api/sessions excludes anything with description IS NULL OR = '') --
+        # both title and case link are optional in the creation modal, so a
+        # description-less Investigation previously stored description = '' and
+        # silently fell through to the plain-chat bucket: it showed in the flat
+        # history list, not the pinned Investigations section, indistinguishable
+        # from a stray chat. Guaranteeing a non-empty description here is what
+        # actually makes this session an Investigation.
+        description = payload.description.strip()[:500] or (
+            f"Investigation linked to case {case_no}." if case_no else "Investigation (no additional details provided)."
         )
-        if not case_check:
-            raise HTTPException(status_code=404, detail="That case number doesn't match any real case.")
-        case_row = case_check[0].get("CaseMaster", {})
-        case_no = payload.case_no
 
-    # description drives whether this session is classified as an
-    # Investigation (GET /api/investigations) vs a plain quick chat (GET
-    # /api/sessions excludes anything with description IS NULL OR = '') --
-    # both title and case link are optional in the creation modal, so a
-    # description-less Investigation previously stored description = '' and
-    # silently fell through to the plain-chat bucket: it showed in the flat
-    # history list, not the pinned Investigations section, indistinguishable
-    # from a stray chat. Guaranteeing a non-empty description here is what
-    # actually makes this session an Investigation.
-    description = payload.description.strip()[:500] or (
-        f"Investigation linked to case {case_no}." if case_no else "Investigation (no additional details provided)."
-    )
+        session_id = f"sess-{employee_id}-{int(datetime.utcnow().timestamp())}"
+        zcql_insert_row("ChatSession", {
+            "session_id": session_id,
+            "employee_id": employee_id,
+            "title": payload.title.strip()[:60],
+            "description": description,
+            "case_no": case_no or "",
+            "created_at": datetime.utcnow().isoformat(),
+            "last_active_at": datetime.utcnow().isoformat()
+        })
 
-    session_id = f"sess-{employee_id}-{int(datetime.utcnow().timestamp())}"
-    zcql_insert_row("ChatSession", {
-        "session_id": session_id,
-        "employee_id": employee_id,
-        "title": payload.title.strip()[:60],
-        "description": description,
-        "case_no": case_no or "",
-        "created_at": datetime.utcnow().isoformat(),
-        "last_active_at": datetime.utcnow().isoformat()
-    })
+        # Opening message so the thread isn't a blank screen -- composed
+        # directly from real CaseMaster fields (no LLM call, no fabrication
+        # risk, instant). If no case was linked, a short generic opener
+        # instead of nothing at all. ZCQL result keys are lowercase for some
+        # columns regardless of SELECT casing (confirmed elsewhere in this
+        # file for Latitude/Longitude) -- fall back across both casings so a
+        # quirky column doesn't silently blank out the kickoff message.
+        def _cf(row: Dict[str, Any], key: str):
+            return row.get(key) if row.get(key) is not None else row.get(key.lower())
 
-    # Opening message so the thread isn't a blank screen -- composed
-    # directly from real CaseMaster fields (no LLM call, no fabrication risk,
-    # instant). If no case was linked, a short generic opener instead of
-    # nothing at all.
-    if case_row:
-        facts = (case_row.get("BriefFacts") or "").strip()
-        kickoff = (
-            f"Investigation \"{payload.title.strip()}\" opened, linked to case {case_row.get('CrimeNo')} "
-            f"(registered {case_row.get('CrimeRegisteredDate') or 'date unknown'}, "
-            f"{case_row.get('AccusedCount') if case_row.get('AccusedCount') is not None else '?'} accused, "
-            f"{case_row.get('VictimCount') if case_row.get('VictimCount') is not None else '?'} victim(s)).\n\n"
-            f"Brief facts on record: {facts or 'None recorded for this case.'}\n\n"
-            f"Ask me anything about this case -- risk profile, MO matches, network, hotspots, or a full report."
-        )
-    else:
-        kickoff = (
-            f"Investigation \"{payload.title.strip()}\" opened"
-            f"{f': {payload.description.strip()}' if payload.description.strip() else ''}. "
-            f"No case is linked yet -- ask me anything to begin, or link a case later from Settings."
-        )
-    _persist_chat_message(session_id, "assistant", kickoff, "text", {"_text_en": kickoff, "_text_kn": kickoff}, sender_employee_id=None)
+        if case_row:
+            facts = (_cf(case_row, "BriefFacts") or "").strip()
+            crime_no_val = _cf(case_row, "CrimeNo") or case_no
+            reg_date = _cf(case_row, "CrimeRegisteredDate") or "date unknown"
+            kickoff = (
+                f"Investigation \"{payload.title.strip()}\" opened, linked to case {crime_no_val} "
+                f"(registered {reg_date}).\n\n"
+                f"Brief facts on record: {facts or 'None recorded for this case.'}\n\n"
+                f"Ask me anything about this case -- risk profile, MO matches, network, hotspots, or a full report."
+            )
+        else:
+            kickoff = (
+                f"Investigation \"{payload.title.strip()}\" opened"
+                f"{f': {payload.description.strip()}' if payload.description.strip() else ''}. "
+                f"No case is linked yet -- ask me anything to begin, or link a case later from Settings."
+            )
+        _persist_chat_message(session_id, "assistant", kickoff, "text", {"_text_en": kickoff, "_text_kn": kickoff}, sender_employee_id=None)
 
-    return {"session_id": session_id, "title": payload.title, "description": description, "case_no": case_no}
+        return {"session_id": session_id, "title": payload.title, "description": description, "case_no": case_no}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to create investigation (title={payload.title!r}, case_no={payload.case_no!r}): {e}")
+        raise HTTPException(status_code=500, detail=f"Could not create investigation: {e}")
 
 
 @app.get("/api/investigations")

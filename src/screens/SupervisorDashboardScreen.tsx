@@ -3,7 +3,7 @@ import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import { TwoPersonApprovalModal } from "../components/TwoPersonApprovalModal";
 import { WatermarkOverlay } from "../components/WatermarkOverlay";
-import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock } from "lucide-react";
+import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity } from "lucide-react";
 
 interface ConsistencyFlag {
   ROWID: number;
@@ -213,6 +213,69 @@ export const SupervisorDashboardScreen: React.FC = () => {
           <ShieldCheck className="w-4 h-4" />
           <span>{isVerifyingLedger ? t.supervisorVerifyingHashes : t.supervisorVerifyLedger}</span>
         </button>
+      </div>
+
+      {/* Quick-read telemetry strip -- derived from the same flags/auditLogs
+          already fetched for the two panels below, no extra round-trip. */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 shrink-0">
+        <div className="glass-card p-3.5 border border-stone-850 flex items-center gap-3">
+          <div className="w-9 h-9 rounded-lg bg-amber-500/10 border border-amber-500/25 flex items-center justify-center shrink-0">
+            <AlertTriangle className="w-4.5 h-4.5 text-amber-500" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-lg font-black text-stone-100 font-mono leading-tight">
+              {isLoadingFlags ? "—" : flags.filter((f) => f.reviewed === 0).length}
+            </div>
+            <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
+              {lang === "en" ? "Pending Flags" : "ಬಾಕಿ ಫ್ಲ್ಯಾಗ್‌ಗಳು"}
+            </div>
+          </div>
+        </div>
+        <div className="glass-card p-3.5 border border-stone-850 flex items-center gap-3">
+          <div className="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/25 flex items-center justify-center shrink-0">
+            <CheckCircle2 className="w-4.5 h-4.5 text-emerald-500" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-lg font-black text-stone-100 font-mono leading-tight">
+              {isLoadingFlags ? "—" : flags.filter((f) => f.reviewed !== 0).length}
+            </div>
+            <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
+              {lang === "en" ? "Resolved Flags" : "ಬಗೆಹರಿದ ಫ್ಲ್ಯಾಗ್‌ಗಳು"}
+            </div>
+          </div>
+        </div>
+        <div className="glass-card p-3.5 border border-stone-850 flex items-center gap-3">
+          <div className="w-9 h-9 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 flex items-center justify-center shrink-0">
+            <Activity className="w-4.5 h-4.5 text-[#C79A4E]" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-lg font-black text-stone-100 font-mono leading-tight">
+              {isLoadingAudit ? "—" : auditLogs.length}
+            </div>
+            <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
+              {lang === "en" ? "Audit Entries Loaded" : "ಆಡಿಟ್ ನಮೂದುಗಳು"}
+            </div>
+          </div>
+        </div>
+        <div className="glass-card p-3.5 border border-stone-850 flex items-center gap-3">
+          <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 border ${
+            ledgerVerified === null ? "bg-stone-800/50 border-stone-700" : ledgerVerified ? "bg-emerald-500/10 border-emerald-500/25" : "bg-rose-500/10 border-rose-500/25"
+          }`}>
+            <ShieldCheck className={`w-4.5 h-4.5 ${ledgerVerified === null ? "text-stone-400" : ledgerVerified ? "text-emerald-500" : "text-rose-500"}`} />
+          </div>
+          <div className="min-w-0">
+            <div className={`text-[11px] font-black font-mono leading-tight truncate ${ledgerVerified === null ? "text-stone-400" : ledgerVerified ? "text-emerald-500" : "text-rose-500"}`}>
+              {ledgerVerified === null
+                ? (lang === "en" ? "Not Verified" : "ಪರಿಶೀಲಿಸಿಲ್ಲ")
+                : ledgerVerified
+                  ? (lang === "en" ? "Chain Intact" : "ಸರಪಳಿ ಸುರಕ್ಷಿತ")
+                  : (lang === "en" ? "Inconsistent" : "ಅಸಮಂಜಸ")}
+            </div>
+            <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
+              {lang === "en" ? "Ledger Status" : "ಲೆಡ್ಜರ್ ಸ್ಥಿತಿ"}
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Ledger Verification Status Alert Banner */}

@@ -102,7 +102,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   ];
 
   return (
-    <div className="min-h-screen bg-[#161412] text-stone-100 flex flex-col font-sans transition-colors duration-300">
+    <div className="min-h-screen bg-[var(--color-background-dark)] text-[var(--color-text-primary)] flex flex-col font-sans transition-colors duration-300">
       {/* Indian Tricolour Top Accent Strip */}
       <div className="tricolour-strip shrink-0" />
 
@@ -122,7 +122,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
               {isExpanded ? (
                 <div className="flex items-center gap-2">
                   <VajraLogo animated={false} size={24} />
-                  <span className="font-black text-sm tracking-widest text-[#C79A4E]">VAJRA 3.0</span>
+                  <span className="font-black text-sm tracking-widest text-[#C79A4E]">VAJRA</span>
                 </div>
               ) : (
                 <VajraLogo animated={false} size={24} className="mx-auto" />
@@ -311,7 +311,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
               fought that inner region for who owns scrolling and who
               resolves height -- the whole page grew instead of just the
               message list. This is just the bounded frame now. */}
-          <main className="flex-1 overflow-hidden relative bg-[#161412]">
+          <main className="flex-1 overflow-hidden relative bg-[var(--color-background-dark)]">
             {children}
           </main>
         </div>

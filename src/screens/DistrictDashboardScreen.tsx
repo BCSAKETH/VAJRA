@@ -15,7 +15,7 @@ import {
   Legend,
   LabelList,
 } from "recharts";
-import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers } from "lucide-react";
+import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock } from "lucide-react";
 
 interface DistrictSummaryRow {
   district_id: number;
@@ -32,6 +32,8 @@ interface DistrictDetail {
   crime_type_distribution: { name: string; value: number }[];
   case_outcomes: { name: string; value: number }[];
   police_presence: { employee_headcount: number; station_count: number };
+  most_wanted: { suspect: string; case_count: number } | null;
+  recent_cases: { crime_no: string; registered_date: string; brief_facts: string }[];
 }
 
 const PIE_COLORS = ["#C79A4E", "#5DCAA5", "#9085e9", "#e66767", "#3987e5", "#F59E0B", "#77a6e0", "#c98fd6"];
@@ -276,7 +278,7 @@ export const DistrictDashboardScreen: React.FC = () => {
             <div className="space-y-4 animate-fade-in">
               {isLoadingDetail ? (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {[1, 2, 3, 4].map((n) => (
+                  {[1, 2, 3, 4, 5, 6].map((n) => (
                     <div key={n} className="h-64 rounded-2xl shimmer-bg border border-stone-900" />
                   ))}
                 </div>
@@ -432,6 +434,49 @@ export const DistrictDashboardScreen: React.FC = () => {
                         </div>
                       </div>
                     </div>
+                  </div>
+
+                  {/* Most-wanted */}
+                  <div className="glass-card p-4 border border-stone-850 space-y-3">
+                    <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                      <UserX className="w-3.5 h-3.5 text-rose-450" />
+                      {lang === "en" ? "Most Wanted" : "ಅತಿ ಬೇಕಾದ"}
+                    </h3>
+                    {detail.most_wanted ? (
+                      <div className="bg-rose-500/5 border border-rose-500/15 rounded-lg p-3 flex items-center justify-between">
+                        <span className="text-sm font-extrabold text-stone-100 truncate">{detail.most_wanted.suspect}</span>
+                        <span className="text-[10px] font-mono font-black text-rose-400 shrink-0 ml-2">
+                          {detail.most_wanted.case_count} {lang === "en" ? "cases" : "ಪ್ರಕರಣಗಳು"}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="text-[10px] text-stone-600 font-mono py-2">
+                        {lang === "en" ? "No repeat suspect flagged in this district." : "ಈ ಜಿಲ್ಲೆಯಲ್ಲಿ ಯಾವುದೇ ಪುನರಾವರ್ತಿತ ಶಂಕಿತ ಗುರುತಿಸಲಾಗಿಲ್ಲ."}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Recent case activity */}
+                  <div className="glass-card p-4 border border-stone-850 space-y-3 lg:col-span-2">
+                    <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-[#C79A4E]" />
+                      {lang === "en" ? "Recent Case Activity" : "ಇತ್ತೀಚಿನ ಪ್ರಕರಣ ಚಟುವಟಿಕೆ"}
+                    </h3>
+                    {detail.recent_cases.length === 0 ? (
+                      <div className="text-[10px] text-stone-600 font-mono py-2">
+                        {lang === "en" ? "No recent case records found." : "ಇತ್ತೀಚಿನ ಪ್ರಕರಣ ದಾಖಲೆಗಳು ಕಂಡುಬಂದಿಲ್ಲ."}
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-stone-850">
+                        {detail.recent_cases.map((c, i) => (
+                          <div key={i} className="py-2 flex items-start gap-3 font-mono">
+                            <span className="text-[10px] font-black text-[#C79A4E] shrink-0 w-24 truncate">{c.crime_no}</span>
+                            <span className="text-[9.5px] text-stone-500 shrink-0 w-20">{c.registered_date?.split(" ")[0]}</span>
+                            <span className="text-[10.5px] text-stone-400 truncate flex-1">{c.brief_facts || "—"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               ) : null}
