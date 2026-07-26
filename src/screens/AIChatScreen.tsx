@@ -14,6 +14,27 @@ const ExpandedOverlay = lazy(() =>
   import("../components/ExpandedOverlay").then((m) => ({ default: m.ExpandedOverlay }))
 );
 
+// Shared shape between the initial session-history fetch (handleSelectSession)
+// and the cowork polling fallback below -- factored out so both stay in sync
+// instead of drifting into two slightly different mappings over time.
+const mapSessionMessages = (sessionId: string, messages: any[]): ChatMessage[] =>
+  messages.map((m: any, idx: number) => ({
+    id: `${sessionId}-${idx}`,
+    sender: m.sender === "user" ? "user" : "assistant",
+    text: m.text,
+    textEn: m.text_en,
+    textKn: m.text_kn,
+    timestamp: m.timestamp
+      ? new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      : "",
+    responseType: m.response_type,
+    data: m.data,
+    citations: m.citations,
+    attachments: m.data?.attachments,
+    senderName: m.sender_name,
+    senderEmployeeId: m.sender_employee_id,
+  }));
+
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 3;
 const MAX_AGGREGATE_BYTES = 20 * 1024 * 1024;
@@ -262,6 +283,39 @@ export const AIChatScreen: React.FC = () => {
       .then((sessions: any[]) => setHasParticipants(sessions.some((s) => s.session_id === activeSessionId)))
       .catch(() => setHasParticipants(false));
   }, [activeSessionId]);
+
+  // Cowork live-push replacement: Zoho Catalyst's AppSail gateway (ZGS)
+  // does not proxy WebSocket upgrade requests in this environment --
+  // confirmed directly, a raw handshake against /ws/chat/... comes back a
+  // plain HTTP 404 from FastAPI itself, not a 101 Switching Protocols, so
+  // the browser's WebSocket connection can never succeed here regardless of
+  // anything in this app's own code. Short-interval polling is the real
+  // working substitute: only runs for genuine multi-participant sessions
+  // (not every solo chat), and only ever grows the thread -- if the server
+  // has no more messages than what's already on screen, this is a silent
+  // no-op, so it can never clobber an in-flight optimistic update with
+  // stale data.
+  useEffect(() => {
+    if (!activeSessionId || !hasParticipants) return;
+    const pollForNewMessages = async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/sessions/${activeSessionId}/messages`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        });
+        if (!res.ok) return;
+        const raw = await res.json();
+        const loaded = mapSessionMessages(activeSessionId, raw);
+        sessionMessagesCacheRef.current.set(activeSessionId, loaded);
+        setChatMessages((prev) => (loaded.length > prev.length ? loaded : prev));
+      } catch {
+        // Silent -- this is a background convenience poll, not a
+        // user-initiated action; a transient failure just means this
+        // particular tick found nothing new, next tick tries again.
+      }
+    };
+    const interval = setInterval(pollForNewMessages, 4000);
+    return () => clearInterval(interval);
+  }, [activeSessionId, hasParticipants]);
 
 
 
@@ -581,22 +635,7 @@ export const AIChatScreen: React.FC = () => {
       const messages = await response.json();
       if (requestId !== selectSessionRequestRef.current) return; // superseded
 
-      const loaded: ChatMessage[] = messages.map((m: any, idx: number) => ({
-        id: `${sessionId}-${idx}`,
-        sender: m.sender === "user" ? "user" : "assistant",
-        text: m.text,
-        textEn: m.text_en,
-        textKn: m.text_kn,
-        timestamp: m.timestamp
-          ? new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-          : "",
-        responseType: m.response_type,
-        data: m.data,
-        citations: m.citations,
-        attachments: m.data?.attachments,
-        senderName: m.sender_name,
-        senderEmployeeId: m.sender_employee_id,
-      }));
+      const loaded = mapSessionMessages(sessionId, messages);
       sessionMessagesCacheRef.current.set(sessionId, loaded);
       setChatMessages(loaded);
       setActiveSessionId(sessionId);

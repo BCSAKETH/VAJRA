@@ -1,8 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import type { Layer } from "leaflet";
+import { geoMercator, geoPath } from "d3-geo";
+import type { Feature, Geometry } from "geojson";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { MapContainer, TileLayer, CircleMarker, Popup, GeoJSON } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import karnatakaDistrictsGeo from "../assets/karnataka-districts.json";
 import {
   ResponsiveContainer,
@@ -38,7 +39,11 @@ interface DistrictDetail {
   recent_cases: { crime_no: string; registered_date: string; brief_facts: string }[];
 }
 
-const KARNATAKA_CENTER: [number, number] = [14.85, 76.0];
+// Fixed SVG coordinate space the map is drawn into (see MAP_PROJECTION
+// below) -- the <svg> itself scales responsively via viewBox, this is just
+// the internal unit space the projection targets.
+const MAP_WIDTH = 780;
+const MAP_HEIGHT = 760;
 
 // karnataka-districts.json (public-domain district boundaries, 2011 census
 // administrative units -- see civictech-India/udit-001 GeoJSON datasets)
@@ -58,11 +63,6 @@ const GEOJSON_TO_DB_NAME: Record<string, string> = {
 
 const PIE_COLORS = ["#C79A4E", "#5DCAA5", "#9085e9", "#e66767", "#3987e5", "#F59E0B", "#77a6e0", "#c98fd6"];
 const OUTCOME_COLORS: Record<string, string> = { Solved: "#5DCAA5", Unsolved: "#E24B4A", Unclassified: "#77746e" };
-const RANK_STYLE = [
-  { ring: "ring-[#E4C590] border-[#E4C590]", chip: "bg-[#E4C590] text-stone-950" },
-  { ring: "ring-stone-300 border-stone-300", chip: "bg-stone-300 text-stone-950" },
-  { ring: "ring-[#C79A4E]/60 border-[#C79A4E]/60", chip: "bg-[#C79A4E]/60 text-stone-950" },
-];
 
 const StatCard: React.FC<{ icon: React.ElementType; label: string; value: React.ReactNode; sub?: React.ReactNode }> = ({
   icon: Icon,
@@ -92,16 +92,26 @@ export const DistrictDashboardScreen: React.FC = () => {
   const [detail, setDetail] = useState<DistrictDetail | null>(null);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   const drilldownRef = useRef<HTMLDivElement | null>(null);
-  // The GeoJSON polygon layer's hover/select highlighting is applied
-  // imperatively (layer.setStyle) inside stable Leaflet event handlers
-  // bound once in onEachFeature, not re-rendered by React on every hover --
-  // re-mounting all 30 district polygons on every mouse movement would be
-  // real, visible jank. These refs let those stable closures read the
-  // CURRENT selection/rows without needing to be recreated when it changes.
-  const selectedIdRef = useRef<number | null>(null);
-  useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
-  const rowsRef = useRef<DistrictSummaryRow[]>([]);
-  useEffect(() => { rowsRef.current = rows; }, [rows]);
+
+  // Plain SVG <path> elements per district (not a Leaflet layer), so hover/
+  // select highlighting is just normal React state + re-render -- cheap for
+  // 30 paths, no imperative layer manipulation needed.
+  const districtPaths = useMemo(() => {
+    const projection = geoMercator().fitSize(
+      [MAP_WIDTH, MAP_HEIGHT],
+      karnatakaDistrictsGeo as any
+    );
+    const pathGenerator = geoPath(projection);
+    return (karnatakaDistrictsGeo as any).features.map((feature: Feature<Geometry>) => {
+      const geoName = (feature.properties as any).district as string;
+      const dbName = GEOJSON_TO_DB_NAME[geoName] || geoName;
+      return {
+        dbName,
+        d: pathGenerator(feature) || "",
+        centroid: pathGenerator.centroid(feature),
+      };
+    });
+  }, []);
 
   // Fixed architecture: every number is a live query, no caching. One
   // grouped summary fetch per load/refresh -- never per-hover. Also refetch
@@ -163,16 +173,6 @@ export const DistrictDashboardScreen: React.FC = () => {
 
   const maxCases = Math.max(1, ...rows.map((r) => r.active_cases));
   const hovered = rows.find((r) => r.district_id === hoveredId);
-
-  // Rank the top 3 districts by active case load for a visible leaderboard
-  // treatment on the heat grid -- purely presentational, computed from the
-  // same live summary rows already fetched.
-  const rankById = useMemo(() => {
-    const sorted = [...rows].sort((a, b) => b.active_cases - a.active_cases).slice(0, 3);
-    const map = new Map<number, number>();
-    sorted.forEach((r, i) => map.set(r.district_id, i));
-    return map;
-  }, [rows]);
 
   const totalActiveCases = useMemo(() => rows.reduce((sum, r) => sum + r.active_cases, 0), [rows]);
   const flaggedSuspectCount = useMemo(() => rows.filter((r) => r.most_wanted).length, [rows]);
@@ -238,121 +238,72 @@ export const DistrictDashboardScreen: React.FC = () => {
             />
           </div>
 
-          {/* Real Karnataka district-boundary map -- actual polygon shapes
-              from public 2011-census administrative boundary data (this
-              project's own District table has no geometry at all, only
-              DistrictID/DistrictName/StateID), merged by name against live
-              case counts. Every color, count, and most-wanted label comes
-              from the live summary rows below, never from the boundary
-              file itself. Hover highlights a district and drives the same
-              floating stat card the grid uses; click drills down. Remounts
-              (via `key`) only when case-count data actually changes on
-              refresh -- hover/select highlighting is applied directly to
-              the Leaflet layer instead, so hovering across all 30 districts
-              never re-renders the polygon layer itself. */}
-          <div className="h-[420px] rounded-2xl overflow-hidden border border-stone-850 relative">
-            <MapContainer center={KARNATAKA_CENTER} zoom={7} style={{ height: "100%", width: "100%" }} scrollWheelZoom={true}>
-              <TileLayer
-                url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                subdomains="abcd"
-                attribution="&copy; OpenStreetMap &copy; CARTO"
-              />
-              {rows.length > 0 && (
-                <GeoJSON
-                  key={rows.map((r) => `${r.district_id}:${r.active_cases}`).join(",")}
-                  data={karnatakaDistrictsGeo as any}
-                  style={(feature: any) => {
-                    const dbName = GEOJSON_TO_DB_NAME[feature.properties.district] || feature.properties.district;
-                    const row = rows.find((r) => r.district === dbName);
-                    const intensity = row ? row.active_cases / maxCases : 0;
-                    const isSelected = !!row && row.district_id === selectedId;
-                    return {
-                      fillColor: isSelected ? "#E4C590" : "#C79A4E",
-                      fillOpacity: row ? 0.22 + intensity * 0.55 : 0.05,
-                      color: isSelected ? "#E4C590" : "#3a352e",
-                      weight: isSelected ? 2.5 : 1,
-                    };
-                  }}
-                  onEachFeature={(feature: any, layer: Layer) => {
-                    const dbName = GEOJSON_TO_DB_NAME[feature.properties.district] || feature.properties.district;
-                    const row = rowsRef.current.find((r) => r.district === dbName);
-                    if (!row) return;
-                    const anyLayer = layer as any;
-                    layer.on({
-                      mouseover: () => {
-                        setHoveredId(row.district_id);
-                        anyLayer.setStyle({ weight: 2.5, color: "#C79A4E" });
-                        anyLayer.bringToFront();
-                      },
-                      mouseout: () => {
-                        setHoveredId(null);
-                        const stillSelected = selectedIdRef.current === row.district_id;
-                        anyLayer.setStyle({ weight: stillSelected ? 2.5 : 1, color: stillSelected ? "#E4C590" : "#3a352e" });
-                      },
-                      click: () => handleSelectDistrict(row.district_id),
-                    });
-                  }}
-                />
-              )}
-            </MapContainer>
-            <div className="absolute bottom-2 left-2 z-[400] glass-panel border border-stone-800 rounded-lg px-2.5 py-1.5 text-[9px] font-mono text-stone-400 pointer-events-none">
-              {lang === "en" ? "Fill intensity = active case load. Hover or click a district." : "ಬಣ್ಣದ ತೀವ್ರತೆ = ಸಕ್ರಿಯ ಪ್ರಕರಣ ಹೊರೆ. ಜಿಲ್ಲೆಯ ಮೇಲೆ ಹೋವರ್/ಕ್ಲಿಕ್ ಮಾಡಿ."}
-            </div>
-          </div>
-
-          {/* Same district list as a compact, scannable grid below the map --
-              same data, same hover/click interactions, useful for districts
-              that sit close together on the map. */}
-          <div className="relative">
-            <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 gap-2.5">
-              {isLoadingSummary
-                ? Array.from({ length: 18 }).map((_, i) => (
-                    <div key={i} className="h-20 rounded-xl shimmer-bg border border-stone-900" />
-                  ))
-                : rows.map((r) => {
-                    const intensity = r.active_cases / maxCases;
-                    const isSelected = r.district_id === selectedId;
-                    const rank = rankById.get(r.district_id);
-                    return (
-                      <button
-                        key={r.district_id}
-                        onMouseEnter={() => setHoveredId(r.district_id)}
+          {/* Standalone Karnataka cutout map -- no basemap/tiles at all, just
+              the state's own district polygons rendered as plain SVG paths
+              (d3-geo computes the projection + path geometry; nothing here
+              is a Leaflet layer). Districts ARE the interactive surface now
+              -- the old grid is gone entirely, replaced by hover/click on
+              the polygons themselves. Shape data is external public
+              geographic data (see GEOJSON_TO_DB_NAME above); every color,
+              count, and most-wanted label is still a live query result. */}
+          <div className="rounded-2xl border border-stone-850 bg-stone-950/40 p-4 relative">
+            {isLoadingSummary ? (
+              <div className="h-[560px] flex items-center justify-center">
+                <div className="w-2/3 h-2/3 rounded-2xl shimmer-bg" />
+              </div>
+            ) : (
+              <svg
+                viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`}
+                className="w-full h-auto max-h-[620px] mx-auto"
+                role="img"
+                aria-label={lang === "en" ? "Interactive map of Karnataka districts" : "ಕರ್ನಾಟಕ ಜಿಲ್ಲೆಗಳ ಸಂವಾದಾತ್ಮಕ ನಕ್ಷೆ"}
+              >
+                {districtPaths.map(({ dbName, d, centroid }) => {
+                  const row = rows.find((r) => r.district === dbName);
+                  const intensity = row ? row.active_cases / maxCases : 0;
+                  const isSelected = !!row && row.district_id === selectedId;
+                  const isHovered = !!row && row.district_id === hoveredId;
+                  const active = isSelected || isHovered;
+                  return (
+                    <g key={dbName}>
+                      <path
+                        d={d}
+                        className="transition-all duration-200 cursor-pointer"
+                        fill={active ? "#E4C590" : "#C79A4E"}
+                        fillOpacity={row ? 0.32 + intensity * 0.45 : 0.08}
+                        stroke={active ? "#F2E4C4" : "#161412"}
+                        strokeWidth={active ? 2.5 : 1.25}
+                        style={active ? { filter: "drop-shadow(0 0 10px rgba(228,197,144,0.65))" } : undefined}
+                        onMouseEnter={() => row && setHoveredId(row.district_id)}
                         onMouseLeave={() => setHoveredId(null)}
-                        onClick={() => handleSelectDistrict(r.district_id)}
-                        className={`group relative h-20 rounded-xl border p-2.5 flex flex-col justify-between text-left overflow-hidden bg-stone-900/50 transition-all duration-200 cursor-pointer hover:-translate-y-0.5 hover:shadow-lg ${
-                          isSelected
-                            ? "border-[#C79A4E] ring-1 ring-[#C79A4E] shadow-[0_0_20px_rgba(199,154,78,0.18)]"
-                            : "border-stone-850 hover:border-stone-700"
-                        }`}
-                      >
-                        {/* Intensity encoded as a bottom heat bar, not a full
-                            solid fill -- keeps the grid legible as cards
-                            rather than a wall of flat color blocks. */}
-                        <div
-                          className="absolute inset-x-0 bottom-0 transition-all duration-300"
-                          style={{
-                            height: `${18 + intensity * 60}%`,
-                            background: "linear-gradient(to top, rgba(199,154,78,0.35), rgba(199,154,78,0))",
-                          }}
-                        />
-                        {rank !== undefined && (
-                          <span
-                            className={`absolute top-1.5 right-1.5 w-4 h-4 rounded-full text-[8px] font-black flex items-center justify-center font-mono ${RANK_STYLE[rank].chip}`}
-                          >
-                            {rank + 1}
-                          </span>
-                        )}
-                        <span className="relative text-[9.5px] font-bold text-stone-300 group-hover:text-stone-100 truncate leading-tight pr-4">
-                          {r.district}
-                        </span>
-                        <span className="relative text-base font-black text-[#E4C590] font-mono">{r.active_cases}</span>
-                      </button>
-                    );
-                  })}
+                        onClick={() => row && handleSelectDistrict(row.district_id)}
+                      />
+                      {row && (
+                        <text
+                          x={centroid[0]}
+                          y={centroid[1]}
+                          textAnchor="middle"
+                          className="pointer-events-none select-none transition-all duration-200"
+                          fontSize={active ? 11 : 8.5}
+                          fontWeight={active ? 800 : 600}
+                          fill={active ? "#211F1D" : "rgba(33,31,29,0.55)"}
+                          style={{ fontFamily: "'JetBrains Mono', monospace" }}
+                        >
+                          {row.district.toUpperCase()}
+                        </text>
+                      )}
+                    </g>
+                  );
+                })}
+              </svg>
+            )}
+
+            <div className="absolute bottom-3 left-4 text-[9px] font-mono text-stone-500 pointer-events-none">
+              {lang === "en" ? "Fill intensity = active case load. Hover to preview, click for detailed metrics." : "ಬಣ್ಣದ ತೀವ್ರತೆ = ಸಕ್ರಿಯ ಪ್ರಕರಣ ಹೊರೆ. ಪೂರ್ವವೀಕ್ಷಣೆಗೆ ಹೋವರ್ ಮಾಡಿ, ವಿವರಗಳಿಗೆ ಕ್ಲಿಕ್ ಮಾಡಿ."}
             </div>
 
             {hovered && (
-              <div className="absolute top-0 right-0 z-10 glass-panel border border-[#C79A4E]/30 rounded-xl p-3 w-56 shadow-2xl pointer-events-none">
+              <div className="absolute top-4 right-4 z-10 glass-panel border border-[#C79A4E]/30 rounded-xl p-3 w-56 shadow-2xl pointer-events-none animate-fade-in">
                 <p className="text-xs font-bold text-stone-100">{hovered.district}</p>
                 <p className="text-[10px] text-stone-400 font-mono mt-1">
                   {lang === "en" ? "Active cases" : "ಸಕ್ರಿಯ ಪ್ರಕರಣಗಳು"}: <span className="text-[#C79A4E] font-bold">{hovered.active_cases}</span>
