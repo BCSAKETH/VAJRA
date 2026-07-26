@@ -112,7 +112,7 @@ class CatalystQwen:
             # cascading a single slow response into a full "[Translation
             # temporarily unavailable]"/no-tool-selected failure instead of a
             # real, if delayed, answer.
-            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=300)
+            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
             if res.status_code == 200:
                 data = res.json()
                 text = data.get("response") or ""
@@ -182,7 +182,7 @@ class CatalystQwen:
             # cascading a single slow response into a full "[Translation
             # temporarily unavailable]"/no-tool-selected failure instead of a
             # real, if delayed, answer.
-            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=300)
+            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
             if res.status_code == 200:
                 data = res.json()
                 translated = (data.get("response") or "").strip()
@@ -263,7 +263,7 @@ class CatalystQwen:
             # cascading a single slow response into a full "[Translation
             # temporarily unavailable]"/no-tool-selected failure instead of a
             # real, if delayed, answer.
-            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=300)
+            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
             if res.status_code == 200:
                 data = res.json()
                 raw = (data.get("response") or "").strip()

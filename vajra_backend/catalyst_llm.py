@@ -254,7 +254,7 @@ class CatalystLLM:
                     time.sleep(delay)
                 try:
                     logger.info(f"Posting to Catalyst LLM Serving endpoint (attempt {attempt + 1}): {self.endpoint_url}")
-                    res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=300)
+                    res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
 
                     if res.status_code == 200:
                         data = res.json()
