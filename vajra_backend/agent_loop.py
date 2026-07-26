@@ -245,6 +245,17 @@ class VajraAgentLoop:
             }
         },
         {
+            "name": "generate_full_report",
+            "description": "Generate a COMPREHENSIVE investigative dossier on a named suspect in one response, combining conviction risk score + SHAP factors, Modus Operandi behavioral match, criminal/syndicate network, and repeat-offense history together. Use this (instead of a single narrower tool) whenever the officer asks for a 'full report', 'complete profile', 'everything about', 'comprehensive dossier', 'detailed profile', or similar composite request about one suspect -- a single narrow tool only covers one facet and under-answers a composite ask.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "suspect_name": {"type": "string", "description": "The name of the suspect offender"}
+                },
+                "required": ["suspect_name"]
+            }
+        },
+        {
             "name": "get_case_types_distribution",
             "description": "Retrieve the distribution of cases by crime category/type (e.g. THEFT, CYBERCRIME, MURDER) across the database. Use for questions like 'pie chart of case types' or 'breakdown of cases by category' or 'distribution of crime types'.",
             "parameters": {
@@ -1242,10 +1253,36 @@ class VajraAgentLoop:
                 except Exception as ex:
                     logger.warning(f"Forecast results read error: {ex}")
             if not forecast_results:
-                forecast_results = [{"district": district, "crime_type": crime_type, "period": "Next 30 Days", "predicted": 12.5, "historical_avg": 10.0, "confidence": 0.85}]
+                # No precomputed row for this exact district/crime_type combo
+                # -- previously fell back to a hardcoded fake number (12.5)
+                # presented as if it were a real prediction. That's exactly
+                # the kind of fabrication the platform must never do.
+                # Instead derive an honest baseline projection from the SAME
+                # real month-by-month COUNT() data get_crime_trends uses:
+                # one-step-ahead linear extrapolation from the real recent
+                # average and slope, clearly labeled as a baseline estimate
+                # rather than a trained time-series model's output.
+                trend = self._compute_crime_trends(district, crime_type, 6)
+                avg = trend["data"]["avg_per_month"]
+                pct = trend["data"]["trend"]["pct_per_month"]
+                projected = max(0.0, round(avg * (1 + pct / 100), 1))
+                forecast_results = [{
+                    "district": district, "crime_type": crime_type, "period": "Next 30 Days",
+                    "predicted": projected, "historical_avg": avg, "confidence": None,
+                    "method": "baseline_trend_extrapolation",
+                }]
+                text_result = (
+                    f"No precomputed seasonal forecast exists for {crime_type} in {district}. Derived a baseline "
+                    f"projection instead from real recent data: {trend['data']['months']}-month average is {avg}/month, "
+                    f"trending {trend['data']['trend']['direction']} ({pct:+.1f}%/month) -- projecting ~{projected} "
+                    f"incidents next month. This is a trend-extrapolation estimate, not a trained time-series model; "
+                    f"treat as directional guidance, not a precise probability."
+                )
+                citations.append({"type": "Baseline Trend Extrapolation", "id": f"{district}-{crime_type}", "details": "Derived from real CaseMaster monthly COUNT aggregation (see get_crime_trends), not fabricated"})
+            else:
+                text_result = f"Early Warning Forecast: Projecting {forecast_results[0]['predicted']} incidents for {crime_type} in {district} over the next month (Baseline average: {forecast_results[0]['historical_avg']})."
+                citations.append({"type": "Seasonal Time-Series Predictor", "id": f"{district}-{crime_type}", "details": "Forecasting results table"})
             data = {"forecast": forecast_results}
-            text_result = f"Early Warning Forecast: Projecting {forecast_results[0]['predicted']} incidents for {crime_type} in {district} over the next month (Baseline average: {forecast_results[0]['historical_avg']})."
-            citations.append({"type": "Seasonal Time-Series Predictor", "id": f"{district}-{crime_type}", "details": "Forecasting results table"})
             self._write_audit_log(employee_id, "Crime Trend Forecast", f"{district}-{crime_type}", f"Forecast {crime_type} in {district}", text_result, session_id)
 
         # 9. get_offender_risk
@@ -1821,6 +1858,65 @@ class VajraAgentLoop:
                 employee_id, "Case Types Distribution", district or "All Districts",
                 f"Case distribution: district={district or 'all'}",
                 text_result, session_id
+            )
+
+        # 20. generate_full_report -- a composite dossier. The agent loop only
+        # ever calls ONE tool per user turn (offering the full tool catalog
+        # on iteration 2+ was confirmed live to time out under load, see the
+        # iteration-1-only comment above), so a request that genuinely needs
+        # several facets at once ("full report on suspect X") previously
+        # could only ever get ONE narrow tool's worth of answer no matter how
+        # the LLM tried to route it. Rather than let the LLM chain multiple
+        # slow tool-selection round-trips, this runs the SAME already-proven
+        # sub-tool implementations directly in-process (cheap, no extra LLM
+        # calls, no extra latency beyond real DB/model work) and merges them
+        # into one genuinely comprehensive response.
+        elif tool_name == "generate_full_report":
+            suspect = params.get("suspect_name", "")
+            risk_res = self._execute_tool("get_offender_risk", {"suspect_name": suspect}, employee_id, session_id, user_unit_id)
+            mo_res = self._execute_tool("get_mo_profile", {"suspect_name": suspect}, employee_id, session_id, user_unit_id)
+            network_res = self._execute_tool("query_graph_network", {"suspect_name": suspect}, employee_id, session_id, user_unit_id)
+            repeat_res = self._execute_tool("get_repeat_offenders", {}, employee_id, session_id, user_unit_id)
+
+            # Anchor the inline/expanded widget on the risk gauge + SHAP chart
+            # (the richest already-wired visual) and fold the other facets in
+            # as extra data keys -- InlineWidget/ExpandedOverlay's "risk"
+            # renderer only reads the fields it knows about, so additive
+            # extra keys are harmless if unused, and available for future
+            # widget richness without another round of plumbing.
+            response_type = "risk"
+            data = dict(risk_res.get("data") or {})
+            data["mo_profile"] = mo_res.get("data")
+            data["network"] = network_res.get("data")
+            data["repeat_offender_context"] = repeat_res.get("data")
+
+            network_entities = len((network_res.get("data") or {}).get("nodes") or [])
+            repeat_match = next(
+                (o for o in ((repeat_res.get("data") or {}).get("offenders") or [])
+                 if suspect and suspect.lower() in (o.get("suspect") or "").lower()),
+                None
+            )
+            repeat_line = (
+                f"Flagged as a repeat offender with {repeat_match['case_count']} separate cases."
+                if repeat_match else "No standing repeat-offender alert for this name."
+            )
+
+            text_result = (
+                f"COMPREHENSIVE DOSSIER -- {suspect}\n\n"
+                f"1. Conviction risk: {risk_res.get('text_result', 'Not available.')}\n\n"
+                f"2. Modus Operandi: {mo_res.get('text_result', 'Not available.')}\n\n"
+                f"3. Criminal network: {network_res.get('text_result') or f'{network_entities} connected entities traced.'}\n\n"
+                f"4. Repeat-offense history: {repeat_line}"
+            )
+            citations = (
+                (risk_res.get("citations") or [])
+                + (mo_res.get("citations") or [])
+                + (network_res.get("citations") or [])
+                + (repeat_res.get("citations") or [])
+            )
+            self._write_audit_log(
+                employee_id, "Composite Full Report", suspect,
+                f"Full report requested for {suspect}", text_result, session_id
             )
 
         return {
