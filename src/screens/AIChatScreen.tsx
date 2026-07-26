@@ -4,6 +4,7 @@ import { API_BASE } from "../config";
 import { ChatBubble } from "../components/ChatBubble";
 import { ChatHistoryPanel } from "../components/ChatHistoryPanel";
 import { ChatInput } from "../components/ChatInput";
+import { WatermarkOverlay } from "../components/WatermarkOverlay";
 import { Download, Sparkles, X, Users } from "lucide-react";
 
 // ExpandedOverlay pulls in Leaflet + Recharts directly (~250KB+ of the main
@@ -428,6 +429,13 @@ export const AIChatScreen: React.FC = () => {
           lang: lang,
           session_id: sendSessionId,
           client_msg_id: clientMsgId,
+          // Previously never sent -- uploadedAttachmentRefs only fed the
+          // LOCAL optimistic bubble (userMsg above), so the backend had
+          // nothing to persist and the attachment reference vanished the
+          // moment the session reloaded from history. The backend already
+          // accepts and stores this field (ChatRequest.attachments); it was
+          // just never actually populated from here.
+          attachments: uploadedAttachmentRefs.length > 0 ? uploadedAttachmentRefs : undefined,
         }),
       });
 
@@ -757,6 +765,10 @@ export const AIChatScreen: React.FC = () => {
       />
 
       <div className="flex-1 flex flex-col relative overflow-hidden">
+      {/* Security watermark -- already used on Spatial/Supervisor, missing
+          here despite chat being the screen most likely to display raw case
+          facts, suspect names, and attachment content. */}
+      <WatermarkOverlay />
       {/* Header export action button */}
       <div className="absolute top-4 right-4 z-20">
         {chatMessages.length > 0 && (

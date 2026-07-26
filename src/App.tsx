@@ -31,7 +31,7 @@ const ScreenLoadingFallback: React.FC = () => (
 );
 
 const AppContent: React.FC = () => {
-  const { currentScreen, isAuthenticated } = useApp();
+  const { currentScreen, isAuthenticated, roleTier, lang } = useApp();
 
   if (!isAuthenticated || currentScreen === "login") {
     return (
@@ -65,6 +65,29 @@ const AppContent: React.FC = () => {
         return <ReportsScreen />;
       case "supervisor":
       case "audit":
+        // The sidebar nav item is already hidden for non-supervisors, but
+        // that's a UI convenience, not access control -- currentScreen is
+        // just localStorage state (vajra_screen) an officer could set
+        // directly. The backend now independently 403s the underlying
+        // audit-log/consistency-flag reads for non-supervisors regardless,
+        // so this is defense in depth: don't even render the screen shell
+        // for a role that can't see its data.
+        if (roleTier !== "supervisor") {
+          return (
+            <div className="h-full flex items-center justify-center p-6">
+              <div className="max-w-sm text-center space-y-2">
+                <p className="text-sm font-bold text-rose-400">
+                  {lang === "en" ? "Access Restricted" : "ಪ್ರವೇಶ ನಿರ್ಬಂಧಿಸಲಾಗಿದೆ"}
+                </p>
+                <p className="text-xs text-stone-500">
+                  {lang === "en"
+                    ? "The Supervisor Dashboard requires Supervisor-tier clearance (PI and above)."
+                    : "ಸೂಪರ್‌ವೈಸರ್ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್‌ಗೆ ಸೂಪರ್‌ವೈಸರ್-ಹಂತದ ಅನುಮತಿ ಅಗತ್ಯವಿದೆ (PI ಮತ್ತು ಮೇಲ್ಪಟ್ಟು)."}
+                </p>
+              </div>
+            </div>
+          );
+        }
         return <SupervisorDashboardScreen />;
       case "settings":
         return <SettingsScreen />;

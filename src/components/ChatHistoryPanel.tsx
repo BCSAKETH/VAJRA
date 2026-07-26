@@ -122,7 +122,16 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
   };
 
   return (
-    <div className="w-60 shrink-0 border-r border-stone-850 bg-stone-950/30 flex flex-col h-full overflow-y-auto">
+    // overflow-hidden (not overflow-y-auto) -- the same fix as the chat
+    // composer's own MainLayout <main>: this whole panel previously scrolled
+    // as ONE unit (NEW CHAT + pinned Investigations + the flat sessions
+    // list, which ALSO has its own overflow-y-auto below), so once the
+    // combined content exceeded the viewport, scrolling down to reach a
+    // past chat pushed NEW CHAT itself out of view at the top -- confirmed
+    // live, this is exactly the "I need to scroll up to get to chat"
+    // complaint. Only the flat sessions list scrolls now; NEW CHAT/NEW
+    // INVESTIGATION/pinned investigations stay fixed, Claude/ChatGPT-style.
+    <div className="w-60 shrink-0 border-r border-stone-850 bg-stone-950/30 flex flex-col h-full overflow-hidden">
       {/* Click-anywhere backdrop to close an open three-dot menu -- simpler
           and more robust than outside-click ref tracking per row. */}
       {openMenuId && (

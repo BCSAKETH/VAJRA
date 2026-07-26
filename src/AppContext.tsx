@@ -358,6 +358,31 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     }
   };
 
+  // Global 401 handling. Session tokens expire after 1 hour; only the chat
+  // send path ever checked for a 401 and forced re-login -- every other
+  // fetch (alerts polling, chat history, investigations, district summary,
+  // cowork invitations, ...) just logged the failure to console and kept
+  // silently retrying forever. Confirmed live: leave a tab open past token
+  // expiry and the whole app goes quietly dark -- every panel shows stale
+  // or empty data with no visible explanation, only console 401s. A single
+  // fetch() wrapper here catches every API 401 in one place instead of
+  // retrofitting every existing call site (and covers future ones too).
+  useEffect(() => {
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = async (...args: Parameters<typeof fetch>) => {
+      const response = await originalFetch(...args);
+      if (response.status === 401) {
+        const url = typeof args[0] === "string" ? args[0] : (args[0] as Request)?.url || "";
+        if (url.startsWith(API_BASE)) {
+          setIsAuthenticated(false);
+        }
+      }
+      return response;
+    };
+    return () => { window.fetch = originalFetch; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const setBadgeNumber = (badge: string | null) => {
     setBadgeNumberState(badge);
   };
