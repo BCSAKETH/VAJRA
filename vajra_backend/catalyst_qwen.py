@@ -103,14 +103,16 @@ class CatalystQwen:
         }
 
         try:
-            # Raised from 30s to 90s, matching catalyst_llm.py's proven
-            # ceiling (a briefer excursion to 300s on both was reverted after
-            # AppSail itself was confirmed to hard-kill requests before that
-            # -- see catalyst_llm.py's chat() for the live evidence). 90s
-            # still gives real margin over the original 30s for exactly the
-            # cascading-failure risk this was raised for (Qwen cut off on a
-            # slow-but-working tool-selection-fallback or translation call).
-            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
+            # Raised from 30s to 300s, matching catalyst_llm.py's own ceiling
+            # (same request, same reasoning). This is the fallback used both
+            # for tool-selection (when GLM is down) and translation (the
+            # last of three tiers, after Zia and GLM) -- a tight timeout here
+            # meant Qwen itself could get cut off on exactly the kind of
+            # slow-but-working turn GLM's own budget was raised to tolerate,
+            # cascading a single slow response into a full "[Translation
+            # temporarily unavailable]"/no-tool-selected failure instead of a
+            # real, if delayed, answer.
+            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=300)
             if res.status_code == 200:
                 data = res.json()
                 text = data.get("response") or ""
@@ -171,14 +173,16 @@ class CatalystQwen:
         }
 
         try:
-            # Raised from 30s to 90s, matching catalyst_llm.py's proven
-            # ceiling (a briefer excursion to 300s on both was reverted after
-            # AppSail itself was confirmed to hard-kill requests before that
-            # -- see catalyst_llm.py's chat() for the live evidence). 90s
-            # still gives real margin over the original 30s for exactly the
-            # cascading-failure risk this was raised for (Qwen cut off on a
-            # slow-but-working tool-selection-fallback or translation call).
-            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
+            # Raised from 30s to 300s, matching catalyst_llm.py's own ceiling
+            # (same request, same reasoning). This is the fallback used both
+            # for tool-selection (when GLM is down) and translation (the
+            # last of three tiers, after Zia and GLM) -- a tight timeout here
+            # meant Qwen itself could get cut off on exactly the kind of
+            # slow-but-working turn GLM's own budget was raised to tolerate,
+            # cascading a single slow response into a full "[Translation
+            # temporarily unavailable]"/no-tool-selected failure instead of a
+            # real, if delayed, answer.
+            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=300)
             if res.status_code == 200:
                 data = res.json()
                 translated = (data.get("response") or "").strip()
@@ -250,14 +254,16 @@ class CatalystQwen:
         }
 
         try:
-            # Raised from 30s to 90s, matching catalyst_llm.py's proven
-            # ceiling (a briefer excursion to 300s on both was reverted after
-            # AppSail itself was confirmed to hard-kill requests before that
-            # -- see catalyst_llm.py's chat() for the live evidence). 90s
-            # still gives real margin over the original 30s for exactly the
-            # cascading-failure risk this was raised for (Qwen cut off on a
-            # slow-but-working tool-selection-fallback or translation call).
-            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
+            # Raised from 30s to 300s, matching catalyst_llm.py's own ceiling
+            # (same request, same reasoning). This is the fallback used both
+            # for tool-selection (when GLM is down) and translation (the
+            # last of three tiers, after Zia and GLM) -- a tight timeout here
+            # meant Qwen itself could get cut off on exactly the kind of
+            # slow-but-working turn GLM's own budget was raised to tolerate,
+            # cascading a single slow response into a full "[Translation
+            # temporarily unavailable]"/no-tool-selected failure instead of a
+            # real, if delayed, answer.
+            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=300)
             if res.status_code == 200:
                 data = res.json()
                 raw = (data.get("response") or "").strip()

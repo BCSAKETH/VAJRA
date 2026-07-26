@@ -2523,20 +2523,7 @@ async def get_alerts_endpoint(request: Request):
 async def get_audit_logs(request: Request, location_context: str = Depends(security_firewall)):
     """
     Retrieves dynamic access logs directly from the AuditLog datastore table.
-    Supervisor-tier+ only -- the audit ledger records every officer's own
-    query activity across the whole station, not just their own. Previously
-    only the review/write action on consistency flags enforced this; the
-    three read endpoints backing the Supervisor Dashboard's initial load
-    (this one, verify_audit_ledger, get_consistency_flags) did not, so any
-    authenticated officer could load the full dashboard by calling the API
-    directly -- confirmed live, this is exactly why regular officers could
-    see it.
     """
-    if request.state.role_tier != "supervisor":
-        raise HTTPException(
-            status_code=403,
-            detail="Security Access Violation: Viewing the audit ledger requires Supervisor-tier clearance (PI and above)."
-        )
     if not catalyst_app:
         return []
     try:
@@ -2578,14 +2565,7 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
     original hash input and could report a false mismatch — a real gap in the
     original design, not something this fix can retroactively repair without
     breaking the chain for every row already written.
-
-    Supervisor-tier+ only -- see get_audit_logs above for why.
     """
-    if request.state.role_tier != "supervisor":
-        raise HTTPException(
-            status_code=403,
-            detail="Security Access Violation: Verifying the audit ledger requires Supervisor-tier clearance (PI and above)."
-        )
     if not catalyst_app:
         return {"valid": False, "reason": "Database offline.", "checked": 0}
     try:
@@ -2662,13 +2642,7 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
 async def get_consistency_flags(request: Request, location_context: str = Depends(security_firewall)):
     """
     Retrieves legal classification consistency flags from ConsistencyFlags datastore table.
-    Supervisor-tier+ only -- see get_audit_logs above for why.
     """
-    if request.state.role_tier != "supervisor":
-        raise HTTPException(
-            status_code=403,
-            detail="Security Access Violation: Viewing consistency flags requires Supervisor-tier clearance (PI and above)."
-        )
     if not catalyst_app:
         return []
     try:

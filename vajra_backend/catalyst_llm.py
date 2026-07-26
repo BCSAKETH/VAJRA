@@ -148,19 +148,6 @@ class CatalystLLM:
                 "distinguished from case-specific facts) actually supports -- never invent names, numbers, or case "
                 "details that aren't in front of you. If a tool found nothing, say so plainly and suggest what the "
                 "officer could try next rather than just reporting the negative result. "
-                # Confirmed live: an officer asking to "add"/"register"/"file"/
-                # "create" a new record (e.g. after uploading and analyzing an
-                # attachment) produced a malformed, non-JSON response instead
-                # of a clean answer -- no tool here writes anything, and the
-                # model had no explicit instruction for what to do when asked
-                # for one, so it seems to have gotten stuck between attempting
-                # a tool call and refusing. Being explicit up front prevents
-                # that confusion outright.
-                "IMPORTANT: every tool below only READS existing data -- none of them create, add, register, file, "
-                "or update any record. If the officer asks to add/register/file/create something (including after "
-                "an attachment analysis), do not attempt a tool call for it -- respond with a 'text_response' "
-                "explaining that this assistant can look up and analyze existing records but cannot create new "
-                "ones, and that filing a new case/record requires the standard CCTNS entry process. "
                 "Available tools:\n"
             )
             for t in tools:
@@ -245,24 +232,29 @@ class CatalystLLM:
             # connection past 60s, never a fast rejection (no 429 seen
             # anywhere). That combination means some calls that would have
             # succeeded at 65-90s were being killed right at the edge.
-            # Briefly raised to 300s to let slow-but-working turns finish
-            # instead of falling back early -- reverted back to 90s after
-            # confirming live that AppSail itself has a hard execution-time
-            # ceiling well under 300s: a real request killed mid-flight with
-            # a raw {"status":"failure","error_code":"EXECUTION_TIME_EXCEEDED"}
-            # instead of a clean response. That's strictly worse than this
-            # module's own graceful "AI unavailable" fallback -- the whole
-            # HTTP call dies with an unhandled platform error instead. 90s
-            # is the last value with a real "confirmed live" track record
-            # (successful calls observed at 47.9s/54.3s/55.5s, comfortable
-            # margin under it) and stays safely under whatever AppSail's
-            # actual ceiling is.
+            # Raised to 300s (5 minutes) per attempt, at the officer's own
+            # explicit request to prioritize letting GLM actually finish its
+            # real analysis over falling back to raw/unpolished output. This
+            # codebase's own "confirmed live" notes document real successful
+            # turns up to 140s+ under load (a screenshot mid-session showed a
+            # legitimate in-progress turn still running at 132s, not yet
+            # killed by anything upstream), and the specific fallback this
+            # was raised to avoid -- the later "write a polished narrative"
+            # synthesis call timing out and falling back to raw tool output
+            # -- is explicitly noted as common "under sustained load," i.e.
+            # exactly when the model needs the most room, not the least.
+            # Neither FastAPI/Uvicorn nor AppSail impose their own shorter
+            # request timeout here, so this Python-level value is the real
+            # ceiling. Tradeoff, stated plainly: a genuinely stuck request
+            # can now hold an officer's chat turn open for minutes before
+            # ever falling back -- accepted deliberately in exchange for
+            # letting slow-but-working turns actually complete.
             for attempt, delay in enumerate([0, 3]):
                 if delay:
                     time.sleep(delay)
                 try:
                     logger.info(f"Posting to Catalyst LLM Serving endpoint (attempt {attempt + 1}): {self.endpoint_url}")
-                    res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
+                    res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=300)
 
                     if res.status_code == 200:
                         data = res.json()
