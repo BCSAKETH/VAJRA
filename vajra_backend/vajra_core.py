@@ -806,7 +806,7 @@ class VajraSemanticMemory:
                 # Fetch all units first to avoid N+1 query overhead
                 unit_map = {}
                 try:
-                    all_units = catalyst_app.zcql().execute_query("SELECT UnitID, UnitName FROM Unit")
+                    all_units = catalyst_app.zql().execute_query("SELECT UnitID, UnitName FROM Unit")
                     for ur in all_units:
                         u_data = ur.get("Unit", {})
                         u_id = u_data.get("UnitID")
@@ -822,7 +822,7 @@ class VajraSemanticMemory:
                     FROM CaseMaster 
                     LIMIT 250
                 """
-                res = catalyst_app.zcql().execute_query(zql_query)
+                res = catalyst_app.zql().execute_query(zql_query)
                 if res:
                     for r in res:
                         cm_data = r.get("CaseMaster", {})
