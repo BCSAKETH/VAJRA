@@ -1,11 +1,18 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback, Suspense, lazy } from "react";
 import { useApp, ChatMessage } from "../AppContext";
 import { API_BASE } from "../config";
 import { ChatBubble } from "../components/ChatBubble";
-import { ExpandedOverlay } from "../components/ExpandedOverlay";
 import { ChatHistoryPanel } from "../components/ChatHistoryPanel";
 import { ChatInput } from "../components/ChatInput";
 import { Download, Sparkles, X, Users } from "lucide-react";
+
+// ExpandedOverlay pulls in Leaflet + Recharts directly (~250KB+ of the main
+// bundle) but only ever renders when a widget is actually expanded -- most
+// chat turns never touch it. Deferring the import means Login/AIChat's
+// first load no longer pays for a map/charting library it may never use.
+const ExpandedOverlay = lazy(() =>
+  import("../components/ExpandedOverlay").then((m) => ({ default: m.ExpandedOverlay }))
+);
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 3;
@@ -40,6 +47,14 @@ export const AIChatScreen: React.FC = () => {
   // after the officer has already clicked a different session (or "new
   // chat") while the first request was still in flight.
   const selectSessionRequestRef = useRef(0);
+  // In-memory cache of already-loaded session transcripts, keyed by
+  // session_id. Re-opening a session already visited this browser session
+  // (a common workflow -- comparing two past cases back and forth) was
+  // re-fetching the full message history over the network on every single
+  // click, even the second time. Populated on navigate-away with whatever
+  // is currently on screen (not just the server fetch result), so it always
+  // reflects any messages sent live during that visit -- never goes stale.
+  const sessionMessagesCacheRef = useRef<Map<string, ChatMessage[]>>(new Map());
   const [isRecording, setIsRecording] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState("");
   const [voiceAvailable, setVoiceAvailable] = useState(true);
@@ -350,7 +365,14 @@ export const AIChatScreen: React.FC = () => {
           ? "I am unable to reach the VAJRA server. Please verify that your network connection is active and that backend services are running."
           : "ವಜ್ರ ಸರ್ವರ್ ತಲುಪಲು ಸಾಧ್ಯವಾಗುತ್ತಿಲ್ಲ. ದಯವಿಟ್ಟು ನಿಮ್ಮ ನೆಟ್‌ವರ್ಕ್ ಸಂಪರ್ಕ ಸಕ್ರಿಯವಾಗಿದೆಯೇ ಮತ್ತು ಬ್ಯಾಕೆಂಡ್ ಸೇವೆಗಳು ಚಾಲನೆಯಲ್ಲಿವೆಯೇ ಎಂದು ಪರಿಶೀಲಿಸಿ.",
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        isSimulated: false,
+        // A network/server failure previously rendered as isSimulated:false,
+        // which gives it the exact same bubble styling as a real successful
+        // answer -- an officer had no visual signal that the system failed
+        // to respond at all versus actually answering. Reuse the existing
+        // amber "AI Unavailable" treatment (already correct for this case)
+        // instead of inventing a new state.
+        isSimulated: true,
+        simulatedReason: lang === "en" ? "connection_failed" : "ಸಂಪರ್ಕ_ವಿಫಲವಾಗಿದೆ",
       };
       setChatMessages((prev) => [...prev, errorMsg]);
     } finally {
@@ -366,6 +388,12 @@ export const AIChatScreen: React.FC = () => {
     // after this and clobber the fresh blank thread.
     selectSessionRequestRef.current++;
     setLoadingSessionId(null);
+    // Snapshot the outgoing session into the cache first, same as
+    // handleSelectSession, so a later click back into it via the sidebar
+    // hits the instant cache path instead of re-fetching.
+    if (activeSessionId) {
+      sessionMessagesCacheRef.current.set(activeSessionId, chatMessages);
+    }
     setChatMessages([]);
     setActiveSessionId(null);
     setChatMode("chat");
@@ -437,6 +465,24 @@ export const AIChatScreen: React.FC = () => {
   // response if a newer session-select/new-chat has since superseded it.
   const handleSelectSession = async (sessionId: string) => {
     if (sessionId === activeSessionId && !loadingSessionId) return;
+
+    // Snapshot whatever's currently on screen into the cache under the
+    // session we're navigating AWAY from, so any messages sent live during
+    // this visit are preserved for next time -- not just what the server
+    // returned on the original fetch.
+    if (activeSessionId) {
+      sessionMessagesCacheRef.current.set(activeSessionId, chatMessages);
+    }
+
+    const cached = sessionMessagesCacheRef.current.get(sessionId);
+    if (cached) {
+      selectSessionRequestRef.current++; // invalidate any in-flight fetch
+      setLoadingSessionId(null);
+      setChatMessages(cached);
+      setActiveSessionId(sessionId);
+      return;
+    }
+
     const requestId = ++selectSessionRequestRef.current;
     setLoadingSessionId(sessionId);
     try {
@@ -463,6 +509,7 @@ export const AIChatScreen: React.FC = () => {
         citations: m.citations,
         attachments: m.data?.attachments,
       }));
+      sessionMessagesCacheRef.current.set(sessionId, loaded);
       setChatMessages(loaded);
       setActiveSessionId(sessionId);
     } catch (err) {
@@ -748,11 +795,19 @@ export const AIChatScreen: React.FC = () => {
 
       {/* Full screen widgets expansion backdrop */}
       {expandedWidget && (
-        <ExpandedOverlay
-          type={expandedWidget.type}
-          data={expandedWidget.data}
-          onClose={() => setExpandedWidget(null)}
-        />
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/85 backdrop-blur-sm">
+              <div className="w-8 h-8 border-2 border-stone-800 border-t-[#C79A4E] rounded-full animate-spin" />
+            </div>
+          }
+        >
+          <ExpandedOverlay
+            type={expandedWidget.type}
+            data={expandedWidget.data}
+            onClose={() => setExpandedWidget(null)}
+          />
+        </Suspense>
       )}
       </div>
     </div>
