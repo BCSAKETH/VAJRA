@@ -1407,7 +1407,7 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
             "sender": sender,
             "text": text[:2000],
             "response_type": response_type,
-            "data_json": json.dumps(data or {})[:4000],
+            "data_json": json.dumps(data or {})[:10000],
             "citations_json": json.dumps(citations or [])[:2000],
             "sent_at": datetime.utcnow().isoformat()
         }
@@ -2379,6 +2379,34 @@ def _downscale_image(image_bytes: bytes) -> bytes:
     return buf.getvalue()
 
 
+def _make_thumbnail_data_uri(image_bytes: bytes, max_dim: int = 220, quality: int = 45, max_chars: int = 9000) -> Optional[str]:
+    """
+    ChatMessage.data_json is capped at 10,000 chars server-side (confirmed
+    live -- Catalyst silently truncates past that, it doesn't error), which
+    is where attachment refs get persisted for chat-history reload. A JPEG
+    downscaled only to MAX_IMAGE_DIMENSION (1568px, sized for Qwen's actual
+    analysis) is 50-200KB -- 5-20x too big to embed as base64 here. This
+    produces a second, much smaller, low-quality thumbnail specifically for
+    inline storage; degrading quality progressively until the base64 output
+    actually fits, rather than emitting a silently-truncated (and therefore
+    corrupt/undecodable) data URI.
+    """
+    from PIL import Image
+    import io
+    import base64
+    for attempt_dim, attempt_q in [(max_dim, quality), (160, 35), (120, 25), (90, 20)]:
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        ratio = attempt_dim / max(img.size)
+        if ratio < 1:
+            img = img.resize((max(1, int(img.size[0] * ratio)), max(1, int(img.size[1] * ratio))), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=attempt_q)
+        b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+        if len(b64) <= max_chars:
+            return f"data:image/jpeg;base64,{b64}"
+    return None
+
+
 def _rasterize_pdf(pdf_bytes: bytes, max_pages: int = 3) -> List[bytes]:
     """Renders the first max_pages pages of a PDF to JPEG bytes."""
     import fitz
@@ -2417,6 +2445,11 @@ async def upload_chat_attachments(
     aggregate_size = 0
     processed_images: List[bytes] = []
     attachment_refs: List[Dict[str, Any]] = []
+    # ChatMessage.data_json is capped at 10,000 chars total (see
+    # _make_thumbnail_data_uri) and up to MAX_ATTACHMENTS_PER_MESSAGE share
+    # that one budget -- split it evenly per file, minus headroom for the
+    # surrounding JSON structure (field names/punctuation per entry).
+    per_image_char_budget = max(800, (9000 // max(1, min(len(files), MAX_ATTACHMENTS_PER_MESSAGE))) - 200)
 
     for f in files:
         content = await f.read()
@@ -2450,15 +2483,29 @@ async def upload_chat_attachments(
             stratus_key = None
             for idx, page_img in enumerate(downscaled_pages):
                 stratus_key = store_attachment(page_img, "jpg", "image/jpeg") or stratus_key
+            thumb_bytes = downscaled_pages[0] if downscaled_pages else None
         else:
             downscaled = _downscale_image(content)
             processed_images.append(downscaled)
             stratus_key = store_attachment(downscaled, "jpg", "image/jpeg")
+            thumb_bytes = downscaled
+
+        # Stratus/File Store are currently unreachable from this backend (SDK
+        # gap / wrong-host bug -- store_attachment always returns None), so
+        # stratus_id alone would leave every attachment showing a link with
+        # nothing behind it. A small thumbnail embedded directly as a data
+        # URI means the attachment survives in chat history and renders
+        # immediately with no separate fetch/storage dependency at all --
+        # self-contained by construction, not reliant on Stratus ever coming
+        # back online. stratus_id is kept for when/if storage is fixed
+        # properly.
+        data_uri = _make_thumbnail_data_uri(thumb_bytes, max_chars=per_image_char_budget) if thumb_bytes else None
 
         attachment_refs.append({
             "file_name": f.filename,
             "type": f.content_type,
             "stratus_id": stratus_key,
+            "data_uri": data_uri,
             "page_count": page_count
         })
 

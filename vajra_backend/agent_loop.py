@@ -1922,12 +1922,16 @@ class VajraAgentLoop:
                 if repeat_match else "No standing repeat-offender alert for this name."
             )
 
+            risk_text = risk_res.get('text_result', 'Not available.').replace("Offender Risk Score: ", "")
+            mo_text = mo_res.get('text_result', 'Not available.').replace("Behavioral MO Profile: ", "")
+            network_text = (network_res.get('text_result') or f"{network_entities} connected entities traced.").replace(f"Syndicate network links for suspect {suspect}: ", "")
+
             text_result = (
-                f"COMPREHENSIVE DOSSIER -- {suspect}\n\n"
-                f"1. Conviction risk: {risk_res.get('text_result', 'Not available.')}\n\n"
-                f"2. Modus Operandi: {mo_res.get('text_result', 'Not available.')}\n\n"
-                f"3. Criminal network: {network_res.get('text_result') or f'{network_entities} connected entities traced.'}\n\n"
-                f"4. Repeat-offense history: {repeat_line}"
+                f"COMPREHENSIVE INVESTIGATIVE DOSSIER: {suspect.upper() if suspect else 'UNKNOWN SUSPECT'}\n\n"
+                f"• Conviction Risk Assessment: {risk_text}\n"
+                f"• Modus Operandi Match: {mo_text}\n"
+                f"• Criminal Network Tracing: {network_text}\n"
+                f"• Repeat-Offense History: {repeat_line}"
             )
             citations = (
                 (risk_res.get("citations") or [])
