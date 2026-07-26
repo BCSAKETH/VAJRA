@@ -43,7 +43,7 @@ export interface ChatMessage {
   // failed/unavailable turns so ChatBubble can offer a one-click retry
   // (Claude-style) instead of making them retype the whole query.
   retryText?: string;
-  attachments?: { file_name: string; type: string; page_count: number; stratus_id?: string }[];
+  attachments?: { file_name: string; type: string; page_count: number; stratus_id?: string; data_uri?: string }[];
   // Cowork sender attribution -- who actually typed this in a shared session.
   senderName?: string;
   senderEmployeeId?: number | string | null;

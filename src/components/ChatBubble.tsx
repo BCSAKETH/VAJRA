@@ -97,9 +97,11 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
     }
   };
 
-  // Attachments are stored in Stratus, not a public URL -- <img src> can't
-  // send the Bearer auth header, so this fetches the bytes with the header
-  // and hands the browser a local blob URL to actually display.
+  // Attachments are embedded inline as a data URI at upload time (see
+  // upload_chat_attachments in main.py) -- no fetch needed, no dependency on
+  // Stratus (currently unreachable from the backend). stratus_id-only
+  // fetching is kept as a fallback for older messages saved before this
+  // change, on the off chance storage does come back online later.
   const handleViewAttachment = async (stratusId: string) => {
     setLoadingAttachmentId(stratusId);
     try {
@@ -157,19 +159,24 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
           {/* Main Text Content */}
           <div className="whitespace-pre-wrap font-sans text-stone-200">{displayText}</div>
 
-          {/* Attachment indicator -- clickable when a Stratus reference
-              exists, so an officer can actually view what they attached
-              instead of only seeing the filename chip. */}
+          {/* Attachment indicator -- clickable when an inline thumbnail or a
+              Stratus reference exists, so an officer can actually view what
+              they attached instead of only seeing the filename chip. */}
           {message.attachments && message.attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mt-2.5">
               {message.attachments.map((a, i) => {
-                const isViewable = !!a.stratus_id;
+                const isViewable = !!a.data_uri || !!a.stratus_id;
                 const isLoadingThis = loadingAttachmentId === a.stratus_id;
                 const Wrapper: any = isViewable ? "button" : "span";
+                const handleClick = a.data_uri
+                  ? () => setViewingImageUrl(a.data_uri!)
+                  : a.stratus_id
+                  ? () => handleViewAttachment(a.stratus_id!)
+                  : undefined;
                 return (
                   <Wrapper
                     key={i}
-                    onClick={isViewable ? () => handleViewAttachment(a.stratus_id!) : undefined}
+                    onClick={handleClick}
                     disabled={isLoadingThis}
                     className={`flex items-center gap-1 px-2 py-1 rounded-md bg-stone-950/40 border border-stone-800 text-[10px] text-stone-400 font-mono ${
                       isViewable ? "hover:border-[#C79A4E]/40 hover:text-stone-200 transition-colors cursor-pointer" : ""

@@ -232,7 +232,14 @@ export const AIChatScreen: React.FC = () => {
         console.error("Failed to parse WebSocket message:", err);
       }
     };
-    ws.onerror = (err) => console.error("Cowork WebSocket error:", err);
+    // Live push is a nice-to-have on top of solo chat (which already works
+    // over plain HTTP, independent of this socket) -- if the platform's
+    // gateway in front of this deployment doesn't proxy WebSocket upgrades,
+    // fail quietly instead of spamming the console with a raw error event
+    // and an "interrupted" disconnect on every session switch.
+    ws.onerror = () => {
+      console.warn("Cowork live-push unavailable for this session (falling back to per-request updates only).");
+    };
 
     return () => {
       ws.close();
@@ -290,7 +297,7 @@ export const AIChatScreen: React.FC = () => {
     const sendSessionId = activeSessionIdRef.current;
 
     let queryForAgent = textToSend;
-    let uploadedAttachmentRefs: { file_name: string; type: string; page_count: number; stratus_id?: string }[] = [];
+    let uploadedAttachmentRefs: { file_name: string; type: string; page_count: number; stratus_id?: string; data_uri?: string }[] = [];
     if (filesToSend.length > 0) {
       setIsUploadingAttachments(true);
       try {

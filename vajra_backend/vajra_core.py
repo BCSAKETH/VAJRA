@@ -80,11 +80,49 @@ try:
                 return f.read().strip()
         return None
 
+class DirectZCQLClient:
+    """Direct REST ZCQL client when Catalyst SDK fails or in container runtime."""
+    def execute_query(self, query: str):
+        logger.info(f"Direct ZCQL query: {query}")
+        token = get_cached_access_token()
+        if not token:
+            raise Exception("Failed to retrieve valid access token for ZCQL query.")
+        project_id = os.getenv("CATALYST_PROJECT_ID", "50212000000025002")
+        region = os.getenv("CATALYST_REGION", "IN")
+        domain = "zoho.in" if region == "IN" else "zoho.com"
+        url = f"https://api.catalyst.{domain}/baas/v1/project/{project_id}/query"
+        headers = {
+            "Authorization": f"Zoho-oauthtoken {token}",
+            "Content-Type": "application/json",
+            "X-Catalyst-Environment": "Development",
+            "environment": "Development"
+        }
+        res = requests.post(url, headers=headers, json={"query": query}, timeout=15)
+        logger.info(f"Direct ZCQL response status: {res.status_code}")
+        if res.status_code != 200:
+            raise Exception(f"ZCQL query failed: {res.status_code} - {res.text}")
+        return res.json().get("data", [])
+
+
+class FallbackCatalystApp:
+    def __init__(self):
+        self._zcql = DirectZCQLClient()
+
+    def zcql(self):
+        return self._zcql
+
+    def zql(self):
+        return self._zcql
+
+
+try:
+    from zcatalyst_sdk.credentials import RefreshTokenCredential
+    from zcatalyst_sdk.zcql import Zcql
+    
     # Patch RefreshTokenCredential.token to use our cached token
     def patched_token(self) -> str:
         t = get_cached_access_token()
         if t:
-            # Update SDK's internal caching structure to satisfy it
             self._cached_token = {
                 'access_token': t,
                 'expires_in': int(round(time.time())) + 3600 * 1000
@@ -95,11 +133,8 @@ try:
     RefreshTokenCredential.token = patched_token
 
     client_id = os.getenv("CATALYST_CLIENT_ID")
-    if os.getenv("PORT") and not os.getenv("X_ZOHO_CATALYST_IS_LOCAL") == "true":
-        logger.info("Initializing Zoho Catalyst SDK with container credentials (AppSail environment).")
-        catalyst_app = zcatalyst_sdk.initialize_app()
-    elif client_id:
-        logger.info("Initializing Zoho Catalyst SDK with OAuth refresh token (Local environment).")
+    if client_id:
+        logger.info("Initializing Zoho Catalyst SDK with OAuth refresh token.")
         cred = RefreshTokenCredential({
             'client_id': client_id,
             'client_secret': os.getenv("CATALYST_CLIENT_SECRET"),
@@ -114,38 +149,37 @@ try:
             }
         )
     else:
-        logger.info("Initializing Zoho Catalyst SDK with no arguments (Fallback).")
+        logger.info("Initializing Zoho Catalyst SDK with default options.")
         catalyst_app = zcatalyst_sdk.initialize_app()
     
     # Monkeypatch execute_query to bypass SDK Accept header bug in India region
     def patched_execute_query(self, query: str):
         logger.info(f"Patched ZCQL query: {query}")
-        credential = self._app.credential
-        credential._switch_user("user")
-        token = credential.token()
-        project_id = self._app.config.get("project_id")
-        url = f"https://api.catalyst.zoho.in/baas/v1/project/{project_id}/query"
+        token = get_cached_access_token()
+        project_id = os.getenv("CATALYST_PROJECT_ID", "50212000000025002")
+        region = os.getenv("CATALYST_REGION", "IN")
+        domain = "zoho.in" if region == "IN" else "zoho.com"
+        url = f"https://api.catalyst.{domain}/baas/v1/project/{project_id}/query"
         headers = {
             "Authorization": f"Zoho-oauthtoken {token}",
             "Content-Type": "application/json",
             "X-Catalyst-Environment": "Development",
             "environment": "Development"
         }
-        res = requests.post(url, headers=headers, json={"query": query})
+        res = requests.post(url, headers=headers, json={"query": query}, timeout=15)
         logger.info(f"Patched ZCQL response status: {res.status_code}")
         if res.status_code != 200:
             raise Exception(f"ZCQL query failed: {res.status_code} - {res.text}")
         return res.json().get("data", [])
         
     Zcql.execute_query = patched_execute_query
-    
-    # Add alias zql to CatalystApp for compatibility
     zcatalyst_sdk.CatalystApp.zql = zcatalyst_sdk.CatalystApp.zcql
 
     logger.info("Successfully initialized Zoho Catalyst SDK connection with ZCQL monkeypatch.")
 except Exception as e:
-    logger.critical(f"Zoho Catalyst SDK failed to initialize: {e}. Falling back to default settings.")
-    catalyst_app = None
+    logger.warning(f"Zoho Catalyst SDK initialization note: {e}. Using DirectZCQLClient fallback.")
+    catalyst_app = FallbackCatalystApp()
+
 
 
 def _zcql_escape_value(v) -> str:

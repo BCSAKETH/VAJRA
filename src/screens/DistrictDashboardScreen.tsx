@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
@@ -36,6 +36,24 @@ interface DistrictDetail {
   recent_cases: { crime_no: string; registered_date: string; brief_facts: string }[];
 }
 
+// Real district anchor coordinates -- the same reference points the backend
+// seed data's case locations were generated around (see DISTRICT_HOTSPOTS in
+// migrate_to_catalyst.py), used here only to place each district's marker on
+// the state map. Every number shown on/under the map itself (case counts,
+// most-wanted, hotspot clusters) still comes from a live query -- this
+// constant only answers "where does District N's dot go."
+const DISTRICT_CENTERS: Record<number, [number, number]> = {
+  1: [16.1691, 75.6636], 2: [15.1394, 76.9214], 3: [15.8497, 74.4977], 4: [12.9716, 77.5946],
+  5: [13.2846, 77.5871], 6: [17.9104, 77.5199], 7: [11.9236, 76.9456], 8: [13.4351, 77.7315],
+  9: [13.3161, 75.7720], 10: [14.2251, 76.3980], 11: [12.8438, 75.2479], 12: [14.4644, 75.9932],
+  13: [15.4589, 75.0078], 14: [15.4167, 75.6167], 15: [13.0072, 76.0962], 16: [14.7935, 75.4046],
+  17: [17.3297, 76.8343], 18: [12.3375, 75.8069], 19: [13.1372, 78.1298], 20: [15.3547, 76.1548],
+  21: [12.5242, 76.8958], 22: [12.2958, 76.6394], 23: [16.2076, 77.3463], 24: [12.7217, 77.2812],
+  25: [13.9299, 75.5681], 26: [13.3379, 77.1173], 27: [13.3409, 74.7421], 28: [14.7998, 74.6979],
+  29: [16.8302, 75.7100], 30: [16.7642, 77.1374],
+};
+const KARNATAKA_CENTER: [number, number] = [14.85, 76.0];
+
 const PIE_COLORS = ["#C79A4E", "#5DCAA5", "#9085e9", "#e66767", "#3987e5", "#F59E0B", "#77a6e0", "#c98fd6"];
 const OUTCOME_COLORS: Record<string, string> = { Solved: "#5DCAA5", Unsolved: "#E24B4A", Unclassified: "#77746e" };
 const RANK_STYLE = [
@@ -71,6 +89,7 @@ export const DistrictDashboardScreen: React.FC = () => {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<DistrictDetail | null>(null);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  const drilldownRef = useRef<HTMLDivElement | null>(null);
 
   // Fixed architecture: every number is a live query, no caching. One
   // grouped summary fetch per load/refresh -- never per-hover. Also refetch
@@ -105,6 +124,13 @@ export const DistrictDashboardScreen: React.FC = () => {
     setSelectedId(districtId);
     setIsLoadingDetail(true);
     setDetail(null);
+    // Scroll to the drill-down panel right away rather than waiting on the
+    // fetch -- the loading shimmer is itself the feedback that a district
+    // was selected, so there's no reason to make the officer wait for data
+    // before the page even moves.
+    requestAnimationFrame(() => {
+      drilldownRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
     try {
       const res = await fetch(`${API_BASE}/api/dashboard/districts/${districtId}/detail`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
@@ -200,15 +226,69 @@ export const DistrictDashboardScreen: React.FC = () => {
             />
           </div>
 
-          {/* Choropleth-style clickable district grid. Karnataka districts
-              have no polygon/GeoJSON boundary data anywhere in this
-              project's schema (District only has DistrictID/DistrictName/
-              StateID) -- a literal geographic map shape can't be built from
-              real data. This grid uses the same visual encoding a
-              choropleth does (color intensity = case density) with the
-              same interactions (hover, click-to-drill-down), honestly
-              presented as a heat grid rather than claiming a shape that
-              doesn't exist in the data. */}
+          {/* Real Karnataka map -- Karnataka districts have no polygon/
+              GeoJSON boundary data anywhere in this project's schema
+              (District only has DistrictID/DistrictName/StateID), so exact
+              district shapes can't be drawn. Each district is instead
+              plotted at its real anchor coordinate (the same reference
+              points the seed data's case locations were generated around --
+              see DISTRICT_CENTERS above) on an actual OSM basemap, sized and
+              colored by live case-count intensity. Hover shows the same
+              live stats as the grid below; click drills down and scrolls to
+              the panel. */}
+          <div className="h-80 rounded-2xl overflow-hidden border border-stone-850 relative">
+            <MapContainer center={KARNATAKA_CENTER} zoom={7} style={{ height: "100%", width: "100%" }} scrollWheelZoom={true}>
+              <TileLayer
+                url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+                subdomains="abcd"
+                attribution="&copy; OpenStreetMap &copy; CARTO"
+              />
+              {rows.map((r) => {
+                const center = DISTRICT_CENTERS[r.district_id];
+                if (!center) return null;
+                const intensity = r.active_cases / maxCases;
+                const isSelected = r.district_id === selectedId;
+                return (
+                  <CircleMarker
+                    key={r.district_id}
+                    center={center}
+                    radius={7 + intensity * 10}
+                    pathOptions={{
+                      fillColor: isSelected ? "#E4C590" : "#C79A4E",
+                      color: isSelected ? "#E4C590" : "#211F1D",
+                      weight: isSelected ? 2.5 : 1,
+                      fillOpacity: 0.45 + intensity * 0.45,
+                    }}
+                    eventHandlers={{
+                      mouseover: () => setHoveredId(r.district_id),
+                      mouseout: () => setHoveredId(null),
+                      click: () => handleSelectDistrict(r.district_id),
+                    }}
+                  >
+                    <Popup>
+                      <span className="text-xs text-stone-900 font-bold">{r.district}</span>
+                      <br />
+                      <span className="text-[11px] text-stone-700">
+                        {lang === "en" ? "Active cases" : "ಸಕ್ರಿಯ ಪ್ರಕರಣಗಳು"}: <b>{r.active_cases}</b>
+                      </span>
+                      {r.most_wanted && (
+                        <>
+                          <br />
+                          <span className="text-[11px] text-rose-700">
+                            {lang === "en" ? "Most wanted" : "ಅತಿ ಬೇಕಾದ"}: {r.most_wanted.suspect} ({r.most_wanted.case_count})
+                          </span>
+                        </>
+                      )}
+                    </Popup>
+                  </CircleMarker>
+                );
+              })}
+            </MapContainer>
+          </div>
+
+          {/* Same district list as a compact, scannable grid below the map --
+              same data, same hover/click interactions, useful for districts
+              that sit close together on the map. */}
           <div className="relative">
             <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 gap-2.5">
               {isLoadingSummary
@@ -275,7 +355,7 @@ export const DistrictDashboardScreen: React.FC = () => {
 
           {/* Drill-down panel */}
           {selectedId && (
-            <div className="space-y-4 animate-fade-in">
+            <div ref={drilldownRef} className="space-y-4 animate-fade-in scroll-mt-6">
               {isLoadingDetail ? (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {[1, 2, 3, 4, 5, 6].map((n) => (
@@ -332,6 +412,7 @@ export const DistrictDashboardScreen: React.FC = () => {
                     ) : (
                       <div className="h-56 rounded-lg overflow-hidden">
                         <MapContainer
+                          key={detail.district_id}
                           center={[detail.hotspots[0].lat, detail.hotspots[0].lng]}
                           zoom={10}
                           style={{ height: "100%", width: "100%" }}

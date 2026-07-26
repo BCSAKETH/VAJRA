@@ -4,6 +4,7 @@ dist/
 coverage/
 .DS_Store
 *.log
+**/*.log
 .env*
 !.env.example
 
@@ -18,15 +19,32 @@ __pycache__/
 *.pdf
 .git/index.lock
 .token_cache
-*.joblib
-*.txt
+**/.token_cache
+screenshots/
+
+# Exclude credentials / secrets
 Accounts.txt
 accounts.txt
 *accounts*
 *credentials*
 *.pem
 *.key
-screenshots/
 
-# Vendored deploy dependencies (pre-installed Linux wheels for AppSail,
-# regenerate via: pip install --target=vajra_backend/vendor --platform=...)
+# Exclude temporary scratch & test scripts
+scratch/
+**/scratch/
+scratch_*.py
+
+# Exclude temporary media recordings
+video_full.mp4
+*.mp4
+*.webp
+
+# Whitelist Critical Backend & App Assets (Never Ignore)
+!requirements.txt
+!**/requirements.txt
+!vajra_backend/*.joblib
+!*.ttf
+!*.woff2
+
+
