@@ -1,8 +1,9 @@
 import React, { useState, useEffect } from "react";
 import { ChatMessage } from "../AppContext";
 import { translations } from "../i18n";
-import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles } from "lucide-react";
+import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2 } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
+import { API_BASE } from "../config";
 
 interface ChatBubbleProps {
   message: ChatMessage;
@@ -56,6 +57,9 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   const t = translations[lang];
   const isAI = message.sender === "assistant";
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
+  const [loadingAttachmentId, setLoadingAttachmentId] = useState<string | null>(null);
   const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
 
   const displayText = isAI
@@ -65,7 +69,11 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   useEffect(() => {
     return () => {
       if (isSpeaking) window.speechSynthesis.cancel();
+      // Release the blob URL so the browser doesn't hold the decoded image
+      // in memory for the lifetime of the page after the viewer closes.
+      if (viewingImageUrl) URL.revokeObjectURL(viewingImageUrl);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSpeaking]);
 
   const handleToggleSpeak = () => {
@@ -78,20 +86,40 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
     if (started) setIsSpeaking(true);
   };
 
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(displayText);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch (err) {
+      console.error("Copy failed:", err);
+    }
+  };
+
+  // Attachments are stored in Stratus, not a public URL -- <img src> can't
+  // send the Bearer auth header, so this fetches the bytes with the header
+  // and hands the browser a local blob URL to actually display.
+  const handleViewAttachment = async (stratusId: string) => {
+    setLoadingAttachmentId(stratusId);
+    try {
+      const res = await fetch(`${API_BASE}/api/attachments/${stratusId}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      });
+      if (!res.ok) throw new Error("Attachment not available.");
+      const blob = await res.blob();
+      setViewingImageUrl(URL.createObjectURL(blob));
+    } catch (err) {
+      console.error("Failed to load attachment:", err);
+    } finally {
+      setLoadingAttachmentId(null);
+    }
+  };
+
   return (
-    <div className={`flex flex-col gap-1.5 w-full animate-fade-in ${isAI ? "items-start" : "items-end"}`}>
+    <div className={`flex flex-col gap-1.5 w-full animate-fade-in group ${isAI ? "items-start" : "items-end"}`}>
       {/* Sender Label */}
       <span className="text-[10px] text-stone-500 font-semibold px-2 font-mono flex items-center gap-1.5">
         {isAI ? "VAJRA.AI" : (message.senderName ? message.senderName.toUpperCase() : "INVESTIGATOR")} • {message.timestamp}
-        {isAI && ttsSupported && (
-          <button
-            onClick={handleToggleSpeak}
-            title={isSpeaking ? t.ttsStop : t.ttsRead}
-            className={`p-0.5 rounded hover:bg-stone-800 transition-colors cursor-pointer ${isSpeaking ? "text-[#C79A4E]" : "text-stone-600 hover:text-stone-300"}`}
-          >
-            {isSpeaking ? <Volume2 className="w-3 h-3 animate-pulse text-[#C79A4E]" /> : <VolumeX className="w-3 h-3" />}
-          </button>
-        )}
       </span>
 
       {/* Bubble Container */}
@@ -119,18 +147,30 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
           {/* Main Text Content */}
           <div className="whitespace-pre-wrap font-sans text-stone-200">{displayText}</div>
 
-          {/* Attachment indicator */}
+          {/* Attachment indicator -- clickable when a Stratus reference
+              exists, so an officer can actually view what they attached
+              instead of only seeing the filename chip. */}
           {message.attachments && message.attachments.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mt-2.5">
-              {message.attachments.map((a, i) => (
-                <span
-                  key={i}
-                  className="flex items-center gap-1 px-2 py-1 rounded-md bg-stone-950/40 border border-stone-800 text-[10px] text-stone-400 font-mono"
-                >
-                  <Paperclip className="w-3 h-3" />
-                  {a.file_name}{a.page_count > 1 ? ` (${a.page_count}p)` : ""}
-                </span>
-              ))}
+              {message.attachments.map((a, i) => {
+                const isViewable = !!a.stratus_id;
+                const isLoadingThis = loadingAttachmentId === a.stratus_id;
+                const Wrapper: any = isViewable ? "button" : "span";
+                return (
+                  <Wrapper
+                    key={i}
+                    onClick={isViewable ? () => handleViewAttachment(a.stratus_id!) : undefined}
+                    disabled={isLoadingThis}
+                    className={`flex items-center gap-1 px-2 py-1 rounded-md bg-stone-950/40 border border-stone-800 text-[10px] text-stone-400 font-mono ${
+                      isViewable ? "hover:border-[#C79A4E]/40 hover:text-stone-200 transition-colors cursor-pointer" : ""
+                    }`}
+                  >
+                    {isLoadingThis ? <Loader2 className="w-3 h-3 animate-spin" /> : <Paperclip className="w-3 h-3" />}
+                    {a.file_name}{a.page_count > 1 ? ` (${a.page_count}p)` : ""}
+                    {isViewable && !isLoadingThis && <Eye className="w-3 h-3 ml-0.5 text-[#C79A4E]" />}
+                  </Wrapper>
+                );
+              })}
             </div>
           )}
 
@@ -169,9 +209,53 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
             />
           </div>
         )}
+
+        {/* Message actions -- visible on hover, hidden otherwise so the
+            thread stays uncluttered. Copy works for any message; Speak
+            (moved down from the sender label) stays AI-only. */}
+        <div className={`flex items-center gap-1 px-1 opacity-0 group-hover:opacity-100 transition-opacity ${isAI ? "" : "self-end"}`}>
+          <button
+            onClick={handleCopy}
+            title={lang === "en" ? "Copy" : "ನಕಲಿಸಿ"}
+            className="p-1 rounded hover:bg-stone-800 text-stone-600 hover:text-stone-300 transition-colors cursor-pointer"
+          >
+            {copied ? <Check className="w-3 h-3 text-[#5DCAA5]" /> : <Copy className="w-3 h-3" />}
+          </button>
+          {isAI && ttsSupported && (
+            <button
+              onClick={handleToggleSpeak}
+              title={isSpeaking ? t.ttsStop : t.ttsRead}
+              className={`p-1 rounded hover:bg-stone-800 transition-colors cursor-pointer ${isSpeaking ? "text-[#C79A4E]" : "text-stone-600 hover:text-stone-300"}`}
+            >
+              {isSpeaking ? <Volume2 className="w-3 h-3 animate-pulse text-[#C79A4E]" /> : <VolumeX className="w-3 h-3" />}
+            </button>
+          )}
+        </div>
         </>
         )}
       </div>
+
+      {/* Image lightbox -- fixed overlay in normal flow (not a stray
+          position:fixed with no layout parent), closes on backdrop click. */}
+      {viewingImageUrl && (
+        <div
+          className="fixed inset-0 z-50 bg-stone-950/90 backdrop-blur-sm flex items-center justify-center p-6"
+          onClick={() => { URL.revokeObjectURL(viewingImageUrl); setViewingImageUrl(null); }}
+        >
+          <button
+            className="absolute top-4 right-4 p-2 rounded-lg bg-stone-900/80 border border-stone-800 text-stone-400 hover:text-stone-100 cursor-pointer"
+            onClick={() => { URL.revokeObjectURL(viewingImageUrl); setViewingImageUrl(null); }}
+          >
+            <X className="w-5 h-5" />
+          </button>
+          <img
+            src={viewingImageUrl}
+            alt="Attachment preview"
+            className="max-w-full max-h-full rounded-xl border border-stone-800 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>
+      )}
     </div>
   );
 });

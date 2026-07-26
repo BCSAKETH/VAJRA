@@ -1319,6 +1319,17 @@ class ChatRequest(BaseModel):
     dictionaryTerms: Optional[List[Any]] = []
     activeFIR: Optional[Dict[str, Any]] = None
     attachments: Optional[List[Dict[str, Any]]] = None
+    # What the officer actually typed, e.g. "analyze the attached file" --
+    # `message` carries the FULL query the agent reasons over, which for an
+    # attachment turn has the entire Qwen-generated attachment analysis
+    # prepended to it (see AIChatScreen.handleSend's queryForAgent). Without
+    # this separate field, that whole analysis dump got persisted AND
+    # broadcast AND used for the auto-generated session title as if it were
+    # the officer's own message -- confirmed live: this is exactly why
+    # session titles read "Attachment analysis: This document is a clinical
+    # consultation..." instead of what was actually typed. Falls back to
+    # `message` for older/plain-text callers that don't send it.
+    display_text: Optional[str] = None
 
 
 def _persist_chat_message(session_id: str, sender: str, text: str, response_type: str = "text", data: Optional[Dict[str, Any]] = None, citations: Optional[List[Any]] = None, sender_employee_id: Optional[int] = None):
@@ -1519,6 +1530,57 @@ async def get_session_messages(session_id: str, request: Request, location_conte
         return []
 
 
+@app.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Deletes a conversation permanently -- backs the history sidebar's
+    three-dot Delete menu. Only the session OWNER may delete it (not a
+    Cowork viewer/collaborator, who could otherwise erase a shared
+    investigation thread out from under everyone else in it).
+    """
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    role = _get_cowork_role(session_id, employee_id)
+    if role != "owner":
+        raise HTTPException(status_code=403, detail="Only the session owner can delete this conversation.")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    try:
+        catalyst_app.zql().execute_query(f"DELETE FROM ChatMessage WHERE session_id = '{session_id}'")
+        catalyst_app.zql().execute_query(f"DELETE FROM CoworkParticipant WHERE session_id = '{session_id}'")
+        catalyst_app.zql().execute_query(f"DELETE FROM ChatSession WHERE session_id = '{session_id}'")
+        return {"deleted": True, "session_id": session_id}
+    except Exception as e:
+        logger.warning(f"Failed to delete session {session_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete conversation: {str(e)}")
+
+
+@app.get("/api/attachments/{stratus_key}")
+async def get_attachment(stratus_key: str, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Serves a previously-uploaded chat attachment (see store_attachment in
+    catalyst_stratus.py) back to the frontend so an officer can actually
+    view an image they attached, not just see its filename chip. Auth-gated
+    like every other endpoint -- Stratus objects aren't public URLs, so this
+    proxies the bytes through the same Bearer-token check as the rest of the
+    app rather than exposing a raw storage URL.
+    """
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    # Reject anything that isn't a bare filename -- stratus_key is always a
+    # uuid4().hex + extension (see store_attachment), never a path.
+    if "/" in stratus_key or ".." in stratus_key:
+        raise HTTPException(status_code=400, detail="Invalid attachment key.")
+    try:
+        from catalyst_stratus import ATTACHMENTS_BUCKET
+        bucket = catalyst_app.stratus().bucket(ATTACHMENTS_BUCKET)
+        obj = bucket.get_object(key=stratus_key)
+        content = obj.content if hasattr(obj, "content") else obj
+        return Response(content=content, media_type="image/jpeg")
+    except Exception as e:
+        logger.warning(f"Could not retrieve attachment '{stratus_key}' from Stratus: {e}")
+        raise HTTPException(status_code=404, detail="Attachment not found or storage unavailable.")
+
+
 VAJRA_MENTION_RE = re.compile(r"@vajra\b", re.IGNORECASE)
 
 
@@ -1546,6 +1608,10 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     in the shared thread without pinging the model on every line.
     """
     message = payload.message.strip()
+    # The officer's own short text for display/storage/titles -- see the
+    # display_text field docstring above. Never the full attachment-analysis
+    # dump `message` carries when there was an attachment.
+    display_text = (payload.display_text or message).strip()
     lang = payload.lang
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId") or 4003385
     unit_id = request.state.user_profile.get("UnitID") or request.state.user_profile.get("unitid")
@@ -1554,11 +1620,12 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     # Resolve session ID: prefer the real persisted session_id from the request
     # body. If none was supplied, this is a new conversation -- auto-create a
     # real ChatSession row (auto-titled from the first ~40 characters of the
-    # message) instead of falling back to a synthetic id that never gets a
-    # matching ChatSession row and so never shows up in session history.
+    # officer's own text, not the full agent-facing query) instead of
+    # falling back to a synthetic id that never gets a matching ChatSession
+    # row and so never shows up in session history.
     session_id = payload.session_id or request.headers.get("X-Session-ID")
     if not session_id:
-        auto_title = message[:40] + ("..." if len(message) > 40 else "")
+        auto_title = display_text[:40] + ("..." if len(display_text) > 40 else "")
         try:
             session_id = _create_chat_session(employee_id, auto_title or "New Conversation")
         except Exception as e:
@@ -1572,23 +1639,27 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
             raise HTTPException(status_code=403, detail="Viewer access only -- you cannot post messages in this session.")
 
     is_cowork = _is_cowork_session(session_id)
-    mentions_vajra = bool(VAJRA_MENTION_RE.search(message))
+    # Checked against the officer's own words, not the full agent-facing
+    # query -- a pasted attachment analysis could coincidentally contain the
+    # substring "@vajra" in its own text, which isn't the officer mentioning
+    # the AI.
+    mentions_vajra = bool(VAJRA_MENTION_RE.search(display_text))
 
     _persist_chat_message(
-        session_id, "user", message, "text",
+        session_id, "user", display_text, "text",
         {"attachments": payload.attachments} if payload.attachments else None,
         sender_employee_id=employee_id
     )
     await connection_manager.broadcast(session_id, {
         "type": "message", "sender": "user", "sender_employee_id": employee_id,
-        "sender_name": first_name, "text": message, "response_type": "text",
+        "sender_name": first_name, "text": display_text, "response_type": "text",
         "data": {}, "citations": [], "timestamp": datetime.utcnow().isoformat()
     })
 
     if is_cowork and not mentions_vajra:
         # Human-to-human message in a shared thread -- no AI call, return fast.
         return {
-            "text": message,
+            "text": display_text,
             "session_id": session_id,
             "response_type": "text",
             "data": {},
@@ -1640,6 +1711,36 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
         await run_in_threadpool(translator.translate, query_for_agent, "kn", "en")
         if lang == "kn" else query_for_agent
     )
+
+    # translator.translate()'s own honest-failure fallback (all three
+    # translation backends -- Zia fast-translate, GLM, Qwen -- unavailable)
+    # returns a literal "[Translation temporarily unavailable for: '...']"
+    # string. Previously that string was passed straight into the agent
+    # loop as if it were the real query -- GLM correctly found no tool
+    # matching a translation-failure notice and fell through to "Please
+    # clarify your request," which told the officer nothing true about what
+    # actually went wrong (a Kannada query silently became untranslatable,
+    # not ambiguous). Detect the marker and say so plainly instead of
+    # routing garbage into tool selection.
+    if lang == "kn" and processed_query.startswith("[Translation temporarily unavailable"):
+        text_kn = "ಅನುವಾದ ಸೇವೆ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ ಅಥವಾ ಇಂಗ್ಲಿಷ್‌ನಲ್ಲಿ ಟೈಪ್ ಮಾಡಿ."
+        text_en = "Kannada translation is temporarily unavailable. Please try again shortly, or type your query in English."
+        _persist_chat_message(
+            session_id, "assistant", text_kn, "text",
+            {"_text_en": text_en, "_text_kn": text_kn}, sender_employee_id=None
+        )
+        await connection_manager.broadcast(session_id, {
+            "type": "message", "sender": "assistant", "sender_employee_id": None,
+            "sender_name": "VAJRA.AI", "text": text_kn, "text_en": text_en, "text_kn": text_kn,
+            "response_type": "text", "data": {}, "citations": [],
+            "timestamp": datetime.utcnow().isoformat(), "is_simulated": True,
+            "simulated_reason": "translation_unavailable",
+        })
+        return {
+            "text": text_kn, "text_en": text_en, "text_kn": text_kn,
+            "session_id": session_id, "response_type": "text", "data": {}, "citations": [],
+            "is_simulated": True, "simulated_reason": "translation_unavailable", "ai_invoked": False,
+        }
 
     # Execute the central Agent Loop
     result = await run_in_threadpool(

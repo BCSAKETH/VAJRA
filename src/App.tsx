@@ -42,10 +42,21 @@ const AppContent: React.FC = () => {
     );
   }
 
-  const renderScreen = () => {
+  // AIChatScreen renders ALWAYS-MOUNTED, hidden via CSS instead of switched
+  // out of the DOM -- previously it unmounted on every screen navigation,
+  // which destroyed its local state (activeSessionId, isThinking, the
+  // WebSocket connection) entirely. A running query commonly takes 15-140s
+  // (see the thinking-indicator comment in AIChatScreen.tsx); checking the
+  // map or another screen while waiting is a normal workflow, and coming
+  // back used to lose the in-progress answer and reset the conversation.
+  // Every other screen is fine to unmount/remount (no long-lived state to
+  // preserve) and stays lazy/code-split as before.
+  const isChatActive = currentScreen === "ai_chat" || !(
+    ["spatial", "fir_search", "reports", "supervisor", "audit", "settings", "district_dashboard"].includes(currentScreen)
+  );
+
+  const renderOtherScreen = () => {
     switch (currentScreen) {
-      case "ai_chat":
-        return <AIChatScreen />;
       case "spatial":
         return <SpatialScreen />;
       case "fir_search":
@@ -60,13 +71,20 @@ const AppContent: React.FC = () => {
       case "district_dashboard":
         return <DistrictDashboardScreen />;
       default:
-        return <AIChatScreen />;
+        return null;
     }
   };
 
   return (
     <MainLayout>
-      <Suspense fallback={<ScreenLoadingFallback />}>{renderScreen()}</Suspense>
+      <div className="h-full relative">
+        <div className="absolute inset-0" style={{ display: isChatActive ? "block" : "none" }}>
+          <AIChatScreen />
+        </div>
+        {!isChatActive && (
+          <Suspense fallback={<ScreenLoadingFallback />}>{renderOtherScreen()}</Suspense>
+        )}
+      </div>
       <SessionTimeoutGuard />
     </MainLayout>
   );

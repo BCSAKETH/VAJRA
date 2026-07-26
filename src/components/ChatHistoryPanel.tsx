@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { MessageSquarePlus, MessageSquare, FolderPlus, Folder, Users, Loader2 } from "lucide-react";
+import { MessageSquarePlus, MessageSquare, FolderPlus, Folder, Users, Loader2, MoreVertical, Trash2 } from "lucide-react";
 import { NewInvestigationModal } from "./NewInvestigationModal";
 
 interface SessionSummary {
@@ -27,6 +27,9 @@ interface ChatHistoryPanelProps {
   // Session id currently being fetched (see AIChatScreen.handleSelectSession).
   // Drives an immediate per-row spinner so a click never reads as "did nothing".
   loadingSessionId?: string | null;
+  // Fired after a conversation is deleted server-side, so the parent can
+  // clear the active thread if the deleted session was open.
+  onSessionDeleted?: (sessionId: string) => void;
 }
 
 const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
@@ -35,13 +38,18 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
   onNewChat,
   refreshKey,
   loadingSessionId = null,
+  onSessionDeleted,
 }) => {
-  const { t } = useApp();
+  const { t, lang, addToast } = useApp();
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [investigations, setInvestigations] = useState<Investigation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [showNewInvestigation, setShowNewInvestigation] = useState(false);
   const [investigationsRefresh, setInvestigationsRefresh] = useState(0);
+  // Which row's three-dot menu is currently open. A single id, not a set --
+  // only one menu can be open at a time.
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     const loadSessions = async () => {
@@ -77,8 +85,48 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
     loadInvestigations();
   }, [refreshKey, investigationsRefresh]);
 
+  const handleDelete = async (sessionId: string, title: string) => {
+    setOpenMenuId(null);
+    const confirmed = window.confirm(
+      lang === "en"
+        ? `Delete "${title || "this conversation"}"? This cannot be undone.`
+        : `"${title || "ಈ ಸಂಭಾಷಣೆ"}" ಅನ್ನು ಅಳಿಸುವುದೇ? ಇದನ್ನು ರದ್ದುಗೊಳಿಸಲಾಗುವುದಿಲ್ಲ.`
+    );
+    if (!confirmed) return;
+
+    setDeletingId(sessionId);
+    try {
+      const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`, {
+        method: "DELETE",
+        headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || "Delete failed.");
+      }
+      setSessions((prev) => prev.filter((s) => s.session_id !== sessionId));
+      setInvestigations((prev) => prev.filter((i) => i.session_id !== sessionId));
+      onSessionDeleted?.(sessionId);
+    } catch (err: any) {
+      console.error("Failed to delete session:", err);
+      addToast(
+        lang === "en" ? "Delete Failed" : "ಅಳಿಸುವಿಕೆ ವಿಫಲವಾಗಿದೆ",
+        err.message || (lang === "en" ? "Could not delete this conversation." : "ಈ ಸಂಭಾಷಣೆಯನ್ನು ಅಳಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ."),
+        "Critical"
+      );
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
   return (
     <div className="w-60 shrink-0 border-r border-stone-850 bg-stone-950/30 flex flex-col h-full overflow-y-auto">
+      {/* Click-anywhere backdrop to close an open three-dot menu -- simpler
+          and more robust than outside-click ref tracking per row. */}
+      {openMenuId && (
+        <div className="fixed inset-0 z-40" onClick={() => setOpenMenuId(null)} />
+      )}
+
       {/* Investigations -- pinned above regular chat history, same pattern
           as Claude/ChatGPT's Projects sitting above Recents in one rail. */}
       <div className="p-3 border-b border-stone-850 space-y-2">
@@ -93,33 +141,55 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
           <div className="space-y-1 pt-1">
             {investigations.map((inv) => {
               const isLoadingThis = loadingSessionId === inv.session_id;
+              const isDeleting = deletingId === inv.session_id;
               return (
-                <button
-                  key={inv.session_id}
-                  onClick={() => onSelectSession(inv.session_id)}
-                  disabled={!!loadingSessionId}
-                  aria-busy={isLoadingThis}
-                  className={`w-full text-left flex items-start gap-2 px-2.5 py-2 rounded-lg text-xs transition-all cursor-pointer disabled:cursor-wait ${
-                    loadingSessionId && !isLoadingThis ? "opacity-50" : ""
-                  } ${
-                    inv.session_id === activeSessionId
-                      ? "bg-amber-500/10 border border-amber-500/25 text-stone-100"
-                      : "border border-transparent hover:bg-stone-900/60 text-stone-400 hover:text-stone-200"
-                  }`}
-                >
-                  {isLoadingThis ? (
-                    <Loader2 className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500 animate-spin" />
-                  ) : (
-                    <Folder className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500" />
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate leading-tight">{inv.title}</div>
-                    {inv.case_no && (
-                      <div className="text-[9px] text-stone-550 font-mono truncate">{inv.case_no}</div>
+                <div key={inv.session_id} className="relative group">
+                  <button
+                    onClick={() => onSelectSession(inv.session_id)}
+                    disabled={!!loadingSessionId || isDeleting}
+                    aria-busy={isLoadingThis}
+                    className={`w-full text-left flex items-start gap-2 px-2.5 py-2 pr-7 rounded-lg text-xs transition-all cursor-pointer disabled:cursor-wait ${
+                      (loadingSessionId && !isLoadingThis) || isDeleting ? "opacity-50" : ""
+                    } ${
+                      inv.session_id === activeSessionId
+                        ? "bg-amber-500/10 border border-amber-500/25 text-stone-100"
+                        : "border border-transparent hover:bg-stone-900/60 text-stone-400 hover:text-stone-200"
+                    }`}
+                  >
+                    {isLoadingThis || isDeleting ? (
+                      <Loader2 className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500 animate-spin" />
+                    ) : (
+                      <Folder className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500" />
                     )}
-                  </div>
-                  {inv.role !== "owner" && <Users className="w-3 h-3 shrink-0 text-stone-500 mt-0.5" />}
-                </button>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate leading-tight">{inv.title}</div>
+                      {inv.case_no && (
+                        <div className="text-[9px] text-stone-550 font-mono truncate">{inv.case_no}</div>
+                      )}
+                    </div>
+                    {inv.role !== "owner" && <Users className="w-3 h-3 shrink-0 text-stone-500 mt-0.5" />}
+                  </button>
+                  {inv.role === "owner" && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === inv.session_id ? null : inv.session_id); }}
+                      className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded text-stone-600 hover:text-stone-200 hover:bg-stone-800 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                      aria-label="More options"
+                    >
+                      <MoreVertical className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                  {openMenuId === inv.session_id && (
+                    <div className="absolute right-1 top-7 z-50 bg-stone-900 border border-stone-800 rounded-lg shadow-2xl py-1 w-32">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); handleDelete(inv.session_id, inv.title); }}
+                        className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-rose-400 hover:bg-rose-500/10 cursor-pointer"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        {lang === "en" ? "Delete" : "ಅಳಿಸಿ"}
+                      </button>
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
@@ -146,27 +216,47 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
         ) : (
           sessions.map((s) => {
             const isLoadingThis = loadingSessionId === s.session_id;
+            const isDeleting = deletingId === s.session_id;
             return (
-              <button
-                key={s.session_id}
-                onClick={() => onSelectSession(s.session_id)}
-                disabled={!!loadingSessionId}
-                aria-busy={isLoadingThis}
-                className={`w-full text-left flex items-start gap-2 px-2.5 py-2 rounded-lg text-xs transition-all cursor-pointer disabled:cursor-wait ${
-                  loadingSessionId && !isLoadingThis ? "opacity-50" : ""
-                } ${
-                  s.session_id === activeSessionId
-                    ? "bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-stone-100"
-                    : "border border-transparent hover:bg-stone-900/60 text-stone-400 hover:text-stone-200"
-                }`}
-              >
-                {isLoadingThis ? (
-                  <Loader2 className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[#C79A4E] animate-spin" />
-                ) : (
-                  <MessageSquare className="w-3.5 h-3.5 shrink-0 mt-0.5 text-stone-500" />
+              <div key={s.session_id} className="relative group">
+                <button
+                  onClick={() => onSelectSession(s.session_id)}
+                  disabled={!!loadingSessionId || isDeleting}
+                  aria-busy={isLoadingThis}
+                  className={`w-full text-left flex items-start gap-2 px-2.5 py-2 pr-7 rounded-lg text-xs transition-all cursor-pointer disabled:cursor-wait ${
+                    (loadingSessionId && !isLoadingThis) || isDeleting ? "opacity-50" : ""
+                  } ${
+                    s.session_id === activeSessionId
+                      ? "bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-stone-100"
+                      : "border border-transparent hover:bg-stone-900/60 text-stone-400 hover:text-stone-200"
+                  }`}
+                >
+                  {isLoadingThis || isDeleting ? (
+                    <Loader2 className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[#C79A4E] animate-spin" />
+                  ) : (
+                    <MessageSquare className="w-3.5 h-3.5 shrink-0 mt-0.5 text-stone-500" />
+                  )}
+                  <span className="truncate leading-tight">{s.title || t.newConversationFallback}</span>
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === s.session_id ? null : s.session_id); }}
+                  className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded text-stone-600 hover:text-stone-200 hover:bg-stone-800 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                  aria-label="More options"
+                >
+                  <MoreVertical className="w-3.5 h-3.5" />
+                </button>
+                {openMenuId === s.session_id && (
+                  <div className="absolute right-1 top-7 z-50 bg-stone-900 border border-stone-800 rounded-lg shadow-2xl py-1 w-32">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleDelete(s.session_id, s.title); }}
+                      className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-rose-400 hover:bg-rose-500/10 cursor-pointer"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      {lang === "en" ? "Delete" : "ಅಳಿಸಿ"}
+                    </button>
+                  </div>
                 )}
-                <span className="truncate leading-tight">{s.title || t.newConversationFallback}</span>
-              </button>
+              </div>
             );
           })
         )}
@@ -187,4 +277,3 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
 };
 
 export const ChatHistoryPanel = React.memo(ChatHistoryPanelComponent);
-

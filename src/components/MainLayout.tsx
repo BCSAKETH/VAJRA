@@ -196,8 +196,15 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
             </div>
           </header>
 
-          {/* Core Content Display Pane */}
-          <main className="flex-1 overflow-y-auto relative bg-[#161412]">
+          {/* Core Content Display Pane -- overflow-hidden (not auto): every
+              screen already manages its own internal scroll region (its own
+              h-full ... overflow-y-auto), including the chat thread, which
+              needs to scroll independently while its composer stays fixed
+              at the bottom (Claude-style). A second overflow-y-auto here
+              fought that inner region for who owns scrolling and who
+              resolves height -- the whole page grew instead of just the
+              message list. This is just the bounded frame now. */}
+          <main className="flex-1 overflow-hidden relative bg-[#161412]">
             {children}
           </main>
         </div>

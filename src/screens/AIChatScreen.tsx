@@ -233,7 +233,7 @@ export const AIChatScreen: React.FC = () => {
     if (!textToSend.trim() && filesToSend.length === 0) return;
 
     let queryForAgent = textToSend;
-    let uploadedAttachmentRefs: { file_name: string; type: string; page_count: number }[] = [];
+    let uploadedAttachmentRefs: { file_name: string; type: string; page_count: number; stratus_id?: string }[] = [];
     if (filesToSend.length > 0) {
       setIsUploadingAttachments(true);
       try {
@@ -302,6 +302,7 @@ export const AIChatScreen: React.FC = () => {
         },
         body: JSON.stringify({
           message: queryForAgent,
+          display_text: textToSend,
           lang: lang,
           session_id: activeSessionId,
         }),
@@ -590,6 +591,12 @@ export const AIChatScreen: React.FC = () => {
         onNewChat={handleNewChat}
         refreshKey={sessionsRefreshKey}
         loadingSessionId={loadingSessionId}
+        onSessionDeleted={(deletedId) => {
+          sessionMessagesCacheRef.current.delete(deletedId);
+          if (deletedId === activeSessionId) {
+            handleNewChat();
+          }
+        }}
       />
 
       <div className="flex-1 flex flex-col relative overflow-hidden">
