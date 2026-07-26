@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
@@ -12,8 +12,10 @@ import {
   PieChart,
   Pie,
   Cell,
+  Legend,
+  LabelList,
 } from "recharts";
-import { Map, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2 } from "lucide-react";
+import { Map, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers } from "lucide-react";
 
 interface DistrictSummaryRow {
   district_id: number;
@@ -32,8 +34,31 @@ interface DistrictDetail {
   police_presence: { employee_headcount: number; station_count: number };
 }
 
-const PIE_COLORS = ["#C79A4E", "#5DCAA5", "#9085e9", "#e66767", "#3987e5", "#F59E0B"];
+const PIE_COLORS = ["#C79A4E", "#5DCAA5", "#9085e9", "#e66767", "#3987e5", "#F59E0B", "#77a6e0", "#c98fd6"];
 const OUTCOME_COLORS: Record<string, string> = { Solved: "#5DCAA5", Unsolved: "#E24B4A", Unclassified: "#77746e" };
+const RANK_STYLE = [
+  { ring: "ring-[#E4C590] border-[#E4C590]", chip: "bg-[#E4C590] text-stone-950" },
+  { ring: "ring-stone-300 border-stone-300", chip: "bg-stone-300 text-stone-950" },
+  { ring: "ring-[#C79A4E]/60 border-[#C79A4E]/60", chip: "bg-[#C79A4E]/60 text-stone-950" },
+];
+
+const StatCard: React.FC<{ icon: React.ElementType; label: string; value: React.ReactNode; sub?: React.ReactNode }> = ({
+  icon: Icon,
+  label,
+  value,
+  sub,
+}) => (
+  <div className="glass-card p-3.5 border border-stone-850 flex items-center gap-3">
+    <div className="w-9 h-9 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 flex items-center justify-center shrink-0">
+      <Icon className="w-4.5 h-4.5 text-[#C79A4E]" />
+    </div>
+    <div className="min-w-0">
+      <div className="text-lg font-black text-stone-100 font-mono truncate leading-tight">{value}</div>
+      <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide truncate">{label}</div>
+      {sub && <div className="text-[9.5px] text-stone-600 truncate">{sub}</div>}
+    </div>
+  </div>
+);
 
 export const DistrictDashboardScreen: React.FC = () => {
   const { lang, addToast } = useApp();
@@ -99,6 +124,23 @@ export const DistrictDashboardScreen: React.FC = () => {
   const maxCases = Math.max(1, ...rows.map((r) => r.active_cases));
   const hovered = rows.find((r) => r.district_id === hoveredId);
 
+  // Rank the top 3 districts by active case load for a visible leaderboard
+  // treatment on the heat grid -- purely presentational, computed from the
+  // same live summary rows already fetched.
+  const rankById = useMemo(() => {
+    const sorted = [...rows].sort((a, b) => b.active_cases - a.active_cases).slice(0, 3);
+    const map = new Map<number, number>();
+    sorted.forEach((r, i) => map.set(r.district_id, i));
+    return map;
+  }, [rows]);
+
+  const totalActiveCases = useMemo(() => rows.reduce((sum, r) => sum + r.active_cases, 0), [rows]);
+  const flaggedSuspectCount = useMemo(() => rows.filter((r) => r.most_wanted).length, [rows]);
+  const topDistrict = rows.length ? [...rows].sort((a, b) => b.active_cases - a.active_cases)[0] : null;
+
+  const crimeTypeTotal = detail ? detail.crime_type_distribution.reduce((s, d) => s + d.value, 0) : 0;
+  const caseOutcomeTotal = detail ? detail.case_outcomes.reduce((s, d) => s + d.value, 0) : 0;
+
   return (
     <div className="h-full flex flex-col p-6 space-y-6 bg-stone-950/20 overflow-y-auto">
       <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center border-b border-stone-850 pb-4 shrink-0">
@@ -130,6 +172,32 @@ export const DistrictDashboardScreen: React.FC = () => {
         </div>
       ) : (
         <>
+          {/* Statewide telemetry strip -- quick-read totals derived from the
+              same live rows the heat grid renders, so it never diverges. */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 shrink-0">
+            <StatCard
+              icon={ShieldAlert}
+              value={isLoadingSummary ? "—" : totalActiveCases.toLocaleString()}
+              label={lang === "en" ? "Total Active Cases" : "ಒಟ್ಟು ಸಕ್ರಿಯ ಪ್ರಕರಣಗಳು"}
+            />
+            <StatCard
+              icon={Layers}
+              value={isLoadingSummary ? "—" : rows.length}
+              label={lang === "en" ? "Districts Tracked" : "ಟ್ರ್ಯಾಕ್ ಮಾಡಿದ ಜಿಲ್ಲೆಗಳು"}
+            />
+            <StatCard
+              icon={Flame}
+              value={isLoadingSummary || !topDistrict ? "—" : topDistrict.district}
+              sub={topDistrict ? `${topDistrict.active_cases} ${lang === "en" ? "cases" : "ಪ್ರಕರಣಗಳು"}` : undefined}
+              label={lang === "en" ? "Highest Load" : "ಅತಿ ಹೆಚ್ಚು ಹೊರೆ"}
+            />
+            <StatCard
+              icon={Users}
+              value={isLoadingSummary ? "—" : flaggedSuspectCount}
+              label={lang === "en" ? "Districts w/ Most-Wanted" : "ಅತಿ ಬೇಕಾದ ಜಿಲ್ಲೆಗಳು"}
+            />
+          </div>
+
           {/* Choropleth-style clickable district grid. Karnataka districts
               have no polygon/GeoJSON boundary data anywhere in this
               project's schema (District only has DistrictID/DistrictName/
@@ -140,27 +208,48 @@ export const DistrictDashboardScreen: React.FC = () => {
               presented as a heat grid rather than claiming a shape that
               doesn't exist in the data. */}
           <div className="relative">
-            <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 gap-2">
+            <div className="grid grid-cols-3 sm:grid-cols-5 md:grid-cols-6 gap-2.5">
               {isLoadingSummary
                 ? Array.from({ length: 18 }).map((_, i) => (
-                    <div key={i} className="h-16 rounded-lg shimmer-bg border border-stone-900" />
+                    <div key={i} className="h-20 rounded-xl shimmer-bg border border-stone-900" />
                   ))
                 : rows.map((r) => {
                     const intensity = r.active_cases / maxCases;
                     const isSelected = r.district_id === selectedId;
+                    const rank = rankById.get(r.district_id);
                     return (
                       <button
                         key={r.district_id}
                         onMouseEnter={() => setHoveredId(r.district_id)}
                         onMouseLeave={() => setHoveredId(null)}
                         onClick={() => handleSelectDistrict(r.district_id)}
-                        className={`h-16 rounded-lg border p-2 flex flex-col justify-between text-left transition-all cursor-pointer ${
-                          isSelected ? "border-[#C79A4E] ring-1 ring-[#C79A4E]" : "border-stone-850 hover:border-stone-700"
+                        className={`group relative h-20 rounded-xl border p-2.5 flex flex-col justify-between text-left overflow-hidden bg-stone-900/50 transition-all duration-200 cursor-pointer hover:-translate-y-0.5 hover:shadow-lg ${
+                          isSelected
+                            ? "border-[#C79A4E] ring-1 ring-[#C79A4E] shadow-[0_0_20px_rgba(199,154,78,0.18)]"
+                            : "border-stone-850 hover:border-stone-700"
                         }`}
-                        style={{ backgroundColor: `rgba(199,154,78,${0.06 + intensity * 0.5})` }}
                       >
-                        <span className="text-[9.5px] font-bold text-stone-200 truncate leading-tight">{r.district}</span>
-                        <span className="text-sm font-black text-[#E4C590] font-mono">{r.active_cases}</span>
+                        {/* Intensity encoded as a bottom heat bar, not a full
+                            solid fill -- keeps the grid legible as cards
+                            rather than a wall of flat color blocks. */}
+                        <div
+                          className="absolute inset-x-0 bottom-0 transition-all duration-300"
+                          style={{
+                            height: `${18 + intensity * 60}%`,
+                            background: "linear-gradient(to top, rgba(199,154,78,0.35), rgba(199,154,78,0))",
+                          }}
+                        />
+                        {rank !== undefined && (
+                          <span
+                            className={`absolute top-1.5 right-1.5 w-4 h-4 rounded-full text-[8px] font-black flex items-center justify-center font-mono ${RANK_STYLE[rank].chip}`}
+                          >
+                            {rank + 1}
+                          </span>
+                        )}
+                        <span className="relative text-[9.5px] font-bold text-stone-300 group-hover:text-stone-100 truncate leading-tight pr-4">
+                          {r.district}
+                        </span>
+                        <span className="relative text-base font-black text-[#E4C590] font-mono">{r.active_cases}</span>
                       </button>
                     );
                   })}
@@ -188,7 +277,7 @@ export const DistrictDashboardScreen: React.FC = () => {
               {isLoadingDetail ? (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {[1, 2, 3, 4].map((n) => (
-                    <div key={n} className="h-56 rounded-2xl shimmer-bg border border-stone-900" />
+                    <div key={n} className="h-64 rounded-2xl shimmer-bg border border-stone-900" />
                   ))}
                 </div>
               ) : detail ? (
@@ -198,13 +287,23 @@ export const DistrictDashboardScreen: React.FC = () => {
                     <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono">
                       {detail.district} — {lang === "en" ? "Socio-Economic Profile" : "ಸಾಮಾಜಿಕ-ಆರ್ಥಿಕ ಪ್ರೊಫೈಲ್"}
                     </h3>
-                    <div className="h-48">
+                    <div className="h-56">
                       <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={detail.socio_economic_chart.data} layout="vertical" margin={{ left: 20 }}>
+                        <BarChart data={detail.socio_economic_chart.data} layout="vertical" margin={{ left: 20, right: 28 }}>
                           <XAxis type="number" tick={{ fontSize: 9, fill: "#94A3B8" }} />
                           <YAxis type="category" dataKey="name" width={110} tick={{ fontSize: 9, fill: "#94A3B8" }} />
-                          <Tooltip contentStyle={{ background: "#211f1d", border: "1px solid #37332e", fontSize: 11 }} />
-                          <Bar dataKey="value" fill="#C79A4E" radius={[0, 4, 4, 0]} />
+                          <Tooltip
+                            cursor={{ fill: "rgba(199,154,78,0.06)" }}
+                            contentStyle={{ background: "#211f1d", border: "1px solid #37332e", fontSize: 11, borderRadius: 8 }}
+                          />
+                          <Bar dataKey="value" fill="#C79A4E" radius={[0, 4, 4, 0]}>
+                            <LabelList
+                              dataKey="value"
+                              position="right"
+                              formatter={(v: number) => (v == null ? "" : v.toFixed(1))}
+                              style={{ fill: "#E4C590", fontSize: 9, fontFamily: "monospace", fontWeight: 700 }}
+                            />
+                          </Bar>
                         </BarChart>
                       </ResponsiveContainer>
                     </div>
@@ -213,15 +312,23 @@ export const DistrictDashboardScreen: React.FC = () => {
 
                   {/* Hotspot map */}
                   <div className="glass-card p-4 border border-stone-850 space-y-2">
-                    <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono">
-                      {lang === "en" ? "High-Crime Hotspots (DBSCAN)" : "ಅಧಿಕ-ಅಪರಾಧ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳು"}
-                    </h3>
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono">
+                        {lang === "en" ? "High-Crime Hotspots (DBSCAN)" : "ಅಧಿಕ-ಅಪರಾಧ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳು"}
+                      </h3>
+                      {detail.hotspots.length > 0 && (
+                        <span className="flex items-center gap-1 text-[9px] font-mono text-stone-500">
+                          <span className="w-2 h-2 rounded-full bg-[#C79A4E] border border-stone-950 shrink-0" />
+                          {detail.hotspots.length} {lang === "en" ? "clusters" : "ಸಮೂಹಗಳು"}
+                        </span>
+                      )}
+                    </div>
                     {detail.hotspots.length === 0 ? (
-                      <div className="h-48 flex items-center justify-center text-[10px] text-stone-600 font-mono">
+                      <div className="h-56 flex items-center justify-center text-[10px] text-stone-600 font-mono text-center px-4">
                         {lang === "en" ? "No dense clusters detected in this district's sample." : "ಈ ಜಿಲ್ಲೆಯಲ್ಲಿ ದಟ್ಟವಾದ ಸಮೂಹಗಳು ಕಂಡುಬಂದಿಲ್ಲ."}
                       </div>
                     ) : (
-                      <div className="h-48 rounded-lg overflow-hidden">
+                      <div className="h-56 rounded-lg overflow-hidden">
                         <MapContainer
                           center={[detail.hotspots[0].lat, detail.hotspots[0].lng]}
                           zoom={10}
@@ -252,18 +359,29 @@ export const DistrictDashboardScreen: React.FC = () => {
 
                   {/* Crime types pie */}
                   <div className="glass-card p-4 border border-stone-850 space-y-2">
-                    <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono">
-                      {lang === "en" ? "Crime Types Breakdown" : "ಅಪರಾಧ ಪ್ರಕಾರಗಳ ವಿಭಜನೆ"}
-                    </h3>
-                    <div className="h-48 flex items-center justify-center">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono">
+                        {lang === "en" ? "Crime Types Breakdown" : "ಅಪರಾಧ ಪ್ರಕಾರಗಳ ವಿಭಜನೆ"}
+                      </h3>
+                      <span className="text-[9px] font-mono text-stone-500">
+                        {crimeTypeTotal.toLocaleString()} {lang === "en" ? "total" : "ಒಟ್ಟು"}
+                      </span>
+                    </div>
+                    <div className="h-56">
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
-                          <Pie data={detail.crime_type_distribution} dataKey="value" nameKey="name" innerRadius={30} outerRadius={60} paddingAngle={2}>
+                          <Pie data={detail.crime_type_distribution} dataKey="value" nameKey="name" innerRadius={38} outerRadius={68} paddingAngle={2}>
                             {detail.crime_type_distribution.map((_, i) => (
-                              <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                              <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} stroke="#161412" strokeWidth={1} />
                             ))}
                           </Pie>
-                          <Tooltip contentStyle={{ background: "#211f1d", border: "1px solid #37332e", fontSize: 10 }} />
+                          <Tooltip contentStyle={{ background: "#211f1d", border: "1px solid #37332e", fontSize: 10, borderRadius: 8 }} />
+                          <Legend
+                            verticalAlign="bottom"
+                            iconType="circle"
+                            iconSize={7}
+                            wrapperStyle={{ fontSize: 9, color: "#A8A49C", paddingTop: 6 }}
+                          />
                         </PieChart>
                       </ResponsiveContainer>
                     </div>
@@ -271,19 +389,30 @@ export const DistrictDashboardScreen: React.FC = () => {
 
                   {/* Solved vs unsolved pie + police presence */}
                   <div className="glass-card p-4 border border-stone-850 space-y-3">
-                    <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
-                      <ShieldAlert className="w-3.5 h-3.5 text-[#C79A4E]" />
-                      {lang === "en" ? "Case Outcomes" : "ಪ್ರಕರಣದ ಫಲಿತಾಂಶಗಳು"}
-                    </h3>
-                    <div className="h-32 flex items-center justify-center">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                        <ShieldAlert className="w-3.5 h-3.5 text-[#C79A4E]" />
+                        {lang === "en" ? "Case Outcomes" : "ಪ್ರಕರಣದ ಫಲಿತಾಂಶಗಳು"}
+                      </h3>
+                      <span className="text-[9px] font-mono text-stone-500">
+                        {caseOutcomeTotal.toLocaleString()} {lang === "en" ? "total" : "ಒಟ್ಟು"}
+                      </span>
+                    </div>
+                    <div className="h-40">
                       <ResponsiveContainer width="100%" height="100%">
                         <PieChart>
-                          <Pie data={detail.case_outcomes} dataKey="value" nameKey="name" innerRadius={20} outerRadius={45} paddingAngle={2}>
+                          <Pie data={detail.case_outcomes} dataKey="value" nameKey="name" innerRadius={26} outerRadius={54} paddingAngle={2}>
                             {detail.case_outcomes.map((entry, i) => (
-                              <Cell key={i} fill={OUTCOME_COLORS[entry.name] || PIE_COLORS[i]} />
+                              <Cell key={i} fill={OUTCOME_COLORS[entry.name] || PIE_COLORS[i]} stroke="#161412" strokeWidth={1} />
                             ))}
                           </Pie>
-                          <Tooltip contentStyle={{ background: "#211f1d", border: "1px solid #37332e", fontSize: 10 }} />
+                          <Tooltip contentStyle={{ background: "#211f1d", border: "1px solid #37332e", fontSize: 10, borderRadius: 8 }} />
+                          <Legend
+                            verticalAlign="bottom"
+                            iconType="circle"
+                            iconSize={7}
+                            wrapperStyle={{ fontSize: 9, color: "#A8A49C", paddingTop: 4 }}
+                          />
                         </PieChart>
                       </ResponsiveContainer>
                     </div>

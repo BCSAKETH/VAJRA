@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useApp, ScreenId } from "../AppContext";
 import {
   MessageSquare,
@@ -14,10 +14,23 @@ import {
   Shield,
   Sun,
   Moon,
+  IdCard,
+  Building2,
+  X,
 } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
 import { NotificationBellPanel } from "./NotificationBellPanel";
 import { ToastContainer } from "./ToastContainer";
+import { API_BASE } from "../config";
+
+interface OfficerProfile {
+  kgid: string;
+  first_name: string | null;
+  station: string | null;
+  rank: string | null;
+  designation: string | null;
+  role_tier: string | null;
+}
 
 interface MainLayoutProps {
   children: React.ReactNode;
@@ -40,6 +53,34 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
 
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
   const [isSidebarHovered, setIsSidebarHovered] = useState(false);
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [profile, setProfile] = useState<OfficerProfile | null>(null);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const profileRef = useRef<HTMLDivElement>(null);
+
+  // Fetched lazily on first open (not on mount) -- the officer's own rank/
+  // station/designation rarely change mid-session, so there's no value in
+  // paying this round-trip before the profile card is ever opened.
+  useEffect(() => {
+    if (!isProfileOpen || profile || profileLoading) return;
+    setProfileLoading(true);
+    fetch(`${API_BASE}/api/auth/me`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+    })
+      .then((res) => (res.ok ? res.json() : Promise.reject(new Error("Profile unavailable"))))
+      .then((data: OfficerProfile) => setProfile(data))
+      .catch(() => setProfile(null))
+      .finally(() => setProfileLoading(false));
+  }, [isProfileOpen, profile, profileLoading]);
+
+  useEffect(() => {
+    if (!isProfileOpen) return;
+    const onClickOutside = (e: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) setIsProfileOpen(false);
+    };
+    document.addEventListener("mousedown", onClickOutside);
+    return () => document.removeEventListener("mousedown", onClickOutside);
+  }, [isProfileOpen]);
 
   if (!isAuthenticated || currentScreen === "login") {
     return <div className="min-h-screen bg-[#161412] flex flex-col">{children}</div>;
@@ -123,22 +164,88 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
           </div>
 
           {/* Bottom Sidebar Controls */}
-          <div className="p-4 border-t border-stone-800 flex flex-col gap-4 bg-stone-950/20">
-            {isExpanded ? (
-              <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full bg-stone-800 border border-stone-750 flex items-center justify-center font-bold text-xs text-[#C79A4E]">
-                  KG
+          <div className="p-4 border-t border-stone-800 flex flex-col gap-4 bg-stone-950/20 relative" ref={profileRef}>
+            {/* Officer profile popover -- anchored above the trigger like a
+                ChatGPT/Claude account menu, pulling from /api/auth/me
+                (rank/designation/station resolved server-side by the same
+                security firewall that gates every other endpoint, never
+                client-supplied). */}
+            {isProfileOpen && (
+              <div className="absolute bottom-full left-3 right-3 sm:left-4 sm:right-auto sm:w-64 mb-2 glass-panel border border-stone-800 rounded-xl shadow-2xl p-4 animate-slide-up z-20">
+                <div className="flex items-start justify-between gap-2 mb-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-9 h-9 rounded-full bg-[#C79A4E]/15 border border-[#C79A4E]/30 flex items-center justify-center font-black text-xs text-[#C79A4E] shrink-0">
+                      {(profile?.first_name || "KG").slice(0, 2).toUpperCase()}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-stone-100 truncate">
+                        {profileLoading ? "..." : profile?.first_name || t.profileLabel}
+                      </p>
+                      <p className="text-[10px] text-stone-500 font-mono truncate">{badgeNumber || `KGID: ${profile?.kgid || "—"}`}</p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setIsProfileOpen(false)}
+                    className="p-1 rounded-md text-stone-600 hover:text-stone-300 hover:bg-stone-800 transition-colors shrink-0 cursor-pointer"
+                    aria-label="Close"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 </div>
-                <div className="flex-1 min-w-0">
+                <div className="space-y-2 border-t border-stone-850 pt-3">
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <Shield className="w-3.5 h-3.5 text-[#C79A4E] shrink-0" />
+                    <span className="text-stone-500">{lang === "en" ? "Rank" : "ಶ್ರೇಣಿ"}</span>
+                    <span className="ml-auto text-stone-200 font-semibold truncate">
+                      {profileLoading ? "…" : profile?.rank || "—"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <IdCard className="w-3.5 h-3.5 text-[#C79A4E] shrink-0" />
+                    <span className="text-stone-500">{lang === "en" ? "Designation" : "ಪದನಾಮ"}</span>
+                    <span className="ml-auto text-stone-200 font-semibold truncate">
+                      {profileLoading ? "…" : profile?.designation || "—"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <Building2 className="w-3.5 h-3.5 text-[#C79A4E] shrink-0" />
+                    <span className="text-stone-500">{lang === "en" ? "Station" : "ಠಾಣೆ"}</span>
+                    <span className="ml-auto text-stone-200 font-semibold truncate">
+                      {profileLoading ? "…" : profile?.station || "—"}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 text-[11px]">
+                    <UserCheck className="w-3.5 h-3.5 text-[#C79A4E] shrink-0" />
+                    <span className="text-stone-500">{lang === "en" ? "Access Tier" : "ಪ್ರವೇಶ ಸ್ತರ"}</span>
+                    <span className="ml-auto text-[#C79A4E] font-bold uppercase text-[10px] font-mono">
+                      {profileLoading ? "…" : profile?.role_tier || roleTier || "—"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <button
+              onClick={() => setIsProfileOpen((v) => !v)}
+              className={`flex items-center gap-3 rounded-lg transition-colors cursor-pointer ${
+                isExpanded ? "p-1.5 -m-1.5 hover:bg-stone-800/50 w-full" : "mx-auto"
+              }`}
+              aria-label={t.profileLabel}
+            >
+              <div
+                className={`w-8 h-8 rounded-full bg-stone-800 border flex items-center justify-center font-bold text-xs text-[#C79A4E] shrink-0 transition-colors ${
+                  isProfileOpen ? "border-[#C79A4E]" : "border-stone-750"
+                }`}
+              >
+                KG
+              </div>
+              {isExpanded && (
+                <div className="flex-1 min-w-0 text-left">
                   <p className="text-xs font-semibold text-stone-300 truncate">{t.profileLabel}</p>
                   <p className="text-[10px] text-stone-500 truncate">{badgeNumber || "KGID: 4003385"}</p>
                 </div>
-              </div>
-            ) : (
-              <div className="w-8 h-8 rounded-full bg-stone-800 border border-stone-750 flex items-center justify-center font-bold text-xs text-[#C79A4E] mx-auto">
-                KG
-              </div>
-            )}
+              )}
+            </button>
 
             <button
               onClick={() => setIsAuthenticated(false)}
