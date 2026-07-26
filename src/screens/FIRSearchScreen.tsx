@@ -58,7 +58,11 @@ export const FIRSearchScreen: React.FC = () => {
       if (!data || data.length === 0) {
         setFirs([]);
         if (searchStr.trim()) {
-          addToast("Search Result", "No CCTNS matches found for query.", "Info");
+          addToast(
+            lang === "en" ? "Search Result" : "ಹುಡುಕಾಟ ಫಲಿತಾಂಶ",
+            lang === "en" ? "No CCTNS matches found for query." : "ಪ್ರಶ್ನೆಗೆ CCTNS ಹೊಂದಾಣಿಕೆಗಳು ಕಂಡುಬಂದಿಲ್ಲ.",
+            "Info"
+          );
         }
       } else {
         setFirs(data);
@@ -86,10 +90,12 @@ export const FIRSearchScreen: React.FC = () => {
         <div className="space-y-1">
           <h2 className="text-base font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">
             <FolderOpen className="w-5 h-5 text-[#C79A4E]" />
-            <span>FIR Security Registry</span>
+            <span>{lang === "en" ? "FIR Security Registry" : "FIR ಭದ್ರತಾ ರಿಜಿಸ್ಟ್ರಿ"}</span>
           </h2>
           <p className="text-[11px] text-stone-550 leading-relaxed font-mono">
-            Audit case registry entries across the Karnataka CCTNS datastore.
+            {lang === "en"
+              ? "Audit case registry entries across the Karnataka CCTNS datastore."
+              : "ಕರ್ನಾಟಕ CCTNS ಡೇಟಾಸ್ಟೋರ್‌ನಾದ್ಯಂತ ಪ್ರಕರಣ ರಿಜಿಸ್ಟ್ರಿ ನಮೂದುಗಳನ್ನು ಪರಿಶೀಲಿಸಿ."}
           </p>
         </div>
 
@@ -100,7 +106,7 @@ export const FIRSearchScreen: React.FC = () => {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && handleSearch(query)}
-            placeholder="Search CrimeNo or facts..."
+            placeholder={lang === "en" ? "Search CrimeNo or facts..." : "CrimeNo ಅಥವಾ ಸಂಗತಿಗಳನ್ನು ಹುಡುಕಿ..."}
             className="w-full bg-stone-950/60 border border-stone-850 focus:border-[#C79A4E] rounded-xl py-2.5 pl-3.5 pr-10 text-xs text-stone-200 focus:outline-none transition-all placeholder-stone-650"
           />
           <button
@@ -124,17 +130,19 @@ export const FIRSearchScreen: React.FC = () => {
                 {lang === "en" ? "Data Unavailable — Security Registry Offline" : "ಡೇಟಾ ಲಭ್ಯವಿಲ್ಲ — ಸಿಐಎಸ್ ರಿಜಿಸ್ಟ್ರಿ ಆಫ್‌ಲೈನ್"}
               </h4>
               <p className="text-xs text-stone-500 leading-relaxed font-semibold">
-                Unable to establish a secure handshake with KSP directory server. Mocks are strictly blocked.
+                {lang === "en"
+                  ? "Unable to establish a secure handshake with KSP directory server. Mocks are strictly blocked."
+                  : "KSP ಡೈರೆಕ್ಟರಿ ಸರ್ವರ್‌ನೊಂದಿಗೆ ಸುರಕ್ಷಿತ ಹ್ಯಾಂಡ್‌ಶೇಕ್ ಸ್ಥಾಪಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ. ಅನುಕರಣೆ ಡೇಟಾ ಕಟ್ಟುನಿಟ್ಟಾಗಿ ನಿರ್ಬಂಧಿಸಲಾಗಿದೆ."}
               </p>
             </div>
           </div>
         ) : isLoading ? (
           <div className="flex-1 flex items-center justify-center text-stone-400 text-xs font-mono">
-            Decrypting CCTNS files...
+            {lang === "en" ? "Decrypting CCTNS files..." : "CCTNS ಫೈಲ್‌ಗಳನ್ನು ಡೀಕ್ರಿಪ್ಟ್ ಮಾಡಲಾಗುತ್ತಿದೆ..."}
           </div>
         ) : firs.length === 0 ? (
           <div className="flex-1 flex items-center justify-center text-stone-500 text-xs font-mono">
-            No secure case records resolved.
+            {lang === "en" ? "No secure case records resolved." : "ಯಾವುದೇ ಸುರಕ್ಷಿತ ಪ್ರಕರಣ ದಾಖಲೆಗಳು ಕಂಡುಬಂದಿಲ್ಲ."}
           </div>
         ) : (
           <>
@@ -144,11 +152,11 @@ export const FIRSearchScreen: React.FC = () => {
                 <table className="w-full text-left text-xs font-mono border-collapse">
                   <thead>
                     <tr className="bg-stone-950/45 border-b border-stone-800 text-stone-400 uppercase text-[9.5px] font-black tracking-wider">
-                      <th className="py-3.5 px-4">Crime No</th>
-                      <th className="py-3.5 px-4">Registered</th>
-                      <th className="py-3.5 px-4">District / Unit</th>
-                      <th className="py-3.5 px-4">Gravity</th>
-                      <th className="py-3.5 px-4 text-center">Actions</th>
+                      <th className="py-3.5 px-4">{lang === "en" ? "Crime No" : "ಅಪರಾಧ ಸಂಖ್ಯೆ"}</th>
+                      <th className="py-3.5 px-4">{lang === "en" ? "Registered" : "ನೋಂದಾಯಿಸಲಾಗಿದೆ"}</th>
+                      <th className="py-3.5 px-4">{lang === "en" ? "District / Unit" : "ಜಿಲ್ಲೆ / ಠಾಣೆ"}</th>
+                      <th className="py-3.5 px-4">{lang === "en" ? "Gravity" : "ಗಂಭೀರತೆ"}</th>
+                      <th className="py-3.5 px-4 text-center">{lang === "en" ? "Actions" : "ಕ್ರಮಗಳು"}</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-stone-850">
@@ -171,7 +179,7 @@ export const FIRSearchScreen: React.FC = () => {
                               row.LookupValue === "Heinous" ? "bg-rose-500/10 text-rose-450" : "bg-stone-800 text-stone-400"
                             }`}
                           >
-                            {row.LookupValue || "Non-Heinous"}
+                            {row.LookupValue || (lang === "en" ? "Non-Heinous" : "ಗಂಭೀರವಲ್ಲದ")}
                           </span>
                         </td>
                         <td className="py-3 px-4 text-center">
@@ -194,14 +202,14 @@ export const FIRSearchScreen: React.FC = () => {
               <div className="w-full md:w-96 glass-panel border border-stone-800 rounded-2xl p-5 flex flex-col gap-4 animate-fade-in relative z-10 shrink-0">
                 <div className="border-b border-stone-850 pb-3 flex justify-between items-start">
                   <div>
-                    <span className="text-[10px] font-bold text-[#C79A4E] font-mono block">CASE DOSSIER</span>
+                    <span className="text-[10px] font-bold text-[#C79A4E] font-mono block">{lang === "en" ? "CASE DOSSIER" : "ಪ್ರಕರಣ ಕಡತ"}</span>
                     <h4 className="font-extrabold text-stone-200 text-sm font-mono mt-0.5">{selectedCase.CrimeNo}</h4>
                   </div>
                   <button
                     onClick={() => setSelectedCase(null)}
                     className="text-xs text-stone-500 hover:text-stone-300 cursor-pointer font-bold font-mono"
                   >
-                    Close
+                    {lang === "en" ? "Close" : "ಮುಚ್ಚಿ"}
                   </button>
                 </div>
 
@@ -209,7 +217,7 @@ export const FIRSearchScreen: React.FC = () => {
                   <div className="bg-stone-950/45 p-3 rounded-lg border border-stone-900 font-mono text-[10.5px]">
                     <div className="flex items-center gap-1.5 mb-1.5 text-stone-200 font-bold">
                       <Calendar className="w-3.5 h-3.5 text-[#C79A4E]" />
-                      <span>Registration Log</span>
+                      <span>{lang === "en" ? "Registration Log" : "ನೋಂದಣಿ ದಾಖಲೆ"}</span>
                     </div>
                     <p className="text-stone-400">{selectedCase.CrimeRegisteredDate}</p>
                   </div>
@@ -217,25 +225,27 @@ export const FIRSearchScreen: React.FC = () => {
                   <div className="bg-stone-950/45 p-3 rounded-lg border border-stone-900 font-mono text-[10.5px]">
                     <div className="flex items-center gap-1.5 mb-1.5 text-stone-200 font-bold">
                       <MapPin className="w-3.5 h-3.5 text-[#C79A4E]" />
-                      <span>Incident Precinct</span>
+                      <span>{lang === "en" ? "Incident Precinct" : "ಘಟನೆ ಠಾಣಾ ವ್ಯಾಪ್ತಿ"}</span>
                     </div>
                     <p className="text-stone-400">{selectedCase.UnitName} • {selectedCase.DistrictName}</p>
                   </div>
 
                   <div className="space-y-1.5">
-                    <span className="block text-[11px] font-bold text-stone-400 font-mono">Incident Narrative (Brief Facts):</span>
+                    <span className="block text-[11px] font-bold text-stone-400 font-mono">
+                      {lang === "en" ? "Incident Narrative (Brief Facts):" : "ಘಟನೆ ವಿವರಣೆ (ಸಂಕ್ಷಿಪ್ತ ಸಂಗತಿಗಳು):"}
+                    </span>
                     <div className="bg-stone-950/65 rounded-lg p-3 text-stone-300 border border-stone-900">
-                      {selectedCase.BriefFacts || "No narrative details compiled."}
+                      {selectedCase.BriefFacts || (lang === "en" ? "No narrative details compiled." : "ಯಾವುದೇ ವಿವರಣೆ ಸಂಗ್ರಹಿಸಲಾಗಿಲ್ಲ.")}
                     </div>
                   </div>
 
                   <div className="grid grid-cols-2 gap-3 border-t border-stone-850 pt-3.5 font-mono text-[10.5px]">
                     <div>
-                      <span className="block text-stone-500">Victim Count:</span>
+                      <span className="block text-stone-500">{lang === "en" ? "Victim Count:" : "ಬಲಿಪಶು ಸಂಖ್ಯೆ:"}</span>
                       <span className="font-extrabold text-stone-250">{selectedCase.VictimCount}</span>
                     </div>
                     <div>
-                      <span className="block text-stone-500">Accused Count:</span>
+                      <span className="block text-stone-500">{lang === "en" ? "Accused Count:" : "ಆರೋಪಿಗಳ ಸಂಖ್ಯೆ:"}</span>
                       <span className="font-extrabold text-stone-250">{selectedCase.AccusedCount}</span>
                     </div>
                   </div>
