@@ -103,7 +103,16 @@ class CatalystQwen:
         }
 
         try:
-            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=30)
+            # Raised from 30s to 300s, matching catalyst_llm.py's own ceiling
+            # (same request, same reasoning). This is the fallback used both
+            # for tool-selection (when GLM is down) and translation (the
+            # last of three tiers, after Zia and GLM) -- a tight timeout here
+            # meant Qwen itself could get cut off on exactly the kind of
+            # slow-but-working turn GLM's own budget was raised to tolerate,
+            # cascading a single slow response into a full "[Translation
+            # temporarily unavailable]"/no-tool-selected failure instead of a
+            # real, if delayed, answer.
+            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=300)
             if res.status_code == 200:
                 data = res.json()
                 text = data.get("response") or ""
@@ -164,7 +173,16 @@ class CatalystQwen:
         }
 
         try:
-            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=30)
+            # Raised from 30s to 300s, matching catalyst_llm.py's own ceiling
+            # (same request, same reasoning). This is the fallback used both
+            # for tool-selection (when GLM is down) and translation (the
+            # last of three tiers, after Zia and GLM) -- a tight timeout here
+            # meant Qwen itself could get cut off on exactly the kind of
+            # slow-but-working turn GLM's own budget was raised to tolerate,
+            # cascading a single slow response into a full "[Translation
+            # temporarily unavailable]"/no-tool-selected failure instead of a
+            # real, if delayed, answer.
+            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=300)
             if res.status_code == 200:
                 data = res.json()
                 translated = (data.get("response") or "").strip()
@@ -236,7 +254,16 @@ class CatalystQwen:
         }
 
         try:
-            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=30)
+            # Raised from 30s to 300s, matching catalyst_llm.py's own ceiling
+            # (same request, same reasoning). This is the fallback used both
+            # for tool-selection (when GLM is down) and translation (the
+            # last of three tiers, after Zia and GLM) -- a tight timeout here
+            # meant Qwen itself could get cut off on exactly the kind of
+            # slow-but-working turn GLM's own budget was raised to tolerate,
+            # cascading a single slow response into a full "[Translation
+            # temporarily unavailable]"/no-tool-selected failure instead of a
+            # real, if delayed, answer.
+            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=300)
             if res.status_code == 200:
                 data = res.json()
                 raw = (data.get("response") or "").strip()

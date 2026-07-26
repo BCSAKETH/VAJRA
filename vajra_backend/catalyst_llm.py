@@ -232,14 +232,29 @@ class CatalystLLM:
             # connection past 60s, never a fast rejection (no 429 seen
             # anywhere). That combination means some calls that would have
             # succeeded at 65-90s were being killed right at the edge.
-            # Raised to 90s for real margin above the highest observed
-            # success, not an arbitrary guess.
+            # Raised to 300s (5 minutes) per attempt, at the officer's own
+            # explicit request to prioritize letting GLM actually finish its
+            # real analysis over falling back to raw/unpolished output. This
+            # codebase's own "confirmed live" notes document real successful
+            # turns up to 140s+ under load (a screenshot mid-session showed a
+            # legitimate in-progress turn still running at 132s, not yet
+            # killed by anything upstream), and the specific fallback this
+            # was raised to avoid -- the later "write a polished narrative"
+            # synthesis call timing out and falling back to raw tool output
+            # -- is explicitly noted as common "under sustained load," i.e.
+            # exactly when the model needs the most room, not the least.
+            # Neither FastAPI/Uvicorn nor AppSail impose their own shorter
+            # request timeout here, so this Python-level value is the real
+            # ceiling. Tradeoff, stated plainly: a genuinely stuck request
+            # can now hold an officer's chat turn open for minutes before
+            # ever falling back -- accepted deliberately in exchange for
+            # letting slow-but-working turns actually complete.
             for attempt, delay in enumerate([0, 3]):
                 if delay:
                     time.sleep(delay)
                 try:
                     logger.info(f"Posting to Catalyst LLM Serving endpoint (attempt {attempt + 1}): {self.endpoint_url}")
-                    res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
+                    res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=300)
 
                     if res.status_code == 200:
                         data = res.json()
