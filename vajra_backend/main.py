@@ -1330,6 +1330,13 @@ class ChatRequest(BaseModel):
     # consultation..." instead of what was actually typed. Falls back to
     # `message` for older/plain-text callers that don't send it.
     display_text: Optional[str] = None
+    # Client-generated nonce echoed back in this turn's WebSocket broadcasts
+    # (both the user message and the assistant reply). The sending tab
+    # already renders both directly from this endpoint's own HTTP response --
+    # reliable regardless of the WebSocket's connection state -- and uses
+    # this id purely to recognize and skip its own echo when the broadcast
+    # arrives a second time over the socket, instead of rendering it twice.
+    client_msg_id: Optional[str] = None
 
 
 def _persist_chat_message(session_id: str, sender: str, text: str, response_type: str = "text", data: Optional[Dict[str, Any]] = None, citations: Optional[List[Any]] = None, sender_employee_id: Optional[int] = None):
@@ -1439,9 +1446,13 @@ async def list_sessions(request: Request, location_context: str = Depends(securi
         part_res = catalyst_app.zql().execute_query(
             f"SELECT session_id FROM CoworkParticipant WHERE employee_id = {employee_id} LIMIT 100"
         )
+        invited_ids = set()
         for p in part_res:
             sid = p.get("CoworkParticipant", {}).get("session_id")
-            if not sid or sid in seen_session_ids:
+            if not sid:
+                continue
+            invited_ids.add(sid)
+            if sid in seen_session_ids:
                 continue
             sess_res = catalyst_app.zql().execute_query(
                 f"SELECT session_id, title, last_active_at FROM ChatSession "
@@ -1450,6 +1461,21 @@ async def list_sessions(request: Request, location_context: str = Depends(securi
             if sess_res:
                 seen_session_ids.add(sid)
                 sessions.append(sess_res[0].get("ChatSession", {}))
+
+        # is_cowork: true if this officer was invited in, OR if anyone else
+        # has been invited into a session they own -- the history list
+        # otherwise gave no visual signal that a "solo-looking" chat is
+        # actually a shared thread other officers can see and post in.
+        owned_ids = [s["session_id"] for s in sessions if s["session_id"] not in invited_ids]
+        shared_owned_ids = set()
+        if owned_ids:
+            id_list = ",".join(f"'{sid}'" for sid in owned_ids)
+            part_check = catalyst_app.zql().execute_query(
+                f"SELECT DISTINCT session_id FROM CoworkParticipant WHERE session_id IN ({id_list})"
+            )
+            shared_owned_ids = {r.get("CoworkParticipant", {}).get("session_id") for r in part_check}
+        for s in sessions:
+            s["is_cowork"] = s["session_id"] in invited_ids or s["session_id"] in shared_owned_ids
 
         sessions.sort(key=lambda s: s.get("last_active_at") or "", reverse=True)
         return sessions[:50]
@@ -1498,6 +1524,31 @@ async def get_session_messages(session_id: str, request: Request, location_conte
         res = catalyst_app.zql().execute_query(
             f"SELECT sender, sender_employee_id, text, response_type, data_json, citations_json, sent_at FROM ChatMessage WHERE session_id = '{session_id}' ORDER BY sent_at ASC LIMIT 300"
         )
+        # Historic reload previously left every message attributed to a
+        # generic "INVESTIGATOR" label -- sender_employee_id was stored but
+        # never resolved back to a name here (only the live WebSocket
+        # broadcast path did that, via first_name captured at send time).
+        # One batched IN(...) query resolves every distinct sender in this
+        # thread instead of a lookup per message.
+        distinct_ids = {
+            r.get("ChatMessage", {}).get("sender_employee_id")
+            for r in res
+            if r.get("ChatMessage", {}).get("sender_employee_id") is not None
+        }
+        names_by_id: Dict[int, str] = {}
+        if distinct_ids:
+            try:
+                id_list = ",".join(str(i) for i in distinct_ids)
+                name_res = catalyst_app.zql().execute_query(
+                    f"SELECT EmployeeID, FirstName FROM Employee WHERE EmployeeID IN ({id_list})"
+                )
+                for nr in name_res:
+                    emp = nr.get("Employee", {})
+                    if emp.get("EmployeeID") is not None:
+                        names_by_id[emp["EmployeeID"]] = emp.get("FirstName") or "Officer"
+            except Exception as e:
+                logger.warning(f"Could not resolve sender names for session {session_id}: {e}")
+
         messages = []
         for r in res:
             m = r.get("ChatMessage", {})
@@ -1513,9 +1564,15 @@ async def get_session_messages(session_id: str, request: Request, location_conte
             # without instant language-toggle) instead of showing blank.
             text_en = data.pop("_text_en", None) or stored_text
             text_kn = data.pop("_text_kn", None) or stored_text
+            sender_employee_id = m.get("sender_employee_id")
+            if m.get("sender") == "assistant":
+                sender_name = "VAJRA.AI"
+            else:
+                sender_name = names_by_id.get(sender_employee_id) if sender_employee_id is not None else None
             messages.append({
                 "sender": m.get("sender"),
-                "sender_employee_id": m.get("sender_employee_id"),
+                "sender_employee_id": sender_employee_id,
+                "sender_name": sender_name,
                 "text": stored_text,
                 "text_en": text_en,
                 "text_kn": text_kn,
@@ -1653,7 +1710,8 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     await connection_manager.broadcast(session_id, {
         "type": "message", "sender": "user", "sender_employee_id": employee_id,
         "sender_name": first_name, "text": display_text, "response_type": "text",
-        "data": {}, "citations": [], "timestamp": datetime.utcnow().isoformat()
+        "data": {}, "citations": [], "timestamp": datetime.utcnow().isoformat(),
+        "client_msg_id": payload.client_msg_id
     })
 
     if is_cowork and not mentions_vajra:
@@ -1735,6 +1793,7 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
             "response_type": "text", "data": {}, "citations": [],
             "timestamp": datetime.utcnow().isoformat(), "is_simulated": True,
             "simulated_reason": "translation_unavailable",
+            "client_msg_id": f"{payload.client_msg_id}-ai" if payload.client_msg_id else None
         })
         return {
             "text": text_kn, "text_en": text_en, "text_kn": text_kn,
@@ -1793,7 +1852,8 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
         # (the first-turn code path) carried these fields, so the honest-
         # unavailable notice silently stopped being honest from message 2 on.
         "is_simulated": result.get("is_simulated", False),
-        "simulated_reason": result.get("simulated_reason", "")
+        "simulated_reason": result.get("simulated_reason", ""),
+        "client_msg_id": f"{payload.client_msg_id}-ai" if payload.client_msg_id else None
     })
 
     return {
@@ -2022,24 +2082,65 @@ async def create_investigation(payload: CreateInvestigationRequest, request: Req
         raise HTTPException(status_code=400, detail="Title is required.")
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
 
+    case_row = None
     case_no = None
     if payload.case_no:
-        case_check = catalyst_app.zql().execute_query(f"SELECT CrimeNo FROM CaseMaster WHERE CrimeNo = '{payload.case_no}' LIMIT 1")
+        case_check = catalyst_app.zql().execute_query(
+            f"SELECT CaseMasterID, CrimeNo, CrimeRegisteredDate, AccusedCount, VictimCount, BriefFacts "
+            f"FROM CaseMaster WHERE CrimeNo = '{payload.case_no}' LIMIT 1"
+        )
         if not case_check:
             raise HTTPException(status_code=404, detail="That case number doesn't match any real case.")
+        case_row = case_check[0].get("CaseMaster", {})
         case_no = payload.case_no
+
+    # description drives whether this session is classified as an
+    # Investigation (GET /api/investigations) vs a plain quick chat (GET
+    # /api/sessions excludes anything with description IS NULL OR = '') --
+    # both title and case link are optional in the creation modal, so a
+    # description-less Investigation previously stored description = '' and
+    # silently fell through to the plain-chat bucket: it showed in the flat
+    # history list, not the pinned Investigations section, indistinguishable
+    # from a stray chat. Guaranteeing a non-empty description here is what
+    # actually makes this session an Investigation.
+    description = payload.description.strip()[:500] or (
+        f"Investigation linked to case {case_no}." if case_no else "Investigation (no additional details provided)."
+    )
 
     session_id = f"sess-{employee_id}-{int(datetime.utcnow().timestamp())}"
     zcql_insert_row("ChatSession", {
         "session_id": session_id,
         "employee_id": employee_id,
         "title": payload.title.strip()[:60],
-        "description": payload.description.strip()[:500],
+        "description": description,
         "case_no": case_no or "",
         "created_at": datetime.utcnow().isoformat(),
         "last_active_at": datetime.utcnow().isoformat()
     })
-    return {"session_id": session_id, "title": payload.title, "description": payload.description, "case_no": case_no}
+
+    # Opening message so the thread isn't a blank screen -- composed
+    # directly from real CaseMaster fields (no LLM call, no fabrication risk,
+    # instant). If no case was linked, a short generic opener instead of
+    # nothing at all.
+    if case_row:
+        facts = (case_row.get("BriefFacts") or "").strip()
+        kickoff = (
+            f"Investigation \"{payload.title.strip()}\" opened, linked to case {case_row.get('CrimeNo')} "
+            f"(registered {case_row.get('CrimeRegisteredDate') or 'date unknown'}, "
+            f"{case_row.get('AccusedCount') if case_row.get('AccusedCount') is not None else '?'} accused, "
+            f"{case_row.get('VictimCount') if case_row.get('VictimCount') is not None else '?'} victim(s)).\n\n"
+            f"Brief facts on record: {facts or 'None recorded for this case.'}\n\n"
+            f"Ask me anything about this case -- risk profile, MO matches, network, hotspots, or a full report."
+        )
+    else:
+        kickoff = (
+            f"Investigation \"{payload.title.strip()}\" opened"
+            f"{f': {payload.description.strip()}' if payload.description.strip() else ''}. "
+            f"No case is linked yet -- ask me anything to begin, or link a case later from Settings."
+        )
+    _persist_chat_message(session_id, "assistant", kickoff, "text", {"_text_en": kickoff, "_text_kn": kickoff}, sender_employee_id=None)
+
+    return {"session_id": session_id, "title": payload.title, "description": description, "case_no": case_no}
 
 
 @app.get("/api/investigations")
@@ -2090,8 +2191,24 @@ async def list_investigations(request: Request, location_context: str = Depends(
                 investigations.append({
                     "session_id": sid, "title": s["title"], "description": s["description"],
                     "case_no": s.get("case_no") or None, "last_active_at": s.get("last_active_at"),
-                    "role": part.get("role")
+                    "role": part.get("role"), "is_cowork": True
                 })
+
+        # Owner-side investigations don't know yet whether anyone accepted an
+        # invite into them -- role stays "owner" either way, so without this
+        # an owner who shared their own investigation saw no cowork signal
+        # at all (only invited guests did, via role != "owner").
+        owner_ids = [inv["session_id"] for inv in investigations if inv["role"] == "owner"]
+        if owner_ids:
+            id_list = ",".join(f"'{sid}'" for sid in owner_ids)
+            part_check = catalyst_app.zql().execute_query(
+                f"SELECT DISTINCT session_id FROM CoworkParticipant WHERE session_id IN ({id_list})"
+            )
+            shared_owner_ids = {r.get("CoworkParticipant", {}).get("session_id") for r in part_check}
+            for inv in investigations:
+                if inv["role"] == "owner":
+                    inv["is_cowork"] = inv["session_id"] in shared_owner_ids
+
         return investigations
     except Exception as e:
         logger.warning(f"Could not list investigations: {e}")

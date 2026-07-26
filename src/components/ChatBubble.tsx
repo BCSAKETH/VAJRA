@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { ChatMessage } from "../AppContext";
 import { translations } from "../i18n";
-import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2 } from "lucide-react";
+import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 import { API_BASE } from "../config";
 
@@ -9,6 +9,7 @@ interface ChatBubbleProps {
   message: ChatMessage;
   lang: "en" | "kn";
   onExpandWidget: (type: string, data: any) => void;
+  onRetry?: () => void;
 }
 
 // Clean markdown and formatting artifacts before sending text to speech synthesis
@@ -53,7 +54,7 @@ const speakText = (text: string, lang: "en" | "kn", onEnd: () => void) => {
   return true;
 };
 
-export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang, onExpandWidget }) => {
+export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang, onExpandWidget, onRetry }) => {
   const t = translations[lang];
   const isAI = message.sender === "assistant";
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -127,11 +128,20 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
         {isAI && message.isSimulated ? (
           <div className="rounded-2xl p-4 border border-amber-500/30 bg-amber-500/10 flex items-start gap-2.5 max-w-full">
             <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
-            <div className="text-xs leading-relaxed text-amber-350">
+            <div className="text-xs leading-relaxed text-amber-350 flex-1 min-w-0">
               <span className="font-extrabold uppercase tracking-wider block mb-1 text-amber-500">
                 {t.aiUnavailableTitle}
               </span>
               <span className="text-stone-200">{displayText}</span>
+              {onRetry && (
+                <button
+                  onClick={onRetry}
+                  className="mt-2.5 flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 hover:text-amber-300 text-[11px] font-bold uppercase tracking-wider transition-colors cursor-pointer"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                  {lang === "en" ? "Retry" : "ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ"}
+                </button>
+              )}
             </div>
           </div>
         ) : (

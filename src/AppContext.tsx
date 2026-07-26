@@ -39,6 +39,10 @@ export interface ChatMessage {
   isSimulated?: boolean;
   simulatedReason?: string;
   citations?: { type: string; id: string; details: string }[];
+  // The officer's own text that led to this assistant message, kept only on
+  // failed/unavailable turns so ChatBubble can offer a one-click retry
+  // (Claude-style) instead of making them retype the whole query.
+  retryText?: string;
   attachments?: { file_name: string; type: string; page_count: number; stratus_id?: string }[];
   // Cowork sender attribution -- who actually typed this in a shared session.
   senderName?: string;
@@ -64,6 +68,8 @@ interface AppContextType {
   setIsAuthenticated: (auth: boolean) => void;
   badgeNumber: string | null;
   setBadgeNumber: (badge: string | null) => void;
+  officerName: string | null;
+  setOfficerName: (name: string | null) => void;
   roleTier: "officer" | "supervisor" | null;
   setRoleTier: (tier: "officer" | "supervisor" | null) => void;
   isDbConnected: boolean;
@@ -76,6 +82,12 @@ interface AppContextType {
     realTimestamp?: string,
   ) => void;
   removeToast: (id: string) => void;
+  addNotification: (
+    title: string,
+    message: string,
+    severity: "Critical" | "Warning" | "Info" | "Success",
+    realTimestamp?: string,
+  ) => void;
   notifications: ToastMessage[];
   clearNotifications: () => void;
   markAllAsRead: () => void;
@@ -120,13 +132,27 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     return localStorage.getItem("vajra_badge");
   });
 
+  // The officer's own first name, resolved once via /api/auth/me right
+  // after login (see LoginScreen.tsx) and cached so every screen -- chat
+  // attribution, the sidebar profile card -- can show a real name instead
+  // of the generic "INVESTIGATOR" placeholder without a fetch of its own.
+  const [officerName, setOfficerNameState] = useState<string | null>(() => {
+    return localStorage.getItem("vajra_officer_name");
+  });
+  const setOfficerName = (name: string | null) => {
+    setOfficerNameState(name);
+    if (name) {
+      localStorage.setItem("vajra_officer_name", name);
+    } else {
+      localStorage.removeItem("vajra_officer_name");
+    }
+  };
+
   // role_tier comes directly from the /api/auth/login response (set by
-  // LoginScreen.tsx) rather than a separate /api/auth/me fetch. /api/auth/me
-  // depends on Catalyst resolving the Bearer token to a specific end-user
-  // session, which requires Third-party Authentication -- not wired yet, so
-  // that endpoint currently 401s for every request. The login response
-  // already resolves role_tier server-side from the authenticating badge's
-  // own RankID, so we use that directly instead of a call that can't work yet.
+  // LoginScreen.tsx) rather than a separate /api/auth/me fetch -- that
+  // endpoint is called separately (see officerName above) only for the
+  // officer's display name, since role_tier is already resolved
+  // server-side from the authenticating badge's own RankID at login time.
   const [roleTierState, setRoleTierState] = useState<"officer" | "supervisor" | null>(() => {
     const saved = localStorage.getItem("vajra_role_tier");
     return saved === "officer" || saved === "supervisor" ? saved : null;
@@ -235,6 +261,29 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
 
   const removeToast = useCallback((id: string) => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
+  // Bell-only variant of addToast -- same dedupe, same persisted
+  // notifications list, but never pushes onto the ephemeral on-screen toast
+  // stack. Proactive alerts (repeat-offender / spatial-spike) can arrive
+  // dozens deep on first login; popping a toast for every backlogged one
+  // buried real screen controls under "+N more notifications". They still
+  // land in the bell icon's unread count exactly like before.
+  const addNotification = useCallback((
+    title: string,
+    message: string,
+    severity: "Critical" | "Warning" | "Info" | "Success",
+    realTimestamp?: string,
+  ) => {
+    setNotifications((prev) => {
+      const isDuplicate = prev.some((n) => n.title === title && n.message === message);
+      if (isDuplicate) return prev;
+      const id = `notif-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
+      const timestamp = realTimestamp
+        ? new Date(realTimestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+        : new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      return [{ id, title, message, severity, timestamp, read: false }, ...prev];
+    });
   }, []);
 
   const clearNotifications = useCallback(() => {
@@ -354,6 +403,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         setIsAuthenticated,
         badgeNumber,
         setBadgeNumber,
+        officerName,
+        setOfficerName,
         roleTier: roleTierState,
         setRoleTier,
         isDbConnected,
@@ -361,6 +412,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         toasts,
         addToast,
         removeToast,
+        addNotification,
         notifications,
         clearNotifications,
         markAllAsRead,

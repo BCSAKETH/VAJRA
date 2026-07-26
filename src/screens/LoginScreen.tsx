@@ -11,6 +11,7 @@ export const LoginScreen: React.FC = () => {
     setLang,
     setIsAuthenticated,
     setBadgeNumber,
+    setOfficerName,
     setRoleTier,
     setGlobalLoading,
     addToast,
@@ -79,6 +80,16 @@ export const LoginScreen: React.FC = () => {
       setIsAuthenticated(true);
       setBadgeNumber(badgeInput);
       setRoleTier(data.role_tier === "supervisor" ? "supervisor" : "officer");
+
+      // Best-effort: resolve the officer's real first name for chat
+      // attribution and the sidebar profile card. Never blocks login on
+      // failure -- worst case, labels just fall back to "INVESTIGATOR".
+      fetch(`${API_BASE}/api/auth/me`, {
+        headers: { Authorization: `Bearer ${data.access_token}` },
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((me) => { if (me?.first_name) setOfficerName(me.first_name); })
+        .catch(() => {});
 
       addToast(
         lang === "en" ? "Secure Logon Established" : "ಸುರಕ್ಷಿತ ಲಾಗಿನ್ ಸ್ಥಾಪಿಸಲಾಗಿದೆ",

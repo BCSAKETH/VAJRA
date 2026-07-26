@@ -8,6 +8,7 @@ interface SessionSummary {
   session_id: string;
   title: string;
   last_active_at: string;
+  is_cowork?: boolean;
 }
 
 interface Investigation {
@@ -17,6 +18,7 @@ interface Investigation {
   case_no: string | null;
   last_active_at: string;
   role: string;
+  is_cowork?: boolean;
 }
 
 interface ChatHistoryPanelProps {
@@ -167,7 +169,14 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
                         <div className="text-[9px] text-stone-550 font-mono truncate">{inv.case_no}</div>
                       )}
                     </div>
-                    {inv.role !== "owner" && <Users className="w-3 h-3 shrink-0 text-stone-500 mt-0.5" />}
+                    {inv.is_cowork && (
+                      <Users
+                        className="w-3 h-3 shrink-0 text-[#5DCAA5] mt-0.5"
+                        aria-label={lang === "en" ? "Shared / Cowork session" : "ಹಂಚಿಕೊಂಡ ಅಧಿವೇಶನ"}
+                      >
+                        <title>{inv.role !== "owner" ? (lang === "en" ? "Shared with you" : "ನಿಮ್ಮೊಂದಿಗೆ ಹಂಚಲಾಗಿದೆ") : (lang === "en" ? "Shared by you" : "ನಿಮ್ಮಿಂದ ಹಂಚಲಾಗಿದೆ")}</title>
+                      </Users>
+                    )}
                   </button>
                   {inv.role === "owner" && (
                     <button
@@ -236,7 +245,13 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
                   ) : (
                     <MessageSquare className="w-3.5 h-3.5 shrink-0 mt-0.5 text-stone-500" />
                   )}
-                  <span className="truncate leading-tight">{s.title || t.newConversationFallback}</span>
+                  <span className="truncate leading-tight flex-1 min-w-0">{s.title || t.newConversationFallback}</span>
+                  {s.is_cowork && (
+                    <Users
+                      className="w-3 h-3 shrink-0 text-[#5DCAA5] mt-0.5"
+                      aria-label={lang === "en" ? "Shared / Cowork session" : "ಹಂಚಿಕೊಂಡ ಅಧಿವೇಶನ"}
+                    />
+                  )}
                 </button>
                 <button
                   onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === s.session_id ? null : s.session_id); }}

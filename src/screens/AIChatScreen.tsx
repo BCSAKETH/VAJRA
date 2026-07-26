@@ -26,7 +26,9 @@ export const AIChatScreen: React.FC = () => {
     chatMessages,
     setChatMessages,
     badgeNumber,
+    officerName,
     addToast,
+    addNotification,
     setIsAuthenticated,
   } = useApp();
 
@@ -88,6 +90,13 @@ export const AIChatScreen: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  // client_msg_ids this tab has already rendered directly from its own HTTP
+  // /api/chat response (both "<id>" for the user bubble and "<id>-ai" for
+  // the assistant reply) -- the same turn also arrives over the WebSocket
+  // broadcast a moment later (every participant, including the sender,
+  // shares one broadcast channel), and without this the sender saw their
+  // own message and its answer rendered twice.
+  const sentClientMsgIdsRef = useRef<Set<string>>(new Set());
 
   // Poll proactive alerts. seenAlerts lives in a ref (not a local variable
   // inside the effect) so it survives if this effect ever re-runs for any
@@ -110,9 +119,12 @@ export const AIChatScreen: React.FC = () => {
             const alertKey = `${alert.type}-${alert.timestamp}-${alert.details}`;
             if (!seenAlertsRef.current.has(alertKey)) {
               seenAlertsRef.current.add(alertKey);
-              // Pop toast -- alert.timestamp is the real TriggerTime from
-              // ProactiveAlerts, not "now", so old alerts read as old.
-              addToast(
+              // Bell only, not a popup toast -- a first-login backlog can be
+              // dozens of alerts deep, and popping a toast for each one
+              // buried real on-screen controls under "+N more notifications".
+              // alert.timestamp is the real TriggerTime from ProactiveAlerts,
+              // not "now", so old alerts still read as old in the bell list.
+              addNotification(
                 alert.type === "SPATIAL_SPIKE" ? "🚨 Spatial Crime Spike" : "👤 Repeat Offender Alert",
                 alert.details,
                 "Warning",
@@ -129,7 +141,7 @@ export const AIChatScreen: React.FC = () => {
     pollAlerts();
     const interval = setInterval(pollAlerts, 15000);
     return () => clearInterval(interval);
-  }, [addToast]);
+  }, [addNotification]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -176,6 +188,16 @@ export const AIChatScreen: React.FC = () => {
       try {
         const payload = JSON.parse(event.data);
         if (payload.type !== "message") return;
+        // This tab already rendered its own turn straight from the HTTP
+        // response (reliable regardless of the socket's connection state) --
+        // skip the broadcast echo of that same turn so it isn't shown twice.
+        // Consume the id on first match rather than leaving it live for the
+        // session's whole lifetime.
+        if (payload.client_msg_id && sentClientMsgIdsRef.current.has(payload.client_msg_id)) {
+          sentClientMsgIdsRef.current.delete(payload.client_msg_id);
+          if (payload.sender === "assistant") setIsThinking(false);
+          return;
+        }
         setChatMessages((prev) => {
           const newMsg: ChatMessage = {
             id: `ws-${Date.now()}-${Math.random()}`,
@@ -273,22 +295,26 @@ export const AIChatScreen: React.FC = () => {
       setIsUploadingAttachments(false);
     }
 
-    // Once a session exists, the WebSocket is connected and delivers every
-    // message (including the sender's own) via broadcast -- appending it
-    // here too would show it twice. Only the very first message of a brand
-    // new session (before a session_id/WS connection exists yet) still
-    // needs the old optimistic local append.
-    const wsAlreadyConnected = !!activeSessionId;
-    if (!wsAlreadyConnected) {
-      const userMsg: ChatMessage = {
-        id: `msg-${Date.now()}-user`,
-        sender: "user",
-        text: textToSend,
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        attachments: uploadedAttachmentRefs.length > 0 ? uploadedAttachmentRefs : undefined,
-      };
-      setChatMessages((prev) => [...prev, userMsg]);
-    }
+    // Rendered directly from this call's own HTTP response below, always --
+    // reliable regardless of whether the WebSocket happens to be connected,
+    // mid-reconnect, or drops the broadcast (confirmed live: relying on the
+    // broadcast alone for every message after the first meant a turn could
+    // go through on the server but never appear on screen until a manual
+    // refresh). client_msg_id lets the WS handler recognize and skip the
+    // broadcast echo of this exact turn instead of rendering it a second
+    // time once it arrives.
+    const clientMsgId = `cmid-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    sentClientMsgIdsRef.current.add(clientMsgId);
+    sentClientMsgIdsRef.current.add(`${clientMsgId}-ai`);
+    const userMsg: ChatMessage = {
+      id: `msg-${Date.now()}-user`,
+      sender: "user",
+      text: textToSend,
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      attachments: uploadedAttachmentRefs.length > 0 ? uploadedAttachmentRefs : undefined,
+      senderName: officerName || undefined,
+    };
+    setChatMessages((prev) => [...prev, userMsg]);
     setInputVal("");
     setThinkingType(lang === "kn" ? "translation" : "standard");
     setIsThinking(true);
@@ -305,6 +331,7 @@ export const AIChatScreen: React.FC = () => {
           display_text: textToSend,
           lang: lang,
           session_id: activeSessionId,
+          client_msg_id: clientMsgId,
         }),
       });
 
@@ -324,10 +351,10 @@ export const AIChatScreen: React.FC = () => {
 
       const data = await response.json();
 
-      // Once the WebSocket is connected, it delivers this same message via
-      // broadcast -- appending it here too would duplicate it. Only the
-      // first turn (before a session/WS exists) still needs this.
-      if (!wsAlreadyConnected && data.ai_invoked !== false) {
+      // Rendered directly from this response, always -- see clientMsgId
+      // comment above for why. The WS handler skips its own echo of this
+      // exact turn via sentClientMsgIdsRef.
+      if (data.ai_invoked !== false) {
         const aiMsg: ChatMessage = {
           id: `msg-${Date.now()}-ai`,
           sender: "assistant",
@@ -340,6 +367,7 @@ export const AIChatScreen: React.FC = () => {
           isSimulated: data.is_simulated,
           simulatedReason: data.simulated_reason,
           citations: data.citations,
+          retryText: data.is_simulated ? textToSend : undefined,
         };
         setChatMessages((prev) => [...prev, aiMsg]);
       }
@@ -374,6 +402,7 @@ export const AIChatScreen: React.FC = () => {
         // instead of inventing a new state.
         isSimulated: true,
         simulatedReason: lang === "en" ? "connection_failed" : "ಸಂಪರ್ಕ_ವಿಫಲವಾಗಿದೆ",
+        retryText: textToSend,
       };
       setChatMessages((prev) => [...prev, errorMsg]);
     } finally {
@@ -509,6 +538,8 @@ export const AIChatScreen: React.FC = () => {
         data: m.data,
         citations: m.citations,
         attachments: m.data?.attachments,
+        senderName: m.sender_name,
+        senderEmployeeId: m.sender_employee_id,
       }));
       sessionMessagesCacheRef.current.set(sessionId, loaded);
       setChatMessages(loaded);
@@ -648,6 +679,7 @@ export const AIChatScreen: React.FC = () => {
               message={msg}
               lang={lang}
               onExpandWidget={(widgetType, widgetData) => setExpandedWidget({ type: widgetType as any, data: widgetData })}
+              onRetry={msg.retryText ? () => handleSend(msg.retryText!) : undefined}
             />
           ))
         )}
