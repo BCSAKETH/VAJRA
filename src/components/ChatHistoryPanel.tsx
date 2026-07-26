@@ -129,6 +129,20 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
         <div className="fixed inset-0 z-40" onClick={() => setOpenMenuId(null)} />
       )}
 
+      {/* New Chat first -- the primary, most-used action sits at the very
+          top like Claude/ChatGPT's own "New chat", with Investigations
+          (a secondary, case-linked workflow) pinned right below it rather
+          than competing for the top slot. */}
+      <div className="p-3 border-b border-stone-850">
+        <button
+          onClick={onNewChat}
+          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-[#C79A4E]/30 bg-[#C79A4E]/10 hover:bg-[#C79A4E]/20 text-[#C79A4E] text-xs font-bold uppercase tracking-wider transition-all cursor-pointer"
+        >
+          <MessageSquarePlus className="w-3.5 h-3.5" />
+          {t.newChat}
+        </button>
+      </div>
+
       {/* Investigations -- pinned above regular chat history, same pattern
           as Claude/ChatGPT's Projects sitting above Recents in one rail. */}
       <div className="p-3 border-b border-stone-850 space-y-2">
@@ -203,16 +217,6 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
             })}
           </div>
         )}
-      </div>
-
-      <div className="p-3 border-b border-stone-850">
-        <button
-          onClick={onNewChat}
-          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-[#C79A4E]/30 bg-[#C79A4E]/10 hover:bg-[#C79A4E]/20 text-[#C79A4E] text-xs font-bold uppercase tracking-wider transition-all cursor-pointer"
-        >
-          <MessageSquarePlus className="w-3.5 h-3.5" />
-          {t.newChat}
-        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
