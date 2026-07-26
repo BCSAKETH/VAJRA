@@ -34,6 +34,7 @@ export interface Translations {
   navSupervisor: string;
   navAudit: string;
   navSettings: string;
+  navDistrictDashboard: string;
   chatPlaceholder: string;
   voiceListening: string;
   thinkingIndicator: string;
@@ -178,6 +179,7 @@ export const translations: Record<Language, Translations> = {
     navSupervisor: "Supervisor Dashboard",
     navAudit: "Immutable Audit Ledger",
     navSettings: "System Settings",
+    navDistrictDashboard: "District Analytics",
     chatPlaceholder: "Ask VAJRA (e.g. 'Assess conviction risk for Ramesh' or 'Plot crime hotspots')...",
     voiceListening: "Listening to Karnataka voice feed...",
     thinkingIndicator: "VAJRA is reasoning over CCTNS registers...",
@@ -310,6 +312,7 @@ export const translations: Record<Language, Translations> = {
     navSupervisor: "ಮೇಲ್ವಿಚಾರಕರ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್",
     navAudit: "ಅಸ್ಥಿರವಲ್ಲದ ದಾಖಲೆ ಲಾಗ್",
     navSettings: "ಸಿಸ್ಟಮ್ ಸೆಟ್ಟಿಂಗ್ಗಳು",
+    navDistrictDashboard: "ಜಿಲ್ಲಾ ವಿಶ್ಲೇಷಣೆ",
     chatPlaceholder: "ಪ್ರಶ್ನೆ ಕೇಳಿ (ಉದಾಹರಣೆಗೆ: 'ರಮೇಶ್ ಅಪರಾಧದ ಅಪಾಯ ವಿಶ್ಲೇಷಿಸು' ಅಥವಾ 'ಅಪರಾಧದ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳನ್ನು ತೋರಿಸಿ')...",
     voiceListening: "ಕನ್ನಡ ಧ್ವನಿ ಸಂಜ್ಞೆ ಆಲಿಸಲಾಗುತ್ತಿದೆ...",
     thinkingIndicator: "ವಜ್ರ ಸಿಬ್ಬಂದಿ CCTNS ದಾಖಲೆಗಳನ್ನು ಹುಡುಕುತ್ತಿದ್ದಾರೆ...",

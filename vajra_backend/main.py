@@ -18,7 +18,7 @@ import json
 import hashlib
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 import pandas as pd
 import joblib
@@ -469,6 +469,305 @@ async def get_accident_spots(
         return [r.get("AccidentReports", {}) for r in res]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to query accident reports: {str(e)}")
+
+
+@app.get("/api/cases/spatial-hotspots")
+async def get_spatial_hotspots(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Backs SpatialScreen.tsx. This endpoint never existed -- the frontend has
+    been calling a URL with no matching route this whole time, always 404ing
+    and showing "Data Unavailable / Geospatial Database Offline" regardless
+    of whether the database itself was actually fine. Reuses the SAME
+    query_hotspots tool logic the chat agent already uses (real ZCQL
+    coordinate fetch + the shared cluster_hotspots DBSCAN helper), not a
+    reimplementation, so this endpoint and the chat tool can never drift
+    apart on what counts as a hotspot.
+    """
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    unit_id = request.state.user_profile.get("UnitID") or request.state.user_profile.get("unitid")
+    result = agent_loop._execute_tool("query_hotspots", {}, employee_id, "dashboard", unit_id)
+    hotspots = (result.get("data") or {}).get("hotspots") or []
+    return hotspots
+
+
+@app.get("/api/cases/demographics")
+async def get_cases_demographics(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Backs ReportsScreen.tsx (bar chart of crime incidence by district, line
+    chart of unemployment vs incidents). Same missing-route bug as
+    /api/cases/spatial-hotspots above -- always 404'd, always showed
+    "Analytics Offline". Real per-district data: DistrictSocioProfile for
+    the socio-economic figures (illustrative synthetic values, disclosed as
+    such -- see DistrictSocioProfile in docs/SCHEMA.md) joined with a real
+    live case count per district via the same Unit.DistrictID join pattern
+    used throughout agent_loop.py (CaseMaster has no direct usable DistrictID
+    join path -- see get_offender_risk's comment on the phantom-column ZCQL
+    400 this caused previously).
+    """
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    try:
+        districts = catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")
+        units = catalyst_app.zql().execute_query("SELECT UnitID, DistrictID FROM Unit")
+        unit_to_district = {u.get("Unit", {}).get("UnitID"): u.get("Unit", {}).get("DistrictID") for u in units}
+
+        # One grouped COUNT query across all stations (not one query per
+        # district) -- GROUP BY aggregates aren't subject to ZCQL's 300-row
+        # SELECT cap (confirmed elsewhere in agent_loop.py), so this scans
+        # every case exactly once regardless of table size.
+        case_counts_by_unit: Dict[Any, int] = {}
+        try:
+            count_res = catalyst_app.zql().execute_query(
+                "SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster GROUP BY PoliceStationID"
+            )
+            for r in count_res:
+                cm = r.get("CaseMaster", {})
+                case_counts_by_unit[cm.get("PoliceStationID")] = int(cm.get("COUNT(CaseMasterID)") or 0)
+        except Exception as e:
+            logger.warning(f"Grouped case-count query failed: {e}")
+
+        case_counts_by_district: Dict[Any, int] = {}
+        for unit_id, count in case_counts_by_unit.items():
+            dist_id = unit_to_district.get(unit_id)
+            if dist_id is not None:
+                case_counts_by_district[dist_id] = case_counts_by_district.get(dist_id, 0) + count
+
+        profile_res = catalyst_app.zql().execute_query("SELECT * FROM DistrictSocioProfile")
+        profile_by_district = {p.get("DistrictSocioProfile", {}).get("DistrictID"): p.get("DistrictSocioProfile", {}) for p in profile_res}
+
+        out = []
+        for d in districts:
+            d_data = d.get("District", {})
+            dist_id = d_data.get("DistrictID")
+            profile = profile_by_district.get(dist_id) or {}
+            out.append({
+                "district": d_data.get("DistrictName"),
+                "crimeCount": case_counts_by_district.get(dist_id, 0),
+                "unemploymentRate": profile.get("UnemploymentRate"),
+                "literacyRate": profile.get("LiteracyRate"),
+            })
+        out.sort(key=lambda x: x["crimeCount"], reverse=True)
+        return out
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute district demographics: {str(e)}")
+
+
+# Solved/unsolved classification for the district dashboard's outcome pie
+# chart. Fixed vocabulary per spec: solved = {CONVICTED, CHARGESHEETED,
+# CLOSED, COMPROMISED, ACQUITTED, BOUND OVER}; unsolved = {UNDER
+# INVESTIGATION, PENDING TRIAL, UNDETECTED, REFERRED}. The REAL seeded
+# CaseStatusMaster names (see docs/SCHEMA.md) don't string-match this
+# vocabulary exactly ("Dis/Acq", "BoundOver" with no space) -- classify by
+# normalized substring keyword match, not exact equality, so real-world
+# naming variance doesn't silently drop every case into neither bucket.
+# "Dis/Acq" (discharged/acquitted) is treated as solved: both outcomes are a
+# case reaching a real conclusion, matching the spirit of the given list
+# even though "discharged" has no exact slot in it.
+_SOLVED_KEYWORDS = ["convict", "chargesheet", "close", "compromis", "acquit", "boundover", "disacq"]
+_UNSOLVED_KEYWORDS = ["underinvestigation", "pendingtrial", "undetect", "refer"]
+
+
+def _classify_case_status(status_name: str) -> str:
+    norm = re.sub(r"[^a-z]", "", (status_name or "").lower())
+    if any(k in norm for k in _SOLVED_KEYWORDS):
+        return "solved"
+    if any(k in norm for k in _UNSOLVED_KEYWORDS):
+        return "unsolved"
+    return "unclassified"
+
+
+@app.get("/api/dashboard/districts/summary")
+async def get_district_dashboard_summary(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    All-districts hover payload for the district analytics dashboard map.
+    Fixed architecture per spec: no caching, no materialized/pre-aggregated
+    tables -- every number is a live query, computed once per dashboard
+    load/refresh (not per-hover; the frontend fetches this once and reads
+    from the in-memory result on hover). CaseMaster has no direct usable
+    DistrictID join path (see get_offender_risk's comment on the phantom-
+    column ZCQL 400 this caused previously) -- district is resolved via the
+    same Unit.DistrictID join used throughout agent_loop.py.
+
+    "Most-wanted" per district is a bounded-sample computation (first 300
+    Accused rows, same documented pattern as detect_crime_groups), NOT a
+    full 14,000-row Accused table scan -- that would need ~47 paginated
+    ZCQL calls per the same constraint documented in get_repeat_offenders,
+    far too slow for an interactive dashboard load. Disclosed via
+    `sample_note` in the response rather than presented as exhaustive.
+    """
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    try:
+        districts = catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")
+        units = catalyst_app.zql().execute_query("SELECT UnitID, DistrictID FROM Unit")
+        unit_to_district = {u.get("Unit", {}).get("UnitID"): u.get("Unit", {}).get("DistrictID") for u in units}
+
+        # 1. Case counts: one grouped query, rolled up unit -> district.
+        case_counts_by_district: Dict[Any, int] = {}
+        try:
+            count_res = catalyst_app.zql().execute_query(
+                "SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster GROUP BY PoliceStationID"
+            )
+            for r in count_res:
+                cm = r.get("CaseMaster", {})
+                unit_id = cm.get("PoliceStationID")
+                dist_id = unit_to_district.get(unit_id)
+                if dist_id is not None:
+                    count = int(cm.get("COUNT(CaseMasterID)") or 0)
+                    case_counts_by_district[dist_id] = case_counts_by_district.get(dist_id, 0) + count
+        except Exception as e:
+            logger.warning(f"District summary: grouped case-count query failed: {e}")
+
+        # 2. Most-wanted per district: bounded Accused sample + one IN-clause
+        # lookup to resolve those cases' districts (never a full table scan).
+        most_wanted_by_district: Dict[Any, Dict[str, Any]] = {}
+        try:
+            acc_res = catalyst_app.zql().execute_query("SELECT AccusedName, CaseMasterID FROM Accused LIMIT 300")
+            case_ids = sorted({r.get("Accused", {}).get("CaseMasterID") for r in acc_res if r.get("Accused", {}).get("CaseMasterID")})
+            case_to_unit: Dict[Any, Any] = {}
+            if case_ids:
+                cm_res = catalyst_app.zql().execute_query(
+                    f"SELECT CaseMasterID, PoliceStationID FROM CaseMaster WHERE CaseMasterID IN ({','.join(str(c) for c in case_ids)})"
+                )
+                case_to_unit = {r.get("CaseMaster", {}).get("CaseMasterID"): r.get("CaseMaster", {}).get("PoliceStationID") for r in cm_res}
+
+            tally: Dict[Tuple[Any, str], int] = {}
+            for r in acc_res:
+                a = r.get("Accused", {})
+                name = (a.get("AccusedName") or "").strip()
+                cid = a.get("CaseMasterID")
+                if not name or "unknown" in name.lower() or not cid:
+                    continue
+                dist_id = unit_to_district.get(case_to_unit.get(cid))
+                if dist_id is None:
+                    continue
+                key = (dist_id, name)
+                tally[key] = tally.get(key, 0) + 1
+
+            for (dist_id, name), count in tally.items():
+                current = most_wanted_by_district.get(dist_id)
+                if not current or count > current["case_count"]:
+                    most_wanted_by_district[dist_id] = {"suspect": name, "case_count": count}
+        except Exception as e:
+            logger.warning(f"District summary: most-wanted computation failed: {e}")
+
+        out = []
+        for d in districts:
+            d_data = d.get("District", {})
+            dist_id = d_data.get("DistrictID")
+            out.append({
+                "district_id": dist_id,
+                "district": d_data.get("DistrictName"),
+                "active_cases": case_counts_by_district.get(dist_id, 0),
+                "most_wanted": most_wanted_by_district.get(dist_id),
+            })
+        return {
+            "districts": out,
+            "sample_note": "Most-wanted is computed from a 300-row Accused sample, not a full-table scan.",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute district summary: {str(e)}")
+
+
+@app.get("/api/dashboard/districts/{district_id}/detail")
+async def get_district_dashboard_detail(district_id: int, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    One district's full drill-down chart data. Every query here is scoped
+    with WHERE PoliceStationID IN (this district's own ~2-20 stations) --
+    never a full CaseMaster scan for a single district's panel.
+    """
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    try:
+        d_res = catalyst_app.zql().execute_query(f"SELECT DistrictName FROM District WHERE DistrictID = {district_id} LIMIT 1")
+        if not d_res:
+            raise HTTPException(status_code=404, detail=f"District {district_id} not found.")
+        district_name = d_res[0].get("District", {}).get("DistrictName")
+
+        unit_res = catalyst_app.zql().execute_query(f"SELECT UnitID FROM Unit WHERE DistrictID = {district_id}")
+        unit_ids = [u.get("Unit", {}).get("UnitID") for u in unit_res if u.get("Unit", {}).get("UnitID")]
+        unit_filter = f" WHERE PoliceStationID IN ({','.join(str(u) for u in unit_ids)})" if unit_ids else " WHERE 1=0"
+
+        # 1. Socio-economic bar chart -- illustrative synthetic values, must
+        # be disclosed as such (see DistrictSocioProfile in docs/SCHEMA.md).
+        socio = {}
+        sp_res = catalyst_app.zql().execute_query(f"SELECT * FROM DistrictSocioProfile WHERE DistrictID = {district_id} LIMIT 1")
+        if sp_res:
+            socio = sp_res[0].get("DistrictSocioProfile", {})
+        socio_chart = {
+            "data": [
+                {"name": "Literacy Rate", "value": socio.get("LiteracyRate")},
+                {"name": "Unemployment Rate", "value": socio.get("UnemploymentRate")},
+                {"name": "Urbanization Index", "value": socio.get("UrbanizationIndex")},
+                {"name": "Migration Index", "value": socio.get("MigrationIndex")},
+                {"name": "Economic Stress Index", "value": socio.get("EconomicStressIndex")},
+            ],
+            "disclaimer": "Illustrative synthetic estimates, not official Census/NCRB data.",
+        }
+
+        # 2. Hotspots -- reuses the SAME cluster_hotspots DBSCAN helper the
+        # chat agent's query_hotspots tool uses (see agent_loop.py), scoped
+        # to this district's own coordinates only. Never reimplemented.
+        coords = []
+        map_res = catalyst_app.zql().execute_query(
+            f"SELECT Latitude, Longitude, CrimeNo FROM CaseMaster{unit_filter} AND Latitude IS NOT NULL LIMIT 300"
+            if unit_ids else f"SELECT Latitude, Longitude, CrimeNo FROM CaseMaster{unit_filter}"
+        )
+        for r in map_res:
+            cm = r.get("CaseMaster", {})
+            lat, lng = cm.get("latitude"), cm.get("longitude")
+            if lat is not None and lng is not None:
+                coords.append({"lat": float(lat), "lng": float(lng), "label": cm.get("CrimeNo")})
+        hotspots = agent_loop.cluster_hotspots(coords) if coords else []
+
+        # 3. Crime-type pie -- reuses the existing tool directly (no
+        # reimplementation of the GROUP BY + fallback logic it already has).
+        dist_tool_res = agent_loop._execute_tool("get_case_types_distribution", {"district": district_name}, None, "dashboard", None)
+        crime_types = (dist_tool_res.get("data") or {}).get("series") or []
+
+        # 4. Solved vs unsolved -- one grouped query + keyword classification.
+        status_names: Dict[Any, str] = {}
+        st_res = catalyst_app.zql().execute_query("SELECT CaseStatusID, CaseStatusName FROM CaseStatusMaster")
+        for r in st_res:
+            s = r.get("CaseStatusMaster", {})
+            status_names[s.get("CaseStatusID")] = s.get("CaseStatusName")
+
+        outcome_buckets = {"solved": 0, "unsolved": 0, "unclassified": 0}
+        status_count_res = catalyst_app.zql().execute_query(
+            f"SELECT CaseStatusID, COUNT(CaseMasterID) FROM CaseMaster{unit_filter} GROUP BY CaseStatusID"
+        )
+        for r in status_count_res:
+            cm = r.get("CaseMaster", {})
+            status_id = cm.get("CaseStatusID")
+            count = int(cm.get("COUNT(CaseMasterID)") or 0)
+            bucket = _classify_case_status(status_names.get(status_id, ""))
+            outcome_buckets[bucket] += count
+
+        # 5. Police presence: Employee headcount per this district's units,
+        # plus the station count itself as a secondary figure.
+        emp_res = catalyst_app.zql().execute_query("SELECT UnitID, COUNT(EmployeeID) FROM Employee GROUP BY UnitID")
+        unit_id_set = set(unit_ids)
+        headcount = sum(
+            int(r.get("Employee", {}).get("COUNT(EmployeeID)") or 0)
+            for r in emp_res if r.get("Employee", {}).get("UnitID") in unit_id_set
+        )
+
+        return {
+            "district_id": district_id,
+            "district": district_name,
+            "socio_economic_chart": socio_chart,
+            "hotspots": hotspots,
+            "crime_type_distribution": crime_types,
+            "case_outcomes": [
+                {"name": "Solved", "value": outcome_buckets["solved"]},
+                {"name": "Unsolved", "value": outcome_buckets["unsolved"]},
+            ] + ([{"name": "Unclassified", "value": outcome_buckets["unclassified"]}] if outcome_buckets["unclassified"] else []),
+            "police_presence": {"employee_headcount": headcount, "station_count": len(unit_ids)},
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute district detail: {str(e)}")
 
 
 @app.get("/api/firs")

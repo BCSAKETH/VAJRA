@@ -17,6 +17,9 @@ const SupervisorDashboardScreen = lazy(() =>
   import("./screens/SupervisorDashboardScreen").then((m) => ({ default: m.SupervisorDashboardScreen }))
 );
 const SettingsScreen = lazy(() => import("./screens/SettingsScreen").then((m) => ({ default: m.SettingsScreen })));
+const DistrictDashboardScreen = lazy(() =>
+  import("./screens/DistrictDashboardScreen").then((m) => ({ default: m.DistrictDashboardScreen }))
+);
 
 const ScreenLoadingFallback: React.FC = () => (
   <div className="h-full flex items-center justify-center">
@@ -54,6 +57,8 @@ const AppContent: React.FC = () => {
         return <SupervisorDashboardScreen />;
       case "settings":
         return <SettingsScreen />;
+      case "district_dashboard":
+        return <DistrictDashboardScreen />;
       default:
         return <AIChatScreen />;
     }

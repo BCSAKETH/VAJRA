@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { MapContainer, TileLayer, Marker, Popup, Circle } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Popup, Circle } from "react-leaflet";
 import { WatermarkOverlay } from "../components/WatermarkOverlay";
 import { MapPin, Sliders, AlertTriangle } from "lucide-react";
 
@@ -172,14 +172,6 @@ export const SpatialScreen: React.FC = () => {
               />
               {points.map((point, index) => (
                 <React.Fragment key={index}>
-                  <Marker position={[point.lat, point.lng]}>
-                    <Popup>
-                      <div className="text-xs font-sans text-stone-900">
-                        <span className="font-bold block">{point.label}</span>
-                        Lat: {point.lat.toFixed(5)}, Lng: {point.lng.toFixed(5)}
-                      </div>
-                    </Popup>
-                  </Marker>
                   <Circle
                     center={[point.lat, point.lng]}
                     radius={eps * 111300} // rough degrees to meters conversion
@@ -190,6 +182,29 @@ export const SpatialScreen: React.FC = () => {
                       fillOpacity: 0.08,
                     }}
                   />
+                  {/* Solid gold center marker -- react-leaflet's default
+                      Marker needs an external icon image Vite doesn't
+                      auto-resolve (renders broken/missing), and even when it
+                      does load it's an unthemed blue pin. CircleMarker is a
+                      self-contained SVG circle -- no asset dependency, and
+                      themed to match the rest of the app. */}
+                  <CircleMarker
+                    center={[point.lat, point.lng]}
+                    radius={6}
+                    pathOptions={{
+                      fillColor: "#C79A4E",
+                      color: "#211F1D",
+                      weight: 1.5,
+                      fillOpacity: 0.95,
+                    }}
+                  >
+                    <Popup>
+                      <div className="text-xs font-sans text-stone-900">
+                        <span className="font-bold block">{point.label}</span>
+                        Lat: {point.lat.toFixed(5)}, Lng: {point.lng.toFixed(5)}
+                      </div>
+                    </Popup>
+                  </CircleMarker>
                 </React.Fragment>
               ))}
             </MapContainer>

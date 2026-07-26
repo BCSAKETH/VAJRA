@@ -1024,6 +1024,46 @@ class VajraAgentLoop:
 
         return None
 
+    def cluster_hotspots(self, coordinates: List[Dict[str, Any]], eps: float = 0.005, min_samples: int = 6) -> List[Dict[str, Any]]:
+        """
+        DBSCAN spatial clustering over a list of {lat, lng, ...} points,
+        returning cluster centroids. Extracted from query_hotspots so the
+        district-dashboard detail endpoint (main.py) can scope this same
+        clustering to one district's cases without reimplementing it --
+        both call this one method. min_samples defaults to 6 (not the more
+        conventional 10): Catalyst hard-caps every ZCQL query at 300 rows, so
+        any caller only ever sees up to a 300-row slice of the real incident
+        volume, and a lower threshold was confirmed live to still find real
+        clusters within that sample size without false-positive noise.
+        """
+        centroids: List[Dict[str, Any]] = []
+        if not coordinates:
+            return centroids
+        try:
+            from sklearn.cluster import DBSCAN
+            X = np.array([[c["lat"], c["lng"]] for c in coordinates])
+            db = DBSCAN(eps=eps, min_samples=min_samples, metric='euclidean')
+            labels = db.fit_predict(X)
+
+            unique_labels = set(labels)
+            if -1 in unique_labels:
+                unique_labels.remove(-1)
+
+            for idx, label in enumerate(sorted(unique_labels)):
+                cluster_points = X[labels == label]
+                lat_center = float(np.mean(cluster_points[:, 0]))
+                lng_center = float(np.mean(cluster_points[:, 1]))
+                point_count = len(cluster_points)
+                centroids.append({
+                    "lat": lat_center,
+                    "lng": lng_center,
+                    "label": f"DBSCAN Hotspot {idx + 1} ({point_count} incidents)",
+                    "point_count": point_count,
+                })
+        except Exception as db_err:
+            logger.warning(f"DBSCAN clustering failed: {db_err}")
+        return centroids
+
     def _execute_tool(self, tool_name: str, params: Dict[str, Any], employee_id: int, session_id: str, user_unit_id: Optional[int]) -> Dict[str, Any]:
         """
         Executes the registered backend capabilities.
@@ -1193,40 +1233,10 @@ class VajraAgentLoop:
                 except Exception as ex:
                     logger.error(f"Failed to fetch coordinates for hotspot: {ex}")
             
-            # Execute DBSCAN clustering
-            centroids = []
-            if coordinates:
-                try:
-                    from sklearn.cluster import DBSCAN
-                    X = np.array([[c["lat"], c["lng"]] for c in coordinates])
-                    # min_samples lowered from 10: Catalyst hard-caps every ZCQL
-                    # query at 300 rows, so this tool only ever sees a 300-row
-                    # slice of ~18000 total cases spread across ~30 city-wide
-                    # hotspot points -- confirmed live that even with cases
-                    # concentrated onto real hotspot points (not scattered
-                    # randomly), a 300-row sample averages ~10 points per
-                    # hotspot, right at the old threshold with no margin for
-                    # sampling variance across which 300 rows happen to be
-                    # returned.
-                    db = DBSCAN(eps=0.005, min_samples=6, metric='euclidean')
-                    labels = db.fit_predict(X)
-                    
-                    unique_labels = set(labels)
-                    if -1 in unique_labels:
-                        unique_labels.remove(-1)
-                    
-                    for idx, label in enumerate(sorted(unique_labels)):
-                        cluster_points = X[labels == label]
-                        lat_center = float(np.mean(cluster_points[:, 0]))
-                        lng_center = float(np.mean(cluster_points[:, 1]))
-                        point_count = len(cluster_points)
-                        centroids.append({
-                            "lat": lat_center,
-                            "lng": lng_center,
-                            "label": f"DBSCAN Hotspot {idx + 1} ({point_count} incidents)"
-                        })
-                except Exception as db_err:
-                    logger.warning(f"DBSCAN clustering failed: {db_err}")
+            # Execute DBSCAN clustering (shared helper -- see cluster_hotspots
+            # below; the district-dashboard detail endpoint in main.py calls
+            # the same method so hotspot clustering is never reimplemented).
+            centroids = self.cluster_hotspots(coordinates)
 
             if centroids:
                 data = {"hotspots": centroids}

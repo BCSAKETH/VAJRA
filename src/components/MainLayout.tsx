@@ -53,6 +53,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   // /api/alerts/consistency-flags/{id}/review.
   const navItems = [
     { id: "ai_chat" as ScreenId, label: t.navChat, icon: MessageSquare },
+    { id: "district_dashboard" as ScreenId, label: t.navDistrictDashboard, icon: Map },
     ...(roleTier === "supervisor"
       ? [{ id: "supervisor" as ScreenId, label: t.navSupervisor, icon: UserCheck }]
       : []),
