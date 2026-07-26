@@ -686,8 +686,14 @@ export const AIChatScreen: React.FC = () => {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input controls & suggestions footer */}
-      <div className="p-4 border-t border-stone-850 bg-stone-900/10 shrink-0">
+      {/* Input controls & suggestions footer -- Claude/ChatGPT-style: no
+          hard divider line between the thread and the composer. A soft
+          top fade instead (the thread appears to dissolve under it), and
+          the composer card itself (ChatInput's own glass-panel border)
+          is the only visible boundary, not an outer strip. */}
+      <div className="relative shrink-0">
+        <div className="pointer-events-none absolute inset-x-0 -top-6 h-6 bg-gradient-to-t from-[#161412] to-transparent" />
+        <div className="p-4 pt-2">
         <div className="max-w-4xl mx-auto space-y-4">
           {/* Suggestion Chips */}
           {chatMessages.length === 0 && (
@@ -740,6 +746,7 @@ export const AIChatScreen: React.FC = () => {
               </span>
             )}
           </div>
+        </div>
         </div>
       </div>
 

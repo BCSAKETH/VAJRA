@@ -1,5 +1,27 @@
 @import "tailwindcss";
 
+/* Non-standard stone shade stops (350/450/550/650/750/850) used throughout
+   the app -- these aren't real Tailwind v4 tokens (the default stone scale
+   only defines 50/100/.../900/950), so every `border-stone-850`,
+   `bg-stone-450`, `text-stone-550` etc. across the whole codebase compiled
+   to NOTHING: no CSS rule generated at all. A `border-*` utility with no
+   matching color utility falls back to the browser default border-color
+   (currentColor), which on light text over a dark background renders as a
+   bright near-white line -- confirmed live, this is what the composer's
+   top divider (and every other silently-broken use of these shades
+   app-wide) actually was. Interpolated OKLCH values between the real
+   adjacent stone stops (Tailwind's own v4 default theme values) so this one
+   block fixes every existing usage without touching any component file.
+*/
+@theme {
+  --color-stone-350: oklch(78.9% 0.0075 56.3);
+  --color-stone-450: oklch(63.1% 0.0115 57.2);
+  --color-stone-550: oklch(49.9% 0.012 65.9);
+  --color-stone-650: oklch(40.9% 0.0105 70.6);
+  --color-stone-750: oklch(32.1% 0.0085 50.9);
+  --color-stone-850: oklch(24.2% 0.0065 45.2);
+}
+
 @layer base {
   /* VAJRA warm-charcoal + gold identity.
      --color-teal is kept as the token *name* app-wide but now resolves to the
