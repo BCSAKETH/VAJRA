@@ -68,10 +68,12 @@ export const ReportsScreen: React.FC = () => {
         <div className="space-y-1">
           <h2 className="text-base font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">
             <BarChart3 className="w-5 h-5 text-[#C79A4E]" />
-            <span>Demographic Correlation Reports</span>
+            <span>{lang === "en" ? "Demographic Correlation Reports" : "ಜನಸಂಖ್ಯಾ ಪರಸ್ಪರ ಸಂಬಂಧ ವರದಿಗಳು"}</span>
           </h2>
           <p className="text-[11px] text-stone-550 leading-relaxed font-mono">
-            Statistical correlations between localized socio-demographic indicators and crime frequency indexes.
+            {lang === "en"
+              ? "Statistical correlations between localized socio-demographic indicators and crime frequency indexes."
+              : "ಸ್ಥಳೀಯ ಸಾಮಾಜಿಕ-ಜನಸಂಖ್ಯಾ ಸೂಚಕಗಳು ಮತ್ತು ಅಪರಾಧ ಆವರ್ತನ ಸೂಚ್ಯಂಕಗಳ ನಡುವಿನ ಅಂಕಿಅಂಶ ಪರಸ್ಪರ ಸಂಬಂಧಗಳು."}
           </p>
         </div>
       </div>
@@ -86,13 +88,15 @@ export const ReportsScreen: React.FC = () => {
               {lang === "en" ? "Data Unavailable — Analytics Offline" : "ಡೇಟಾ ಲಭ್ಯವಿಲ್ಲ — ವಿಶ್ಲೇಷಣೆ ಆಫ್‌ಲೈನ್"}
             </h4>
             <p className="text-xs text-stone-500 leading-relaxed font-semibold">
-              The analytical reporting services are currently offline. Check connection to database.
+              {lang === "en"
+                ? "The analytical reporting services are currently offline. Check connection to database."
+                : "ವಿಶ್ಲೇಷಣಾತ್ಮಕ ವರದಿ ಸೇವೆಗಳು ಪ್ರಸ್ತುತ ಆಫ್‌ಲೈನ್‌ನಲ್ಲಿವೆ. ಡೇಟಾಬೇಸ್‌ಗೆ ಸಂಪರ್ಕವನ್ನು ಪರಿಶೀಲಿಸಿ."}
             </p>
           </div>
         </div>
       ) : isLoading ? (
         <div className="flex-1 flex items-center justify-center text-stone-400 text-xs font-mono">
-          Compiling correlation matrices...
+          {lang === "en" ? "Compiling correlation matrices..." : "ಪರಸ್ಪರ ಸಂಬಂಧ ಮ್ಯಾಟ್ರಿಕ್ಸ್‌ಗಳನ್ನು ಸಂಗ್ರಹಿಸಲಾಗುತ್ತಿದೆ..."}
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1 min-h-0">
@@ -100,7 +104,9 @@ export const ReportsScreen: React.FC = () => {
           <div className="glass-card p-5 border border-stone-850 flex flex-col gap-4">
             <div className="flex items-center gap-2 border-b border-stone-850 pb-2">
               <Sparkles className="w-4 h-4 text-[#C79A4E]" />
-              <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono">Crime Incidence Index by District</h3>
+              <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono">
+                {lang === "en" ? "Crime Incidence Index by District" : "ಜಿಲ್ಲಾವಾರು ಅಪರಾಧ ಘಟನೆ ಸೂಚ್ಯಂಕ"}
+              </h3>
             </div>
             <div className="flex-1 min-h-[250px]">
               <ResponsiveContainer width="100%" height="100%">
@@ -109,7 +115,7 @@ export const ReportsScreen: React.FC = () => {
                   <XAxis dataKey="district" stroke="#94A3B8" fontSize={9.5} />
                   <YAxis stroke="#94A3B8" fontSize={9.5} />
                   <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b" }} />
-                  <Bar dataKey="crimeCount" fill="#C79A4E" radius={[4, 4, 0, 0]} name="Incidents Logged" />
+                  <Bar dataKey="crimeCount" fill="#C79A4E" radius={[4, 4, 0, 0]} name={lang === "en" ? "Incidents Logged" : "ದಾಖಲಾದ ಘಟನೆಗಳು"} />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -119,7 +125,9 @@ export const ReportsScreen: React.FC = () => {
           <div className="glass-card p-5 border border-stone-850 flex flex-col gap-4">
             <div className="flex items-center gap-2 border-b border-stone-850 pb-2">
               <TrendingUp className="w-4 h-4 text-[#C79A4E]" />
-              <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono">Unemployment Rate vs Incident Volume</h3>
+              <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono">
+                {lang === "en" ? "Unemployment Rate vs Incident Volume" : "ನಿರುದ್ಯೋಗ ದರ vs ಘಟನೆ ಪ್ರಮಾಣ"}
+              </h3>
             </div>
             <div className="flex-1 min-h-[250px]">
               <ResponsiveContainer width="100%" height="100%">
@@ -128,8 +136,8 @@ export const ReportsScreen: React.FC = () => {
                   <XAxis dataKey="district" stroke="#94A3B8" fontSize={9.5} />
                   <YAxis stroke="#94A3B8" fontSize={9.5} />
                   <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b" }} />
-                  <Line type="monotone" dataKey="crimeCount" stroke="#F59E0B" strokeWidth={2.5} name="Incidents" />
-                  <Line type="monotone" dataKey="unemploymentRate" stroke="#C79A4E" strokeWidth={2} name="Unemployment %" strokeDasharray="4 4" />
+                  <Line type="monotone" dataKey="crimeCount" stroke="#F59E0B" strokeWidth={2.5} name={lang === "en" ? "Incidents" : "ಘಟನೆಗಳು"} />
+                  <Line type="monotone" dataKey="unemploymentRate" stroke="#C79A4E" strokeWidth={2} name={lang === "en" ? "Unemployment %" : "ನಿರುದ್ಯೋಗ %"} strokeDasharray="4 4" />
                 </LineChart>
               </ResponsiveContainer>
             </div>

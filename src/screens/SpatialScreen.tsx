@@ -76,10 +76,12 @@ export const SpatialScreen: React.FC = () => {
         <div className="space-y-1.5">
           <h3 className="text-sm font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">
             <Sliders className="w-4 h-4 text-[#C79A4E]" />
-            <span>Hotspot Controls</span>
+            <span>{lang === "en" ? "Hotspot Controls" : "ಹಾಟ್‌ಸ್ಪಾಟ್ ನಿಯಂತ್ರಣಗಳು"}</span>
           </h3>
           <p className="text-[11px] text-stone-550 leading-relaxed font-mono">
-            Spatial DBSCAN and Kernel Density parameters for official patrol route allocation.
+            {lang === "en"
+              ? "Spatial DBSCAN and Kernel Density parameters for official patrol route allocation."
+              : "ಅಧಿಕೃತ ಗಸ್ತು ಮಾರ್ಗ ಹಂಚಿಕೆಗಾಗಿ ಪ್ರಾದೇಶಿಕ DBSCAN ಮತ್ತು ಕರ್ನಲ್ ಡೆನ್ಸಿಟಿ ನಿಯತಾಂಕಗಳು."}
           </p>
         </div>
 
@@ -87,7 +89,7 @@ export const SpatialScreen: React.FC = () => {
           {/* DBSCAN EPS Radius */}
           <div className="space-y-1.5">
             <label className="flex justify-between text-[11.5px] font-bold text-stone-400 font-mono">
-              <span>EPS Radius (deg):</span>
+              <span>{lang === "en" ? "EPS Radius (deg):" : "EPS ತ್ರಿಜ್ಯ (ಡಿಗ್ರಿ):"}</span>
               <span className="text-[#C79A4E] font-bold">{eps.toFixed(3)}</span>
             </label>
             <input
@@ -105,7 +107,7 @@ export const SpatialScreen: React.FC = () => {
           {/* DBSCAN Min Points */}
           <div className="space-y-1.5">
             <label className="flex justify-between text-[11.5px] font-bold text-stone-400 font-mono">
-              <span>Min Cluster Points:</span>
+              <span>{lang === "en" ? "Min Cluster Points:" : "ಕನಿಷ್ಠ ಸಮೂಹ ಬಿಂದುಗಳು:"}</span>
               <span className="text-[#C79A4E] font-bold">{minPts}</span>
             </label>
             <input
@@ -124,15 +126,15 @@ export const SpatialScreen: React.FC = () => {
         {/* Diagnostic Metadata */}
         <div className="mt-auto border-t border-stone-850 pt-4 space-y-3 font-mono text-[10px] text-stone-450 bg-stone-950/20 p-3 rounded-lg border">
           <div className="flex justify-between">
-            <span>Points Scanned:</span>
+            <span>{lang === "en" ? "Points Scanned:" : "ಸ್ಕ್ಯಾನ್ ಮಾಡಿದ ಬಿಂದುಗಳು:"}</span>
             <span className="font-bold text-stone-200">{points.length}</span>
           </div>
           <div className="flex justify-between">
-            <span>Active Clusters:</span>
+            <span>{lang === "en" ? "Active Clusters:" : "ಸಕ್ರಿಯ ಸಮೂಹಗಳು:"}</span>
             <span className="font-bold text-amber-500">{errorMsg ? "0" : Math.max(1, Math.round(points.length / minPts))}</span>
           </div>
           <div className="flex justify-between">
-            <span>Spatial Engine:</span>
+            <span>{lang === "en" ? "Spatial Engine:" : "ಪ್ರಾದೇಶಿಕ ಎಂಜಿನ್:"}</span>
             <span className="text-[#C79A4E] font-bold">DBSCAN 1.2</span>
           </div>
         </div>
@@ -150,13 +152,13 @@ export const SpatialScreen: React.FC = () => {
                 {lang === "en" ? "Data Unavailable" : "ಡೇಟಾ ಲಭ್ಯವಿಲ್ಲ"}
               </h4>
               <p className="text-xs text-stone-500 leading-relaxed font-semibold">
-                {errorMsg} Check connection to the KSP CCTNS geographical registry.
+                {errorMsg} {lang === "en" ? "Check connection to the KSP CCTNS geographical registry." : "KSP CCTNS ಭೌಗೋಳಿಕ ರಿಜಿಸ್ಟ್ರಿಗೆ ಸಂಪರ್ಕವನ್ನು ಪರಿಶೀಲಿಸಿ."}
               </p>
             </div>
           </div>
         ) : isLoading ? (
           <div className="flex-1 flex items-center justify-center bg-stone-950/40 text-stone-400 text-xs font-mono">
-            Loading geographical spatial nodes...
+            {lang === "en" ? "Loading geographical spatial nodes..." : "ಭೌಗೋಳಿಕ ಪ್ರಾದೇಶಿಕ ನೋಡ್‌ಗಳನ್ನು ಲೋಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ..."}
           </div>
         ) : (
           <div className="flex-1 relative">
