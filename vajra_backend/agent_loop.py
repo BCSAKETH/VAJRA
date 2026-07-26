@@ -265,6 +265,17 @@ class VajraAgentLoop:
                 },
                 "required": []
             }
+        },
+        {
+            "name": "generate_crime_overview",
+            "description": "Generate MULTIPLE charts/graphs about crime in one response: monthly trend line, case-type distribution pie/bar, and active spatial hotspots together. Use this (instead of a single narrower tool) whenever the officer asks for a 'variety of charts', 'different graphs', 'full analytics', 'complete overview', 'everything about crime in <place>', or similar composite analytics request -- a single narrow tool only returns one chart type and under-answers a composite ask.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "district": {"type": "string", "description": "Optional district name to scope all charts to (e.g. Bengaluru Urban). Omit for all districts."}
+                },
+                "required": []
+            }
         }
     ]
 
@@ -1917,6 +1928,42 @@ class VajraAgentLoop:
             self._write_audit_log(
                 employee_id, "Composite Full Report", suspect,
                 f"Full report requested for {suspect}", text_result, session_id
+            )
+
+        # 21. generate_crime_overview -- same composite pattern as
+        # generate_full_report, for "variety of charts" style requests. One
+        # tool call, three real sub-tools run in-process, merged into one
+        # multi-chart response instead of forcing several separate turns.
+        elif tool_name == "generate_crime_overview":
+            district = params.get("district", "")
+            trend_res = self._execute_tool("get_crime_trends", {"district": district}, employee_id, session_id, user_unit_id)
+            dist_res = self._execute_tool("get_case_types_distribution", {"district": district}, employee_id, session_id, user_unit_id)
+            hotspot_res = self._execute_tool("query_hotspots", {}, employee_id, session_id, user_unit_id)
+
+            # Anchor the inline/expanded widget on the trend chart (richest
+            # already-wired chart visual) and fold the pie/distribution and
+            # hotspot data in as extra keys, same additive pattern as the
+            # full-report tool above.
+            response_type = "trend"
+            data = dict(trend_res.get("data") or {})
+            data["case_distribution"] = dist_res.get("data")
+            data["hotspots"] = hotspot_res.get("data")
+
+            scope_label = district or "all districts"
+            text_result = (
+                f"CRIME OVERVIEW -- {scope_label}\n\n"
+                f"1. Trend: {trend_res.get('text_result', 'Not available.')}\n\n"
+                f"2. Case-type distribution: {dist_res.get('text_result', 'Not available.')}\n\n"
+                f"3. Spatial hotspots: {hotspot_res.get('text_result', 'Not available.')}"
+            )
+            citations = (
+                (trend_res.get("citations") or [])
+                + (dist_res.get("citations") or [])
+                + (hotspot_res.get("citations") or [])
+            )
+            self._write_audit_log(
+                employee_id, "Composite Crime Overview", scope_label,
+                f"Crime overview requested for {scope_label}", text_result, session_id
             )
 
         return {
