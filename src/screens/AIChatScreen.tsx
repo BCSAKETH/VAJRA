@@ -39,6 +39,15 @@ export const AIChatScreen: React.FC = () => {
   // messages land in the same ChatSession row instead of scattering across
   // synthetic per-request ids.
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  // Mirrors activeSessionId synchronously for handleSend's async callbacks
+  // (see there) -- a GLM turn can take 15-140s+, and if the officer
+  // navigates to a different conversation while one is still in flight, the
+  // reply must not land in whatever conversation happens to be on screen
+  // when it finally resolves. React state read inside a closure captured
+  // before the navigation would still see the OLD activeSessionId; this ref
+  // always reflects the current one.
+  const activeSessionIdRef = useRef<string | null>(null);
+  useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
   const [sessionsRefreshKey, setSessionsRefreshKey] = useState(0);
   // Which session (if any) is currently being fetched from the history
   // sidebar. Surfaced as an immediate spinner on the clicked row and a
@@ -249,10 +258,36 @@ export const AIChatScreen: React.FC = () => {
 
 
 
+  // Appends a message belonging to `turnSessionId` -- if that's still the
+  // conversation on screen, updates the live thread as before; if the
+  // officer has since navigated to a different conversation (a GLM turn can
+  // run 15-140s+, easily long enough to switch away and back), it patches
+  // that session's cache entry directly instead of dumping the reply into
+  // whatever's currently displayed. Confirmed live: without this, a reply
+  // that arrived after navigating away either vanished (never made it into
+  // either conversation's cache) or appeared in the wrong thread.
+  const appendMessageForTurn = useCallback((msg: ChatMessage, turnSessionId: string | null) => {
+    if (activeSessionIdRef.current === turnSessionId) {
+      setChatMessages((prev) => [...prev, msg]);
+      return;
+    }
+    if (turnSessionId) {
+      const existing = sessionMessagesCacheRef.current.get(turnSessionId) || [];
+      sessionMessagesCacheRef.current.set(turnSessionId, [...existing, msg]);
+    }
+  }, []);
+
   // Submit Text Query to Copilot Agent Loop
   const handleSend = useCallback(async (textToSend: string, filesToSend: File[] = []) => {
     if (isThinking || isUploadingAttachments) return;
     if (!textToSend.trim() && filesToSend.length === 0) return;
+
+    // The conversation this turn belongs to, fixed at send-time -- used
+    // below to route the eventual reply correctly even if the officer
+    // navigates elsewhere while it's still in flight. null means "brand new
+    // chat, no session yet" (resolved to the real id once the response
+    // hands one back).
+    const sendSessionId = activeSessionIdRef.current;
 
     let queryForAgent = textToSend;
     let uploadedAttachmentRefs: { file_name: string; type: string; page_count: number; stratus_id?: string }[] = [];
@@ -330,7 +365,7 @@ export const AIChatScreen: React.FC = () => {
           message: queryForAgent,
           display_text: textToSend,
           lang: lang,
-          session_id: activeSessionId,
+          session_id: sendSessionId,
           client_msg_id: clientMsgId,
         }),
       });
@@ -350,10 +385,16 @@ export const AIChatScreen: React.FC = () => {
       }
 
       const data = await response.json();
+      // Resolved id for THIS turn -- sendSessionId for an existing
+      // conversation, or the id the backend just auto-created if this was
+      // the first message of a brand new one.
+      const turnSessionId = sendSessionId || data.session_id || null;
 
       // Rendered directly from this response, always -- see clientMsgId
       // comment above for why. The WS handler skips its own echo of this
-      // exact turn via sentClientMsgIdsRef.
+      // exact turn via sentClientMsgIdsRef. Routed via appendMessageForTurn
+      // so a reply arriving after the officer has navigated elsewhere lands
+      // in the right conversation's cache instead of the one on screen.
       if (data.ai_invoked !== false) {
         const aiMsg: ChatMessage = {
           id: `msg-${Date.now()}-ai`,
@@ -369,20 +410,25 @@ export const AIChatScreen: React.FC = () => {
           citations: data.citations,
           retryText: data.is_simulated ? textToSend : undefined,
         };
-        setChatMessages((prev) => [...prev, aiMsg]);
+        appendMessageForTurn(aiMsg, turnSessionId);
       }
 
       // First turn of a new conversation: the backend just auto-created a
-      // real ChatSession and handed back its id. Adopt it so every
-      // subsequent turn in this conversation persists to the same session,
-      // and nudge the history sidebar to refresh so the new entry shows up.
-      if (!activeSessionId && data.session_id) {
-        setActiveSessionId(data.session_id);
+      // real ChatSession and handed back its id. Only auto-adopt it (switch
+      // the visible thread over) if the officer is still exactly where they
+      // were when they sent it -- otherwise they've already navigated
+      // elsewhere (a new chat reset, or an existing conversation) and
+      // forcing them back would be as disruptive as the bug this whole
+      // function exists to prevent. The sidebar refresh is always safe.
+      if (!sendSessionId && data.session_id) {
         setSessionsRefreshKey((k) => k + 1);
-        // If the officer picked "Cowork" mode before sending the first
-        // message, the session now exists -- prompt for who to invite.
-        if (chatMode === "cowork") {
-          setShowInvitePanel(true);
+        if (activeSessionIdRef.current === sendSessionId) {
+          setActiveSessionId(data.session_id);
+          // If the officer picked "Cowork" mode before sending the first
+          // message, the session now exists -- prompt for who to invite.
+          if (chatMode === "cowork") {
+            setShowInvitePanel(true);
+          }
         }
       }
     } catch (err: any) {
@@ -404,12 +450,14 @@ export const AIChatScreen: React.FC = () => {
         simulatedReason: lang === "en" ? "connection_failed" : "ಸಂಪರ್ಕ_ವಿಫಲವಾಗಿದೆ",
         retryText: textToSend,
       };
-      setChatMessages((prev) => [...prev, errorMsg]);
+      appendMessageForTurn(errorMsg, sendSessionId);
     } finally {
-      setIsThinking(false);
-      setThinkingType("standard");
+      if (activeSessionIdRef.current === sendSessionId) {
+        setIsThinking(false);
+        setThinkingType("standard");
+      }
     }
-  }, [isThinking, isUploadingAttachments, activeSessionId, lang, addToast, setIsAuthenticated, chatMode]);
+  }, [isThinking, isUploadingAttachments, lang, addToast, setIsAuthenticated, chatMode, appendMessageForTurn]);
 
   // Start a fresh conversation -- clears the transcript and drops the active
   // session id, so the next message sent auto-creates a brand new ChatSession.
