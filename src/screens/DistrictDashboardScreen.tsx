@@ -15,7 +15,7 @@ import {
   Legend,
   LabelList,
 } from "recharts";
-import { Map, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers } from "lucide-react";
+import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers } from "lucide-react";
 
 interface DistrictSummaryRow {
   district_id: number;
@@ -146,7 +146,7 @@ export const DistrictDashboardScreen: React.FC = () => {
       <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center border-b border-stone-850 pb-4 shrink-0">
         <div className="space-y-1">
           <h2 className="text-base font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">
-            <Map className="w-5 h-5 text-[#C79A4E]" />
+            <MapIcon className="w-5 h-5 text-[#C79A4E]" />
             <span>{lang === "en" ? "District Analytics Dashboard" : "ಜಿಲ್ಲಾ ವಿಶ್ಲೇಷಣೆ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್"}</span>
           </h2>
           <p className="text-[11px] text-stone-550 leading-relaxed font-mono">
