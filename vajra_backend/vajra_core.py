@@ -155,7 +155,8 @@ def _zcql_escape_value(v) -> str:
         return "true" if v else "false"
     if isinstance(v, (int, float)):
         return str(v)
-    return "'" + str(v).replace("'", "''") + "'"
+    s = str(v).replace("\\", "\\\\").replace("'", "''").replace("\n", "\\n").replace("\r", "\\r")
+    return f"'{s}'"
 
 
 def zcql_insert_row(table_name: str, row: Dict[str, Any]) -> None:

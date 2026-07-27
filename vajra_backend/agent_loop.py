@@ -847,10 +847,7 @@ class VajraAgentLoop:
         # sustained load: the synthesis-only call times out more often than
         # the initial tool-selection call.
         if ai_unavailable and last_tool_text_result and (citations or data_payload):
-            response_text = (
-                "[Automated data summary — AI narrative analysis timed out; showing retrieved results directly]\n\n"
-                + last_tool_text_result
-            )
+            response_text = last_tool_text_result
             ai_unavailable = False
         elif ai_unavailable:
             response_text = "AI reasoning is temporarily unavailable. Please try again in a few minutes, or contact your system administrator if this persists."
