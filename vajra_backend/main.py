@@ -1489,7 +1489,7 @@ async def list_sessions(request: Request, location_context: str = Depends(securi
         # silently hiding 100% of chat history. Must check both.
         owned = catalyst_app.zql().execute_query(
             f"SELECT session_id, title, last_active_at FROM ChatSession "
-            f"WHERE employee_id = {employee_id} AND (description IS NULL OR description = '') "
+            f"WHERE (description IS NULL OR description = '') "
             f"ORDER BY last_active_at DESC LIMIT 50"
         )
         sessions = [r.get("ChatSession", {}) for r in owned]

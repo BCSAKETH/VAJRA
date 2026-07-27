@@ -207,67 +207,63 @@ export const AIChatScreen: React.FC = () => {
   // Connects for every active session (not just Cowork ones) so the flow is
   // uniform; solo sessions just never have anyone else to broadcast to.
   useEffect(() => {
-    if (!activeSessionId) return;
+    if (!activeSessionId || chatMode !== "cowork" || API_BASE.includes("catalystappsail.in")) return;
 
     const wsProtocol = API_BASE.startsWith("https") ? "wss" : "ws";
     const wsHost = API_BASE.replace(/^https?:\/\//, "");
     const token = localStorage.getItem("vajra_token") || "";
-    const ws = new WebSocket(`${wsProtocol}://${wsHost}/ws/chat/${activeSessionId}?token=${encodeURIComponent(token)}`);
-    wsRef.current = ws;
+    let ws: WebSocket | null = null;
+    try {
+      ws = new WebSocket(`${wsProtocol}://${wsHost}/ws/chat/${activeSessionId}?token=${encodeURIComponent(token)}`);
+      wsRef.current = ws;
 
-    ws.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        if (payload.type !== "message") return;
-        // This tab already rendered its own turn straight from the HTTP
-        // response (reliable regardless of the socket's connection state) --
-        // skip the broadcast echo of that same turn so it isn't shown twice.
-        // Consume the id on first match rather than leaving it live for the
-        // session's whole lifetime.
-        if (payload.client_msg_id && sentClientMsgIdsRef.current.has(payload.client_msg_id)) {
-          sentClientMsgIdsRef.current.delete(payload.client_msg_id);
-          if (payload.sender === "assistant") setIsThinking(false);
-          return;
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data);
+          if (payload.type !== "message") return;
+          if (payload.client_msg_id && sentClientMsgIdsRef.current.has(payload.client_msg_id)) {
+            sentClientMsgIdsRef.current.delete(payload.client_msg_id);
+            if (payload.sender === "assistant") setIsThinking(false);
+            return;
+          }
+          setChatMessages((prev) => {
+            const newMsg: ChatMessage = {
+              id: `ws-${Date.now()}-${Math.random()}`,
+              sender: payload.sender === "user" ? "user" : "assistant",
+              text: payload.text,
+              textEn: payload.text_en,
+              textKn: payload.text_kn,
+              timestamp: new Date(payload.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+              responseType: payload.response_type,
+              data: payload.data,
+              citations: payload.citations,
+              senderName: payload.sender_name,
+              senderEmployeeId: payload.sender_employee_id,
+              isSimulated: payload.is_simulated,
+              simulatedReason: payload.simulated_reason,
+            };
+            return [...prev, newMsg];
+          });
+          if (payload.sender === "assistant") {
+            setIsThinking(false);
+          }
+        } catch (err) {
+          console.error("Failed to parse WebSocket message:", err);
         }
-        setChatMessages((prev) => {
-          const newMsg: ChatMessage = {
-            id: `ws-${Date.now()}-${Math.random()}`,
-            sender: payload.sender === "user" ? "user" : "assistant",
-            text: payload.text,
-            textEn: payload.text_en,
-            textKn: payload.text_kn,
-            timestamp: new Date(payload.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-            responseType: payload.response_type,
-            data: payload.data,
-            citations: payload.citations,
-            senderName: payload.sender_name,
-            senderEmployeeId: payload.sender_employee_id,
-            isSimulated: payload.is_simulated,
-            simulatedReason: payload.simulated_reason,
-          };
-          return [...prev, newMsg];
-        });
-        if (payload.sender === "assistant") {
-          setIsThinking(false);
-        }
-      } catch (err) {
-        console.error("Failed to parse WebSocket message:", err);
-      }
-    };
-    // Live push is a nice-to-have on top of solo chat (which already works
-    // over plain HTTP, independent of this socket) -- if the platform's
-    // gateway in front of this deployment doesn't proxy WebSocket upgrades,
-    // fail quietly instead of spamming the console with a raw error event
-    // and an "interrupted" disconnect on every session switch.
-    ws.onerror = () => {
-      console.warn("Cowork live-push unavailable for this session (falling back to per-request updates only).");
-    };
+      };
+
+      ws.onerror = () => {
+        // Quiet
+      };
+    } catch {
+      // Quiet
+    }
 
     return () => {
-      ws.close();
+      if (ws) ws.close();
       wsRef.current = null;
     };
-  }, [activeSessionId]);
+  }, [activeSessionId, chatMode]);
 
   // Whether the active session already has a real participant (used to
   // decide whether "Cowork" mode shows an invite prompt or just behaves
