@@ -257,7 +257,7 @@ def cache_get(segment_name: str, key: str) -> Optional[str]:
 
 
 SESSION_SECRET = os.getenv("SESSION_SECRET")
-SESSION_TTL_SECONDS = 3600
+SESSION_TTL_SECONDS = 86400  # 24 hours — extended for hackathon demo sessions
 
 
 def issue_session_token(kgid: str) -> str:
