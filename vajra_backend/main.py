@@ -1689,6 +1689,35 @@ async def delete_session(session_id: str, request: Request, location_context: st
         raise HTTPException(status_code=500, detail=f"Failed to delete conversation: {str(e)}")
 
 
+class BulkDeletePayload(BaseModel):
+    session_ids: List[str]
+
+
+@app.post("/api/sessions/bulk-delete")
+async def bulk_delete_sessions(payload: BulkDeletePayload, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Deletes multiple selected sessions in a single request.
+    """
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    deleted_ids = []
+    for sid in payload.session_ids:
+        try:
+            role = _get_cowork_role(sid, employee_id)
+            if role == "owner":
+                catalyst_app.zql().execute_query(f"DELETE FROM ChatMessage WHERE session_id = '{sid}'")
+                catalyst_app.zql().execute_query(f"DELETE FROM CoworkParticipant WHERE session_id = '{sid}'")
+                catalyst_app.zql().execute_query(f"DELETE FROM ChatSession WHERE session_id = '{sid}'")
+                deleted_ids.append(sid)
+            elif role in ("collaborator", "viewer"):
+                catalyst_app.zql().execute_query(f"DELETE FROM CoworkParticipant WHERE session_id = '{sid}' AND employee_id = {employee_id}")
+                deleted_ids.append(sid)
+        except Exception as e:
+            logger.warning(f"Bulk delete error for session {sid}: {e}")
+    return {"deleted_count": len(deleted_ids), "deleted_ids": deleted_ids}
+
+
 @app.get("/api/attachments/{stratus_key}")
 async def get_attachment(stratus_key: str, request: Request, location_context: str = Depends(security_firewall)):
     """
@@ -2299,7 +2328,7 @@ async def list_investigations(request: Request, location_context: str = Depends(
     try:
         owned = catalyst_app.zql().execute_query(
             f"SELECT session_id, title, description, case_no, last_active_at FROM ChatSession "
-            f"WHERE employee_id = {employee_id} AND description != '' ORDER BY last_active_at DESC LIMIT 50"
+            f"WHERE (description IS NOT NULL AND description != '') ORDER BY last_active_at DESC LIMIT 50"
         )
         investigations = [{
             "session_id": r["ChatSession"]["session_id"],

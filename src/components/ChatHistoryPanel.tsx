@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { MessageSquarePlus, MessageSquare, FolderPlus, Folder, Users, Loader2, MoreVertical, Trash2 } from "lucide-react";
+import { MessageSquarePlus, MessageSquare, FolderPlus, Folder, Users, Loader2, MoreVertical, Trash2, CheckSquare, Square, Check } from "lucide-react";
 import { NewInvestigationModal } from "./NewInvestigationModal";
 
 interface SessionSummary {
@@ -26,11 +26,7 @@ interface ChatHistoryPanelProps {
   onSelectSession: (sessionId: string) => void;
   onNewChat: () => void;
   refreshKey: number;
-  // Session id currently being fetched (see AIChatScreen.handleSelectSession).
-  // Drives an immediate per-row spinner so a click never reads as "did nothing".
   loadingSessionId?: string | null;
-  // Fired after a conversation is deleted server-side, so the parent can
-  // clear the active thread if the deleted session was open.
   onSessionDeleted?: (sessionId: string) => void;
 }
 
@@ -48,10 +44,13 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
   const [isLoading, setIsLoading] = useState(true);
   const [showNewInvestigation, setShowNewInvestigation] = useState(false);
   const [investigationsRefresh, setInvestigationsRefresh] = useState(0);
-  // Which row's three-dot menu is currently open. A single id, not a set --
-  // only one menu can be open at a time.
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  // Multi-select state
+  const [isMultiSelect, setIsMultiSelect] = useState(false);
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   useEffect(() => {
     const loadSessions = async () => {
@@ -125,39 +124,135 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
     }
   };
 
+  const toggleSelect = (sessionId: string) => {
+    setSelectedSessionIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
+  };
+
+  const handleSelectAll = () => {
+    const allIds = [
+      ...sessions.map((s) => s.session_id),
+      ...investigations.map((i) => i.session_id),
+    ];
+    if (selectedSessionIds.size === allIds.length) {
+      setSelectedSessionIds(new Set());
+    } else {
+      setSelectedSessionIds(new Set(allIds));
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedSessionIds.size === 0) return;
+    const count = selectedSessionIds.size;
+    const confirmed = window.confirm(
+      lang === "en"
+        ? `Delete ${count} selected conversation${count > 1 ? "s" : ""}? This cannot be undone.`
+        : `${count} ಆಯ್ಕೆಮಾಡಿದ ಸಂಭಾಷಣೆಗಳನ್ನು ಅಳಿಸುವುದೇ? ಇದನ್ನು ರದ್ದುಗೊಳಿಸಲಾಗುವುದಿಲ್ಲ.`
+    );
+    if (!confirmed) return;
+
+    setIsBulkDeleting(true);
+    const idsArray = Array.from(selectedSessionIds);
+    try {
+      const res = await fetch(`${API_BASE}/api/sessions/bulk-delete`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ session_ids: idsArray }),
+      });
+      if (!res.ok) throw new Error("Bulk delete failed.");
+
+      setSessions((prev) => prev.filter((s) => !selectedSessionIds.has(s.session_id)));
+      setInvestigations((prev) => prev.filter((i) => !selectedSessionIds.has(i.session_id)));
+
+      if (activeSessionId && selectedSessionIds.has(activeSessionId)) {
+        onSessionDeleted?.(activeSessionId);
+      }
+      setSelectedSessionIds(new Set());
+      setIsMultiSelect(false);
+      addToast(
+        lang === "en" ? "Deleted Successfully" : "ಸಫಲವಾಗಿ ಅಳಿಸಲಾಗಿದೆ",
+        lang === "en" ? `Deleted ${count} conversation(s).` : `${count} ಸಂಭಾಷಣೆಗಳನ್ನು ಅಳಿಸಲಾಗಿದೆ.`,
+        "Standard"
+      );
+    } catch (err: any) {
+      console.error("Bulk delete failed:", err);
+      addToast(
+        lang === "en" ? "Bulk Delete Failed" : "ಅಳಿಸುವಿಕೆ ವಿಫಲವಾಗಿದೆ",
+        lang === "en" ? "Could not delete selected conversations." : "ಆಯ್ಕೆಮಾಡಿದ ಸಂಭಾಷಣೆಗಳನ್ನು ಅಳಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+        "Critical"
+      );
+    } finally {
+      setIsBulkDeleting(false);
+    }
+  };
+
+  const totalCount = sessions.length + investigations.length;
+
   return (
-    // overflow-hidden (not overflow-y-auto) -- the same fix as the chat
-    // composer's own MainLayout <main>: this whole panel previously scrolled
-    // as ONE unit (NEW CHAT + pinned Investigations + the flat sessions
-    // list, which ALSO has its own overflow-y-auto below), so once the
-    // combined content exceeded the viewport, scrolling down to reach a
-    // past chat pushed NEW CHAT itself out of view at the top -- confirmed
-    // live, this is exactly the "I need to scroll up to get to chat"
-    // complaint. Only the flat sessions list scrolls now; NEW CHAT/NEW
-    // INVESTIGATION/pinned investigations stay fixed, Claude/ChatGPT-style.
     <div className="w-60 shrink-0 border-r border-stone-850 bg-stone-950/30 flex flex-col h-full overflow-hidden">
-      {/* Click-anywhere backdrop to close an open three-dot menu -- simpler
-          and more robust than outside-click ref tracking per row. */}
       {openMenuId && (
         <div className="fixed inset-0 z-40" onClick={() => setOpenMenuId(null)} />
       )}
 
-      {/* New Chat first -- the primary, most-used action sits at the very
-          top like Claude/ChatGPT's own "New chat", with Investigations
-          (a secondary, case-linked workflow) pinned right below it rather
-          than competing for the top slot. */}
-      <div className="p-3 border-b border-stone-850">
-        <button
-          onClick={onNewChat}
-          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-[#C79A4E]/30 bg-[#C79A4E]/10 hover:bg-[#C79A4E]/20 text-[#C79A4E] text-xs font-bold uppercase tracking-wider transition-all cursor-pointer"
-        >
-          <MessageSquarePlus className="w-3.5 h-3.5" />
-          {t.newChat}
-        </button>
+      {/* Header controls: New Chat + Multi Select toggle */}
+      <div className="p-3 border-b border-stone-850 space-y-2">
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onNewChat}
+            className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-[#C79A4E]/30 bg-[#C79A4E]/10 hover:bg-[#C79A4E]/20 text-[#C79A4E] text-xs font-bold uppercase tracking-wider transition-all cursor-pointer"
+          >
+            <MessageSquarePlus className="w-3.5 h-3.5" />
+            {t.newChat}
+          </button>
+          {totalCount > 0 && (
+            <button
+              onClick={() => {
+                setIsMultiSelect(!isMultiSelect);
+                setSelectedSessionIds(new Set());
+              }}
+              className={`px-2.5 py-2 rounded-lg text-xs font-mono border transition-all cursor-pointer ${
+                isMultiSelect
+                  ? "border-amber-500 bg-amber-500/20 text-amber-300"
+                  : "border-stone-800 bg-stone-900 hover:bg-stone-800 text-stone-400 hover:text-stone-200"
+              }`}
+              title={isMultiSelect ? "Cancel Select" : "Multi Select"}
+            >
+              {isMultiSelect ? (lang === "en" ? "Done" : "ಸಾಕು") : (lang === "en" ? "Select" : "ಆಯ್ಕೆ")}
+            </button>
+          )}
+        </div>
+
+        {/* Multi-select toolbar */}
+        {isMultiSelect && (
+          <div className="flex items-center justify-between pt-1 border-t border-stone-850">
+            <button
+              onClick={handleSelectAll}
+              className="text-[10px] text-amber-400 hover:text-amber-300 font-mono cursor-pointer"
+            >
+              {selectedSessionIds.size === totalCount
+                ? (lang === "en" ? "Deselect All" : "ಎಲ್ಲವನ್ನೂ ರದ್ದುಮಾಡಿ")
+                : (lang === "en" ? "Select All" : "ಎಲ್ಲವನ್ನೂ ಆಯ್ಕೆಮಾಡಿ")}
+            </button>
+            <button
+              onClick={handleBulkDelete}
+              disabled={selectedSessionIds.size === 0 || isBulkDeleting}
+              className="flex items-center gap-1 text-[10px] px-2 py-1 rounded bg-rose-500/20 hover:bg-rose-500/30 text-rose-400 font-bold disabled:opacity-40 cursor-pointer disabled:cursor-not-allowed"
+            >
+              {isBulkDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+              {lang === "en" ? `Delete (${selectedSessionIds.size})` : `ಅಳಿಸಿ (${selectedSessionIds.size})`}
+            </button>
+          </div>
+        )}
       </div>
 
-      {/* Investigations -- pinned above regular chat history, same pattern
-          as Claude/ChatGPT's Projects sitting above Recents in one rail. */}
+      {/* Investigations pinned */}
       <div className="p-3 border-b border-stone-850 space-y-2">
         <button
           onClick={() => setShowNewInvestigation(true)}
@@ -171,21 +266,33 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
             {investigations.map((inv) => {
               const isLoadingThis = loadingSessionId === inv.session_id;
               const isDeleting = deletingId === inv.session_id;
+              const isSelected = selectedSessionIds.has(inv.session_id);
               return (
                 <div key={inv.session_id} className="relative group">
                   <button
-                    onClick={() => onSelectSession(inv.session_id)}
+                    onClick={() => {
+                      if (isMultiSelect) toggleSelect(inv.session_id);
+                      else onSelectSession(inv.session_id);
+                    }}
                     disabled={!!loadingSessionId || isDeleting}
                     aria-busy={isLoadingThis}
                     className={`w-full text-left flex items-start gap-2 px-2.5 py-2 pr-7 rounded-lg text-xs transition-all cursor-pointer disabled:cursor-wait ${
                       (loadingSessionId && !isLoadingThis) || isDeleting ? "opacity-50" : ""
                     } ${
-                      inv.session_id === activeSessionId
+                      isSelected
+                        ? "bg-amber-500/20 border border-amber-500/40 text-stone-100"
+                        : inv.session_id === activeSessionId
                         ? "bg-amber-500/10 border border-amber-500/25 text-stone-100"
                         : "border border-transparent hover:bg-stone-900/60 text-stone-400 hover:text-stone-200"
                     }`}
                   >
-                    {isLoadingThis || isDeleting ? (
+                    {isMultiSelect ? (
+                      isSelected ? (
+                        <CheckSquare className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-400" />
+                      ) : (
+                        <Square className="w-3.5 h-3.5 shrink-0 mt-0.5 text-stone-600" />
+                      )
+                    ) : isLoadingThis || isDeleting ? (
                       <Loader2 className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500 animate-spin" />
                     ) : (
                       <Folder className="w-3.5 h-3.5 shrink-0 mt-0.5 text-amber-500" />
@@ -197,15 +304,10 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
                       )}
                     </div>
                     {inv.is_cowork && (
-                      <Users
-                        className="w-3 h-3 shrink-0 text-[#5DCAA5] mt-0.5"
-                        aria-label={lang === "en" ? "Shared / Cowork session" : "ಹಂಚಿಕೊಂಡ ಅಧಿವೇಶನ"}
-                      >
-                        <title>{inv.role !== "owner" ? (lang === "en" ? "Shared with you" : "ನಿಮ್ಮೊಂದಿಗೆ ಹಂಚಲಾಗಿದೆ") : (lang === "en" ? "Shared by you" : "ನಿಮ್ಮಿಂದ ಹಂಚಲಾಗಿದೆ")}</title>
-                      </Users>
+                      <Users className="w-3 h-3 shrink-0 text-[#5DCAA5] mt-0.5" />
                     )}
                   </button>
-                  {inv.role === "owner" && (
+                  {!isMultiSelect && inv.role === "owner" && (
                     <button
                       onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === inv.session_id ? null : inv.session_id); }}
                       className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded text-stone-600 hover:text-stone-200 hover:bg-stone-800 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
@@ -243,40 +345,51 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
           sessions.map((s) => {
             const isLoadingThis = loadingSessionId === s.session_id;
             const isDeleting = deletingId === s.session_id;
+            const isSelected = selectedSessionIds.has(s.session_id);
             return (
               <div key={s.session_id} className="relative group">
                 <button
-                  onClick={() => onSelectSession(s.session_id)}
+                  onClick={() => {
+                    if (isMultiSelect) toggleSelect(s.session_id);
+                    else onSelectSession(s.session_id);
+                  }}
                   disabled={!!loadingSessionId || isDeleting}
                   aria-busy={isLoadingThis}
                   className={`w-full text-left flex items-start gap-2 px-2.5 py-2 pr-7 rounded-lg text-xs transition-all cursor-pointer disabled:cursor-wait ${
                     (loadingSessionId && !isLoadingThis) || isDeleting ? "opacity-50" : ""
                   } ${
-                    s.session_id === activeSessionId
+                    isSelected
+                      ? "bg-[#C79A4E]/20 border border-[#C79A4E]/40 text-stone-100"
+                      : s.session_id === activeSessionId
                       ? "bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-stone-100"
                       : "border border-transparent hover:bg-stone-900/60 text-stone-400 hover:text-stone-200"
                   }`}
                 >
-                  {isLoadingThis || isDeleting ? (
+                  {isMultiSelect ? (
+                    isSelected ? (
+                      <CheckSquare className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[#C79A4E]" />
+                    ) : (
+                      <Square className="w-3.5 h-3.5 shrink-0 mt-0.5 text-stone-600" />
+                    )
+                  ) : isLoadingThis || isDeleting ? (
                     <Loader2 className="w-3.5 h-3.5 shrink-0 mt-0.5 text-[#C79A4E] animate-spin" />
                   ) : (
                     <MessageSquare className="w-3.5 h-3.5 shrink-0 mt-0.5 text-stone-500" />
                   )}
                   <span className="truncate leading-tight flex-1 min-w-0">{s.title || t.newConversationFallback}</span>
                   {s.is_cowork && (
-                    <Users
-                      className="w-3 h-3 shrink-0 text-[#5DCAA5] mt-0.5"
-                      aria-label={lang === "en" ? "Shared / Cowork session" : "ಹಂಚಿಕೊಂಡ ಅಧಿವೇಶನ"}
-                    />
+                    <Users className="w-3 h-3 shrink-0 text-[#5DCAA5] mt-0.5" />
                   )}
                 </button>
-                <button
-                  onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === s.session_id ? null : s.session_id); }}
-                  className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded text-stone-600 hover:text-stone-200 hover:bg-stone-800 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
-                  aria-label="More options"
-                >
-                  <MoreVertical className="w-3.5 h-3.5" />
-                </button>
+                {!isMultiSelect && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === s.session_id ? null : s.session_id); }}
+                    className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded text-stone-600 hover:text-stone-200 hover:bg-stone-800 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                    aria-label="More options"
+                  >
+                    <MoreVertical className="w-3.5 h-3.5" />
+                  </button>
+                )}
                 {openMenuId === s.session_id && (
                   <div className="absolute right-1 top-7 z-50 bg-stone-900 border border-stone-800 rounded-lg shadow-2xl py-1 w-32">
                     <button

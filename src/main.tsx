@@ -10,6 +10,12 @@ import './index.css';
 // container, regardless of any fitBounds()/invalidateSize() JS logic.
 import 'leaflet/dist/leaflet.css';
 
+// Catch Vite chunk 404 load errors (occurs when a new deployment updates hashed JS filenames)
+window.addEventListener("vite:preloadError", (event) => {
+  event.preventDefault();
+  window.location.reload();
+});
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />
