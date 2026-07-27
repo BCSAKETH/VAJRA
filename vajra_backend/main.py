@@ -15,6 +15,7 @@ load_dotenv(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".env"))
 import os
 import re
 import json
+import time
 import hashlib
 import logging
 import random
@@ -46,6 +47,9 @@ from fastapi.responses import Response
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
+
+# Global session messages cache
+_SESSION_MESSAGES_CACHE: Dict[str, Tuple[float, List[Dict[str, Any]]]] = {}
 
 # FastAPI Setup
 app = FastAPI(
