@@ -373,7 +373,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
       const response = await originalFetch(...args);
       if (response.status === 401) {
         const url = typeof args[0] === "string" ? args[0] : (args[0] as Request)?.url || "";
-        if (url.startsWith(API_BASE)) {
+        if (url.includes("/api/") && !url.includes("/api/auth/login")) {
+          localStorage.removeItem("vajra_token");
+          localStorage.removeItem("vajra_auth");
           setIsAuthenticated(false);
         }
       }
