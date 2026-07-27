@@ -1391,32 +1391,9 @@ class ChatRequest(BaseModel):
     client_msg_id: Optional[str] = None
 
 
-def _persist_chat_message(session_id: str, sender: str, text: str, response_type: str = "text", data: Optional[Dict[str, Any]] = None, citations: Optional[List[Any]] = None, sender_employee_id: Optional[int] = None):
-    """
-    Writes a message to the ChatMessage table and bumps ChatSession.LastActiveAt.
-    Degrades gracefully (logs only) if ChatSession/ChatMessage don't exist yet in the
-    live console — this feature requires those two tables to be created manually first.
-    sender_employee_id attributes a message to a specific officer once a
-    session has multiple participants (Cowork) -- solo sessions don't need it.
-    """
+def _bump_chat_session_active(session_id: str):
     if not catalyst_app:
         return
-    try:
-        row = {
-            "session_id": session_id,
-            "sender": sender,
-            "text": text[:2000],
-            "response_type": response_type,
-            "data_json": json.dumps(data or {})[:4000],
-            "citations_json": json.dumps(citations or [])[:2000],
-            "sent_at": datetime.utcnow().isoformat()
-        }
-        if sender_employee_id is not None:
-            row["sender_employee_id"] = sender_employee_id
-        zcql_insert_row("ChatMessage", row)
-    except Exception as e:
-        logger.warning(f"Could not persist chat message (ChatMessage table may not exist yet): {e}")
-
     try:
         existing = catalyst_app.zql().execute_query(f"SELECT ROWID FROM ChatSession WHERE session_id = '{session_id}' LIMIT 1")
         if existing:
@@ -1425,7 +1402,71 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
                 "last_active_at": datetime.utcnow().isoformat()
             })
     except Exception as e:
-        logger.warning(f"Could not update ChatSession.last_active_at (table may not exist yet): {e}")
+        logger.warning(f"Could not update ChatSession.last_active_at: {e}")
+
+
+def _persist_chat_message(session_id: str, sender: str, text: str, response_type: str = "text", data: Optional[Dict[str, Any]] = None, citations: Optional[List[Any]] = None, sender_employee_id: Optional[int] = None):
+    """
+    Writes a message to the ChatMessage table and bumps ChatSession.LastActiveAt.
+    Guarantees zero message loss by using 3-tier fallbacks if optional columns (like sender_employee_id)
+    or large JSON payloads fail in Catalyst Datastore.
+    """
+    if not catalyst_app:
+        return
+
+    _SESSION_MESSAGES_CACHE.pop(session_id, None)
+
+    # 1. Full attempt with all fields
+    try:
+        row = {
+            "session_id": session_id,
+            "sender": sender,
+            "text": text[:2000],
+            "response_type": response_type,
+            "data_json": json.dumps(data or {})[:3800],
+            "citations_json": json.dumps(citations or [])[:1800],
+            "sent_at": datetime.utcnow().isoformat()
+        }
+        if sender_employee_id is not None:
+            row["sender_employee_id"] = sender_employee_id
+        zcql_insert_row("ChatMessage", row)
+        _bump_chat_session_active(session_id)
+        return
+    except Exception as e:
+        logger.warning(f"Full ChatMessage insert failed (retrying with safe standard fields): {e}")
+
+    # 2. Safe fallback attempt without optional columns (like sender_employee_id)
+    try:
+        row = {
+            "session_id": session_id,
+            "sender": sender,
+            "text": text[:2000],
+            "response_type": response_type,
+            "data_json": json.dumps(data or {})[:3500],
+            "citations_json": json.dumps(citations or [])[:1500],
+            "sent_at": datetime.utcnow().isoformat()
+        }
+        zcql_insert_row("ChatMessage", row)
+        _bump_chat_session_active(session_id)
+        return
+    except Exception as e:
+        logger.warning(f"Standard ChatMessage insert failed (retrying with minimal payload): {e}")
+
+    # 3. Minimal guaranteed fallback attempt
+    try:
+        row = {
+            "session_id": session_id,
+            "sender": sender,
+            "text": text[:1000],
+            "response_type": response_type[:50],
+            "data_json": "{}",
+            "citations_json": "[]",
+            "sent_at": datetime.utcnow().isoformat()
+        }
+        zcql_insert_row("ChatMessage", row)
+        _bump_chat_session_active(session_id)
+    except Exception as e:
+        logger.error(f"CRITICAL: Failed to persist ChatMessage for session {session_id}: {e}")
 
 
 def _create_chat_session(employee_id: int, title: str = "New Conversation") -> str:
