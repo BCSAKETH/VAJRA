@@ -792,19 +792,14 @@ class VajraAgentLoop:
                 # already sitting right here. Try it as plain prose first.
                 try:
                     raw_content = llm_res["choices"][0]["message"]["content"]
-                    # No </think> means this response was cut off mid-reasoning
-                    # (confirmed live on a translation call -- the model always
-                    # emits </think> once it actually finishes thinking), not a
-                    # genuine plain-prose answer -- don't treat an unfinished
-                    # reasoning fragment as if the model had committed to it.
-                    if "</think>" in raw_content:
-                        fallback_text = raw_content.split("</think>")[-1].strip()
-                        if fallback_text and len(fallback_text) > 3:
-                            response_text = fallback_text
-                            break
+                    fallback_text = raw_content.split("</think>")[-1].strip() if "</think>" in raw_content else raw_content.strip()
+                    fallback_text = re.sub(r"^<think>.*?</think>", "", fallback_text, flags=re.DOTALL).strip()
+                    if fallback_text and len(fallback_text) > 2:
+                        response_text = fallback_text
+                        break
                 except Exception:
                     pass
-                if current_iteration == 1:
+                if not response_text and current_iteration == 1:
                     response_text = "I encountered an error processing your query. Please restate your request."
                 break
 
