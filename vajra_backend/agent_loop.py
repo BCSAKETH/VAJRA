@@ -443,7 +443,7 @@ class VajraAgentLoop:
             (["repeat offender", "habitual"], "get_repeat_offenders", {"district": district}, "yes"),
             (["forecast", "predict", "early warning"], "get_forecast",
              {"district": district, "crime_type": crime_group}, district and crime_group),
-            (["similar case", "similar to", "past cases like"], "find_similar_cases", {"query": query}, "yes"),
+            (["similar case", "similar cases", "similar to", "past cases", "similar cybercrime", "cybercrime cases", "cybercrime", "cyber crime", "on cybercrime", "cases like"], "find_similar_cases", {"query": query}, "yes"),
         ]
 
         for keywords, tool_name, params, required in patterns:

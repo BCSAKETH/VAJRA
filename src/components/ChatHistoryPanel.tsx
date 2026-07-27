@@ -60,7 +60,11 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
           headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
         });
         if (response.ok) {
-          setSessions(await response.json());
+          const list = await response.json();
+          setSessions(list);
+          if (list.length > 0 && !activeSessionId) {
+            onSelectSession(list[0].session_id);
+          }
         }
       } catch (err) {
         console.error("Failed to load chat sessions:", err);
