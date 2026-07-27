@@ -610,23 +610,6 @@ export const AIChatScreen: React.FC = () => {
   const handleSelectSession = async (sessionId: string) => {
     if (sessionId === activeSessionId && !loadingSessionId) return;
 
-    // Snapshot whatever's currently on screen into the cache under the
-    // session we're navigating AWAY from, so any messages sent live during
-    // this visit are preserved for next time -- not just what the server
-    // returned on the original fetch.
-    if (activeSessionId) {
-      sessionMessagesCacheRef.current.set(activeSessionId, chatMessages);
-    }
-
-    const cached = sessionMessagesCacheRef.current.get(sessionId);
-    if (cached) {
-      selectSessionRequestRef.current++; // invalidate any in-flight fetch
-      setLoadingSessionId(null);
-      setChatMessages(cached);
-      setActiveSessionId(sessionId);
-      return;
-    }
-
     const requestId = ++selectSessionRequestRef.current;
     setLoadingSessionId(sessionId);
     try {
@@ -640,7 +623,6 @@ export const AIChatScreen: React.FC = () => {
       if (requestId !== selectSessionRequestRef.current) return; // superseded
 
       const loaded = mapSessionMessages(sessionId, messages);
-      sessionMessagesCacheRef.current.set(sessionId, loaded);
       setChatMessages(loaded);
       setActiveSessionId(sessionId);
     } catch (err) {
