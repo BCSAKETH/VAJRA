@@ -1642,15 +1642,25 @@ async def get_session_messages(session_id: str, request: Request, location_conte
 @app.delete("/api/sessions/{session_id}")
 async def delete_session(session_id: str, request: Request, location_context: str = Depends(security_firewall)):
     """
-    Deletes a conversation permanently -- backs the history sidebar's
-    three-dot Delete menu. Only the session OWNER may delete it (not a
-    Cowork viewer/collaborator, who could otherwise erase a shared
-    investigation thread out from under everyone else in it).
+    Deletes a conversation permanently if you are the owner, or removes you
+    as a Cowork participant (leaving the shared thread) if you were invited.
+    Previously returned 403 for non-owners, which made invited sessions
+    impossible to remove from your own sidebar.
     """
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
     role = _get_cowork_role(session_id, employee_id)
+    if role not in ("owner", "collaborator", "viewer"):
+        raise HTTPException(status_code=403, detail="You do not have access to this session.")
+    # Non-owners (Cowork participants) just remove themselves from the shared
+    # thread instead of deleting it for everyone else.
     if role != "owner":
-        raise HTTPException(status_code=403, detail="Only the session owner can delete this conversation.")
+        try:
+            catalyst_app.zql().execute_query(
+                f"DELETE FROM CoworkParticipant WHERE session_id = '{session_id}' AND employee_id = {employee_id}"
+            )
+            return {"deleted": True, "session_id": session_id, "action": "left"}
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to leave session: {str(e)}")
     if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
     try:
