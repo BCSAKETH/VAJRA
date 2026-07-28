@@ -335,6 +335,53 @@ export const AIChatScreen: React.FC = () => {
     }
   }, []);
 
+  // /api/chat now returns a fast "pending" ack and finishes the real GLM
+  // turn in a server-side background task (see _run_ai_turn_and_persist in
+  // main.py) -- AppSail's own gateway kills the underlying HTTP request at
+  // ~30-36s regardless of any in-app timeout, well short of this model's
+  // real 15-140s+ response times, so the answer can never come back on the
+  // original request. Poll session history (the same endpoint Cowork's
+  // live-push replacement already polls) until the persisted reply shows
+  // up, using a raw message-count baseline fetched right after the ack --
+  // comparing against local React state here would conflate not-yet-
+  // persisted optimistic messages with the real server count.
+  const pollForPendingReply = useCallback(async (turnSessionId: string | null, baselineCount: number) => {
+    if (!turnSessionId) return;
+    const maxAttempts = 40; // ~2 minutes at 3s apiece
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      try {
+        const res = await fetch(`${API_BASE}/api/sessions/${turnSessionId}/messages`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        });
+        if (!res.ok) continue;
+        const raw = await res.json();
+        if (raw.length > baselineCount) {
+          const loaded = mapSessionMessages(turnSessionId, raw);
+          sessionMessagesCacheRef.current.set(turnSessionId, loaded);
+          if (activeSessionIdRef.current === turnSessionId) {
+            setChatMessages(loaded);
+          }
+          return;
+        }
+      } catch {
+        // Transient -- next tick tries again.
+      }
+    }
+    // Gave up -- tell the officer plainly rather than leaving the composer
+    // stuck on "Thinking..." forever with no explanation.
+    appendMessageForTurn({
+      id: `msg-${Date.now()}-timeout`,
+      sender: "assistant",
+      text: lang === "en"
+        ? "This is taking longer than expected. The response may still arrive shortly -- check back, or try again."
+        : "ಇದು ನಿರೀಕ್ಷಿತಕ್ಕಿಂತ ಹೆಚ್ಚು ಸಮಯ ತೆಗೆದುಕೊಳ್ಳುತ್ತಿದೆ. ಪ್ರತಿಕ್ರಿಯೆ ಶೀಘ್ರದಲ್ಲೇ ಬರಬಹುದು -- ಮತ್ತೆ ಪರಿಶೀಲಿಸಿ ಅಥವಾ ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      isSimulated: true,
+      simulatedReason: lang === "en" ? "response_delayed" : "ಪ್ರತಿಕ್ರಿಯೆ_ವಿಳಂಬವಾಗಿದೆ",
+    }, turnSessionId);
+  }, [lang, appendMessageForTurn]);
+
   // Submit Text Query to Copilot Agent Loop
   const handleSend = useCallback(async (textToSend: string, filesToSend: File[] = []) => {
     if (isThinking || isUploadingAttachments) return;
@@ -455,29 +502,6 @@ export const AIChatScreen: React.FC = () => {
       // the first message of a brand new one.
       const turnSessionId = sendSessionId || data.session_id || null;
 
-      // Rendered directly from this response, always -- see clientMsgId
-      // comment above for why. The WS handler skips its own echo of this
-      // exact turn via sentClientMsgIdsRef. Routed via appendMessageForTurn
-      // so a reply arriving after the officer has navigated elsewhere lands
-      // in the right conversation's cache instead of the one on screen.
-      if (data.ai_invoked !== false) {
-        const aiMsg: ChatMessage = {
-          id: `msg-${Date.now()}-ai`,
-          sender: "assistant",
-          text: data.text,
-          textEn: data.text_en,
-          textKn: data.text_kn,
-          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          responseType: data.response_type,
-          data: data.data,
-          isSimulated: data.is_simulated,
-          simulatedReason: data.simulated_reason,
-          citations: data.citations,
-          retryText: data.is_simulated ? textToSend : undefined,
-        };
-        appendMessageForTurn(aiMsg, turnSessionId);
-      }
-
       // First turn of a new conversation: the backend just auto-created a
       // real ChatSession and handed back its id. Only auto-adopt it (switch
       // the visible thread over) if the officer is still exactly where they
@@ -495,6 +519,40 @@ export const AIChatScreen: React.FC = () => {
             setShowInvitePanel(true);
           }
         }
+      }
+
+      if (data.pending) {
+        // The real answer isn't back yet -- it's still running server-side.
+        // Fetch the current message count as a baseline, then poll until it
+        // grows (see pollForPendingReply above). isThinking deliberately
+        // stays true across this whole await -- the `finally` below only
+        // fires once the poll resolves (success or gives-up timeout).
+        const baselineRes = await fetch(`${API_BASE}/api/sessions/${turnSessionId}/messages`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        });
+        const baselineRaw = baselineRes.ok ? await baselineRes.json() : [];
+        await pollForPendingReply(turnSessionId, baselineRaw.length);
+      } else if (data.ai_invoked !== false) {
+        // Rendered directly from this response, always -- see clientMsgId
+        // comment above for why. The WS handler skips its own echo of this
+        // exact turn via sentClientMsgIdsRef. Routed via appendMessageForTurn
+        // so a reply arriving after the officer has navigated elsewhere lands
+        // in the right conversation's cache instead of the one on screen.
+        const aiMsg: ChatMessage = {
+          id: `msg-${Date.now()}-ai`,
+          sender: "assistant",
+          text: data.text,
+          textEn: data.text_en,
+          textKn: data.text_kn,
+          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          responseType: data.response_type,
+          data: data.data,
+          isSimulated: data.is_simulated,
+          simulatedReason: data.simulated_reason,
+          citations: data.citations,
+          retryText: data.is_simulated ? textToSend : undefined,
+        };
+        appendMessageForTurn(aiMsg, turnSessionId);
       }
     } catch (err: any) {
       console.error(err);
@@ -522,7 +580,7 @@ export const AIChatScreen: React.FC = () => {
         setThinkingType("standard");
       }
     }
-  }, [isThinking, isUploadingAttachments, lang, addToast, setIsAuthenticated, chatMode, appendMessageForTurn]);
+  }, [isThinking, isUploadingAttachments, lang, addToast, setIsAuthenticated, chatMode, appendMessageForTurn, pollForPendingReply]);
 
   // Start a fresh conversation -- clears the transcript and drops the active
   // session id, so the next message sent auto-creates a brand new ChatSession.
