@@ -16,6 +16,7 @@ import os
 import re
 import json
 import time
+import asyncio
 import hashlib
 import logging
 import random
@@ -1532,9 +1533,14 @@ async def list_sessions(request: Request, location_context: str = Depends(securi
         # `description = ''` matches zero rows against real data (ZCQL's
         # NULL semantics: NULL never equals '' or anything else), which was
         # silently hiding 100% of chat history. Must check both.
+        # Confirmed live: this query had no employee_id filter at all -- every
+        # officer's GET /api/sessions returned every OTHER officer's chat
+        # sessions too (all of ChatSession, top 50 by recency), which is both
+        # an RLS violation and the reason the sidebar showed sessions/titles
+        # the signed-in officer never created.
         owned = catalyst_app.zql().execute_query(
             f"SELECT session_id, title, last_active_at FROM ChatSession "
-            f"WHERE (description IS NULL OR description = '') "
+            f"WHERE employee_id = {employee_id} AND (description IS NULL OR description = '') "
             f"ORDER BY last_active_at DESC LIMIT 50"
         )
         sessions = [r.get("ChatSession", {}) for r in owned]
@@ -1829,6 +1835,146 @@ def _is_cowork_session(session_id: str) -> bool:
         return False
 
 
+async def _run_ai_turn_and_persist(
+    session_id: str,
+    message: str,
+    lang: str,
+    employee_id: int,
+    unit_id: Optional[int],
+    client_msg_id: Optional[str],
+):
+    """
+    Runs the full GLM turn (case-context injection, translation, the agent
+    loop's tool-selection + synthesis calls, translation back, persist,
+    broadcast) as a fire-and-forget background task -- NOT awaited by the
+    HTTP request that triggers it.
+
+    Confirmed live: AppSail's own gateway kills the underlying HTTP request
+    at roughly 30-36s regardless of this app's own timeouts ("AppSail
+    Execution Time Exceeded", HTTP 408) -- reproduced even for a one-word
+    query like "map". This GLM "thinking" model's real response times run
+    15-140s+ (confirmed live elsewhere in this file), so no synchronous
+    request/response cycle on this platform can ever complete a real chat
+    turn; the only way one finishes is if the triggering request returns
+    immediately and this work continues after that response is already
+    sent. The frontend gets a fast "pending" ack from chat_endpoint and
+    polls GET /api/sessions/{id}/messages (the same endpoint Cowork
+    real-time already polls) until this task's persisted assistant message
+    shows up.
+    """
+    query_for_agent = VAJRA_MENTION_RE.sub("", message).strip() or message
+
+    # If this session is an Investigation linked to a real case, prepend that
+    # case's real context so the officer doesn't have to keep re-explaining
+    # "this is about case CR-2026-XXXXX" every single message.
+    try:
+        sess_res = catalyst_app.zql().execute_query(f"SELECT case_no FROM ChatSession WHERE session_id = '{session_id}' LIMIT 1")
+        case_no = sess_res[0].get("ChatSession", {}).get("case_no") if sess_res else None
+        if case_no:
+            # CaseMasterID (not CrimeNo) is what summarize_case/other
+            # case_id-based tools actually take as a parameter -- omitting it
+            # here meant the model had a case number to talk about but no
+            # way to actually invoke any tool that operates on the case.
+            case_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID, CrimeNo, BriefFacts FROM CaseMaster WHERE CrimeNo = '{case_no}' LIMIT 1")
+            if case_res:
+                cm = case_res[0].get("CaseMaster", {})
+                query_for_agent = (
+                    f"[Context: this conversation is about case {cm.get('CrimeNo')} "
+                    f"(CaseMasterID {cm.get('CaseMasterID')}) — {cm.get('BriefFacts')}. "
+                    f"Use CaseMasterID {cm.get('CaseMasterID')} for any tool that needs a case_id.]\n\n{query_for_agent}"
+                )
+    except Exception as e:
+        logger.warning(f"Could not resolve investigation case context: {e}")
+
+    # Run query through IndicTrans2 translation layer if Kannada
+    processed_query = (
+        await run_in_threadpool(translator.translate, query_for_agent, "kn", "en")
+        if lang == "kn" else query_for_agent
+    )
+
+    # translator.translate()'s own honest-failure fallback (all three
+    # translation backends -- Zia fast-translate, GLM, Qwen -- unavailable)
+    # returns a literal "[Translation temporarily unavailable for: '...']"
+    # string. Previously that string was passed straight into the agent
+    # loop as if it were the real query -- GLM correctly found no tool
+    # matching a translation-failure notice and fell through to "Please
+    # clarify your request," which told the officer nothing true about what
+    # actually went wrong (a Kannada query silently became untranslatable,
+    # not ambiguous). Detect the marker and say so plainly instead of
+    # routing garbage into tool selection.
+    if lang == "kn" and processed_query.startswith("[Translation temporarily unavailable"):
+        text_kn = "ಅನುವಾದ ಸೇವೆ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ ಅಥವಾ ಇಂಗ್ಲಿಷ್‌ನಲ್ಲಿ ಟೈಪ್ ಮಾಡಿ."
+        text_en = "Kannada translation is temporarily unavailable. Please try again shortly, or type your query in English."
+        _persist_chat_message(
+            session_id, "assistant", text_kn, "text",
+            {"_text_en": text_en, "_text_kn": text_kn}, sender_employee_id=None
+        )
+        await connection_manager.broadcast(session_id, {
+            "type": "message", "sender": "assistant", "sender_employee_id": None,
+            "sender_name": "VAJRA.AI", "text": text_kn, "text_en": text_en, "text_kn": text_kn,
+            "response_type": "text", "data": {}, "citations": [],
+            "timestamp": datetime.utcnow().isoformat(), "is_simulated": True,
+            "simulated_reason": "translation_unavailable",
+            "client_msg_id": f"{client_msg_id}-ai" if client_msg_id else None
+        })
+        return
+
+    # Execute the central Agent Loop
+    result = await run_in_threadpool(
+        agent_loop.run_agent_loop,
+        query=processed_query,
+        session_id=session_id,
+        employee_id=employee_id,
+        user_unit_id=unit_id
+    )
+
+    # Generate BOTH language versions of the answer, always -- not just the
+    # currently-selected display language. run_agent_loop always reasons and
+    # answers in English internally (the tool-calling system prompts are
+    # English-only), so English is free; Kannada needs one more GLM call.
+    # Storing both means toggling the language switch can instantly re-render
+    # already-displayed messages in the other language client-side, with no
+    # new LLM call -- previously only one version of each answer ever
+    # existed, so old messages stayed frozen in whichever language they were
+    # first answered in regardless of later toggling.
+    text_en = result["text"]
+    if result.get("is_simulated"):
+        # The unavailable-AI notice is a fixed, known string, not a real
+        # answer -- translating it through GLM would be calling the very
+        # endpoint that was just confirmed unreachable, for a string that's
+        # cheaper and more reliable to just hardcode once.
+        text_kn = AI_UNAVAILABLE_TEXT_KN
+    else:
+        text_kn = await run_in_threadpool(translator.translate, text_en, "en", "kn")
+    text = text_kn if lang == "kn" else text_en
+
+    # text_en/text_kn are packed into the data dict (not new dedicated
+    # columns) purely so they persist through the EXISTING data_json field --
+    # Catalyst Datastore rejects INSERTs referencing any column not already
+    # declared via the console (confirmed live: "Unknown column is given"),
+    # so a real text_kn column would need a manual console change first.
+    # Underscore-prefixed keys avoid colliding with real widget/visualization
+    # data fields already living in this same dict.
+    persisted_data = {**(result["data"] or {}), "_text_en": text_en, "_text_kn": text_kn}
+
+    _persist_chat_message(session_id, "assistant", text, result["response_type"], persisted_data, result["citations"])
+    await connection_manager.broadcast(session_id, {
+        "type": "message", "sender": "assistant", "sender_employee_id": None,
+        "sender_name": "VAJRA.AI", "text": text, "text_en": text_en, "text_kn": text_kn,
+        "response_type": result["response_type"],
+        "data": result["data"], "citations": result["citations"], "timestamp": datetime.utcnow().isoformat(),
+        # Without these, an "AI unavailable" turn delivered via WebSocket
+        # (every message from the 2nd one onward in a session) rendered as an
+        # ordinary-looking assistant answer instead of the distinct amber
+        # warning card -- confirmed live: only the direct HTTP POST response
+        # (the first-turn code path) carried these fields, so the honest-
+        # unavailable notice silently stopped being honest from message 2 on.
+        "is_simulated": result.get("is_simulated", False),
+        "simulated_reason": result.get("simulated_reason", ""),
+        "client_msg_id": f"{client_msg_id}-ai" if client_msg_id else None
+    })
+
+
 @app.post("/api/chat")
 async def chat_endpoint(payload: ChatRequest, request: Request, location_context: str = Depends(security_firewall)):
     """
@@ -1902,146 +2048,29 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
             "ai_invoked": False
         }
 
-    # Strip the mention itself so it doesn't confuse the agent's own parsing
-    query_for_agent = VAJRA_MENTION_RE.sub("", message).strip() or message
-
-    # If this session is an Investigation linked to a real case, prepend that
-    # case's real context so the officer doesn't have to keep re-explaining
-    # "this is about case CR-2026-XXXXX" every single message.
-    try:
-        sess_res = catalyst_app.zql().execute_query(f"SELECT case_no FROM ChatSession WHERE session_id = '{session_id}' LIMIT 1")
-        case_no = sess_res[0].get("ChatSession", {}).get("case_no") if sess_res else None
-        if case_no:
-            # CaseMasterID (not CrimeNo) is what summarize_case/other
-            # case_id-based tools actually take as a parameter -- omitting it
-            # here meant the model had a case number to talk about but no
-            # way to actually invoke any tool that operates on the case.
-            case_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID, CrimeNo, BriefFacts FROM CaseMaster WHERE CrimeNo = '{case_no}' LIMIT 1")
-            if case_res:
-                cm = case_res[0].get("CaseMaster", {})
-                query_for_agent = (
-                    f"[Context: this conversation is about case {cm.get('CrimeNo')} "
-                    f"(CaseMasterID {cm.get('CaseMasterID')}) — {cm.get('BriefFacts')}. "
-                    f"Use CaseMasterID {cm.get('CaseMasterID')} for any tool that needs a case_id.]\n\n{query_for_agent}"
-                )
-    except Exception as e:
-        logger.warning(f"Could not resolve investigation case context: {e}")
-
-    # Run query through IndicTrans2 translation layer if Kannada
-    # Every call below is synchronous, LLM-backed I/O (real response times
-    # 15-140s+, confirmed live) invoked directly inside this async route.
-    # FastAPI/Starlette never runs an `async def` route's body off the
-    # single event loop thread automatically -- unlike a plain `def` route,
-    # which it does offload -- so a synchronous call here blocks that one
-    # shared event loop for its entire duration. Confirmed live: this route
-    # also needs real `await`s of its own (the Cowork WebSocket broadcast
-    # below), so it can't just become `def`; wrapping only the blocking
-    # calls in run_in_threadpool is the fix that keeps both properties. Any
-    # other officer's request in flight during a slow query -- another
-    # chat turn, a login, an alerts poll -- would otherwise queue behind
-    # this one for its full duration on a single-process deployment.
-    processed_query = (
-        await run_in_threadpool(translator.translate, query_for_agent, "kn", "en")
-        if lang == "kn" else query_for_agent
-    )
-
-    # translator.translate()'s own honest-failure fallback (all three
-    # translation backends -- Zia fast-translate, GLM, Qwen -- unavailable)
-    # returns a literal "[Translation temporarily unavailable for: '...']"
-    # string. Previously that string was passed straight into the agent
-    # loop as if it were the real query -- GLM correctly found no tool
-    # matching a translation-failure notice and fell through to "Please
-    # clarify your request," which told the officer nothing true about what
-    # actually went wrong (a Kannada query silently became untranslatable,
-    # not ambiguous). Detect the marker and say so plainly instead of
-    # routing garbage into tool selection.
-    if lang == "kn" and processed_query.startswith("[Translation temporarily unavailable"):
-        text_kn = "ಅನುವಾದ ಸೇವೆ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ ಅಥವಾ ಇಂಗ್ಲಿಷ್‌ನಲ್ಲಿ ಟೈಪ್ ಮಾಡಿ."
-        text_en = "Kannada translation is temporarily unavailable. Please try again shortly, or type your query in English."
-        _persist_chat_message(
-            session_id, "assistant", text_kn, "text",
-            {"_text_en": text_en, "_text_kn": text_kn}, sender_employee_id=None
-        )
-        await connection_manager.broadcast(session_id, {
-            "type": "message", "sender": "assistant", "sender_employee_id": None,
-            "sender_name": "VAJRA.AI", "text": text_kn, "text_en": text_en, "text_kn": text_kn,
-            "response_type": "text", "data": {}, "citations": [],
-            "timestamp": datetime.utcnow().isoformat(), "is_simulated": True,
-            "simulated_reason": "translation_unavailable",
-            "client_msg_id": f"{payload.client_msg_id}-ai" if payload.client_msg_id else None
-        })
-        return {
-            "text": text_kn, "text_en": text_en, "text_kn": text_kn,
-            "session_id": session_id, "response_type": "text", "data": {}, "citations": [],
-            "is_simulated": True, "simulated_reason": "translation_unavailable", "ai_invoked": False,
-        }
-
-    # Execute the central Agent Loop
-    result = await run_in_threadpool(
-        agent_loop.run_agent_loop,
-        query=processed_query,
-        session_id=session_id,
-        employee_id=employee_id,
-        user_unit_id=unit_id
-    )
-
-    # Generate BOTH language versions of the answer, always -- not just the
-    # currently-selected display language. run_agent_loop always reasons and
-    # answers in English internally (the tool-calling system prompts are
-    # English-only), so English is free; Kannada needs one more GLM call.
-    # Storing both means toggling the language switch can instantly re-render
-    # already-displayed messages in the other language client-side, with no
-    # new LLM call -- previously only one version of each answer ever
-    # existed, so old messages stayed frozen in whichever language they were
-    # first answered in regardless of later toggling.
-    text_en = result["text"]
-    if result.get("is_simulated"):
-        # The unavailable-AI notice is a fixed, known string, not a real
-        # answer -- translating it through GLM would be calling the very
-        # endpoint that was just confirmed unreachable, for a string that's
-        # cheaper and more reliable to just hardcode once.
-        text_kn = AI_UNAVAILABLE_TEXT_KN
-    else:
-        text_kn = await run_in_threadpool(translator.translate, text_en, "en", "kn")
-    text = text_kn if lang == "kn" else text_en
-
-    # text_en/text_kn are packed into the data dict (not new dedicated
-    # columns) purely so they persist through the EXISTING data_json field --
-    # Catalyst Datastore rejects INSERTs referencing any column not already
-    # declared via the console (confirmed live: "Unknown column is given"),
-    # so a real text_kn column would need a manual console change first.
-    # Underscore-prefixed keys avoid colliding with real widget/visualization
-    # data fields already living in this same dict.
-    persisted_data = {**(result["data"] or {}), "_text_en": text_en, "_text_kn": text_kn}
-
-    _persist_chat_message(session_id, "assistant", text, result["response_type"], persisted_data, result["citations"])
-    await connection_manager.broadcast(session_id, {
-        "type": "message", "sender": "assistant", "sender_employee_id": None,
-        "sender_name": "VAJRA.AI", "text": text, "text_en": text_en, "text_kn": text_kn,
-        "response_type": result["response_type"],
-        "data": result["data"], "citations": result["citations"], "timestamp": datetime.utcnow().isoformat(),
-        # Without these, an "AI unavailable" turn delivered via WebSocket
-        # (every message from the 2nd one onward in a session) rendered as an
-        # ordinary-looking assistant answer instead of the distinct amber
-        # warning card -- confirmed live: only the direct HTTP POST response
-        # (the first-turn code path) carried these fields, so the honest-
-        # unavailable notice silently stopped being honest from message 2 on.
-        "is_simulated": result.get("is_simulated", False),
-        "simulated_reason": result.get("simulated_reason", ""),
-        "client_msg_id": f"{payload.client_msg_id}-ai" if payload.client_msg_id else None
-    })
+    # The rest of this turn (case-context injection, translation, the agent
+    # loop's GLM calls, translation back, persist, broadcast) runs as a
+    # detached background task instead of inline here -- see
+    # _run_ai_turn_and_persist's docstring for why: AppSail kills this HTTP
+    # request at ~30-36s regardless of in-app timeouts, well short of this
+    # model's real response times, so returning fast and finishing the work
+    # after the response is sent is the only way a turn can ever complete.
+    asyncio.create_task(_run_ai_turn_and_persist(
+        session_id, message, lang, employee_id, unit_id, payload.client_msg_id
+    ))
 
     return {
-        "text": text,
-        "text_en": text_en,
-        "text_kn": text_kn,
+        "text": "",
+        "text_en": "",
+        "text_kn": "",
         "session_id": session_id,
-        "response_type": result["response_type"],
-        "data": result["data"],
-        "citations": result["citations"],
-        "is_simulated": result.get("is_simulated", False),
-        "simulated_reason": result.get("simulated_reason", ""),
-        "ai_invoked": True
+        "response_type": "pending",
+        "data": {},
+        "citations": [],
+        "is_simulated": False,
+        "simulated_reason": "",
+        "ai_invoked": True,
+        "pending": True,
     }
 
 
@@ -2352,9 +2381,12 @@ async def list_investigations(request: Request, location_context: str = Depends(
     if not catalyst_app:
         return []
     try:
+        # Same missing-filter bug as GET /api/sessions above -- add the owner
+        # scope so this doesn't also leak every other officer's Investigations.
         owned = catalyst_app.zql().execute_query(
             f"SELECT session_id, title, description, case_no, last_active_at FROM ChatSession "
-            f"WHERE (description IS NOT NULL AND description != '') ORDER BY last_active_at DESC LIMIT 50"
+            f"WHERE employee_id = {employee_id} AND (description IS NOT NULL AND description != '') "
+            f"ORDER BY last_active_at DESC LIMIT 50"
         )
         investigations = [{
             "session_id": r["ChatSession"]["session_id"],

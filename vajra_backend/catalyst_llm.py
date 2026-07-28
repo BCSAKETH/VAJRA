@@ -148,6 +148,18 @@ class CatalystLLM:
                 "distinguished from case-specific facts) actually supports -- never invent names, numbers, or case "
                 "details that aren't in front of you. If a tool found nothing, say so plainly and suggest what the "
                 "officer could try next rather than just reporting the negative result. "
+                # Confirmed live: an attachment-analysis result followed by
+                # "add this to records" / "register this case" / "file this"
+                # made the model try to invent a write-style tool call that
+                # doesn't exist, producing unparseable output and a fast
+                # generic error. Every tool here is read-only -- there is no
+                # create/register/file/update tool to call, so naming that
+                # limitation explicitly stops the model from trying.
+                "IMPORTANT: every tool below only READS existing data -- none of them create, add, register, file, "
+                "or update any record. If the officer asks to add/register/file/create/update something (including "
+                "right after an attachment analysis), do not attempt a tool call for it -- respond with a "
+                "'text_response' explaining that this assistant can look up and analyze existing records but cannot "
+                "create new ones, and that they should use the appropriate records system or a supervisor for that. "
                 "Available tools:\n"
             )
             for t in tools:
