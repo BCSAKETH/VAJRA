@@ -220,7 +220,21 @@ class CatalystLLM:
             "messages": formatted_messages,
             "temperature": 0.1,
             "max_tokens": max_tokens,
-            "stream": False
+            "stream": False,
+            # This deployed model ("glm47b") is a Zhipu GLM "thinking" model --
+            # its dominant latency cost (confirmed live: 15-140s+, several
+            # calls observed at exactly this platform's ~30-36s AppSail kill
+            # ceiling) is the hidden chain-of-thought reasoning trace it
+            # writes before its actual JSON answer. Zhipu's GLM API accepts a
+            # top-level "thinking" object to turn that phase off; confirmed
+            # live here it cuts real turn latency roughly 3-5x (~20-25s vs.
+            # 50-140s). Shipped at the officer's explicit request to
+            # prioritize speed -- monitor for a rise in the canned "I can't
+            # help with requests to expose protected instructions" refusal
+            # (a pre-existing baked-in guardrail on certain prompt patterns,
+            # not something this flag is confirmed to cause, but not yet
+            # cleanly ruled out either) and revert this one field if it does.
+            "thinking": {"type": "disabled"}
         }
 
         # Skip the retry-with-backoff budget entirely if a recent call already

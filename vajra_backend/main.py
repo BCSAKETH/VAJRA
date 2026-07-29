@@ -1654,7 +1654,22 @@ async def get_session_messages(session_id: str, request: Request, location_conte
         messages = []
         for r in res:
             m = r.get("ChatMessage", {})
-            data = json.loads(m.get("data_json") or "{}")
+            # Confirmed live: data_json/citations_json get hard-truncated at
+            # 3800/1800 chars in _persist_chat_message's fallback tiers -- a
+            # truncation that lands mid-string produces invalid JSON. Before
+            # this fix, one such row's json.loads() exception blew up the
+            # WHOLE request (caught by the outer except below), silently
+            # wiping the entire session's visible history, not just that one
+            # row. Isolate each row so a single bad one degrades to an empty
+            # data/citations for itself instead of hiding every other message.
+            try:
+                data = json.loads(m.get("data_json") or "{}")
+            except Exception:
+                data = {}
+            try:
+                citations = json.loads(m.get("citations_json") or "[]")
+            except Exception:
+                citations = []
             stored_text = m.get("text")
             # _text_en/_text_kn were packed into data_json (see chat_endpoint)
             # since Catalyst Datastore rejects INSERTs referencing any column
@@ -1677,14 +1692,40 @@ async def get_session_messages(session_id: str, request: Request, location_conte
                 "text_kn": text_kn,
                 "response_type": m.get("response_type"),
                 "data": data,
-                "citations": json.loads(m.get("citations_json") or "[]"),
+                "citations": citations,
                 "timestamp": m.get("sent_at")
             })
+        # Confirmed live: a fresh read sometimes comes back with FEWER rows
+        # than a read moments earlier returned for the exact same session --
+        # a ZCQL-side read inconsistency, not real data (this endpoint has no
+        # code path that removes rows; DELETE /api/sessions/{id} is a
+        # separate, explicit action). Since this table is append-only from
+        # this function's perspective, message count can never legitimately
+        # decrease between calls -- treat a decrease as a bad read and keep
+        # serving the larger, already-confirmed list instead of regressing
+        # the officer's visible history.
+        existing = _SESSION_MESSAGES_CACHE.get(session_id)
+        if existing and len(existing[1]) > len(messages):
+            logger.warning(
+                f"get_session_messages: fresh read for {session_id} returned "
+                f"{len(messages)} rows, fewer than the {len(existing[1])} "
+                f"already cached -- serving the cached list instead."
+            )
+            _SESSION_MESSAGES_CACHE[session_id] = (now, existing[1])
+            return existing[1]
         _SESSION_MESSAGES_CACHE[session_id] = (now, messages)
         return messages
     except Exception as e:
         logger.warning(f"Could not fetch session messages: {e}")
-        return []
+        # Confirmed live: a transient ZCQL read failure here previously
+        # returned a bare [] -- to a session that already had real, visible
+        # messages moments earlier, that reads as "the conversation just
+        # vanished," which is worse than showing slightly-stale data. Fall
+        # back to the last successful read for this session (even past its
+        # normal 15s TTL) instead of an empty list; only a session that has
+        # NEVER successfully loaded still gets [].
+        stale = _SESSION_MESSAGES_CACHE.get(session_id)
+        return stale[1] if stale else []
 
 
 @app.delete("/api/sessions/{session_id}")
