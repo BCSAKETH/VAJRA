@@ -194,7 +194,12 @@ class CatalystQwen:
 
         return {"available": False, "text": text}
 
-    def decide_tool(self, query: str, tools: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    def decide_tool(
+        self,
+        query: str,
+        tools: List[Dict[str, Any]],
+        entity_context: Optional[Dict[str, Any]] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         Tool-selection fallback for when GLM's own tool-selection call is
         unavailable -- the one point in the agent loop where a genuine dead
@@ -214,6 +219,19 @@ class CatalystQwen:
         disclosing that this fallback was used (a citation, not silence --
         see the note on ai_unavailable in agent_loop.py about never
         presenting a non-GLM-reasoned answer as if it were full reasoning).
+
+        entity_context (optional): {"case_id", "suspect", "district"} already
+        resolved by _resolve_entities for this session. Confirmed live: this
+        call is single-shot with no conversation history at all -- a
+        follow-up like "list out all the 10+" or "what about Mysuru?" gives
+        Qwen nothing to resolve "the 10+"/"what about" against, so it
+        answers as if the message were the start of a brand new
+        conversation. This can't give Qwen real multi-turn memory (still one
+        prompt, no message list), but prepending the entities GLM itself
+        already carries across turns is a small, structural improvement for
+        exactly the turns most likely to need it -- worth doing given how
+        often this path now runs (every turn during a GLM cooldown window,
+        not just when GLM is fully down).
         """
         if not self.is_configured():
             return None
@@ -224,6 +242,21 @@ class CatalystQwen:
         tool_lines = "\n".join(
             f"- {t['name']}: {t['description']}. Parameters: {json.dumps(t['parameters'])}" for t in tools
         )
+        context_line = ""
+        if entity_context:
+            parts = []
+            if entity_context.get("case_id"):
+                parts.append(f"case {entity_context['case_id']}")
+            if entity_context.get("suspect"):
+                parts.append(f"suspect {entity_context['suspect']}")
+            if entity_context.get("district"):
+                parts.append(f"district {entity_context['district']}")
+            if parts:
+                context_line = (
+                    f"Context from earlier in this conversation (use this to resolve vague references like "
+                    f"'that case', 'the suspect', 'them', or 'what about...' in the query below, but ONLY if the "
+                    f"query itself doesn't already name something more specific): {', '.join(parts)}.\n\n"
+                )
         prompt = (
             "Ignore the attached image, it is blank and irrelevant. You are helping pick which database tool to "
             "run for a Karnataka Police officer's query. Respond with ONLY a JSON object: either "
@@ -231,6 +264,7 @@ class CatalystQwen:
             '{"text_response": "<a short clarifying question>"} if none of them do or a required parameter '
             "(like a name or case number) is missing from the query. No explanation outside the JSON.\n\n"
             f"Available tools:\n{tool_lines}\n\n"
+            f"{context_line}"
             f"Officer's query: {query}"
         )
 

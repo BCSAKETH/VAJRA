@@ -1299,6 +1299,26 @@ class GLMTranslator:
         cleaned = cls._ZIA_UNSAFE_CHARS.sub(" ", cleaned)
         return re.sub(r"\s+", " ", cleaned).strip()
 
+    # Confirmed live: on a long, structurally complex source text (a ~20-item
+    # bulleted case-type breakdown with bold markdown and percentages), GLM's
+    # translate() occasionally answered with the LITERAL text
+    # 'ಎಲ್ಲಾ...' -- the JSON-escaped SPELLING of the
+    # Kannada characters as plain ASCII text, not the actual Kannada glyphs.
+    # This is the model's own generation, not an encode/decode bug in this
+    # pipeline (traced end to end: data_json round-trips through json.dumps/
+    # loads correctly, and Starlette's JSONResponse uses ensure_ascii=False,
+    # confirmed by the same message's plain `text` field rendering real
+    # Kannada correctly in the same response). Once this literal string is
+    # treated as "the translation" and displayed, an officer sees unreadable
+    # backslash-u gibberish instead of Kannada. Detecting and discarding it
+    # here (like _numbers_match below) stops it before display, same
+    # honesty principle as every other translation safety net in this class.
+    _JSON_ESCAPE_LEAK_RE = re.compile(r"\\u[0-9a-fA-F]{4}")
+
+    @classmethod
+    def _looks_like_leaked_escapes(cls, translated: str) -> bool:
+        return bool(cls._JSON_ESCAPE_LEAK_RE.search(translated))
+
     @staticmethod
     def _numbers_match(source: str, translated: str) -> bool:
         """
@@ -1323,30 +1343,36 @@ class GLMTranslator:
 
         sanitized = self._sanitize_for_fast_translate(normalized_text)
         fast_result = self.llm.translate_fast(sanitized, source_lang, target_lang)
-        if fast_result["available"] and self._numbers_match(sanitized, fast_result["text"]):
+        if fast_result["available"] and not self._looks_like_leaked_escapes(fast_result["text"]) and self._numbers_match(sanitized, fast_result["text"]):
             return fast_result["text"]
         elif fast_result["available"]:
             logger.warning(
-                f"Zia fast-translate returned mismatched numbers (source vs. translated) -- "
+                f"Zia fast-translate returned mismatched numbers or leaked escape codes -- "
                 f"discarding it and falling back to GLM. Source: {sanitized[:100]!r}"
             )
 
         result = self.llm.translate(normalized_text, source_lang, target_lang)
-        if result["available"]:
+        if result["available"] and not self._looks_like_leaked_escapes(result["text"]):
             return result["text"]
+        elif result["available"]:
+            logger.warning(
+                f"GLM translate leaked raw JSON-escape codes instead of real characters -- "
+                f"discarding it and falling back to Qwen. Source: {normalized_text[:100]!r}"
+            )
 
-        # GLM unavailable -- try Qwen before giving up. Separate QuickML
-        # deployment/model from GLM (vlm/chat vs glm/chat), confirmed live
-        # to keep responding through three separate GLM outage windows this
-        # session, so its uptime genuinely doesn't track GLM's. Same
-        # numbers-match safety net as Zia's fast path, since Qwen is also a
-        # general-purpose model and not immune to the same kind of drift.
+        # GLM unavailable (or leaked escapes) -- try Qwen before giving up.
+        # Separate QuickML deployment/model from GLM (vlm/chat vs glm/chat),
+        # confirmed live to keep responding through three separate GLM
+        # outage windows this session, so its uptime genuinely doesn't track
+        # GLM's. Same numbers-match and leaked-escape safety nets as the
+        # other two tiers, since Qwen is also a general-purpose model and
+        # not immune to either failure mode.
         qwen_result = self.qwen.translate(normalized_text, source_lang, target_lang)
-        if qwen_result["available"] and self._numbers_match(normalized_text, qwen_result["text"]):
+        if qwen_result["available"] and not self._looks_like_leaked_escapes(qwen_result["text"]) and self._numbers_match(normalized_text, qwen_result["text"]):
             return qwen_result["text"]
         elif qwen_result["available"]:
             logger.warning(
-                f"Qwen fallback translate returned mismatched numbers -- discarding. "
+                f"Qwen fallback translate returned mismatched numbers or leaked escape codes -- discarding. "
                 f"Source: {normalized_text[:100]!r}"
             )
 
@@ -1681,6 +1707,21 @@ async def get_session_messages(session_id: str, request: Request, location_conte
             # without instant language-toggle) instead of showing blank.
             text_en = data.pop("_text_en", None) or stored_text
             text_kn = data.pop("_text_kn", None) or stored_text
+            # Defensive boundary check -- confirmed live that Zia's fast-
+            # translate API can occasionally return the literal JSON-escaped
+            # SPELLING of Kannada text ('ಎಲ...' as plain ASCII
+            # characters) instead of the real Kannada glyphs, for reasons
+            # not fully isolated (GLMTranslator.translate() already guards
+            # against this at generation time via _looks_like_leaked_escapes,
+            # but this is the last point before the officer sees it, so it
+            # guards here too regardless of how a corrupted value got this
+            # far). `stored_text` is the single language-agnostic field this
+            # row was originally persisted with -- never run through a
+            # translate() call, so it can't carry this specific corruption.
+            if GLMTranslator._looks_like_leaked_escapes(text_kn):
+                text_kn = stored_text
+            if GLMTranslator._looks_like_leaked_escapes(text_en):
+                text_en = stored_text
             sender_employee_id = m.get("sender_employee_id")
             sender_name = "VAJRA.AI" if m.get("sender") == "assistant" else "Officer"
             messages.append({

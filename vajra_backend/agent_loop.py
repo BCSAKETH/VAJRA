@@ -117,10 +117,13 @@ class VajraAgentLoop:
         },
         {
             "name": "query_hotspots",
-            "description": "Retrieve geospatial coordinates of active crime hotspots and incident clusters.",
+            "description": "Retrieve geospatial coordinates of active crime hotspots and incident clusters. Can be scoped to one district or left state-wide.",
             "parameters": {
                 "type": "object",
-                "properties": {}
+                "properties": {
+                    "district": {"type": "string", "description": "Optional district name to scope the map to (e.g. Ballari). Omit for a state-wide map."}
+                },
+                "required": []
             }
         },
         {
@@ -625,7 +628,16 @@ class VajraAgentLoop:
 
         # Append user message
         history.append({"role": "user", "content": query})
-        history = history[-10:]  # Keep last 10 turns max to avoid token bloat
+        # Confirmed live: this was capping at the last 10 RAW entries, not 10
+        # turns as the old comment claimed -- a tool-using turn appends 3-4
+        # entries by itself (user query, assistant tool-decision, "tool
+        # returned X", final assistant answer), so 10 raw entries was really
+        # only ~2-3 real back-and-forths of actual memory before older
+        # context silently fell off, which is why a follow-up two or three
+        # messages back regularly got no context at all. Raised to 24 --
+        # still bounded (this is GLM's max_tokens=3500 budget, not
+        # unlimited), but covers roughly 6-8 real exchanges instead of 2-3.
+        history = history[-24:]
 
         response_text = ""
         response_type = "text"
@@ -707,7 +719,7 @@ class VajraAgentLoop:
                     # QuickML deployment/model from GLM, so its uptime is
                     # genuinely independent), then a deterministic keyword
                     # match as a last resort.
-                    fallback_decision = self.qwen.decide_tool(query, self.TOOLS)
+                    fallback_decision = self.qwen.decide_tool(query, self.TOOLS, entity_context=entities)
                     fallback_label = "Qwen"
                     if fallback_decision is None:
                         fallback_decision = self._keyword_route_tool(query)
@@ -1206,11 +1218,36 @@ class VajraAgentLoop:
 
         # 7. query_hotspots
         elif tool_name == "query_hotspots":
+            # Confirmed live: this never accepted or applied a district filter
+            # at all -- "plot crime hotspots in Ballari" and a plain "map"
+            # request ran the EXACT SAME state-wide query and showed the same
+            # clusters spread across every district, silently ignoring the
+            # officer's district. Same district -> Unit -> PoliceStationID
+            # resolution pattern as _compute_case_types_distribution (ZCQL has
+            # no JOINs, so this two-step lookup is how every other
+            # district-scoped tool here does it).
+            district = self.sanitize_sql_input(params.get("district", ""))
+            unit_ids: List[str] = []
+            if district and catalyst_app:
+                try:
+                    d_res = catalyst_app.zql().execute_query(
+                        f"SELECT DistrictID FROM District WHERE DistrictName LIKE '*{district}*' LIMIT 1"
+                    )
+                    if d_res:
+                        dist_id = d_res[0].get("District", {}).get("DistrictID")
+                        u_res = catalyst_app.zql().execute_query(f"SELECT UnitID FROM Unit WHERE DistrictID = {dist_id}")
+                        unit_ids = [u.get("Unit", {}).get("UnitID") for u in u_res if u.get("Unit", {}).get("UnitID")]
+                except Exception as ex:
+                    logger.warning(f"Could not resolve district '{district}' for hotspot map: {ex}")
+
             response_type = "map"
             coordinates = []
             if catalyst_app:
                 try:
-                    map_query = f"SELECT Latitude, Longitude, CrimeNo FROM CaseMaster WHERE Latitude IS NOT NULL LIMIT 300"
+                    where_clause = "WHERE Latitude IS NOT NULL"
+                    if unit_ids:
+                        where_clause += f" AND PoliceStationID IN ({','.join(map(str, unit_ids))})"
+                    map_query = f"SELECT Latitude, Longitude, CrimeNo FROM CaseMaster {where_clause} LIMIT 300"
                     map_res = catalyst_app.zql().execute_query(map_query)
                     for r in map_res:
                         cm = r.get("CaseMaster", {})
@@ -1224,24 +1261,35 @@ class VajraAgentLoop:
                             })
                 except Exception as ex:
                     logger.error(f"Failed to fetch coordinates for hotspot: {ex}")
-            
-            # Execute DBSCAN clustering (shared helper -- see cluster_hotspots
-            # below; the district-dashboard detail endpoint in main.py calls
-            # the same method so hotspot clustering is never reimplemented).
-            centroids = self.cluster_hotspots(coordinates)
 
-            if centroids:
-                data = {"hotspots": centroids}
-                text_result = f"Plotted spatial crime density map. Detected {len(centroids)} active hotspot clusters containing dense incident concentrations."
+            # district was given but resolved to zero real units -- an
+            # unfillable/wrong district is worse to silently ignore (falling
+            # back to a state-wide map that LOOKS like it answered the
+            # question) than to say so plainly.
+            if district and not unit_ids:
+                text_result = f"'{district}' did not match a real district in the database, so no map could be scoped to it. Please check the spelling."
+                data = {"hotspots": []}
+                citations.append({"type": "Geospatial DBSCAN Analyst", "id": "KSP Hotspots", "details": f"District '{district}' not found"})
+                self._write_audit_log(employee_id, "Spatial Hotspot Query", district, "Get crime hotspots (district not found)", text_result, session_id)
             else:
-                data = {"hotspots": coordinates if coordinates else [
-                    {"lat": 13.02768, "lng": 77.5124, "label": "Peenya Hotspot A"},
-                    {"lat": 12.9716, "lng": 77.5946, "label": "Cubbon Park Cluster"}
-                ]}
-                text_result = "The CCTNS database does not currently contain enough dense incident coordinates to form statistical clusters using DBSCAN (requires at least 10 spatial points within an eps of 0.005). Displaying raw incident marker positions."
+                # Execute DBSCAN clustering (shared helper -- see cluster_hotspots
+                # below; the district-dashboard detail endpoint in main.py calls
+                # the same method so hotspot clustering is never reimplemented).
+                centroids = self.cluster_hotspots(coordinates)
 
-            citations.append({"type": "Geospatial DBSCAN Analyst", "id": "KSP Hotspots", "details": "Incident spatial coordinates"})
-            self._write_audit_log(employee_id, "Spatial Hotspot Query", "CaseMaster", "Get crime hotspots", text_result, session_id)
+                scope_label = f" in {district}" if district else ""
+                if centroids:
+                    data = {"hotspots": centroids}
+                    text_result = f"Plotted spatial crime density map{scope_label}. Detected {len(centroids)} active hotspot clusters containing dense incident concentrations."
+                else:
+                    data = {"hotspots": coordinates if coordinates else [
+                        {"lat": 13.02768, "lng": 77.5124, "label": "Peenya Hotspot A"},
+                        {"lat": 12.9716, "lng": 77.5946, "label": "Cubbon Park Cluster"}
+                    ]}
+                    text_result = f"The CCTNS database does not currently contain enough dense incident coordinates{scope_label} to form statistical clusters using DBSCAN (requires at least 10 spatial points within an eps of 0.005). Displaying raw incident marker positions."
+
+                citations.append({"type": "Geospatial DBSCAN Analyst", "id": "KSP Hotspots", "details": f"Incident spatial coordinates{scope_label}"})
+                self._write_audit_log(employee_id, "Spatial Hotspot Query", district or "All Districts", "Get crime hotspots", text_result, session_id)
 
         # 8. get_forecast
         elif tool_name == "get_forecast":
