@@ -91,7 +91,28 @@ export const AIChatScreen: React.FC = () => {
   const [isRecording, setIsRecording] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState("");
   const [voiceAvailable, setVoiceAvailable] = useState(true);
-  const [isThinking, setIsThinking] = useState(false);
+  // Which sessions currently have an AI turn in flight -- a Set, not a
+  // single boolean, so waiting on one chat's reply no longer locks the
+  // composer for every OTHER chat too. "__new__" covers a turn sent before
+  // the backend has assigned a real session_id yet (a brand-new chat's
+  // first message); pendingKeyRef below tracks which key a given send
+  // should migrate from once that id arrives. isThinking (derived, not
+  // stored) reflects only whether the SESSION CURRENTLY ON SCREEN is
+  // pending, so switching to an idle chat re-enables its composer
+  // immediately even while another chat is still waiting.
+  const [pendingSessionIds, setPendingSessionIds] = useState<Set<string>>(new Set());
+  const isThinking = pendingSessionIds.has(activeSessionId ?? "__new__");
+  const markPending = useCallback((key: string) => {
+    setPendingSessionIds((prev) => (prev.has(key) ? prev : new Set(prev).add(key)));
+  }, []);
+  const clearPending = useCallback((key: string) => {
+    setPendingSessionIds((prev) => {
+      if (!prev.has(key)) return prev;
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+  }, []);
   const [thinkingType, setThinkingType] = useState<"standard" | "translation">("standard");
   // The deployed GLM model is a "thinking" model that reasons at length
   // before answering -- confirmed live, real turns commonly take 15-140s
@@ -223,7 +244,7 @@ export const AIChatScreen: React.FC = () => {
           if (payload.type !== "message") return;
           if (payload.client_msg_id && sentClientMsgIdsRef.current.has(payload.client_msg_id)) {
             sentClientMsgIdsRef.current.delete(payload.client_msg_id);
-            if (payload.sender === "assistant") setIsThinking(false);
+            if (payload.sender === "assistant") clearPending(activeSessionId ?? "__new__");
             return;
           }
           setChatMessages((prev) => {
@@ -245,7 +266,7 @@ export const AIChatScreen: React.FC = () => {
             return [...prev, newMsg];
           });
           if (payload.sender === "assistant") {
-            setIsThinking(false);
+            clearPending(activeSessionId ?? "__new__");
           }
         } catch (err) {
           console.error("Failed to parse WebSocket message:", err);
@@ -263,7 +284,7 @@ export const AIChatScreen: React.FC = () => {
       if (ws) ws.close();
       wsRef.current = null;
     };
-  }, [activeSessionId, chatMode]);
+  }, [activeSessionId, chatMode, clearPending]);
 
   // Whether the active session already has a real participant (used to
   // decide whether "Cowork" mode shows an invite prompt or just behaves
@@ -393,6 +414,11 @@ export const AIChatScreen: React.FC = () => {
     // chat, no session yet" (resolved to the real id once the response
     // hands one back).
     const sendSessionId = activeSessionIdRef.current;
+    // Tracks whichever key pendingSessionIds actually has this turn under
+    // right now -- starts as sendSessionId (or "__new__"), migrates to the
+    // real session_id once the backend assigns one. finally always clears
+    // THIS key, unconditionally, regardless of which chat is on screen.
+    let pendingKey = sendSessionId ?? "__new__";
 
     let queryForAgent = textToSend;
     let uploadedAttachmentRefs: { file_name: string; type: string; page_count: number; stratus_id?: string; data_uri?: string }[] = [];
@@ -457,7 +483,12 @@ export const AIChatScreen: React.FC = () => {
     setChatMessages((prev) => [...prev, userMsg]);
     setInputVal("");
     setThinkingType(lang === "kn" ? "translation" : "standard");
-    setIsThinking(true);
+    // Keyed by sendSessionId (or "__new__"), not a bare flag -- this is the
+    // fix for the composer locking up for every OTHER chat while this one
+    // is still waiting. Migrated to the real session_id once the backend
+    // assigns one (see below), and cleared by pollForPendingReply / the
+    // finally block regardless of which chat is on screen when that happens.
+    markPending(sendSessionId ?? "__new__");
 
     try {
       const response = await fetch(`${API_BASE}/api/chat`, {
@@ -511,6 +542,12 @@ export const AIChatScreen: React.FC = () => {
       // function exists to prevent. The sidebar refresh is always safe.
       if (!sendSessionId && data.session_id) {
         setSessionsRefreshKey((k) => k + 1);
+        // Migrate the pending marker from the "__new__" bucket to the real
+        // id now that one exists, so the eventual clear (here or inside
+        // pollForPendingReply) actually finds and removes it.
+        clearPending(pendingKey);
+        pendingKey = data.session_id;
+        markPending(pendingKey);
         if (activeSessionIdRef.current === sendSessionId) {
           setActiveSessionId(data.session_id);
           // If the officer picked "Cowork" mode before sending the first
@@ -575,12 +612,18 @@ export const AIChatScreen: React.FC = () => {
       };
       appendMessageForTurn(errorMsg, sendSessionId);
     } finally {
+      // The single clear point for every path (pending-poll, immediate
+      // answer, and error) -- unconditional and keyed by pendingKey, not
+      // gated on which chat happens to be on screen right now. That
+      // gating was exactly the bug: switching chats while a reply was in
+      // flight meant this line never ran, leaving the composer locked
+      // everywhere until a page refresh.
+      clearPending(pendingKey);
       if (activeSessionIdRef.current === sendSessionId) {
-        setIsThinking(false);
         setThinkingType("standard");
       }
     }
-  }, [isThinking, isUploadingAttachments, lang, addToast, setIsAuthenticated, chatMode, appendMessageForTurn, pollForPendingReply]);
+  }, [isThinking, isUploadingAttachments, lang, addToast, setIsAuthenticated, chatMode, appendMessageForTurn, pollForPendingReply, markPending, clearPending]);
 
   // Start a fresh conversation -- clears the transcript and drops the active
   // session id, so the next message sent auto-creates a brand new ChatSession.
@@ -854,6 +897,7 @@ export const AIChatScreen: React.FC = () => {
               lang={lang}
               onExpandWidget={(widgetType, widgetData) => setExpandedWidget({ type: widgetType as any, data: widgetData })}
               onRetry={msg.retryText ? () => handleSend(msg.retryText!) : undefined}
+              addToast={addToast}
             />
           ))
         )}

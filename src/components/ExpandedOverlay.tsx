@@ -8,6 +8,20 @@ import { WatermarkOverlay } from "./WatermarkOverlay";
 import { NetworkGraph } from "./NetworkGraph";
 import { downloadJson, downloadHotspotsAsGeoJson, downloadSvgAsPng } from "../lib/widgetExport";
 
+// Confirmed live: the old 10-color palette repeats via index % length once a
+// breakdown has more than 10 categories (real crime-type distributions
+// commonly have ~20) -- two categories more than 10 apart end up painted
+// the exact same color, indistinguishable in both the chart and the ledger
+// dots beside it. 24 distinct colors covers every real category list this
+// app currently produces without a repeat.
+const CHART_COLORS = [
+  "#C79A4E", "#00A896", "#028090", "#F59E0B", "#EF4444",
+  "#8B5CF6", "#EC4899", "#3B82F6", "#10B981", "#6B7280",
+  "#D97706", "#059669", "#DC2626", "#7C3AED", "#DB2777",
+  "#2563EB", "#65A30D", "#9333EA", "#0891B2", "#B45309",
+  "#4F46E5", "#E11D48", "#0D9488", "#A855F7",
+];
+
 // Leaflet measures its container's size at mount time. Inside a modal that
 // animates/expands in, the flex layout hasn't settled to its final size yet
 // when that measurement happens, so the tile grid renders as a handful of
@@ -512,13 +526,20 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                         outerRadius={90}
                         paddingAngle={3}
                         dataKey="value"
-                        label={({ name, percent }) => `${name} (${(percent * 100).toFixed(0)}%)`}
-                        labelLine={true}
+                        // Recharts places one label per slice at a fixed angle with
+                        // no collision detection -- with ~20 real crime categories
+                        // (several under 2%), that reliably produced the overlapping,
+                        // cut-off label mess confirmed live. Below ~4% there's no
+                        // room to draw a readable label anyway; those slices are
+                        // still fully visible by color and covered completely by
+                        // the ledger list beside the chart, so hiding just the
+                        // on-chart label (not the data) is a strict readability win.
+                        label={(entry: any) => (entry.percent >= 0.04 ? `${entry.name} (${(entry.percent * 100).toFixed(0)}%)` : "")}
+                        labelLine={(entry: any) => entry.percent >= 0.04}
                       >
-                        {(data.series || []).map((entry: any, index: number) => {
-                          const COLORS = ["#C79A4E", "#00A896", "#028090", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#3B82F6", "#10B981", "#6B7280"];
-                          return <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />;
-                        })}
+                        {(data.series || []).map((entry: any, index: number) => (
+                          <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                        ))}
                       </Pie>
                       <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }} />
                     </PieChart>
@@ -529,8 +550,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                 <div className="w-full md:w-1/2 overflow-y-auto max-h-[280px] pr-2">
                   <div className="space-y-2">
                     {(data.series || []).map((item: any, idx: number) => {
-                      const COLORS = ["#C79A4E", "#00A896", "#028090", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#3B82F6", "#10B981", "#6B7280"];
-                      const color = COLORS[idx % COLORS.length];
+                      const color = CHART_COLORS[idx % CHART_COLORS.length];
                       const pct = ((item.value / (data.total || 1)) * 100).toFixed(1);
                       return (
                         <div key={idx} className="flex justify-between items-center bg-stone-900/40 p-2.5 rounded border border-stone-850 font-mono text-[11px]">

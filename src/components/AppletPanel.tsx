@@ -16,6 +16,18 @@ import {
 } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
+
+// Same fix as ExpandedOverlay's CHART_COLORS: the old 10-color palette
+// repeated via index % length past 10 categories, making distant categories
+// indistinguishable. 24 distinct colors covers real category lists without
+// a repeat.
+const CHART_COLORS = [
+  "#C79A4E", "#00A896", "#028090", "#F59E0B", "#EF4444",
+  "#8B5CF6", "#EC4899", "#3B82F6", "#10B981", "#6B7280",
+  "#D97706", "#059669", "#DC2626", "#7C3AED", "#DB2777",
+  "#2563EB", "#65A30D", "#9333EA", "#0891B2", "#B45309",
+  "#4F46E5", "#E11D48", "#0D9488", "#A855F7",
+];
 import { Sparkles, Network, Gauge as GaugeIcon } from "lucide-react";
 
 export interface AppletComponentSpec {
@@ -130,10 +142,9 @@ const PieChartCard: React.FC<AppletComponentSpec> = ({ title, data }) => (
             paddingAngle={2}
             dataKey="value"
           >
-            {(Array.isArray(data) ? data : []).map((entry: any, index: number) => {
-              const COLORS = ["#C79A4E", "#00A896", "#028090", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#3B82F6", "#10B981", "#6B7280"];
-              return <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />;
-            })}
+            {(Array.isArray(data) ? data : []).map((entry: any, index: number) => (
+              <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+            ))}
           </Pie>
           <Tooltip contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", fontSize: 9 }} />
         </PieChart>

@@ -10,6 +10,7 @@ interface ChatBubbleProps {
   lang: "en" | "kn";
   onExpandWidget: (type: string, data: any) => void;
   onRetry?: () => void;
+  addToast?: (title: string, message: string, severity: "Critical" | "Warning" | "Info" | "Success") => void;
 }
 
 // Clean markdown and formatting artifacts before sending text to speech synthesis
@@ -25,36 +26,46 @@ const cleanTextForSpeech = (rawText: string): string => {
     .trim();
 };
 
-const speakText = (text: string, lang: "en" | "kn", onEnd: () => void) => {
-  if (!("speechSynthesis" in window)) return false;
+type SpeakResult = "started" | "unsupported" | "no_kannada_voice";
+
+// Confirmed live: when no real Kannada voice is installed on the device,
+// leaving utterance.voice unset makes the browser fall back to its default
+// system voice (almost always English) to read Kannada SCRIPT phonetically
+// -- producing garbled, unintelligible output that LOOKS like it's
+// "speaking" but says nothing real. Silently doing that is worse than not
+// speaking at all: it looks like a working feature that's actually
+// producing noise. Returning "no_kannada_voice" lets the caller tell the
+// officer plainly instead, rather than mispronouncing Kannada through an
+// English voice engine.
+const speakText = (text: string, lang: "en" | "kn", onEnd: () => void): SpeakResult => {
+  if (!("speechSynthesis" in window)) return "unsupported";
   window.speechSynthesis.cancel();
-  
+
   const cleaned = cleanTextForSpeech(text);
-  if (!cleaned) return false;
-  
-  const utterance = new SpeechSynthesisUtterance(cleaned);
-  utterance.lang = lang === "kn" ? "kn-IN" : "en-US";
-  utterance.rate = lang === "kn" ? 0.92 : 1.0;
-  utterance.pitch = 1.0;
-  
+  if (!cleaned) return "unsupported";
+
   const voices = window.speechSynthesis.getVoices();
   let matchedVoice: SpeechSynthesisVoice | undefined;
   if (lang === "kn") {
     matchedVoice = voices.find(v => v.lang.toLowerCase().includes("kn") || v.name.toLowerCase().includes("kannada") || v.name.toLowerCase().includes("kn-in"));
+    if (!matchedVoice) return "no_kannada_voice";
   } else {
     matchedVoice = voices.find(v => v.lang.toLowerCase().includes("en-in")) || voices.find(v => v.lang.toLowerCase().includes("en-us"));
   }
-  if (matchedVoice) {
-    utterance.voice = matchedVoice;
-  }
+
+  const utterance = new SpeechSynthesisUtterance(cleaned);
+  utterance.lang = lang === "kn" ? "kn-IN" : "en-US";
+  utterance.rate = lang === "kn" ? 0.92 : 1.0;
+  utterance.pitch = 1.0;
+  utterance.voice = matchedVoice;
 
   utterance.onend = onEnd;
   utterance.onerror = onEnd;
   window.speechSynthesis.speak(utterance);
-  return true;
+  return "started";
 };
 
-export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang, onExpandWidget, onRetry }) => {
+export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang, onExpandWidget, onRetry, addToast }) => {
   const t = translations[lang];
   const isAI = message.sender === "assistant";
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -83,8 +94,18 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
       setIsSpeaking(false);
       return;
     }
-    const started = speakText(displayText, lang, () => setIsSpeaking(false));
-    if (started) setIsSpeaking(true);
+    const result = speakText(displayText, lang, () => setIsSpeaking(false));
+    if (result === "started") {
+      setIsSpeaking(true);
+    } else if (result === "no_kannada_voice") {
+      addToast?.(
+        lang === "en" ? "Kannada Voice Not Installed" : "ಕನ್ನಡ ಧ್ವನಿ ಸ್ಥಾಪಿಸಲಾಗಿಲ್ಲ",
+        lang === "en"
+          ? "This device has no Kannada text-to-speech voice installed, so playback would be unintelligible -- not playing it. Install a Kannada voice in your OS/browser settings to enable this."
+          : "ಈ ಸಾಧನದಲ್ಲಿ ಕನ್ನಡ ಟೆಕ್ಸ್ಟ್-ಟು-ಸ್ಪೀಚ್ ಧ್ವನಿ ಸ್ಥಾಪಿಸಲಾಗಿಲ್ಲ, ಆದ್ದರಿಂದ ಪ್ಲೇಬ್ಯಾಕ್ ಅರ್ಥವಾಗುವುದಿಲ್ಲ -- ಪ್ಲೇ ಮಾಡುತ್ತಿಲ್ಲ.",
+        "Warning"
+      );
+    }
   };
 
   const handleCopy = async () => {

@@ -26,6 +26,16 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
   const [isRecording, setIsRecording] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState("");
   const [voiceAvailable, setVoiceAvailable] = useState(true);
+  // Which language the mic listens for -- previously hard-wired to the
+  // display-language toggle (lang), meaning an officer had to switch the
+  // ENTIRE UI to Kannada just to have voice input understand Kannada
+  // speech, and vice versa. Starts matching the display language (the
+  // common case) but is independently overridable via the small pill next
+  // to the mic button, and stays as set rather than snapping back on every
+  // display-language change -- the browser's speech recognition can only
+  // listen for one language per session, so this picks which one deliberately
+  // instead of assuming it's always whatever the UI happens to show.
+  const [voiceLang, setVoiceLang] = useState<"en" | "kn">(lang);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -93,8 +103,9 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
       return;
     }
     const recognition = new SpeechRecognitionCtor();
-    // Binds directly to user's EN/KN toggle choice
-    recognition.lang = lang === "kn" ? "kn-IN" : "en-US";
+    // Bound to the independent voice-language pill, NOT the display-language
+    // toggle -- see voiceLang declaration above for why.
+    recognition.lang = voiceLang === "kn" ? "kn-IN" : "en-US";
     recognition.continuous = true;
     recognition.interimResults = true;
     recognitionRef.current = recognition;
@@ -134,7 +145,9 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
 
     recognition.start();
     setIsRecording(true);
-    setRecordingStatus(lang === "en" ? "Listening (Speech STT)..." : "ಆಲಿಸಲಾಗುತ್ತಿದೆ (ಧ್ವನಿ STT)...");
+    setRecordingStatus(
+      voiceLang === "en" ? "Listening for English (Speech STT)..." : "ಕನ್ನಡಕ್ಕಾಗಿ ಆಲಿಸಲಾಗುತ್ತಿದೆ (ಧ್ವನಿ STT)..."
+    );
   };
 
   const stopRecording = () => {
@@ -239,6 +252,26 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
           className="flex-1 bg-transparent border-none text-stone-100 placeholder-stone-500 text-sm focus:outline-none resize-none py-1 font-sans"
         />
 
+        {/* Voice-language pill -- independent of the display-language
+            toggle, so speaking Kannada doesn't require switching the whole
+            UI. Disabled mid-recording since the recognition session is
+            already bound to whichever language it started with. */}
+        {voiceAvailable && (
+          <button
+            type="button"
+            onClick={() => setVoiceLang((v) => (v === "en" ? "kn" : "en"))}
+            disabled={isRecording || isThinking || isUploading}
+            className="px-1.5 py-1 rounded-lg text-[10px] font-mono font-bold tracking-wide text-stone-400 border border-stone-750 hover:text-stone-200 hover:border-stone-600 transition-colors disabled:opacity-50 cursor-pointer shrink-0"
+            title={
+              voiceLang === "en"
+                ? "Mic is listening for English -- tap to switch to Kannada"
+                : "ಮೈಕ್ ಕನ್ನಡಕ್ಕಾಗಿ ಆಲಿಸುತ್ತಿದೆ -- ಇಂಗ್ಲಿಷ್‌ಗೆ ಬದಲಾಯಿಸಲು ಟ್ಯಾಪ್ ಮಾಡಿ"
+            }
+          >
+            {voiceLang === "en" ? "EN" : "ಕನ್"}
+          </button>
+        )}
+
         {/* Mic Toggle Button */}
         {voiceAvailable && (
           <button
@@ -250,7 +283,7 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
                 ? "bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse"
                 : "text-stone-400 hover:text-stone-200 hover:bg-stone-850"
             }`}
-            title={isRecording ? "Stop voice listening" : "Start voice listening (STT)"}
+            title={isRecording ? "Stop voice listening" : `Start voice listening (STT) -- ${voiceLang === "en" ? "English" : "Kannada"}`}
           >
             {isRecording ? <MicOff className="w-4 h-4 text-rose-400" /> : <Mic className="w-4 h-4" />}
           </button>
