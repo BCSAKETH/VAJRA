@@ -1948,6 +1948,8 @@ async def _run_ai_turn_and_persist(
     employee_id: int,
     unit_id: Optional[int],
     client_msg_id: Optional[str],
+    officer_name: Optional[str] = None,
+    officer_badge: Optional[str] = None,
 ):
     """
     Runs the full GLM turn (case-context injection, translation, the agent
@@ -1969,6 +1971,23 @@ async def _run_ai_turn_and_persist(
     shows up.
     """
     query_for_agent = VAJRA_MENTION_RE.sub("", message).strip() or message
+
+    # The agent has no tool and no other way to know who it's talking to --
+    # confirmed live via "what is my name"/"@vajra what is my name" both
+    # getting "I don't have access to your personal identity," which is an
+    # honest (not fabricated) answer given what the model actually has, but
+    # a real, fixable gap: the officer's own name and badge are already
+    # resolved server-side from their authenticated session (chat_endpoint's
+    # own request.state.user_profile) before this task is even started.
+    # Prepending them as real, verified context -- never a guess -- lets the
+    # model answer self-identity questions the same honest, grounded way it
+    # answers questions about suspects.
+    if officer_name and officer_badge:
+        query_for_agent = (
+            f"[Context: you are speaking with Officer {officer_name}, badge {officer_badge}. "
+            f"If asked who they are, their name, or their badge number, answer directly from this -- "
+            f"it is real, verified information, not something to guess at.]\n\n{query_for_agent}"
+        )
 
     # If this session is an Investigation linked to a real case, prepend that
     # case's real context so the officer doesn't have to keep re-explaining
@@ -2162,7 +2181,8 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     # model's real response times, so returning fast and finishing the work
     # after the response is sent is the only way a turn can ever complete.
     asyncio.create_task(_run_ai_turn_and_persist(
-        session_id, message, lang, employee_id, unit_id, payload.client_msg_id
+        session_id, message, lang, employee_id, unit_id, payload.client_msg_id,
+        officer_name=first_name, officer_badge=request.state.kgid
     ))
 
     return {
