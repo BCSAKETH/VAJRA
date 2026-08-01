@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { ChatMessage } from "../AppContext";
 import { translations } from "../i18n";
-import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw } from "lucide-react";
+import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 import { API_BASE } from "../config";
 
@@ -72,6 +72,11 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   const [copied, setCopied] = useState(false);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
   const [loadingAttachmentId, setLoadingAttachmentId] = useState<string | null>(null);
+  // USP-3 "explainable by default" -- one tap reveals the evidence trail
+  // (which tools/records/queries produced this answer) already carried on
+  // every message as citations. Collapsed by default so it never clutters
+  // the calm chat, one click away when an officer needs to trust/verify.
+  const [showEvidence, setShowEvidence] = useState(false);
   const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
 
   const displayText = isAI
@@ -212,19 +217,59 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
             </div>
           )}
 
-          {/* Citation Pills */}
+          {/* Citation Pills + "Why this answer?" evidence expander (USP-3) */}
           {isAI && message.citations && message.citations.length > 0 && (
-            <div className="flex flex-wrap gap-2 mt-4 pt-3 border-t border-stone-850">
-              {message.citations.map((c, i) => (
-                <div
-                  key={i}
-                  className="flex items-center gap-1 text-[10px] font-mono bg-[#C79A4E]/5 text-[#C79A4E] border border-[#C79A4E]/20 px-2 py-0.5 rounded cursor-help transition-colors hover:bg-[#C79A4E]/10"
-                  title={`${c.type}: ${c.details}`}
+            <div className="mt-4 pt-3 border-t border-stone-850 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {message.citations.map((c, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center gap-1 text-[10px] font-mono bg-[#C79A4E]/5 text-[#C79A4E] border border-[#C79A4E]/20 px-2 py-0.5 rounded cursor-help transition-colors hover:bg-[#C79A4E]/10"
+                    title={`${c.type}: ${c.details}`}
+                  >
+                    <Tag className="w-2.5 h-2.5 shrink-0" />
+                    <span>{c.type}: {c.id}</span>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setShowEvidence((v) => !v)}
+                  className="flex items-center gap-1 text-[10px] font-mono text-stone-500 hover:text-[#C79A4E] border border-stone-800 hover:border-[#C79A4E]/30 px-2 py-0.5 rounded transition-colors cursor-pointer"
+                  aria-expanded={showEvidence}
                 >
-                  <Tag className="w-2.5 h-2.5 shrink-0" />
-                  <span>{c.type}: {c.id}</span>
+                  <ShieldCheck className="w-2.5 h-2.5 shrink-0" />
+                  {showEvidence
+                    ? (lang === "en" ? "Hide evidence" : "ಸಾಕ್ಷ್ಯ ಮರೆಮಾಡಿ")
+                    : (lang === "en" ? "Why this answer?" : "ಈ ಉತ್ತರ ಏಕೆ?")}
+                </button>
+              </div>
+              {showEvidence && (
+                <div className="rounded-lg border border-stone-800 bg-stone-950/50 p-3 text-[11px] space-y-2 animate-fade-in">
+                  <div className="text-[10px] uppercase tracking-wider text-stone-500 font-mono">
+                    {lang === "en" ? "◈ Evidence & reasoning trail" : "◈ ಸಾಕ್ಷ್ಯ ಮತ್ತು ತಾರ್ಕಿಕ ಜಾಡು"}
+                  </div>
+                  {message.responseType && message.responseType !== "text" && (
+                    <div className="text-stone-400">
+                      <span className="text-stone-500">{lang === "en" ? "Analysis type: " : "ವಿಶ್ಲೇಷಣೆ ಪ್ರಕಾರ: "}</span>
+                      <span className="font-mono text-[#C79A4E]">{message.responseType}</span>
+                    </div>
+                  )}
+                  <ul className="space-y-1.5">
+                    {message.citations.map((c, i) => (
+                      <li key={i} className="text-stone-300 leading-relaxed">
+                        <span className="font-mono text-[#C79A4E]">{c.type}</span>
+                        {c.id ? <span className="text-stone-500"> · {c.id}</span> : null}
+                        {c.details ? <div className="text-stone-400 mt-0.5">{c.details}</div> : null}
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="text-[9px] text-stone-600 pt-1 border-t border-stone-850">
+                    {lang === "en"
+                      ? "Every VAJRA answer is grounded in real records — no fabricated data. This trail is written to the tamper-evident audit ledger."
+                      : "ಪ್ರತಿ ವಜ್ರ ಉತ್ತರವೂ ನೈಜ ದಾಖಲೆಗಳ ಆಧಾರಿತ — ಯಾವುದೇ ಕಲ್ಪಿತ ಡೇಟಾ ಇಲ್ಲ. ಈ ಜಾಡು ಸುರಕ್ಷಿತ ಆಡಿಟ್ ಲೆಡ್ಜರ್‌ಗೆ ಬರೆಯಲಾಗಿದೆ."}
+                  </div>
                 </div>
-              ))}
+              )}
             </div>
           )}
         </div>
