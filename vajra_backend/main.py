@@ -1319,6 +1319,25 @@ class GLMTranslator:
     def _looks_like_leaked_escapes(cls, translated: str) -> bool:
         return bool(cls._JSON_ESCAPE_LEAK_RE.search(translated))
 
+    _KANNADA_SCRIPT_RE = re.compile(r"[ಀ-೿]")
+
+    @classmethod
+    def _looks_untranslated(cls, target_lang: str, translated: str) -> bool:
+        """
+        Confirmed live: Zia's fast-translate can report "available": True and
+        "translated_text" equal to the ENGLISH SOURCE, byte-for-byte, with no
+        error of any kind -- a silent no-op disguised as a success, not
+        caught by either of the two checks above (leaked escapes: none
+        present, it's just plain English; numbers-match: trivially true
+        against itself). Kannada and English use entirely different scripts,
+        so a genuine EN->KN translation of any real sentence must contain at
+        least one Kannada-range codepoint -- if it doesn't, nothing was
+        actually translated, regardless of what the API claimed.
+        """
+        if target_lang != "kn":
+            return False
+        return not bool(cls._KANNADA_SCRIPT_RE.search(translated))
+
     @staticmethod
     def _numbers_match(source: str, translated: str) -> bool:
         """
@@ -1343,37 +1362,42 @@ class GLMTranslator:
 
         sanitized = self._sanitize_for_fast_translate(normalized_text)
         fast_result = self.llm.translate_fast(sanitized, source_lang, target_lang)
-        if fast_result["available"] and not self._looks_like_leaked_escapes(fast_result["text"]) and self._numbers_match(sanitized, fast_result["text"]):
+        if (fast_result["available"] and not self._looks_like_leaked_escapes(fast_result["text"])
+                and not self._looks_untranslated(target_lang, fast_result["text"])
+                and self._numbers_match(sanitized, fast_result["text"])):
             return fast_result["text"]
         elif fast_result["available"]:
             logger.warning(
-                f"Zia fast-translate returned mismatched numbers or leaked escape codes -- "
-                f"discarding it and falling back to GLM. Source: {sanitized[:100]!r}"
+                f"Zia fast-translate returned mismatched numbers, leaked escape codes, or the "
+                f"untranslated source text verbatim -- discarding it and falling back to GLM. "
+                f"Source: {sanitized[:100]!r}"
             )
 
         result = self.llm.translate(normalized_text, source_lang, target_lang)
-        if result["available"] and not self._looks_like_leaked_escapes(result["text"]):
+        if result["available"] and not self._looks_like_leaked_escapes(result["text"]) and not self._looks_untranslated(target_lang, result["text"]):
             return result["text"]
         elif result["available"]:
             logger.warning(
-                f"GLM translate leaked raw JSON-escape codes instead of real characters -- "
-                f"discarding it and falling back to Qwen. Source: {normalized_text[:100]!r}"
+                f"GLM translate leaked raw JSON-escape codes or returned the untranslated source "
+                f"text verbatim -- discarding it and falling back to Qwen. Source: {normalized_text[:100]!r}"
             )
 
-        # GLM unavailable (or leaked escapes) -- try Qwen before giving up.
-        # Separate QuickML deployment/model from GLM (vlm/chat vs glm/chat),
-        # confirmed live to keep responding through three separate GLM
-        # outage windows this session, so its uptime genuinely doesn't track
-        # GLM's. Same numbers-match and leaked-escape safety nets as the
-        # other two tiers, since Qwen is also a general-purpose model and
-        # not immune to either failure mode.
+        # GLM unavailable (or leaked escapes/untranslated passthrough) -- try
+        # Qwen before giving up. Separate QuickML deployment/model from GLM
+        # (vlm/chat vs glm/chat), confirmed live to keep responding through
+        # three separate GLM outage windows this session, so its uptime
+        # genuinely doesn't track GLM's. Same safety nets as the other two
+        # tiers, since Qwen is also a general-purpose model and not immune
+        # to any of these failure modes.
         qwen_result = self.qwen.translate(normalized_text, source_lang, target_lang)
-        if qwen_result["available"] and not self._looks_like_leaked_escapes(qwen_result["text"]) and self._numbers_match(normalized_text, qwen_result["text"]):
+        if (qwen_result["available"] and not self._looks_like_leaked_escapes(qwen_result["text"])
+                and not self._looks_untranslated(target_lang, qwen_result["text"])
+                and self._numbers_match(normalized_text, qwen_result["text"])):
             return qwen_result["text"]
         elif qwen_result["available"]:
             logger.warning(
-                f"Qwen fallback translate returned mismatched numbers or leaked escape codes -- discarding. "
-                f"Source: {normalized_text[:100]!r}"
+                f"Qwen fallback translate returned mismatched numbers, leaked escape codes, or the "
+                f"untranslated source text verbatim -- discarding. Source: {normalized_text[:100]!r}"
             )
 
         # Honest fallback -- still labeled as such, not silently passed
