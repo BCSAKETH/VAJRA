@@ -437,6 +437,9 @@ class VajraAgentLoop:
         # (keywords, tool_name, params, required_guess) -- required_guess is
         # checked truthy before this pattern is allowed to match at all.
         patterns: List[Tuple[List[str], str, Dict[str, Any], str]] = [
+            # Self-identity -- must come first so "my details/profile" never
+            # falls through to a suspect-lookup pattern. Takes no params.
+            (["my name", "my profile", "my details", "who am i", "my rank", "my station", "my posting", "my assignment", "current assignment", "am i posted", "my designation"], "get_my_profile", {}, "yes"),
             (["risk score", "conviction risk", "recidivism", "re-offend", "risk for", "risk of"], "get_offender_risk", {"suspect_name": name}, name),
             (["network", "syndicate", "co-accused", "connections for", "connections of", "connected to", "crimes is", "crimes does"], "query_graph_network", {"suspect_name": name}, name),
             (["financial", "money trail", "transaction", "bank account"], "query_financial_links", {"entity_id": name}, name),
@@ -465,9 +468,21 @@ class VajraAgentLoop:
 
         return None
 
-    def _resolve_entities(self, query: str, session_id: str) -> Dict[str, Any]:
+    def _resolve_entities(self, query: str, session_id: str, exclude_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Parses query to extract entities. Falls back to Session Memory if missing.
+
+        exclude_name: the logged-in officer's own name, if the caller
+        identity-context prefix (main.py's "[Context: you are speaking with
+        Officer X...]") is present in `query`. Confirmed live: every query
+        now carries that prefix, and this method's suspect-name regex is a
+        dumb capitalized-word matcher with no way to distinguish "the
+        officer's name in a context header" from "a real suspect the
+        officer is asking about" -- without this exclusion, EVERY query
+        (not just self-identity ones) risked resolving `suspect` to the
+        officer's own name instead of whatever suspect the officer actually
+        asked about, since the prefix appears first in the string and this
+        regex takes the first match.
         """
         context = session_memory.get_session_context(session_id)
         
@@ -484,9 +499,19 @@ class VajraAgentLoop:
         case_match = re.search(r'\b([A-Z]{2,4}-\d{4}-\d{4,6})\b', query, re.IGNORECASE)
         # Regex match for suspect names (Capitalized words like Ramesh Kumar)
         suspect_match = None
+        excluded_names = {"karnataka", "police", "cctns", "scrb", "bengaluru", "peenya", "indiranagar", "station"}
+        if exclude_name:
+            excluded_names.add(exclude_name.lower())
+            # Also exclude each individual word of the officer's name (e.g.
+            # "Claire" and "Gibson" separately), since the officer-name
+            # prefix and a real suspect mention can both be present in the
+            # same string and this regex takes the FIRST capitalized match --
+            # a bare first-name-only match earlier in the text would still
+            # win over a real full-name suspect mentioned later otherwise.
+            excluded_names.update(w.lower() for w in exclude_name.split())
         suspect_candidates = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', query)
         for cand in suspect_candidates:
-            if cand.lower() not in ["karnataka", "police", "cctns", "scrb", "bengaluru", "peenya", "indiranagar", "station"]:
+            if cand.lower() not in excluded_names:
                 suspect_match = cand
                 break
 
@@ -621,12 +646,12 @@ class VajraAgentLoop:
             end = content_str.rfind("}", 0, end)
         return content_str
 
-    def run_agent_loop(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None) -> Dict[str, Any]:
+    def run_agent_loop(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Primary execution entry point. Decides what tools to run in sequence using LLM function calling.
         """
         # 1. Resolve Entities & Context
-        entities = self._resolve_entities(query, session_id)
+        entities = self._resolve_entities(query, session_id, exclude_name=officer_name)
 
         # Load conversation history from session memory
         context = session_memory.get_session_context(session_id)
