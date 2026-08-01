@@ -50,6 +50,14 @@ class VajraAgentLoop:
     # 22 Capabilities Tool Registry definition for GLM-4.7-Flash
     TOOLS = [
         {
+            "name": "get_my_profile",
+            "description": "Return the CURRENTLY LOGGED-IN officer's OWN profile -- their name, rank, designation, police station/unit, and district. Use this whenever the officer asks about THEMSELVES: 'what is my name', 'my details', 'my profile', 'who am I', 'my rank/station/posting/current assignment', 'which district am I in'. This is NOT for looking up suspects or other people -- it is the officer's own identity, resolved from their authenticated session. Takes no parameters.",
+            "parameters": {
+                "type": "object",
+                "properties": {}
+            }
+        },
+        {
             "name": "query_case",
             "description": "Structured FIR lookup. Retrieve case details by Case Number (e.g. CrimeNo like 'FIR-2026-0814').",
             "parameters": {
@@ -1082,8 +1090,78 @@ class VajraAgentLoop:
         if user_unit_id is not None and user_unit_id != 1:
             unit_filter_str = f"AND PoliceStationID = {user_unit_id}"
 
+        # 0. get_my_profile -- the logged-in officer's OWN identity. Self-
+        # contained (keyed by the employee_id already resolved from the
+        # authenticated session and passed into every tool call), mirroring
+        # the same Employee -> Unit/Rank/Designation/District resolution the
+        # security firewall does at login (see vajra_core.py). Confirmed live:
+        # without a dedicated tool, "my details / current assignment / my
+        # profile" dead-ended -- every other tool looks up SUSPECTS, so the
+        # fallback either asked a generic clarifying question or misread it as
+        # a suspect lookup ("which suspect's profile?"). This fixes it for BOTH
+        # the GLM and Qwen paths since both pick from this same tool list.
+        if tool_name == "get_my_profile":
+            response_type = "text"
+            if not (catalyst_app and employee_id):
+                text_result = "I could not resolve your officer profile from this session."
+            else:
+                try:
+                    emp_res = catalyst_app.zql().execute_query(
+                        f"SELECT EmployeeID, KGID, FirstName, UnitID, RankID, DesignationID FROM Employee WHERE EmployeeID = {employee_id} LIMIT 1"
+                    )
+                    if not emp_res:
+                        text_result = "I could not find your officer profile in the database."
+                    else:
+                        emp = emp_res[0].get("Employee", {})
+                        name = emp.get("FirstName") or "Officer"
+                        kgid = emp.get("KGID")
+                        unit_id = emp.get("UnitID")
+                        rank_id = emp.get("RankID")
+                        desig_id = emp.get("DesignationID")
+
+                        unit_name, district_name, rank_name, desig_name = None, None, None, None
+                        if unit_id:
+                            u_res = catalyst_app.zql().execute_query(f"SELECT UnitName, DistrictID FROM Unit WHERE UnitID = {unit_id} LIMIT 1")
+                            if u_res:
+                                u = u_res[0].get("Unit", {})
+                                unit_name = u.get("UnitName")
+                                dist_id = u.get("DistrictID")
+                                if dist_id:
+                                    d_res = catalyst_app.zql().execute_query(f"SELECT DistrictName FROM District WHERE DistrictID = {dist_id} LIMIT 1")
+                                    if d_res:
+                                        district_name = d_res[0].get("District", {}).get("DistrictName")
+                        if rank_id:
+                            r_res = catalyst_app.zql().execute_query(f"SELECT RankName FROM Rank WHERE RankID = {rank_id} LIMIT 1")
+                            if r_res:
+                                rank_name = r_res[0].get("Rank", {}).get("RankName")
+                        if desig_id:
+                            dg_res = catalyst_app.zql().execute_query(f"SELECT DesignationName FROM Designation WHERE DesignationID = {desig_id} LIMIT 1")
+                            if dg_res:
+                                desig_name = dg_res[0].get("Designation", {}).get("DesignationName")
+
+                        data = {
+                            "name": name, "badge_kgid": kgid, "rank": rank_name,
+                            "designation": desig_name, "station": unit_name, "district": district_name,
+                        }
+                        parts = [f"You are Officer {name}"]
+                        if kgid:
+                            parts.append(f"badge/KGID {kgid}")
+                        if rank_name:
+                            parts.append(f"rank {rank_name}")
+                        if desig_name:
+                            parts.append(f"designation {desig_name}")
+                        if unit_name:
+                            parts.append(f"posted at {unit_name}")
+                        if district_name:
+                            parts.append(f"in {district_name} district")
+                        text_result = ", ".join(parts) + "."
+                        citations.append({"type": "Officer Profile", "id": str(kgid or employee_id), "details": "Resolved from your authenticated session (Employee record)"})
+                except Exception as e:
+                    text_result = f"Failed to resolve your officer profile: {e}"
+            self._write_audit_log(employee_id, "Self Profile Inquiry", str(employee_id), "Officer requested own profile", text_result, session_id)
+
         # 1. query_case
-        if tool_name == "query_case":
+        elif tool_name == "query_case":
             case_no = self.sanitize_sql_input(params.get("case_no", ""))
             if catalyst_app and case_no:
                 try:
@@ -1625,7 +1703,16 @@ class VajraAgentLoop:
             matches = self.resolve_vague_query(raw_query, user_unit_id)
             data = {"matches": matches}
             text_result = f"Found similar cases: {', '.join([m['fir_id'] for m in matches]) if matches else 'None found'}"
-            citations.append({"type": "Semantic Search Index", "id": raw_query[:20], "details": "Case vector similarity recall"})
+            # Confirmed live: this used to show the officer's own search text
+            # truncated to 20 chars as the citation "id" -- not a real result
+            # identifier, just an echo of the query, which read as confusing/
+            # inconsistent labels across different searches. Show the actual
+            # outcome (how many real cases matched) instead.
+            citations.append({
+                "type": "Semantic Search Index",
+                "id": f"{len(matches)} match{'es' if len(matches) != 1 else ''}",
+                "details": "Case vector similarity recall"
+            })
 
         # 13. ask_clarifying_question
         elif tool_name == "ask_clarifying_question":
@@ -2323,17 +2410,33 @@ class VajraAgentLoop:
                 
                 for token in validated_tokens[:3]:  # Limit tokens to avoid blowing 30s timeout
                     q = f"""
-                        SELECT CrimeNo, BriefFacts, CaseMasterID 
-                        FROM CaseMaster 
+                        SELECT CrimeNo, BriefFacts, CaseMasterID, PoliceStationID
+                        FROM CaseMaster
                         WHERE (CrimeNo LIKE '*{token}*' OR BriefFacts LIKE '*{token}*') {unit_filter}
                         LIMIT 3
                     """
                     res = catalyst_app.zql().execute_query(q)
                     for row in res:
                         cm = row.get("CaseMaster", {})
+                        # Confirmed live: this was a literal hardcoded string,
+                        # "Catalyst Datastore" -- not a real station name for
+                        # any of these matches, just a leftover placeholder.
+                        # Same PoliceStationID -> Unit.UnitName resolution
+                        # already used for real precedents above (line
+                        # ~2439), honestly defaulting to "Unknown PS" (not a
+                        # fabricated-sounding name) when it can't resolve.
+                        station_name = "Unknown PS"
+                        unit_id = cm.get("PoliceStationID")
+                        if unit_id:
+                            try:
+                                unit_res = catalyst_app.zql().execute_query(f"SELECT UnitName FROM Unit WHERE UnitID = {unit_id} LIMIT 1")
+                                if unit_res:
+                                    station_name = unit_res[0].get("Unit", {}).get("UnitName") or station_name
+                            except Exception:
+                                pass
                         matches.append({
                             "fir_id": cm.get("CrimeNo"),
-                            "station": "Catalyst Datastore",
+                            "station": station_name,
                             "crime_type": "Narrative Match",
                             "confidence_score": 0.90,
                             "narrative": cm.get("BriefFacts")
