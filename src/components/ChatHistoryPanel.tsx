@@ -45,6 +45,10 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
   const [showNewInvestigation, setShowNewInvestigation] = useState(false);
   const [investigationsRefresh, setInvestigationsRefresh] = useState(0);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  // "Select" used to be its own always-visible header button, competing with
+  // New Chat for the same top row of limited space. Folded into a 3-dot
+  // menu next to New Chat, same pattern as each row's own delete menu.
+  const [showHeaderMenu, setShowHeaderMenu] = useState(false);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   // Multi-select state
@@ -197,8 +201,8 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
 
   return (
     <div className="w-60 shrink-0 border-r border-stone-850 bg-stone-950/30 flex flex-col h-full overflow-hidden">
-      {openMenuId && (
-        <div className="fixed inset-0 z-40" onClick={() => setOpenMenuId(null)} />
+      {(openMenuId || showHeaderMenu) && (
+        <div className="fixed inset-0 z-40" onClick={() => { setOpenMenuId(null); setShowHeaderMenu(false); }} />
       )}
 
       {/* Header controls: New Chat + Multi Select toggle */}
@@ -211,21 +215,45 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
             <MessageSquarePlus className="w-3.5 h-3.5" />
             {t.newChat}
           </button>
-          {totalCount > 0 && (
+          {totalCount > 0 && isMultiSelect && (
             <button
               onClick={() => {
-                setIsMultiSelect(!isMultiSelect);
+                setIsMultiSelect(false);
                 setSelectedSessionIds(new Set());
               }}
-              className={`px-2.5 py-2 rounded-lg text-xs font-mono border transition-all cursor-pointer ${
-                isMultiSelect
-                  ? "border-amber-500 bg-amber-500/20 text-amber-300"
-                  : "border-stone-800 bg-stone-900 hover:bg-stone-800 text-stone-400 hover:text-stone-200"
-              }`}
-              title={isMultiSelect ? "Cancel Select" : "Multi Select"}
+              className="px-2.5 py-2 rounded-lg text-xs font-mono border border-amber-500 bg-amber-500/20 text-amber-300 transition-all cursor-pointer"
+              title="Cancel Select"
             >
-              {isMultiSelect ? (lang === "en" ? "Done" : "ಸಾಕು") : (lang === "en" ? "Select" : "ಆಯ್ಕೆ")}
+              {lang === "en" ? "Done" : "ಸಾಕು"}
             </button>
+          )}
+          {totalCount > 0 && !isMultiSelect && (
+            <div className="relative">
+              <button
+                onClick={(e) => { e.stopPropagation(); setShowHeaderMenu(!showHeaderMenu); }}
+                className="p-2 rounded-lg border border-stone-800 bg-stone-900 hover:bg-stone-800 text-stone-400 hover:text-stone-200 transition-all cursor-pointer"
+                aria-label="More options"
+                title="More options"
+              >
+                <MoreVertical className="w-3.5 h-3.5" />
+              </button>
+              {showHeaderMenu && (
+                <div className="absolute right-0 top-9 z-50 bg-stone-900 border border-stone-800 rounded-lg shadow-2xl py-1 w-36">
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setIsMultiSelect(true);
+                      setSelectedSessionIds(new Set());
+                      setShowHeaderMenu(false);
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-stone-300 hover:bg-stone-800 cursor-pointer"
+                  >
+                    <CheckSquare className="w-3 h-3" />
+                    {lang === "en" ? "Select" : "ಆಯ್ಕೆ"}
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </div>
 
