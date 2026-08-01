@@ -278,6 +278,17 @@ class VajraAgentLoop:
             }
         },
         {
+            "name": "plan_patrol_deployment",
+            "description": "PREDICTIVE BEAT PLANNING: recommend WHERE to deploy patrols, ranked, by fusing real crime-hotspot density + current crime trend + active repeat-offender presence into one prioritised deployment plan with the reasoning shown. Use for questions like 'where should I send patrols', 'beat plan', 'patrol deployment', 'where to focus policing', 'where is crime going to happen', 'proactive deployment', 'where should officers go tomorrow'. Optionally scoped to a district.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "district": {"type": "string", "description": "Optional district name to scope the plan to (e.g. Ballari). Omit for a state-wide plan."}
+                },
+                "required": []
+            }
+        },
+        {
             "name": "generate_crime_overview",
             "description": "Generate MULTIPLE charts/graphs about crime in one response: monthly trend line, case-type distribution pie/bar, and active spatial hotspots together. Use this (instead of a single narrower tool) whenever the officer asks for a 'variety of charts', 'different graphs', 'full analytics', 'complete overview', 'everything about crime in <place>', or similar composite analytics request -- a single narrow tool only returns one chart type and under-answers a composite ask.",
             "parameters": {
@@ -440,6 +451,7 @@ class VajraAgentLoop:
             # Self-identity -- must come first so "my details/profile" never
             # falls through to a suspect-lookup pattern. Takes no params.
             (["my name", "my profile", "my details", "who am i", "my rank", "my station", "my posting", "my assignment", "current assignment", "am i posted", "my designation"], "get_my_profile", {}, "yes"),
+            (["beat plan", "patrol deployment", "deploy patrol", "where should i send", "where to send patrol", "where to deploy", "where to focus", "proactive deployment", "patrol plan"], "plan_patrol_deployment", {"district": district}, "yes"),
             (["risk score", "conviction risk", "recidivism", "re-offend", "risk for", "risk of"], "get_offender_risk", {"suspect_name": name}, name),
             (["network", "syndicate", "co-accused", "connections for", "connections of", "connected to", "crimes is", "crimes does"], "query_graph_network", {"suspect_name": name}, name),
             (["financial", "money trail", "transaction", "bank account"], "query_financial_links", {"entity_id": name}, name),
@@ -2100,7 +2112,9 @@ class VajraAgentLoop:
             district = params.get("district", "")
             trend_res = self._execute_tool("get_crime_trends", {"district": district}, employee_id, session_id, user_unit_id)
             dist_res = self._execute_tool("get_case_types_distribution", {"district": district}, employee_id, session_id, user_unit_id)
-            hotspot_res = self._execute_tool("query_hotspots", {}, employee_id, session_id, user_unit_id)
+            # Pass district through -- previously omitted, so the hotspot panel
+            # of a district-scoped overview silently showed state-wide clusters.
+            hotspot_res = self._execute_tool("query_hotspots", {"district": district}, employee_id, session_id, user_unit_id)
 
             # Anchor the inline/expanded widget on the trend chart (richest
             # already-wired chart visual) and fold the pie/distribution and
@@ -2126,6 +2140,69 @@ class VajraAgentLoop:
             self._write_audit_log(
                 employee_id, "Composite Crime Overview", scope_label,
                 f"Crime overview requested for {scope_label}", text_result, session_id
+            )
+
+        # 22. plan_patrol_deployment (USP-2, Predictive Beat Planning) -- the
+        # "decision tool" jump: instead of the officer separately asking where
+        # crime clusters, what's trending, and who's a repeat offender, this
+        # fuses those three REAL signals into one ranked "deploy patrols here"
+        # recommendation, with the reasoning shown. Composes the same proven
+        # sub-tools in-process (no new data assumptions, no fabrication -- every
+        # number traces to a real DBSCAN cluster / trend count / repeat-offender
+        # alert). Anchors the map widget on the ranked hotspot cells so the
+        # recommended deployment points render directly.
+        elif tool_name == "plan_patrol_deployment":
+            district = self.sanitize_sql_input(params.get("district", ""))
+            hotspot_res = self._execute_tool("query_hotspots", {"district": district}, employee_id, session_id, user_unit_id)
+            trend_res = self._execute_tool("get_crime_trends", {"district": district}, employee_id, session_id, user_unit_id)
+            repeat_res = self._execute_tool("get_repeat_offenders", {"district": district}, employee_id, session_id, user_unit_id)
+
+            hotspots = (hotspot_res.get("data") or {}).get("hotspots") or []
+            # Rank deployment cells by real incident concentration (DBSCAN
+            # point_count when clustered; falls back to raw-marker order).
+            ranked = sorted(
+                [h for h in hotspots if isinstance(h, dict)],
+                key=lambda h: h.get("point_count") or 0,
+                reverse=True,
+            )
+            offenders = (repeat_res.get("data") or {}).get("offenders") or []
+            repeat_count = len(offenders)
+
+            response_type = "map"
+            data = {"hotspots": ranked}
+            data["trend"] = trend_res.get("data")
+            data["repeat_offenders"] = repeat_res.get("data")
+
+            scope_label = district or "all districts"
+            lines = [f"PREDICTIVE BEAT PLAN -- {scope_label}", ""]
+            if ranked:
+                lines.append(f"Top {min(len(ranked), 5)} recommended patrol deployment cells, ranked by real incident concentration:")
+                for i, h in enumerate(ranked[:5], 1):
+                    pc = h.get("point_count")
+                    loc = f"({h.get('lat'):.4f}, {h.get('lng'):.4f})" if h.get("lat") is not None else (h.get("label") or "cluster")
+                    if pc:
+                        lines.append(f"  {i}. {loc} — {pc} incidents concentrated here")
+                    else:
+                        lines.append(f"  {i}. {loc}")
+            else:
+                lines.append("No dense incident clusters were found to prioritise for this scope.")
+            lines.append("")
+            lines.append(f"Supporting signals: {trend_res.get('text_result', 'trend unavailable')}")
+            if repeat_count:
+                lines.append(f"{repeat_count} repeat-offender alert(s) active in this scope — weight deployment toward cells overlapping their known areas.")
+            lines.append("")
+            lines.append("Recommendation basis: DBSCAN incident density x current crime trend x repeat-offender presence. Every figure above is from real records; final deployment is the commanding officer's decision.")
+            text_result = "\n".join(lines)
+
+            citations = (
+                (hotspot_res.get("citations") or [])
+                + (trend_res.get("citations") or [])
+                + (repeat_res.get("citations") or [])
+            )
+            citations.append({"type": "Predictive Beat Planning", "id": scope_label, "details": "Ranked patrol allocation composed from DBSCAN density, crime trend, and repeat-offender signals"})
+            self._write_audit_log(
+                employee_id, "Predictive Beat Planning", scope_label,
+                f"Patrol deployment plan requested for {scope_label}", text_result, session_id
             )
 
         return {

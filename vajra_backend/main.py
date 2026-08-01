@@ -1979,14 +1979,26 @@ async def _run_ai_turn_and_persist(
     # a real, fixable gap: the officer's own name and badge are already
     # resolved server-side from their authenticated session (chat_endpoint's
     # own request.state.user_profile) before this task is even started.
-    # Prepending them as real, verified context -- never a guess -- lets the
-    # model answer self-identity questions the same honest, grounded way it
-    # answers questions about suspects.
+    #
+    # WARNING, confirmed live: a get_my_profile tool now exists (added
+    # separately) for real, structured self-identity answers -- but simply
+    # naming the officer here, with no guardrail, let the officer's own name
+    # bleed into UNRELATED tool-parameter extraction: a vague query in the
+    # same turn got interpreted as a suspect-lookup request and produced a
+    # full criminal-style dossier (conviction risk score, MO profile,
+    # criminal network) ABOUT THE OFFICER THEMSELVES, using their own name as
+    # the "suspect." On a police platform, treating an officer as a suspect
+    # by accident is a serious correctness/dignity failure, not a cosmetic
+    # one -- the explicit negative instruction below exists specifically to
+    # prevent that, not just to be thorough.
     if officer_name and officer_badge:
         query_for_agent = (
             f"[Context: you are speaking with Officer {officer_name}, badge {officer_badge}. "
-            f"If asked who they are, their name, or their badge number, answer directly from this -- "
-            f"it is real, verified information, not something to guess at.]\n\n{query_for_agent}"
+            f"If they ask who they are, their name, badge, rank, station, or current assignment, "
+            f"call the get_my_profile tool (or answer directly if already known) -- never guess. "
+            f"Do NOT use '{officer_name}' as a suspect_name or entity_id parameter for any other "
+            f"tool (risk score, network, MO profile, financial links, full report, etc.) -- this is "
+            f"the officer asking about themselves, not a suspect to investigate.]\n\n{query_for_agent}"
         )
 
     # If this session is an Investigation linked to a real case, prepend that
@@ -2050,7 +2062,8 @@ async def _run_ai_turn_and_persist(
         query=processed_query,
         session_id=session_id,
         employee_id=employee_id,
-        user_unit_id=unit_id
+        user_unit_id=unit_id,
+        officer_name=officer_name
     )
 
     # Generate BOTH language versions of the answer, always -- not just the
