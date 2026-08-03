@@ -2725,10 +2725,20 @@ async def upload_chat_attachments(
 
 
 @app.get("/api/alerts")
-async def get_alerts_endpoint(request: Request):
+async def get_alerts_endpoint(request: Request, location_context: str = Depends(security_firewall)):
     """
     Returns real proactive alerts computed by the proactive_alerts Job Function
-    and stored in ProactiveAlerts. Previously this cycled 3 canned message
+    and stored in ProactiveAlerts.
+
+    SECURITY (audit P0): previously had NO auth dependency at all, so anyone on
+    the internet could read live policing intelligence -- named repeat
+    offenders, their case counts, stations, spatial spikes. Now gated behind
+    the security firewall like every other data endpoint. Not restricted to
+    supervisor-tier: this feeds the notification bell for every authenticated
+    officer (the frontend already sends the Bearer token), so requiring a valid
+    session -- not a specific rank -- is the correct fix.
+
+    Previously this cycled 3 canned message
     templates over arbitrary CaseMaster rows instead of reading real alerts —
     fixed once the job function's own column-name bug (see
     functions/proactive_alerts/index.py) was corrected and it started
@@ -3037,10 +3047,21 @@ class PDFExportRequest(BaseModel):
 
 
 @app.post("/api/chat/export-pdf")
-async def export_pdf_endpoint(payload: PDFExportRequest):
+async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, location_context: str = Depends(security_firewall)):
     """
     Generates a secure, downloadable PDF report of the active investigation transcript.
+
+    SECURITY (audit P0): previously had NO auth dependency AND stamped the
+    document with a badge number taken straight from the request body -- so
+    anyone could mint an official KSP-letterhead PDF attributed to any officer,
+    with no login. Now (1) gated behind the security firewall, and (2) the
+    badge is derived from the authenticated session (request.state.kgid), never
+    the client payload, so the operator attribution on the document is real and
+    unforgeable. NOTE: server-side enforcement of the two-person-approval
+    workflow for non-supervisor exports is a separate follow-up (the approval
+    gate currently lives only in the UI).
     """
+    authed_badge = request.state.kgid or "UNKNOWN"
     try:
         from fpdf import FPDF
         from datetime import datetime
@@ -3068,7 +3089,9 @@ async def export_pdf_endpoint(payload: PDFExportRequest):
 
         pdf.set_font("NotoKannada", size=10)
         pdf.cell(0, 6, f"Generated At (UTC): {datetime.utcnow().isoformat()}", new_x="LMARGIN", new_y="NEXT")
-        pdf.cell(0, 6, f"Operator Badge No: {payload.badge_id}", new_x="LMARGIN", new_y="NEXT")
+        # Authenticated badge from the session, NOT payload.badge_id (which a
+        # caller could set to anyone) -- see the security note on this endpoint.
+        pdf.cell(0, 6, f"Operator Badge No: {authed_badge}", new_x="LMARGIN", new_y="NEXT")
         pdf.ln(5)
         pdf.line(10, pdf.get_y(), 200, pdf.get_y())
         pdf.ln(5)
