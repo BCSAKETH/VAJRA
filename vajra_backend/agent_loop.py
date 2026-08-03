@@ -662,8 +662,22 @@ class VajraAgentLoop:
         """
         Primary execution entry point. Decides what tools to run in sequence using LLM function calling.
         """
+        # main.py prepends officer-identity and case-context headers to
+        # `query` -- e.g. "[Context: you are speaking with Officer X ... or
+        # current assignment, call the get_my_profile tool ...]". Those are
+        # INSTRUCTIONS FOR THE LLM, not the officer's own words. The
+        # deterministic parsers below (entity resolution + keyword router)
+        # must scan ONLY what the officer actually typed. Confirmed live: the
+        # injected header contains the literal phrase "current assignment",
+        # which matched the get_my_profile keyword pattern, so the keyword
+        # router returned get_my_profile for EVERY query and every single
+        # answer came back as the officer's own profile. Strip leading
+        # [Context: ...] blocks before those parsers see the text; the full
+        # `query` (with headers) still goes to the LLM history unchanged.
+        officer_query = re.sub(r'^\s*(?:\[Context:[^\]]*\]\s*)+', '', query, flags=re.DOTALL)
+
         # 1. Resolve Entities & Context
-        entities = self._resolve_entities(query, session_id, exclude_name=officer_name)
+        entities = self._resolve_entities(officer_query, session_id, exclude_name=officer_name)
 
         # Load conversation history from session memory
         context = session_memory.get_session_context(session_id)
@@ -764,10 +778,13 @@ class VajraAgentLoop:
                     # QuickML deployment/model from GLM, so its uptime is
                     # genuinely independent), then a deterministic keyword
                     # match as a last resort.
-                    fallback_decision = self.qwen.decide_tool(query, self.TOOLS, entity_context=entities)
+                    # officer_query (headers stripped) -- not the raw `query` --
+                    # so the injected context header can't hijack tool selection
+                    # (see the officer_query strip at the top of this method).
+                    fallback_decision = self.qwen.decide_tool(officer_query, self.TOOLS, entity_context=entities)
                     fallback_label = "Qwen"
                     if fallback_decision is None:
-                        fallback_decision = self._keyword_route_tool(query)
+                        fallback_decision = self._keyword_route_tool(officer_query)
                         fallback_label = "Keyword Match"
                 if fallback_decision is not None:
                     logger.warning(f"Tool-selection fallback used ({fallback_label}, iteration {current_iteration}): {fallback_decision}")
