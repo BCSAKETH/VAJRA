@@ -124,6 +124,17 @@ class VajraAgentLoop:
             }
         },
         {
+            "name": "detect_financial_ring",
+            "description": "MONEY-LAUNDERING / HAWALA RING DETECTION: starting from one account or entity, traverse the financial-transaction graph 2 hops out and detect ring structures -- mule accounts (many senders funnel into one), layering chains, and fan-out distribution/payout hubs. Surfaces collection and distribution hubs that a single-entity money-trail lookup would miss. Use for 'money laundering ring', 'hawala network', 'mule accounts', 'financial ring', 'trace the money network', 'who is collecting/distributing the money'. Requires a starting entity or account reference.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "entity_id": {"type": "string", "description": "The starting suspect name or bank/wallet account reference to trace the ring from"}
+                },
+                "required": ["entity_id"]
+            }
+        },
+        {
             "name": "query_hotspots",
             "description": "Retrieve geospatial coordinates of active crime hotspots and incident clusters. Can be scoped to one district or left state-wide.",
             "parameters": {
@@ -454,6 +465,7 @@ class VajraAgentLoop:
             (["beat plan", "patrol deployment", "deploy patrol", "where should i send", "where to send patrol", "where to deploy", "where to focus", "proactive deployment", "patrol plan"], "plan_patrol_deployment", {"district": district}, "yes"),
             (["risk score", "conviction risk", "recidivism", "re-offend", "risk for", "risk of"], "get_offender_risk", {"suspect_name": name}, name),
             (["network", "syndicate", "co-accused", "connections for", "connections of", "connected to", "crimes is", "crimes does"], "query_graph_network", {"suspect_name": name}, name),
+            (["money laundering", "hawala", "mule account", "financial ring", "money network", "laundering ring", "money ring"], "detect_financial_ring", {"entity_id": name}, name),
             (["financial", "money trail", "transaction", "bank account"], "query_financial_links", {"entity_id": name}, name),
             (["mo profile", "modus operandi", "behavioral profile", "behaviour profile"], "get_mo_profile", {"suspect_name": name}, name),
             (["timeline", "chronology", "milestones"], "get_case_timeline", {"case_no": case_no}, case_no),
@@ -1347,6 +1359,107 @@ class VajraAgentLoop:
             text_result = f"Found {len(txns)} suspicious financial transaction nodes linked to entity '{entity}'."
             citations.append({"type": "FinancialTransaction Datastore", "id": entity, "details": "Traced money laundering trails"})
             self._write_audit_log(employee_id, "Financial Link Analysis", entity, f"Money trail of {entity}", text_result, session_id)
+
+        # 6b. detect_financial_ring (USP-5) -- 2-hop money-flow graph +
+        # mule/layering/fan-out ring detection. query_financial_links only
+        # lists one entity's direct transactions; this walks the graph outward
+        # and computes per-account in/out degree to surface COLLECTION hubs
+        # (many distinct senders -> one account = mule/funnel) and
+        # DISTRIBUTION hubs (one account -> many distinct receivers = payout
+        # fan-out) that no single-entity lookup reveals. Pure-Python graph
+        # analysis (no networkx dependency, respecting the vendor disk cap);
+        # every node/edge traces to a real FinancialTransaction row.
+        elif tool_name == "detect_financial_ring":
+            seed = self.sanitize_sql_input(params.get("entity_id", ""))
+            response_type = "network"
+            edges_set = set()          # (sender, receiver) directed
+            senders_of = {}            # account -> set of distinct senders into it
+            receivers_of = {}          # account -> set of distinct receivers out of it
+            total_txns = 0
+            if catalyst_app and seed:
+                try:
+                    visited = set()
+                    frontier = [seed]
+                    # 2 hops, bounded: cap nodes expanded so a hub doesn't blow
+                    # up into hundreds of ZCQL calls on one interactive turn.
+                    for hop in range(2):
+                        next_frontier = []
+                        for node in frontier:
+                            if node in visited or len(visited) > 25:
+                                continue
+                            visited.add(node)
+                            q = (f"SELECT sender_ref, receiver_ref, amount FROM FinancialTransaction "
+                                 f"WHERE sender_ref = '{self.sanitize_sql_input(node)}' OR receiver_ref = '{self.sanitize_sql_input(node)}' LIMIT 40")
+                            tx_res = catalyst_app.zql().execute_query(q)
+                            for r in tx_res:
+                                t = r.get("FinancialTransaction", {})
+                                s, rc = t.get("sender_ref"), t.get("receiver_ref")
+                                if not s or not rc:
+                                    continue
+                                total_txns += 1
+                                edges_set.add((s, rc))
+                                receivers_of.setdefault(s, set()).add(rc)
+                                senders_of.setdefault(rc, set()).add(s)
+                                if hop == 0:
+                                    if s not in visited:
+                                        next_frontier.append(s)
+                                    if rc not in visited:
+                                        next_frontier.append(rc)
+                        frontier = next_frontier
+                except Exception as ex:
+                    logger.warning(f"Financial ring traversal error: {ex}")
+
+            # Score hubs: in-degree = distinct senders (collection/mule),
+            # out-degree = distinct receivers (distribution/payout).
+            all_nodes = set()
+            for s, rc in edges_set:
+                all_nodes.add(s); all_nodes.add(rc)
+            collection_hubs = sorted(
+                ((n, len(senders_of.get(n, set()))) for n in all_nodes),
+                key=lambda x: x[1], reverse=True)
+            distribution_hubs = sorted(
+                ((n, len(receivers_of.get(n, set()))) for n in all_nodes),
+                key=lambda x: x[1], reverse=True)
+
+            nodes = []
+            for n in all_nodes:
+                indeg = len(senders_of.get(n, set()))
+                outdeg = len(receivers_of.get(n, set()))
+                role = "seed" if n == seed else ("collection hub" if indeg >= 3 and indeg >= outdeg else ("distribution hub" if outdeg >= 3 else "account"))
+                nodes.append({
+                    "id": n,
+                    "label": n,
+                    "sublabel": f"in {indeg} / out {outdeg}",
+                    "type": "suspect" if n == seed else ("case" if role in ("collection hub", "distribution hub") else "person"),
+                })
+            edges = [{"source": s, "target": rc} for s, rc in edges_set]
+            data = {"nodes": nodes, "edges": edges, "seed": seed}
+
+            if not all_nodes:
+                text_result = f"No financial transactions were found linked to '{seed}', so no ring could be traced."
+            else:
+                lines = [f"FINANCIAL RING ANALYSIS -- traced from '{seed}'", ""]
+                lines.append(f"Mapped {len(all_nodes)} accounts and {len(edges_set)} transaction links across 2 hops ({total_txns} transactions scanned).")
+                top_c = [h for h in collection_hubs if h[1] >= 3][:3]
+                top_d = [h for h in distribution_hubs if h[1] >= 3][:3]
+                if top_c:
+                    lines.append("")
+                    lines.append("Collection hubs (many senders funnel in -- classic mule/collection pattern):")
+                    for acct, deg in top_c:
+                        lines.append(f"  - {acct}: receives from {deg} distinct sources")
+                if top_d:
+                    lines.append("")
+                    lines.append("Distribution hubs (one account pays out to many -- fan-out/layering):")
+                    for acct, deg in top_d:
+                        lines.append(f"  - {acct}: sends to {deg} distinct destinations")
+                if not top_c and not top_d:
+                    lines.append("No strong collection/distribution hub pattern detected -- the flow looks like ordinary point-to-point transfers, not a structured ring.")
+                lines.append("")
+                lines.append("Every account and link above is a real FinancialTransaction record; hub roles are computed from actual in/out transfer counts, not inferred.")
+                text_result = "\n".join(lines)
+
+            citations.append({"type": "Financial Ring Detection", "id": seed, "details": f"2-hop money-flow graph over {total_txns} real FinancialTransaction records"})
+            self._write_audit_log(employee_id, "Financial Ring Detection", seed, f"Ring analysis from {seed}", text_result, session_id)
 
         # 7. query_hotspots
         elif tool_name == "query_hotspots":
