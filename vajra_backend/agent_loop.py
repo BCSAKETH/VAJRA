@@ -481,7 +481,20 @@ class VajraAgentLoop:
             (["repeat offender", "habitual"], "get_repeat_offenders", {"district": district}, "yes"),
             (["forecast", "predict", "early warning"], "get_forecast",
              {"district": district, "crime_type": crime_group}, district and crime_group),
-            (["similar case", "similar cases", "similar to", "past cases", "similar cybercrime", "cybercrime cases", "cybercrime", "cyber crime", "on cybercrime", "cases like"], "find_similar_cases", {"query": query}, "yes"),
+            # find_similar_cases is the LAST pattern and takes the whole query
+            # as a semantic search string, so it's the natural catch-all for
+            # "find/list/show ... cases" phrasings that no more-specific tool
+            # above claimed. Widened after a live report: with GLM (the primary
+            # model) down, "find all murder cases near ballari" matched nothing
+            # and dead-ended on the honest "AI unavailable" message. These
+            # broader case-finding keywords let that whole class of query
+            # survive a GLM outage by routing to real semantic case search.
+            (["similar case", "similar cases", "similar to", "past cases", "similar cybercrime",
+              "cybercrime cases", "cybercrime", "cyber crime", "on cybercrime", "cases like",
+              "find cases", "find all cases", "find case", "find all", "find murder", "murder case",
+              "murder cases", "cases near", "cases in", "cases around", "cases involving",
+              "cases related", "list cases", "show cases", "show me cases", "any cases", "related cases"],
+             "find_similar_cases", {"query": query}, "yes"),
         ]
 
         for keywords, tool_name, params, required in patterns:
