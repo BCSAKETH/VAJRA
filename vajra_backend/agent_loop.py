@@ -904,9 +904,35 @@ class VajraAgentLoop:
                     if tool_output.get("text_result"):
                         last_tool_text_result = tool_output["text_result"]
 
-                    # Append tool result to history and loop again
+                    # Append tool result to history (must happen BEFORE the
+                    # answer-first short-circuit below, or a follow-up turn
+                    # loses the record that this tool ran).
                     history.append({"role": "assistant", "content": json.dumps(decision)})
                     history.append({"role": "user", "content": f"Tool '{tool_name}' returned: {json.dumps(tool_output['text_result'])}"})
+
+                    # ANSWER-FIRST (Phase 4): for a VISUAL/composite answer
+                    # (map, network, risk, timeline, trend, case_distribution,
+                    # dossier, ...), the tool's own text_result is already a
+                    # complete, grounded answer and the widget/panels carry the
+                    # detail. Use it directly and skip the separate GLM
+                    # synthesis call. Why this is strictly better here:
+                    #   - answer-first: the grounded result is the answer, shown
+                    #     without waiting on a second 15-140s GLM round-trip;
+                    #   - reliability: the synthesis-only call times out more
+                    #     often than any other step (see last_tool_text_result
+                    #     note above) -- for chart answers that timeout wasted a
+                    #     correct result and risked GLM re-narrating (or
+                    #     mangling) an already-good grounded summary;
+                    #   - the Full Dossier headline stays exactly as composed.
+                    # TEXT answers (query_case, summarize_case, find_similar,
+                    # sections, clarifying questions) still fall through to real
+                    # GLM synthesis, where the added analytical narrative is the
+                    # whole value. The ambiguous-name graph case deliberately
+                    # resets response_type to "text", so it correctly does NOT
+                    # short-circuit and still routes through synthesis.
+                    if response_type != "text" and last_tool_text_result:
+                        response_text = last_tool_text_result
+                        break
                 else:
                     # Final synthesis response text or clarifying question.
                     # .split("</think>")[-1] guards against a "thinking" model
