@@ -87,9 +87,15 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   const [showEvidence, setShowEvidence] = useState(false);
   const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
 
-  const displayText = isAI
+  const rawDisplayText = isAI
     ? (lang === "kn" ? (message.textKn || message.text) : (message.textEn || message.text))
     : message.text;
+  // Multiline answers are stored with the newline SQL-escaped to a literal
+  // "\n" (two chars) on insert and never un-escaped on read, so they render
+  // as visible backslash-n instead of line breaks. Convert them back here for
+  // display (the container already uses whitespace-pre-wrap). Also collapse a
+  // stray leading "\n" so answers don't start with a blank line.
+  const displayText = (rawDisplayText || "").replace(/\\r\\n|\\n|\\r/g, "\n").replace(/^\n+/, "");
 
   useEffect(() => {
     return () => {
@@ -288,24 +294,33 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
             panel type is renderable, otherwise the panel's grounded text.
             Falls through to the single-widget path below for normal answers. */}
         {isAI && Array.isArray(message.data?.panels) && message.data.panels.length > 0 ? (
-          <div className="w-full flex flex-col gap-3">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[11px] text-[#C79A4E] font-medium animate-fade-in">
-              <Sparkles className="w-3.5 h-3.5 shrink-0 text-[#C79A4E]" />
-              <span>
-                {lang === "en"
-                  ? `Full Dossier — ${message.data.panels.length} intelligence panels`
-                  : `ಪೂರ್ಣ ದೋಶಿಯರ್ — ${message.data.panels.length} ಗುಪ್ತಚರ ಫಲಕಗಳು`}
-              </span>
+          /* ONE unified case-file container -- the sections live INSIDE it,
+             divided by rules, so it reads as a single investigation dossier
+             rather than a stack of disconnected answer cards. */
+          <div className="w-full rounded-2xl border border-[#C79A4E]/30 bg-stone-950/40 overflow-hidden shadow-lg animate-fade-in">
+            <div className="px-4 py-3 border-b border-[#C79A4E]/25 bg-gradient-to-r from-[#C79A4E]/12 to-transparent">
+              <div className="flex items-center gap-2 text-[#C79A4E]">
+                <Sparkles className="w-4 h-4 shrink-0" />
+                <span className="font-mono text-[12px] font-bold uppercase tracking-[0.18em]">
+                  {lang === "en" ? "Full Case Dossier" : "ಪೂರ್ಣ ಪ್ರಕರಣ ದೋಶಿಯರ್"}
+                </span>
+              </div>
+              <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-stone-400 font-mono">
+                {message.data.case_no && <span>Case: <span className="text-stone-200">{message.data.case_no}</span></span>}
+                {message.data.primary_accused && <span>Primary accused: <span className="text-stone-200">{message.data.primary_accused}</span></span>}
+                <span>{message.data.panels.length} {lang === "en" ? "sections" : "ವಿಭಾಗಗಳು"}</span>
+              </div>
             </div>
-            {message.data.panels.map((panel: any, i: number) => {
-              const title = (lang === "kn" ? panel.title_kn : panel.title_en) || panel.title_en || "";
-              const isWidget = WIDGET_PANEL_TYPES.has(panel.type) && panel.data;
-              return (
-                <div key={i} className="rounded-xl border border-stone-850 bg-stone-950/30 overflow-hidden">
-                  <div className="px-3 py-2 text-[11px] font-mono uppercase tracking-wider text-[#C79A4E] border-b border-stone-850 bg-stone-900/40">
-                    ◈ {title}
-                  </div>
-                  <div className="p-2">
+            <div className="divide-y divide-stone-850">
+              {message.data.panels.map((panel: any, i: number) => {
+                const title = (lang === "kn" ? panel.title_kn : panel.title_en) || panel.title_en || "";
+                const isWidget = WIDGET_PANEL_TYPES.has(panel.type) && panel.data;
+                return (
+                  <div key={i} className="px-4 py-3">
+                    <div className="flex items-center gap-2 mb-2 text-[10.5px] font-mono uppercase tracking-[0.14em] text-[#C79A4E]/90">
+                      <span className="text-[#C79A4E]/60">{String(i + 1).padStart(2, "0")}</span>
+                      <span>{title}</span>
+                    </div>
                     {isWidget ? (
                       <InlineWidget
                         type={panel.type}
@@ -313,14 +328,14 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
                         onExpand={() => onExpandWidget(panel.type, panel.data)}
                       />
                     ) : (
-                      <p className="text-[13px] text-stone-300 leading-relaxed whitespace-pre-wrap px-1 py-1">
-                        {panel.text || (lang === "en" ? "No data for this panel." : "ಈ ಫಲಕಕ್ಕೆ ಡೇಟಾ ಇಲ್ಲ.")}
+                      <p className="text-[13px] text-stone-300 leading-relaxed whitespace-pre-wrap">
+                        {(panel.text || "").replace(/\\r\\n|\\n|\\r/g, "\n").trim() || (lang === "en" ? "No data for this section." : "ಈ ವಿಭಾಗಕ್ಕೆ ಡೇಟಾ ಇಲ್ಲ.")}
                       </p>
                     )}
                   </div>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
         ) : isAI && message.responseType && message.responseType !== "text" && message.data && (
           <div className="w-full flex flex-col gap-2">

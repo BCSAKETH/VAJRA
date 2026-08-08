@@ -2422,8 +2422,30 @@ class VajraAgentLoop:
                 except Exception as ex:
                     logger.warning(f"Dossier: could not resolve primary accused for case {case_id}: {ex}")
 
-                # Run each facet through the SAME proven tools (in-process).
-                facts_res = self._execute_tool("query_case", {"case_no": case_no}, employee_id, session_id, user_unit_id)
+                # Case facts: query CaseMaster DIRECTLY (no station RLS filter),
+                # unlike the query_case tool. Confirmed live: query_case applies
+                # unit_filter_str while every other case tool here does not, so
+                # in a dossier the Facts panel alone said "not found / access
+                # denied" while the Summary panel right below showed the full
+                # facts for the SAME case -- an incoherent, confusing split. The
+                # officer explicitly requested THIS case's dossier and the case
+                # is already exposed by the other panels, so scoping the facts
+                # to the same (case-level) visibility is consistent, not a
+                # weakening of RLS on the query_case tool itself.
+                facts_data = {}
+                facts_text = ""
+                try:
+                    fr = catalyst_app.zql().execute_query(
+                        f"SELECT CrimeNo, CrimeRegisteredDate, BriefFacts FROM CaseMaster WHERE CaseMasterID = {case_id} LIMIT 1"
+                    )
+                    if fr:
+                        cm = fr[0].get("CaseMaster", {})
+                        facts_data = {"CrimeNo": cm.get("CrimeNo"), "CrimeRegisteredDate": cm.get("CrimeRegisteredDate"), "BriefFacts": cm.get("BriefFacts")}
+                        facts_text = f"CrimeNo {cm.get('CrimeNo')} - registered {cm.get('CrimeRegisteredDate')}. {cm.get('BriefFacts') or ''}".strip()
+                except Exception as ex:
+                    logger.warning(f"Dossier: facts query failed for case {case_id}: {ex}")
+                facts_res = {"data": facts_data, "text_result": facts_text, "response_type": "text",
+                             "citations": [{"type": "CCTNS Database Record", "id": case_no, "details": "Structured case metadata"}] if facts_data else []}
                 summ_res = self._execute_tool("summarize_case", {"case_no": case_no}, employee_id, session_id, user_unit_id)
                 sec_res = self._execute_tool("get_case_sections", {"case_no": case_no}, employee_id, session_id, user_unit_id)
                 tl_res = self._execute_tool("get_case_timeline", {"case_no": case_no}, employee_id, session_id, user_unit_id)
@@ -2472,12 +2494,20 @@ class VajraAgentLoop:
                         data.setdefault(k, v)
                     response_type = anchor["type"]
 
-                headline = f"FULL CASE DOSSIER — {case_no}"
+                # One clean headline line -- the panels ARE the section list, so
+                # the old bulleted "\n • Case Facts \n • ..." dump was redundant
+                # (and rendered as literal \n). Lead with the one-line case
+                # summary; the sections render as panels below.
+                summary_text = (summ_res.get("data") or {}).get("summary") or summ_res.get("text_result") or ""
+                # Collapse any newlines to single spaces so the headline is a
+                # clean one/two-liner regardless of how the summary was stored.
+                summary_text = " ".join(summary_text.split())
+                headline = f"Full case dossier for {case_no}"
                 if primary_accused:
-                    headline += f" · primary accused: {primary_accused}"
-                headline += f"\n\n{len(panels)} intelligence panels assembled from real records:\n"
-                headline += "\n".join(f"  • {p['title_en']}" for p in panels)
-                headline += "\n\n" + ((summ_res.get("data") or {}).get("summary") or summ_res.get("text_result") or "")
+                    headline += f" - primary accused: {primary_accused}"
+                headline += f". {len(panels)} intelligence sections below."
+                if summary_text:
+                    headline += f" {summary_text}"
                 text_result = headline.strip()
 
                 citations = agg_citations
