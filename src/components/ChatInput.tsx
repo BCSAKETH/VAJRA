@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Mic, MicOff, Send, Paperclip, X, FileText, Image as ImageIcon } from "lucide-react";
+import { Mic, MicOff, Send, Paperclip, X, FileText, Image as ImageIcon, ChevronDown } from "lucide-react";
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 3;
@@ -12,6 +12,8 @@ interface ChatInputProps {
   isUploading: boolean;
   lang: "en" | "kn";
   addToast: (title: string, message: string, severity: "Critical" | "Warning" | "Info" | "Success") => void;
+  answerMode: "standard" | "dossier";
+  onAnswerModeChange: (m: "standard" | "dossier") => void;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = React.memo(({
@@ -20,7 +22,10 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
   isUploading,
   lang,
   addToast,
+  answerMode,
+  onAnswerModeChange,
 }) => {
+  const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [inputVal, setInputVal] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
   const [isRecording, setIsRecording] = useState(false);
@@ -298,6 +303,55 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
         >
           <Send className="w-4 h-4" />
         </button>
+      </div>
+
+      {/* Answer-mode selector -- the "which model" position in a chat UI.
+          Standard = fast, one focused view. Full Dossier = deep, forces the
+          complete multi-panel investigation view for the case/suspect asked. */}
+      <div className="flex items-center gap-2 pt-1">
+        <div className="relative">
+          <button
+            type="button"
+            onClick={() => setModeMenuOpen((o) => !o)}
+            disabled={isThinking}
+            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold border border-stone-800 bg-stone-900/60 hover:bg-stone-800 transition-colors cursor-pointer disabled:opacity-50"
+            title={lang === "en" ? "Choose answer depth" : "ಉತ್ತರದ ಆಳ ಆಯ್ಕೆಮಾಡಿ"}
+          >
+            <span className={answerMode === "dossier" ? "text-[#C79A4E]" : "text-stone-300"}>
+              ◈ {answerMode === "dossier" ? (lang === "en" ? "Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್") : (lang === "en" ? "Standard" : "ಸಾಮಾನ್ಯ")}
+            </span>
+            <ChevronDown className="w-3 h-3 text-stone-500" />
+          </button>
+          {modeMenuOpen && (
+            <>
+              <div className="fixed inset-0 z-40" onClick={() => setModeMenuOpen(false)} />
+              <div className="absolute bottom-9 left-0 z-50 w-64 bg-stone-900 border border-stone-800 rounded-xl shadow-2xl py-1.5">
+                {([
+                  ["standard", lang === "en" ? "Standard" : "ಸಾಮಾನ್ಯ", lang === "en" ? "Fast, focused answer with one key view." : "ವೇಗದ, ಕೇಂದ್ರೀಕೃತ ಉತ್ತರ."],
+                  ["dossier", lang === "en" ? "Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್", lang === "en" ? "Deep: risk, network, timeline, sections, map & similar cases in one." : "ಆಳವಾದ: ಅಪಾಯ, ಜಾಲ, ಕಾಲಾನುಕ್ರಮ, ಸೆಕ್ಷನ್‌ಗಳು ಒಟ್ಟಿಗೆ."],
+                ] as const).map(([val, title, desc]) => (
+                  <button
+                    key={val}
+                    type="button"
+                    onClick={() => { onAnswerModeChange(val); setModeMenuOpen(false); }}
+                    className={`w-full text-left px-3 py-2 hover:bg-stone-800 cursor-pointer flex items-start gap-2 ${answerMode === val ? "bg-stone-850/60" : ""}`}
+                  >
+                    <span className={`mt-0.5 text-[11px] ${answerMode === val ? "text-[#C79A4E]" : "text-transparent"}`}>✓</span>
+                    <span className="flex flex-col">
+                      <span className={`text-[12px] font-bold ${val === "dossier" ? "text-[#C79A4E]" : "text-stone-200"}`}>◈ {title}</span>
+                      <span className="text-[10px] text-stone-500 leading-snug">{desc}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </div>
+        {answerMode === "dossier" && (
+          <span className="text-[10px] font-mono text-[#C79A4E]/70">
+            {lang === "en" ? "deep investigation view" : "ಆಳವಾದ ತನಿಖಾ ನೋಟ"}
+          </span>
+        )}
       </div>
     </div>
   );

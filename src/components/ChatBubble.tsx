@@ -13,6 +13,14 @@ interface ChatBubbleProps {
   addToast?: (title: string, message: string, severity: "Critical" | "Warning" | "Info" | "Success") => void;
 }
 
+// Panel types that InlineWidget can render as a visual (everything else in a
+// Full Dossier -- case_facts, case_sections, case_summary, similar_cases --
+// renders as its grounded text block instead).
+const WIDGET_PANEL_TYPES = new Set([
+  "map", "network", "risk", "forecast", "timeline",
+  "mo_match", "correlation", "repeat_offenders", "crime_groups", "trend", "case_distribution",
+]);
+
 // Clean markdown and formatting artifacts before sending text to speech synthesis
 const cleanTextForSpeech = (rawText: string): string => {
   return rawText
@@ -274,8 +282,47 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
           )}
         </div>
 
-        {/* Embedded Inline Widgets with Answer-to-Viz Guided Lead-in */}
-        {isAI && message.responseType && message.responseType !== "text" && message.data && (
+        {/* FULL DOSSIER -- multi-panel stacked intelligence view. When the
+            backend returns data.panels (generate_case_dossier / deep mode),
+            render each panel as its own titled block: a visual widget when the
+            panel type is renderable, otherwise the panel's grounded text.
+            Falls through to the single-widget path below for normal answers. */}
+        {isAI && Array.isArray(message.data?.panels) && message.data.panels.length > 0 ? (
+          <div className="w-full flex flex-col gap-3">
+            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[11px] text-[#C79A4E] font-medium animate-fade-in">
+              <Sparkles className="w-3.5 h-3.5 shrink-0 text-[#C79A4E]" />
+              <span>
+                {lang === "en"
+                  ? `Full Dossier — ${message.data.panels.length} intelligence panels`
+                  : `ಪೂರ್ಣ ದೋಶಿಯರ್ — ${message.data.panels.length} ಗುಪ್ತಚರ ಫಲಕಗಳು`}
+              </span>
+            </div>
+            {message.data.panels.map((panel: any, i: number) => {
+              const title = (lang === "kn" ? panel.title_kn : panel.title_en) || panel.title_en || "";
+              const isWidget = WIDGET_PANEL_TYPES.has(panel.type) && panel.data;
+              return (
+                <div key={i} className="rounded-xl border border-stone-850 bg-stone-950/30 overflow-hidden">
+                  <div className="px-3 py-2 text-[11px] font-mono uppercase tracking-wider text-[#C79A4E] border-b border-stone-850 bg-stone-900/40">
+                    ◈ {title}
+                  </div>
+                  <div className="p-2">
+                    {isWidget ? (
+                      <InlineWidget
+                        type={panel.type}
+                        data={panel.data}
+                        onExpand={() => onExpandWidget(panel.type, panel.data)}
+                      />
+                    ) : (
+                      <p className="text-[13px] text-stone-300 leading-relaxed whitespace-pre-wrap px-1 py-1">
+                        {panel.text || (lang === "en" ? "No data for this panel." : "ಈ ಫಲಕಕ್ಕೆ ಡೇಟಾ ಇಲ್ಲ.")}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        ) : isAI && message.responseType && message.responseType !== "text" && message.data && (
           <div className="w-full flex flex-col gap-2">
             <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[11px] text-[#C79A4E] font-medium animate-fade-in">
               <Sparkles className="w-3.5 h-3.5 shrink-0 text-[#C79A4E]" />

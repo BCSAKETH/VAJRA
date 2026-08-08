@@ -289,6 +289,17 @@ class VajraAgentLoop:
             }
         },
         {
+            "name": "generate_case_dossier",
+            "description": "FULL CASE DOSSIER (deep investigation view): assemble EVERYTHING about one case in a single response -- case facts, the primary accused's conviction-risk + criminal network/syndicate, case timeline, applied BNS/IPC sections, a narrative summary, and similar past cases -- as stacked intelligence panels. Use when the officer wants the complete picture of a case: 'full dossier', 'everything about case X', 'complete report on case', 'deep dive on case', 'full investigation file'. Requires a case number.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "case_no": {"type": "string", "description": "The Case Number / CrimeNo to build the full dossier for"}
+                },
+                "required": ["case_no"]
+            }
+        },
+        {
             "name": "plan_patrol_deployment",
             "description": "PREDICTIVE BEAT PLANNING: recommend WHERE to deploy patrols, ranked, by fusing real crime-hotspot density + current crime trend + active repeat-offender presence into one prioritised deployment plan with the reasoning shown. Use for questions like 'where should I send patrols', 'beat plan', 'patrol deployment', 'where to focus policing', 'where is crime going to happen', 'proactive deployment', 'where should officers go tomorrow'. Optionally scoped to a district.",
             "parameters": {
@@ -462,6 +473,7 @@ class VajraAgentLoop:
             # Self-identity -- must come first so "my details/profile" never
             # falls through to a suspect-lookup pattern. Takes no params.
             (["my name", "my profile", "my details", "who am i", "my rank", "my station", "my posting", "my assignment", "current assignment", "am i posted", "my designation"], "get_my_profile", {}, "yes"),
+            (["full dossier", "case dossier", "full report on case", "complete report on case", "deep dive", "full investigation", "everything about case", "complete case file", "full case file"], "generate_case_dossier", {"case_no": case_no}, case_no),
             (["beat plan", "patrol deployment", "deploy patrol", "where should i send", "where to send patrol", "where to deploy", "where to focus", "proactive deployment", "patrol plan"], "plan_patrol_deployment", {"district": district}, "yes"),
             (["risk score", "conviction risk", "recidivism", "re-offend", "risk for", "risk of"], "get_offender_risk", {"suspect_name": name}, name),
             (["network", "syndicate", "co-accused", "connections for", "connections of", "connected to", "crimes is", "crimes does"], "query_graph_network", {"suspect_name": name}, name),
@@ -683,7 +695,7 @@ class VajraAgentLoop:
             end = content_str.rfind("}", 0, end)
         return content_str
 
-    def run_agent_loop(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None) -> Dict[str, Any]:
+    def run_agent_loop(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None, answer_mode: str = "standard") -> Dict[str, Any]:
         """
         Primary execution entry point. Decides what tools to run in sequence using LLM function calling.
         """
@@ -751,12 +763,38 @@ class VajraAgentLoop:
         # answer every time.
         last_tool_text_result = ""
 
+        # FULL DOSSIER ("deep") mode: when the officer explicitly opts into the
+        # deep answer via the composer selector (answer_mode="dossier"), do NOT
+        # rely on the LLM to pick the composite tool (confirmed live it often
+        # routes "full dossier for case X" to a single narrow tool instead).
+        # FORCE the right composite by the resolved entity: a case number ->
+        # generate_case_dossier; else a suspect -> generate_full_report. If the
+        # query names neither, fall through to normal reasoning (deep mode with
+        # nothing to go deep on is just a normal answer). Spliced into the same
+        # shape self.llm.chat returns so the loop below runs unchanged.
+        forced_decision = None
+        if answer_mode == "dossier":
+            if entities.get("case_id"):
+                forced_decision = {"tool": "generate_case_dossier", "parameters": {"case_no": entities["case_id"]}}
+            elif entities.get("suspect"):
+                forced_decision = {"tool": "generate_full_report", "parameters": {"suspect_name": entities["suspect"]}}
+            elif entities.get("district"):
+                # A district-scoped deep view: the multi-chart crime overview
+                # (trend + case-type mix + hotspots) is the district's dossier.
+                forced_decision = {"tool": "generate_crime_overview", "parameters": {"district": entities["district"]}}
+            if forced_decision:
+                citations.append({
+                    "type": "Full Dossier Mode",
+                    "id": forced_decision["parameters"].get("case_no") or forced_decision["parameters"].get("suspect_name") or "",
+                    "details": "Officer selected the deep Full Dossier view; the complete composite was assembled directly.",
+                })
+
         max_iterations = 4
         current_iteration = 0
 
         while current_iteration < max_iterations:
             current_iteration += 1
-            logger.info(f"Agent loop iteration {current_iteration} for query: '{query}'")
+            logger.info(f"Agent loop iteration {current_iteration} for query: '{query}' (mode={answer_mode})")
             # Every tool in TOOLS takes its parameters directly from the
             # query/session context -- none depend on another tool's output --
             # so genuine multi-hop chaining essentially never happens in
@@ -783,11 +821,17 @@ class VajraAgentLoop:
             # through to the generic "I encountered an error" text. Matching
             # iteration 1's budget to iteration 2+ gives it the same room to
             # actually finish thinking before running out of tokens.
-            llm_res = self.llm.chat(
-                history,
-                self.TOOLS if allow_tools else None,
-                max_tokens=3500
-            )
+            # Deep-mode short-circuit: on iteration 1, if the officer forced a
+            # Full Dossier, use the pre-built decision instead of asking the
+            # LLM to choose -- guarantees the composite actually runs.
+            if allow_tools and forced_decision is not None:
+                llm_res = {"choices": [{"message": {"content": json.dumps(forced_decision)}}]}
+            else:
+                llm_res = self.llm.chat(
+                    history,
+                    self.TOOLS if allow_tools else None,
+                    max_tokens=3500
+                )
 
             if llm_res.get("error"):
                 logger.warning(f"GLM unavailable (iteration {current_iteration}): {llm_res.get('error')}")
@@ -2347,6 +2391,98 @@ class VajraAgentLoop:
                 employee_id, "Predictive Beat Planning", scope_label,
                 f"Patrol deployment plan requested for {scope_label}", text_result, session_id
             )
+
+        # 23. generate_case_dossier (Full Dossier / "Deep" mode) -- the
+        # investigation-intelligence view of a single case: not a report, a
+        # complete case file assembled in one turn. Composes the case-keyed
+        # sub-tools plus the primary accused's risk + network, each becoming a
+        # PANEL the frontend stacks. Every panel traces to a real tool result;
+        # empty panels are dropped, never fabricated. Anchors response_type on
+        # the richest available visual so older single-widget clients still
+        # show something, while data.panels carries the full multi-panel set.
+        elif tool_name == "generate_case_dossier":
+            case_no = params.get("case_no", "")
+            case_id = self._resolve_case_no(case_no)
+            response_type = "dossier"
+            if case_id is None:
+                text_result = f"Case {case_no or '(none given)'} was not found, so no dossier could be assembled."
+                data = {"panels": [], "case_no": case_no}
+                citations.append({"type": "Case Dossier", "id": case_no or "unknown", "details": "Case not found"})
+                self._write_audit_log(employee_id, "Full Case Dossier", case_no or "unknown", f"Dossier requested for {case_no}", text_result, session_id)
+            else:
+                # Resolve the primary accused so the network + risk panels have
+                # a subject (a case's intelligence value is largely about WHO).
+                primary_accused = ""
+                try:
+                    acc_res = catalyst_app.zql().execute_query(
+                        f"SELECT AccusedName FROM Accused WHERE CaseMasterID = {case_id} LIMIT 1"
+                    )
+                    if acc_res:
+                        primary_accused = acc_res[0].get("Accused", {}).get("AccusedName") or ""
+                except Exception as ex:
+                    logger.warning(f"Dossier: could not resolve primary accused for case {case_id}: {ex}")
+
+                # Run each facet through the SAME proven tools (in-process).
+                facts_res = self._execute_tool("query_case", {"case_no": case_no}, employee_id, session_id, user_unit_id)
+                summ_res = self._execute_tool("summarize_case", {"case_no": case_no}, employee_id, session_id, user_unit_id)
+                sec_res = self._execute_tool("get_case_sections", {"case_no": case_no}, employee_id, session_id, user_unit_id)
+                tl_res = self._execute_tool("get_case_timeline", {"case_no": case_no}, employee_id, session_id, user_unit_id)
+                sim_res = self._execute_tool("find_similar_cases", {"query": (facts_res.get("data") or {}).get("BriefFacts") or case_no}, employee_id, session_id, user_unit_id)
+                net_res = self._execute_tool("query_graph_network", {"suspect_name": primary_accused}, employee_id, session_id, user_unit_id) if primary_accused else None
+                risk_res = self._execute_tool("get_offender_risk", {"suspect_name": primary_accused}, employee_id, session_id, user_unit_id) if primary_accused else None
+
+                # Assemble panels -- (type, EN title, KN title, source result).
+                # Only panels whose source actually returned data are kept.
+                panel_specs = [
+                    ("case_facts", "Case Facts", "ಪ್ರಕರಣದ ವಿವರ", facts_res),
+                    ("risk", "Primary Accused Risk", "ಪ್ರಮುಖ ಆರೋಪಿ ಅಪಾಯ", risk_res),
+                    ("network", "Criminal Network", "ಅಪರಾಧ ಜಾಲ", net_res),
+                    ("timeline", "Case Timeline", "ಪ್ರಕರಣ ಕಾಲಾನುಕ್ರಮ", tl_res),
+                    ("case_sections", "Applied Sections (BNS/IPC)", "ಅನ್ವಯಿಕ ಸೆಕ್ಷನ್‌ಗಳು", sec_res),
+                    ("case_summary", "Case Summary", "ಪ್ರಕರಣ ಸಾರಾಂಶ", summ_res),
+                    ("similar_cases", "Similar Past Cases", "ಇದೇ ರೀತಿಯ ಪ್ರಕರಣಗಳು", sim_res),
+                ]
+                panels = []
+                agg_citations = []
+                for ptype, t_en, t_kn, res in panel_specs:
+                    if not res:
+                        continue
+                    r_data = res.get("data")
+                    r_text = res.get("text_result") or ""
+                    # Keep a panel if it has either real data or a substantive text result
+                    has_data = bool(r_data) and (not isinstance(r_data, dict) or any(v for v in r_data.values()))
+                    if not has_data and len(r_text.strip()) < 3:
+                        continue
+                    panels.append({
+                        "type": res.get("response_type") if res.get("response_type") and res.get("response_type") != "text" else ptype,
+                        "panel_key": ptype,
+                        "title_en": t_en,
+                        "title_kn": t_kn,
+                        "data": r_data,
+                        "text": r_text,
+                    })
+                    agg_citations.extend(res.get("citations") or [])
+
+                # Anchor the legacy single-widget view on the richest panel.
+                anchor = next((p for p in panels if p["type"] in ("network", "risk", "timeline")), panels[0] if panels else None)
+                data = {"panels": panels, "case_no": case_no, "primary_accused": primary_accused}
+                if anchor and isinstance(anchor.get("data"), dict):
+                    # merge anchor data at top level so old InlineWidget still renders one view
+                    for k, v in anchor["data"].items():
+                        data.setdefault(k, v)
+                    response_type = anchor["type"]
+
+                headline = f"FULL CASE DOSSIER — {case_no}"
+                if primary_accused:
+                    headline += f" · primary accused: {primary_accused}"
+                headline += f"\n\n{len(panels)} intelligence panels assembled from real records:\n"
+                headline += "\n".join(f"  • {p['title_en']}" for p in panels)
+                headline += "\n\n" + ((summ_res.get("data") or {}).get("summary") or summ_res.get("text_result") or "")
+                text_result = headline.strip()
+
+                citations = agg_citations
+                citations.append({"type": "Full Case Dossier", "id": case_no, "details": f"{len(panels)} panels composed from real case records"})
+                self._write_audit_log(employee_id, "Full Case Dossier", case_no, f"Dossier assembled for {case_no}", text_result, session_id)
 
         return {
             "text_result": text_result,

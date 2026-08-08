@@ -132,6 +132,14 @@ export const AIChatScreen: React.FC = () => {
   // over to the WebSocket broadcast so every participant sees the same
   // live thread instead of only the sender seeing their own optimistic update.
   const [chatMode, setChatMode] = useState<"chat" | "cowork">("chat");
+  // Answer depth: "standard" (fast, one focused widget) or "dossier" (deep
+  // Full Dossier -- forces the multi-panel composite for the query's case/
+  // suspect). Chosen via the composer selector; persisted so the officer's
+  // preference sticks across sessions.
+  const [answerMode, setAnswerMode] = useState<"standard" | "dossier">(
+    () => (localStorage.getItem("vajra_answer_mode") as "standard" | "dossier") || "standard"
+  );
+  useEffect(() => { localStorage.setItem("vajra_answer_mode", answerMode); }, [answerMode]);
   const [showInvitePanel, setShowInvitePanel] = useState(false);
   const [inviteBadge, setInviteBadge] = useState("");
   const [inviteRole, setInviteRole] = useState<"viewer" | "collaborator">("collaborator");
@@ -510,6 +518,8 @@ export const AIChatScreen: React.FC = () => {
           // accepts and stores this field (ChatRequest.attachments); it was
           // just never actually populated from here.
           attachments: uploadedAttachmentRefs.length > 0 ? uploadedAttachmentRefs : undefined,
+          // Standard vs Full Dossier -- chosen in the composer selector.
+          answer_mode: answerMode,
         }),
       });
 
@@ -623,7 +633,7 @@ export const AIChatScreen: React.FC = () => {
         setThinkingType("standard");
       }
     }
-  }, [isThinking, isUploadingAttachments, lang, addToast, setIsAuthenticated, chatMode, appendMessageForTurn, pollForPendingReply, markPending, clearPending]);
+  }, [isThinking, isUploadingAttachments, lang, addToast, setIsAuthenticated, chatMode, appendMessageForTurn, pollForPendingReply, markPending, clearPending, answerMode]);
 
   // Start a fresh conversation -- clears the transcript and drops the active
   // session id, so the next message sent auto-creates a brand new ChatSession.
@@ -968,6 +978,8 @@ export const AIChatScreen: React.FC = () => {
             isUploading={isUploadingAttachments}
             lang={lang}
             addToast={addToast}
+            answerMode={answerMode}
+            onAnswerModeChange={setAnswerMode}
           />
 
           {/* Chat / Cowork mode toggle */}

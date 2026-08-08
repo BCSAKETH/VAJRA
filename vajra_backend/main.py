@@ -1437,6 +1437,10 @@ class ChatRequest(BaseModel):
     # consultation..." instead of what was actually typed. Falls back to
     # `message` for older/plain-text callers that don't send it.
     display_text: Optional[str] = None
+    # "standard" (fast, single best tool) or "dossier" (deep Full Dossier --
+    # forces the multi-panel composite for the query's case/suspect). Set by
+    # the composer's Standard/Full Dossier selector.
+    answer_mode: Optional[str] = "standard"
     # Client-generated nonce echoed back in this turn's WebSocket broadcasts
     # (both the user message and the assistant reply). The sending tab
     # already renders both directly from this endpoint's own HTTP response --
@@ -1471,6 +1475,17 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
 
     _SESSION_MESSAGES_CACHE.pop(session_id, None)
 
+    # data_json/citations caps: the ChatMessage.data_json column was probed
+    # live and accepts at least 100,000 chars -- the old 3800 cap was
+    # massively over-conservative and was the reason a Full Dossier's
+    # multi-panel payload (7 panels: risk+network+timeline+... easily
+    # >4KB of JSON) failed the insert and silently fell back to an empty
+    # "{}", so panels vanished between building and retrieval. Raised to a
+    # safe 60,000 (well under the column limit, leaving room for the rest of
+    # the row) so rich dossier payloads persist intact. Normal small answers
+    # are unaffected -- this only caps, never pads.
+    _DATA_JSON_CAP = 60000
+    _CITATIONS_CAP = 9000
     # 1. Full attempt with all fields
     try:
         row = {
@@ -1478,8 +1493,8 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
             "sender": sender,
             "text": text[:2000],
             "response_type": response_type,
-            "data_json": json.dumps(data or {})[:3800],
-            "citations_json": json.dumps(citations or [])[:1800],
+            "data_json": json.dumps(data or {})[:_DATA_JSON_CAP],
+            "citations_json": json.dumps(citations or [])[:_CITATIONS_CAP],
             "sent_at": datetime.utcnow().isoformat()
         }
         if sender_employee_id is not None:
@@ -1497,8 +1512,8 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
             "sender": sender,
             "text": text[:2000],
             "response_type": response_type,
-            "data_json": json.dumps(data or {})[:3500],
-            "citations_json": json.dumps(citations or [])[:1500],
+            "data_json": json.dumps(data or {})[:_DATA_JSON_CAP],
+            "citations_json": json.dumps(citations or [])[:_CITATIONS_CAP],
             "sent_at": datetime.utcnow().isoformat()
         }
         zcql_insert_row("ChatMessage", row)
@@ -1950,6 +1965,7 @@ async def _run_ai_turn_and_persist(
     client_msg_id: Optional[str],
     officer_name: Optional[str] = None,
     officer_badge: Optional[str] = None,
+    answer_mode: str = "standard",
 ):
     """
     Runs the full GLM turn (case-context injection, translation, the agent
@@ -2063,7 +2079,8 @@ async def _run_ai_turn_and_persist(
         session_id=session_id,
         employee_id=employee_id,
         user_unit_id=unit_id,
-        officer_name=officer_name
+        officer_name=officer_name,
+        answer_mode=answer_mode
     )
 
     # Generate BOTH language versions of the answer, always -- not just the
@@ -2195,7 +2212,8 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     # after the response is sent is the only way a turn can ever complete.
     asyncio.create_task(_run_ai_turn_and_persist(
         session_id, message, lang, employee_id, unit_id, payload.client_msg_id,
-        officer_name=first_name, officer_badge=request.state.kgid
+        officer_name=first_name, officer_badge=request.state.kgid,
+        answer_mode=(payload.answer_mode or "standard")
     ))
 
     return {
