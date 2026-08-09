@@ -146,6 +146,22 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
     }
     const cleaned = cleanTextForSpeech(displayText);
     if (!cleaned) return;
+    // Synthesizing a full multi-panel dossier aloud is slow (seconds of audio to
+    // generate before playback can even start) and rarely what an officer wants
+    // to hear end-to-end. Cap the spoken text to a summary length, cut at a
+    // sentence boundary so it never stops mid-word. The on-screen answer still
+    // shows everything -- this only affects what's read aloud, and makes "speak"
+    // start talking fast instead of after a long synthesis wait.
+    const MAX_SPEAK = 700;
+    let toSpeak = cleaned;
+    if (toSpeak.length > MAX_SPEAK) {
+      const slice = toSpeak.slice(0, MAX_SPEAK);
+      const lastStop = Math.max(
+        slice.lastIndexOf(". "), slice.lastIndexOf("? "), slice.lastIndexOf("! "),
+        slice.lastIndexOf("। "), slice.lastIndexOf("\n")
+      );
+      toSpeak = (lastStop > 200 ? slice.slice(0, lastStop + 1) : slice).trim();
+    }
     setIsSpeaking(true);
     try {
       const res = await fetch(`${API_BASE}/api/voice/tts`, {
@@ -154,7 +170,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
           "Content-Type": "application/json",
           "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
         },
-        body: JSON.stringify({ text: cleaned, lang }),
+        body: JSON.stringify({ text: toSpeak, lang }),
       });
       if (res.ok) {
         const blob = await res.blob();
@@ -169,8 +185,8 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
     } catch {
       // fall through to browser TTS
     }
-    // Server TTS unavailable -- fall back to the browser voice.
-    const result = speakText(displayText, lang, () => setIsSpeaking(false));
+    // Server TTS unavailable -- fall back to the browser voice (same trimmed text).
+    const result = speakText(toSpeak, lang, () => setIsSpeaking(false));
     if (result === "started") return;
     setIsSpeaking(false);
     if (result === "no_kannada_voice") {

@@ -2103,6 +2103,42 @@ async def _run_ai_turn_and_persist(
         text_kn = await run_in_threadpool(translator.translate, text_en, "en", "kn")
     text = text_kn if lang == "kn" else text_en
 
+    # Translate Full-Dossier panel BODIES to Kannada too, so every section reads
+    # in Kannada -- not just the top summary and the (hardcoded) section titles.
+    # Only text-bearing panels are translated: widget panels (risk/network/map/
+    # timeline/charts) render a visual, not their text, so translating them would
+    # be wasted latency. All translations run CONCURRENTLY via asyncio.gather so
+    # N panels cost ~one translate call, not N -- important since a dossier is
+    # already slow and speed matters. text_kn is stored per-panel; the frontend
+    # shows it when the language is Kannada and falls back to English otherwise.
+    _WIDGET_PANEL_TYPES = {"map", "network", "risk", "forecast", "timeline",
+                           "mo_match", "correlation", "repeat_offenders",
+                           "crime_groups", "trend", "case_distribution"}
+    # Only translate panel bodies when translation is actually HEALTHY -- proven
+    # by the main answer's text_kn coming back with real Kannada script. During a
+    # Zia/GLM translation outage, every per-panel call would just burn a full
+    # timeout cycle each and make an already-slow dossier far slower (against the
+    # speed goal) for no benefit, since they'd all fall back to English anyway.
+    _translation_healthy = bool(re.search(r"[ಀ-೿]", text_kn or "")) and text_kn != text_en
+    dossier_panels = (result["data"] or {}).get("panels") if isinstance(result.get("data"), dict) else None
+    if dossier_panels and not result.get("is_simulated") and _translation_healthy:
+        async def _tr_panel(ptext: str) -> str:
+            if not ptext or not ptext.strip():
+                return ptext
+            try:
+                return await run_in_threadpool(translator.translate, ptext, "en", "kn")
+            except Exception:
+                return ptext  # never fail the whole turn over one section
+        _to_translate = [
+            p for p in dossier_panels
+            if not (p.get("type") in _WIDGET_PANEL_TYPES and p.get("data"))
+            and (p.get("text") or "").strip()
+        ]
+        if _to_translate:
+            _kn = await asyncio.gather(*[_tr_panel(p.get("text") or "") for p in _to_translate])
+            for _p, _knt in zip(_to_translate, _kn):
+                _p["text_kn"] = _knt
+
     # text_en/text_kn are packed into the data dict (not new dedicated
     # columns) purely so they persist through the EXISTING data_json field --
     # Catalyst Datastore rejects INSERTs referencing any column not already

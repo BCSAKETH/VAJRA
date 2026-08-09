@@ -78,12 +78,17 @@ const MapSizeAndBoundsFixer: React.FC<{ points: { lat: number; lng: number }[] }
 };
 
 interface ExpandedOverlayProps {
-  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend";
+  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution";
   data: any;
   onClose: () => void;
+  // When true, render only the rich content pane (no fixed backdrop, no modal
+  // chrome, no header/close/download) so the SAME rich visualization can be
+  // embedded directly inline in the chat thread -- ChatGPT-style -- reusing
+  // every type's render here instead of maintaining a second copy in InlineWidget.
+  inline?: boolean;
 }
 
-export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, onClose }) => {
+export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, onClose, inline = false }) => {
   const { lang } = useApp();
   const contentRef = useRef<HTMLDivElement>(null);
 
@@ -135,13 +140,14 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
   }));
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 md:p-10 bg-stone-950/80 backdrop-blur-md animate-fade-in">
-      {/* Repeating Diagonal Security Watermark Overlay */}
-      <WatermarkOverlay />
+    <div className={inline ? "w-full" : "fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 md:p-10 bg-stone-950/80 backdrop-blur-md animate-fade-in"}>
+      {/* Repeating Diagonal Security Watermark Overlay (modal only) */}
+      {!inline && <WatermarkOverlay />}
 
-      {/* Modal Container */}
-      <div className="w-full max-w-5xl h-[85vh] glass-panel border border-stone-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden relative">
-        {/* Top Header */}
+      {/* Modal Container (inline: a bounded in-flow card, no fixed sizing) */}
+      <div className={inline ? "w-full flex flex-col relative h-[460px]" : "w-full max-w-5xl h-[85vh] glass-panel border border-stone-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden relative"}>
+        {/* Top Header (hidden inline -- the chat card renders its own header) */}
+        {!inline && (
         <div className="p-4 border-b border-stone-800 flex items-center justify-between shrink-0 bg-stone-900/40">
           <div className="flex items-center gap-2">
             {type === "map" && (
@@ -229,9 +235,10 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
             </button>
           </div>
         </div>
+        )}
 
         {/* Content Pane */}
-        <div ref={contentRef} className="flex-1 p-6 overflow-y-auto bg-stone-950/15">
+        <div ref={contentRef} className={inline ? "flex-1 overflow-y-auto overflow-x-hidden" : "flex-1 p-6 overflow-y-auto bg-stone-950/15"}>
           {type === "map" && (() => {
             const hotspots: { lat: number; lng: number; label?: string }[] = data.hotspots || [];
             return (
