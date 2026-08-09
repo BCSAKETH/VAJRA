@@ -3069,7 +3069,7 @@ async def tts_endpoint(payload: TTSRequest, request: Request, location_context: 
 
 
 @app.post("/api/voice/stt")
-async def stt_endpoint(audio: UploadFile = File(...), language: str = "en", request: Request = None, location_context: str = Depends(security_firewall)):
+async def stt_endpoint(audio: UploadFile = File(...), language: str = "en", location_context: str = Depends(security_firewall)):
     """
     Real server-side speech-to-text via Zia (Kannada/English/Hindi). The mic
     records audio in the browser and posts it here; returns {text}. Replaces
