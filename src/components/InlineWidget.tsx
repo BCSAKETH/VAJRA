@@ -1,6 +1,39 @@
-import React from "react";
+import React, { useEffect, useRef } from "react";
+import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
+import L from "leaflet";
 import { useApp } from "../AppContext";
 import { Maximize2, ShieldAlert, MapPin, Network, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Repeat, Link2, PieChart } from "lucide-react";
+
+// Fit the inline map to the ACTUAL hotspot coordinates every render, and force
+// a resize once the chat bubble has laid out (Leaflet renders grey/half-drawn
+// if the container was 0-height when it mounted). fitBounds to the real points
+// is what makes each district's map genuinely distinct and pin-point framed --
+// not a fixed generic view that looks identical everywhere.
+const InlineMapFitter: React.FC<{ points: { lat: number; lng: number }[] }> = ({ points }) => {
+  const map = useMap();
+  useEffect(() => {
+    const fit = () => {
+      map.invalidateSize();
+      if (points.length === 1) {
+        map.setView([points[0].lat, points[0].lng], 13);
+      } else if (points.length > 1) {
+        map.fitBounds(L.latLngBounds(points.map((p) => [p.lat, p.lng] as [number, number])), {
+          padding: [30, 30],
+          maxZoom: 14,
+        });
+      }
+    };
+    fit();
+    const t1 = setTimeout(fit, 120);
+    const t2 = setTimeout(fit, 400);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, points.length]);
+  return null;
+};
 
 interface InlineWidgetProps {
   type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution";
@@ -94,20 +127,63 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
 
       {/* Widget Layouts */}
       <div className="text-xs space-y-2">
-        {type === "map" && (
-          <div className="space-y-2">
-            <p className="text-stone-400">
-              {lang === "en" ? (
-                <>Resolved <span className="font-bold text-stone-200">{data.hotspots?.length || 0}</span> coordinate points.</>
-              ) : (
-                <><span className="font-bold text-stone-200">{data.hotspots?.length || 0}</span> ನಿರ್ದೇಶಾಂಕ ಬಿಂದುಗಳನ್ನು ಪರಿಹರಿಸಲಾಗಿದೆ.</>
-              )}
-            </p>
-            <div className="bg-stone-950/65 rounded-lg p-2.5 font-mono text-[10px] text-stone-400 border border-stone-900">
-              {lang === "en" ? "Coordinates range:" : "ನಿರ್ದೇಶಾಂಕ ವ್ಯಾಪ್ತಿ:"} {data.hotspots?.[0] ? `${data.hotspots[0].lat}, ${data.hotspots[0].lng}` : (lang === "en" ? "No points mapped" : "ಯಾವುದೇ ಬಿಂದುಗಳಿಲ್ಲ")}
+        {type === "map" && (() => {
+          const hotspots: { lat: number; lng: number; label?: string }[] = (data.hotspots || []).filter(
+            (h: any) => typeof h?.lat === "number" && typeof h?.lng === "number"
+          );
+          if (hotspots.length === 0) {
+            return (
+              <div className="bg-stone-950/65 rounded-lg p-3 font-mono text-[11px] text-stone-400 border border-stone-900">
+                {lang === "en" ? "No mappable coordinates for this query." : "ಈ ಪ್ರಶ್ನೆಗೆ ನಕ್ಷೆಗೆ ಹಾಕಬಹುದಾದ ನಿರ್ದೇಶಾಂಕಗಳಿಲ್ಲ."}
+              </div>
+            );
+          }
+          return (
+            <div className="space-y-2">
+              <p className="text-stone-400">
+                {lang === "en" ? (
+                  <><span className="font-bold text-stone-200">{hotspots.length}</span> hotspot cluster{hotspots.length === 1 ? "" : "s"} plotted.</>
+                ) : (
+                  <><span className="font-bold text-stone-200">{hotspots.length}</span> ಹಾಟ್‌ಸ್ಪಾಟ್ ಸಮೂಹಗಳನ್ನು ಗುರುತಿಸಲಾಗಿದೆ.</>
+                )}
+              </p>
+              <div className="rounded-lg overflow-hidden border border-stone-800 h-[280px] relative z-0">
+                <MapContainer
+                  center={[hotspots[0].lat, hotspots[0].lng]}
+                  zoom={12}
+                  scrollWheelZoom={false}
+                  style={{ height: "100%", width: "100%", background: "#161412" }}
+                >
+                  <TileLayer
+                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                  />
+                  <InlineMapFitter points={hotspots} />
+                  {hotspots.map((marker, idx) => {
+                    const countMatch = marker.label?.match(/\((\d+)\s*incidents?\)/i);
+                    const incidentCount = countMatch ? parseInt(countMatch[1], 10) : null;
+                    const radius = incidentCount ? Math.min(26, 9 + incidentCount * 1.4) : 11;
+                    return (
+                      <CircleMarker
+                        key={idx}
+                        center={[marker.lat, marker.lng]}
+                        radius={radius}
+                        pathOptions={{ color: "#C79A4E", weight: 2, fillColor: "#C79A4E", fillOpacity: 0.35 }}
+                      >
+                        <Popup>
+                          <div className="text-xs font-sans text-stone-900">
+                            <span className="font-bold block">{marker.label || (lang === "en" ? "Hotspot" : "ಹಾಟ್‌ಸ್ಪಾಟ್")}</span>
+                            {marker.lat.toFixed(5)}, {marker.lng.toFixed(5)}
+                          </div>
+                        </Popup>
+                      </CircleMarker>
+                    );
+                  })}
+                </MapContainer>
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {type === "network" && (
           <div className="space-y-2">
