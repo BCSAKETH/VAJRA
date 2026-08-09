@@ -21,6 +21,21 @@ const WIDGET_PANEL_TYPES = new Set([
   "mo_match", "correlation", "repeat_offenders", "crime_groups", "trend", "case_distribution",
 ]);
 
+// Normalize any stored text for display: turn SQL-escaped newlines back into
+// real line breaks AND decode literal "\uXXXX" escape sequences into their real
+// characters. Confirmed live: dossier panel titles/text round-tripped through a
+// double JSON encode, so Kannada arrived as visible "ಪ್..." gibberish
+// instead of glyphs. Decoding here repairs it at the last step before display,
+// for both freshly-generated and already-stored (history) messages. Only valid
+// 4-hex-digit \u sequences are touched, so ordinary text is never altered.
+const decodeDisplayText = (raw: string | undefined | null): string => {
+  let s = (raw || "").replace(/\\r\\n|\\n|\\r/g, "\n");
+  if (s.indexOf("\\u") !== -1) {
+    s = s.replace(/\\u([0-9a-fA-F]{4})/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)));
+  }
+  return s;
+};
+
 // Clean markdown and formatting artifacts before sending text to speech synthesis
 const cleanTextForSpeech = (rawText: string): string => {
   return rawText
@@ -97,7 +112,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   // as visible backslash-n instead of line breaks. Convert them back here for
   // display (the container already uses whitespace-pre-wrap). Also collapse a
   // stray leading "\n" so answers don't start with a blank line.
-  const displayText = (rawDisplayText || "").replace(/\\r\\n|\\n|\\r/g, "\n").replace(/^\n+/, "");
+  const displayText = decodeDisplayText(rawDisplayText).replace(/^\n+/, "");
 
   useEffect(() => {
     return () => {
@@ -355,7 +370,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
             </div>
             <div className="divide-y divide-stone-850">
               {message.data.panels.map((panel: any, i: number) => {
-                const title = (lang === "kn" ? panel.title_kn : panel.title_en) || panel.title_en || "";
+                const title = decodeDisplayText((lang === "kn" ? panel.title_kn : panel.title_en) || panel.title_en || "");
                 const isWidget = WIDGET_PANEL_TYPES.has(panel.type) && panel.data;
                 return (
                   <div key={i} className="px-4 py-3">
@@ -371,7 +386,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
                       />
                     ) : (
                       <p className="text-[13px] text-stone-300 leading-relaxed whitespace-pre-wrap">
-                        {(panel.text || "").replace(/\\r\\n|\\n|\\r/g, "\n").trim() || (lang === "en" ? "No data for this section." : "ಈ ವಿಭಾಗಕ್ಕೆ ಡೇಟಾ ಇಲ್ಲ.")}
+                        {decodeDisplayText((lang === "kn" ? (panel.text_kn || panel.text) : panel.text)).trim() || (lang === "en" ? "No data for this section." : "ಈ ವಿಭಾಗಕ್ಕೆ ಡೇಟಾ ಇಲ್ಲ.")}
                       </p>
                     )}
                   </div>
