@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import { Mic, MicOff, Send, Paperclip, X, FileText, Image as ImageIcon, ChevronDown } from "lucide-react";
+import { API_BASE } from "../config";
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 3;
@@ -44,6 +45,12 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  // MediaRecorder path -> real Zia STT (far better Kannada than the browser
+  // recognizer). recognitionRef stays as the fallback when mic capture or the
+  // STT endpoint is unavailable.
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
 
   useEffect(() => {
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -97,12 +104,72 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
     setPendingAttachments((prev) => prev.filter((_, i) => i !== index));
   };
 
-  const startRecording = () => {
+  // Real Zia STT: record mic audio, upload to /api/voice/stt, drop the
+  // transcript into the composer. Far better Kannada than the browser
+  // recognizer. Falls back to the browser recognizer if mic capture or the
+  // endpoint isn't available.
+  const startRecording = async () => {
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      startBrowserRecording();
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
+      audioChunksRef.current = [];
+      const recorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = recorder;
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
+      recorder.onstop = async () => {
+        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || "audio/webm" });
+        mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+        mediaStreamRef.current = null;
+        mediaRecorderRef.current = null;
+        if (blob.size === 0) { setIsRecording(false); setRecordingStatus(""); return; }
+        setRecordingStatus(lang === "en" ? "Transcribing..." : "ಪ್ರತಿಲಿಪಿ ಮಾಡಲಾಗುತ್ತಿದೆ...");
+        try {
+          const form = new FormData();
+          const ext = (recorder.mimeType || "").includes("wav") ? "wav" : "webm";
+          form.append("audio", blob, `speech.${ext}`);
+          const res = await fetch(`${API_BASE}/api/voice/stt?language=${voiceLang}`, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+            body: form,
+          });
+          if (res.ok) {
+            const data = await res.json();
+            if (data.text) setInputVal((prev) => (prev ? prev + " " : "") + data.text.trim());
+          } else {
+            addToast(
+              lang === "en" ? "Transcription Unavailable" : "ಪ್ರತಿಲಿಪಿ ಲಭ್ಯವಿಲ್ಲ",
+              lang === "en" ? "Voice transcription is temporarily unavailable. Please type instead." : "ಧ್ವನಿ ಪ್ರತಿಲಿಪಿ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ. ದಯವಿಟ್ಟು ಟೈಪ್ ಮಾಡಿ.",
+              "Warning"
+            );
+          }
+        } catch {
+          // silent -- officer can type
+        } finally {
+          setIsRecording(false);
+          setRecordingStatus("");
+        }
+      };
+      recorder.start();
+      setIsRecording(true);
+      setRecordingStatus(
+        voiceLang === "kn" ? "ಕನ್ನಡದಲ್ಲಿ ರೆಕಾರ್ಡ್ ಆಗುತ್ತಿದೆ... (ನಿಲ್ಲಿಸಲು ಮೈಕ್ ಟ್ಯಾಪ್ ಮಾಡಿ)" : "Recording English... (tap mic to stop)"
+      );
+    } catch (err) {
+      // permission denied / no mic -> try the browser recognizer
+      startBrowserRecording();
+    }
+  };
+
+  const startBrowserRecording = () => {
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognitionCtor) {
       addToast(
         lang === "en" ? "Voice Input Unavailable" : "ಧ್ವನಿ ಇನ್‌ಪುಟ್ ಲಭ್ಯವಿಲ್ಲ",
-        lang === "en" ? "This browser does not support speech recognition." : "ಈ ಬ್ರೌಸರ್ ಸ್ಪೀಚ್ ರೆಕಗ್ನಿಷನ್ ಬೆಂಬಲಿಸುವುದಿಲ್ಲ.",
+        lang === "en" ? "Microphone/voice input isn't available in this browser." : "ಈ ಬ್ರೌಸರ್‌ನಲ್ಲಿ ಮೈಕ್/ಧ್ವನಿ ಇನ್‌ಪುಟ್ ಲಭ್ಯವಿಲ್ಲ.",
         "Warning"
       );
       return;
@@ -156,6 +223,14 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
   };
 
   const stopRecording = () => {
+    // MediaRecorder path -> its onstop handler uploads + transcribes, so don't
+    // clear isRecording here (the "Transcribing..." state continues until the
+    // transcript returns).
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+      mediaRecorderRef.current.stop();
+      return;
+    }
+    // Browser-recognizer fallback path.
     if (recognitionRef.current && isRecording) {
       recognitionRef.current.stop();
       recognitionRef.current = null;

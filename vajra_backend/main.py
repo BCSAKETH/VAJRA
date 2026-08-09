@@ -3068,6 +3068,27 @@ async def tts_endpoint(payload: TTSRequest, request: Request, location_context: 
     return Response(content=audio_bytes, media_type=media_type)
 
 
+@app.post("/api/voice/stt")
+async def stt_endpoint(audio: UploadFile = File(...), language: str = "en", request: Request = None, location_context: str = Depends(security_firewall)):
+    """
+    Real server-side speech-to-text via Zia (Kannada/English/Hindi). The mic
+    records audio in the browser and posts it here; returns {text}. Replaces
+    the browser Web Speech recognizer for far better Kannada accuracy. Auth-
+    gated. Returns the transcript, or 502 (soft) so the frontend can fall back.
+    """
+    from catalyst_speech import transcribe_audio
+    try:
+        content = await audio.read()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Could not read the audio upload.")
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty audio upload.")
+    text = await run_in_threadpool(transcribe_audio, content, audio.filename or "speech.wav", audio.content_type or "audio/wav", language)
+    if text is None:
+        raise HTTPException(status_code=502, detail="Transcription is temporarily unavailable.")
+    return {"text": text, "language": language}
+
+
 class VoiceProcessRequest(BaseModel):
     message: str
     lang: str = "en"
