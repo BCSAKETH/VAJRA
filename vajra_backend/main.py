@@ -3046,6 +3046,28 @@ async def write_audit_log_endpoint(payload: WriteAuditLogRequest, request: Reque
         return {"status": "Error", "message": str(e)}
 
 
+class TTSRequest(BaseModel):
+    text: str
+    lang: str = "en"
+
+
+@app.post("/api/voice/tts")
+async def tts_endpoint(payload: TTSRequest, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Real server-side text-to-speech via Zia (Kannada/English/Hindi), returning
+    WAV audio. Replaces the browser SpeechSynthesis path, which mispronounced
+    Kannada on any device without a Kannada voice installed. Auth-gated like
+    every other endpoint. Returns 502 (not a hard error) if Zia is unavailable
+    so the frontend can fall back to the browser voice.
+    """
+    from catalyst_speech import synthesize_speech
+    result = await run_in_threadpool(synthesize_speech, payload.text, payload.lang)
+    if not result:
+        raise HTTPException(status_code=502, detail="Speech synthesis is temporarily unavailable.")
+    audio_bytes, media_type = result
+    return Response(content=audio_bytes, media_type=media_type)
+
+
 class VoiceProcessRequest(BaseModel):
     message: str
     lang: str = "en"

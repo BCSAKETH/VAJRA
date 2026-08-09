@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { ChatMessage } from "../AppContext";
 import { translations } from "../i18n";
 import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck } from "lucide-react";
@@ -85,6 +85,8 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   // every message as citations. Collapsed by default so it never clutters
   // the calm chat, one click away when an officer needs to trust/verify.
   const [showEvidence, setShowEvidence] = useState(false);
+  // Holds the currently-playing server-TTS audio so it can be stopped.
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
 
   const rawDisplayText = isAI
@@ -99,7 +101,8 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
 
   useEffect(() => {
     return () => {
-      if (isSpeaking) window.speechSynthesis.cancel();
+      if (isSpeaking && "speechSynthesis" in window) window.speechSynthesis.cancel();
+      if (audioRef.current) { audioRef.current.pause(); audioRef.current = null; }
       // Release the blob URL so the browser doesn't hold the decoded image
       // in memory for the lifetime of the page after the viewer closes.
       if (viewingImageUrl) URL.revokeObjectURL(viewingImageUrl);
@@ -107,21 +110,60 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSpeaking]);
 
-  const handleToggleSpeak = () => {
+  const stopPlayback = () => {
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+      audioRef.current = null;
+    }
+    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+  };
+
+  // Read the answer aloud. Prefer the server-side Zia TTS (real Kannada/
+  // English/Hindi voice, device-independent) -- this is the fix for browser
+  // SpeechSynthesis mispronouncing Kannada when no Kannada voice is installed.
+  // Falls back to the browser voice only if the server call fails.
+  const handleToggleSpeak = async () => {
     if (isSpeaking) {
-      window.speechSynthesis.cancel();
-      setIsSpeaking(false);
+      stopPlayback();
       return;
     }
+    const cleaned = cleanTextForSpeech(displayText);
+    if (!cleaned) return;
+    setIsSpeaking(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/voice/tts`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
+        },
+        body: JSON.stringify({ text: cleaned, lang }),
+      });
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audioRef.current = audio;
+        audio.onended = () => { URL.revokeObjectURL(url); audioRef.current = null; setIsSpeaking(false); };
+        audio.onerror = () => { URL.revokeObjectURL(url); audioRef.current = null; setIsSpeaking(false); };
+        await audio.play();
+        return;
+      }
+    } catch {
+      // fall through to browser TTS
+    }
+    // Server TTS unavailable -- fall back to the browser voice.
     const result = speakText(displayText, lang, () => setIsSpeaking(false));
-    if (result === "started") {
-      setIsSpeaking(true);
-    } else if (result === "no_kannada_voice") {
+    if (result === "started") return;
+    setIsSpeaking(false);
+    if (result === "no_kannada_voice") {
       addToast?.(
-        lang === "en" ? "Kannada Voice Not Installed" : "ಕನ್ನಡ ಧ್ವನಿ ಸ್ಥಾಪಿಸಲಾಗಿಲ್ಲ",
+        lang === "en" ? "Voice Playback Unavailable" : "ಧ್ವನಿ ಪ್ಲೇಬ್ಯಾಕ್ ಲಭ್ಯವಿಲ್ಲ",
         lang === "en"
-          ? "This device has no Kannada text-to-speech voice installed, so playback would be unintelligible -- not playing it. Install a Kannada voice in your OS/browser settings to enable this."
-          : "ಈ ಸಾಧನದಲ್ಲಿ ಕನ್ನಡ ಟೆಕ್ಸ್ಟ್-ಟು-ಸ್ಪೀಚ್ ಧ್ವನಿ ಸ್ಥಾಪಿಸಲಾಗಿಲ್ಲ, ಆದ್ದರಿಂದ ಪ್ಲೇಬ್ಯಾಕ್ ಅರ್ಥವಾಗುವುದಿಲ್ಲ -- ಪ್ಲೇ ಮಾಡುತ್ತಿಲ್ಲ.",
+          ? "Server voice is temporarily unavailable and this device has no Kannada voice installed. Please try again shortly."
+          : "ಸರ್ವರ್ ಧ್ವನಿ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ ಮತ್ತು ಈ ಸಾಧನದಲ್ಲಿ ಕನ್ನಡ ಧ್ವನಿ ಸ್ಥಾಪಿಸಲಾಗಿಲ್ಲ. ದಯವಿಟ್ಟು ಸ್ವಲ್ಪ ಸಮಯದ ನಂತರ ಪ್ರಯತ್ನಿಸಿ.",
         "Warning"
       );
     }
