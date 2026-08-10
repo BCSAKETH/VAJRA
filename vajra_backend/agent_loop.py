@@ -4,6 +4,7 @@ import logging
 import re
 import hashlib
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Tuple, Optional
 import numpy as np
 import pandas as pd
@@ -2472,12 +2473,46 @@ class VajraAgentLoop:
                     logger.warning(f"Dossier: facts query failed for case {case_id}: {ex}")
                 facts_res = {"data": facts_data, "text_result": facts_text, "response_type": "text",
                              "citations": [{"type": "CCTNS Database Record", "id": case_no, "details": "Structured case metadata"}] if facts_data else []}
-                summ_res = self._execute_tool("summarize_case", {"case_no": case_no}, employee_id, session_id, user_unit_id)
-                sec_res = self._execute_tool("get_case_sections", {"case_no": case_no}, employee_id, session_id, user_unit_id)
-                tl_res = self._execute_tool("get_case_timeline", {"case_no": case_no}, employee_id, session_id, user_unit_id)
-                sim_res = self._execute_tool("find_similar_cases", {"query": (facts_res.get("data") or {}).get("BriefFacts") or case_no}, employee_id, session_id, user_unit_id)
-                net_res = self._execute_tool("query_graph_network", {"suspect_name": primary_accused}, employee_id, session_id, user_unit_id) if primary_accused else None
-                risk_res = self._execute_tool("get_offender_risk", {"suspect_name": primary_accused}, employee_id, session_id, user_unit_id) if primary_accused else None
+                # Run the independent sub-tools CONCURRENTLY instead of serially.
+                # A dossier's heavy sub-calls (each its own ZCQL/GLM round-trip)
+                # previously ran back-to-back, so wall-clock = their SUM. They have
+                # no data dependency on one another (primary_accused + facts are
+                # already resolved above; sim only needs facts, also ready), so a
+                # thread pool collapses the wall clock to ~the slowest single call.
+                # Each task is defensively wrapped: a failure drops ONLY its own
+                # panel (panel_specs below already skips a None result), so this is
+                # never worse than the serial version even when a service is down;
+                # and if the pool itself fails, it falls back to serial so a
+                # dossier is never lost to a concurrency error.
+                def _run_subtool(tool_name: str, params: Dict[str, Any]):
+                    try:
+                        return self._execute_tool(tool_name, params, employee_id, session_id, user_unit_id)
+                    except Exception as ex:
+                        logger.warning(f"Dossier sub-tool '{tool_name}' failed: {ex}")
+                        return None
+
+                _specs: Dict[str, Tuple[str, Dict[str, Any]]] = {
+                    "summ": ("summarize_case", {"case_no": case_no}),
+                    "sec": ("get_case_sections", {"case_no": case_no}),
+                    "tl": ("get_case_timeline", {"case_no": case_no}),
+                    "sim": ("find_similar_cases", {"query": (facts_res.get("data") or {}).get("BriefFacts") or case_no}),
+                }
+                if primary_accused:
+                    _specs["net"] = ("query_graph_network", {"suspect_name": primary_accused})
+                    _specs["risk"] = ("get_offender_risk", {"suspect_name": primary_accused})
+                try:
+                    with ThreadPoolExecutor(max_workers=len(_specs)) as _ex:
+                        _futs = {k: _ex.submit(_run_subtool, t, p) for k, (t, p) in _specs.items()}
+                        _out = {k: f.result() for k, f in _futs.items()}
+                except Exception as ex:
+                    logger.warning(f"Dossier concurrent fetch failed, falling back to serial: {ex}")
+                    _out = {k: _run_subtool(t, p) for k, (t, p) in _specs.items()}
+                summ_res = _out.get("summ")
+                sec_res = _out.get("sec")
+                tl_res = _out.get("tl")
+                sim_res = _out.get("sim")
+                net_res = _out.get("net")
+                risk_res = _out.get("risk")
 
                 # Assemble panels -- (type, EN title, KN title, source result).
                 # Only panels whose source actually returned data are kept.

@@ -1464,6 +1464,60 @@ def _bump_chat_session_active(session_id: str):
         logger.warning(f"Could not update ChatSession.last_active_at: {e}")
 
 
+def _fit_json(obj: Any, cap: int) -> str:
+    """
+    Serialize obj to JSON that is ALWAYS valid and <= cap chars. Uses
+    ensure_ascii=False so Kannada persists as compact real UTF-8 (not 6-char
+    \\uXXXX escapes) -- smaller, and free of the double-encode gibberish. If the
+    result still exceeds cap, drop the most-dispensable fields IN ORDER rather
+    than slicing mid-string (which would corrupt the JSON): per-panel text_kn
+    first (frontend falls back to the English body), then the cached
+    full-narrative _text_kn, then raw widget `data` on text-bearing panels. Only
+    if all that still overflows do we return a minimal valid object.
+    """
+    if not obj:
+        return "{}" if isinstance(obj, dict) or obj is None else "[]"
+    s = json.dumps(obj, ensure_ascii=False)
+    if len(s) <= cap:
+        return s
+    if not isinstance(obj, dict):
+        # lists (citations): trim from the end, keep valid JSON
+        arr = list(obj)
+        while arr:
+            arr.pop()
+            s = json.dumps(arr, ensure_ascii=False)
+            if len(s) <= cap:
+                return s
+        return "[]"
+    d = dict(obj)
+    panels = d.get("panels")
+    if isinstance(panels, list):
+        d["panels"] = [dict(p) if isinstance(p, dict) else p for p in panels]
+        panels = d["panels"]
+        for p in panels:
+            if isinstance(p, dict):
+                p.pop("text_kn", None)
+        s = json.dumps(d, ensure_ascii=False)
+        if len(s) <= cap:
+            return s
+    d.pop("_text_kn", None)
+    s = json.dumps(d, ensure_ascii=False)
+    if len(s) <= cap:
+        return s
+    if isinstance(panels, list):
+        for p in panels:
+            if isinstance(p, dict) and (p.get("text") or "").strip():
+                p.pop("data", None)  # keep the text panel; drop its heavy raw data
+        s = json.dumps(d, ensure_ascii=False)
+        if len(s) <= cap:
+            return s
+    # Last resort: keep identity + English narrative so the message is never
+    # blank/corrupt (English only, since _text_kn was already dropped above).
+    minimal = {k: d.get(k) for k in ("case_no", "primary_accused", "_text_en") if d.get(k)}
+    s = json.dumps(minimal, ensure_ascii=False)
+    return s if len(s) <= cap else "{}"
+
+
 def _persist_chat_message(session_id: str, sender: str, text: str, response_type: str = "text", data: Optional[Dict[str, Any]] = None, citations: Optional[List[Any]] = None, sender_employee_id: Optional[int] = None):
     """
     Writes a message to the ChatMessage table and bumps ChatSession.LastActiveAt.
@@ -1476,15 +1530,17 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
     _SESSION_MESSAGES_CACHE.pop(session_id, None)
 
     # data_json/citations caps: the ChatMessage.data_json column was probed
-    # live and accepts at least 100,000 chars -- the old 3800 cap was
-    # massively over-conservative and was the reason a Full Dossier's
-    # multi-panel payload (7 panels: risk+network+timeline+... easily
-    # >4KB of JSON) failed the insert and silently fell back to an empty
-    # "{}", so panels vanished between building and retrieval. Raised to a
-    # safe 60,000 (well under the column limit, leaving room for the rest of
-    # the row) so rich dossier payloads persist intact. Normal small answers
-    # are unaffected -- this only caps, never pads.
-    _DATA_JSON_CAP = 60000
+    # live and accepts at least 100,000 chars. Cap set to 95,000 (safely under
+    # the column limit). Kannada dossiers with per-panel text_kn blew past the
+    # old 60,000 cap; the old code then HARD-SLICED json.dumps(...)[:cap], which
+    # cut mid-string -> invalid JSON -> json.loads on read failed -> data={} ->
+    # panels silently vanished. _fit_json below never slices: it serializes with
+    # ensure_ascii=False (real UTF-8 Kannada is ~6x smaller than \uXXXX escapes,
+    # and this also removes the \u double-encode gibberish at the source), and if
+    # still over cap it STRUCTURALLY drops the most-dispensable fields first
+    # (per-panel text_kn -> full-narrative _text_kn -> raw widget data) so what
+    # persists is always VALID JSON, never a corrupted slice.
+    _DATA_JSON_CAP = 95000
     _CITATIONS_CAP = 9000
     # 1. Full attempt with all fields
     try:
@@ -1493,8 +1549,8 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
             "sender": sender,
             "text": text[:2000],
             "response_type": response_type,
-            "data_json": json.dumps(data or {})[:_DATA_JSON_CAP],
-            "citations_json": json.dumps(citations or [])[:_CITATIONS_CAP],
+            "data_json": _fit_json(data or {}, _DATA_JSON_CAP),
+            "citations_json": _fit_json(citations or [], _CITATIONS_CAP),
             "sent_at": datetime.utcnow().isoformat()
         }
         if sender_employee_id is not None:
@@ -1512,8 +1568,8 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
             "sender": sender,
             "text": text[:2000],
             "response_type": response_type,
-            "data_json": json.dumps(data or {})[:_DATA_JSON_CAP],
-            "citations_json": json.dumps(citations or [])[:_CITATIONS_CAP],
+            "data_json": _fit_json(data or {}, _DATA_JSON_CAP),
+            "citations_json": _fit_json(citations or [], _CITATIONS_CAP),
             "sent_at": datetime.utcnow().isoformat()
         }
         zcql_insert_row("ChatMessage", row)
