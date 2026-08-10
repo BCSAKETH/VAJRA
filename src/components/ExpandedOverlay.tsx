@@ -306,6 +306,17 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                     <span className="ml-2 text-amber-500 normal-case font-normal text-[10px]">{lang === "en" ? "(simulated — suspect not found in database)" : "(ಸಿಮ್ಯುಲೇಟೆಡ್ — ಶಂಕಿತರು ಡೇಟಾಬೇಸ್‌ನಲ್ಲಿ ಕಂಡುಬಂದಿಲ್ಲ)"}</span>
                   )}
                 </h4>
+                {/* Degree-centrality hub: the most-connected entity in this
+                    cluster -- the actionable "look here first" signal. */}
+                {data.hub && data.hub.label && (
+                  <div className="flex items-center flex-wrap gap-2 text-[11px] font-mono">
+                    <span className="px-2 py-0.5 rounded-full bg-[#C79A4E]/15 border border-[#C79A4E]/30 text-[#C79A4E] font-bold uppercase tracking-wider">
+                      {lang === "en" ? "Central Hub" : "ಕೇಂದ್ರ ವ್ಯಕ್ತಿ"}
+                    </span>
+                    <span className="text-stone-100 font-bold">{data.hub.label}</span>
+                    <span className="text-stone-500">· {data.hub.degree} {lang === "en" ? "direct links" : "ನೇರ ಸಂಪರ್ಕಗಳು"}</span>
+                  </div>
+                )}
                 <div className="flex-1 bg-stone-950/60 border border-stone-900 rounded-xl p-2 min-h-[320px]">
                   <NetworkGraph nodes={data.nodes || []} edges={data.edges || []} />
                 </div>

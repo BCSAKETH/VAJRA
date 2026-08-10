@@ -756,6 +756,26 @@ class VajraGraphRAG:
                         if len(nodes) > 1:
                             edges.append({"source": nodes[1]["id"], "target": co_node_id})
 
+                    # Degree centrality (deterministic, no networkx -> respects the
+                    # vendor disk cap): count the edges touching each node. The
+                    # most-connected ENTITY (person, not a case node) is the likely
+                    # hub / kingpin of this cluster -- the actionable "who to look at
+                    # first" signal, not just a flat list of names.
+                    deg: Dict[str, int] = {}
+                    for e in edges:
+                        deg[e["source"]] = deg.get(e["source"], 0) + 1
+                        deg[e["target"]] = deg.get(e["target"], 0) + 1
+                    label_by_id = {n["id"]: n for n in nodes}
+                    centrality = sorted(
+                        (
+                            {"label": label_by_id[nid]["label"], "type": label_by_id[nid].get("type"), "degree": d}
+                            for nid, d in deg.items() if nid in label_by_id
+                        ),
+                        key=lambda x: -x["degree"],
+                    )[:8]
+                    person_centrality = [c for c in centrality if c["type"] in ("suspect", "person")]
+                    hub = person_centrality[0] if person_centrality else (centrality[0] if centrality else None)
+
                     return {
                         "target_suspect": suspect_name,
                         "engine_mode": "Live Zoho Catalyst ZQL Tracing",
@@ -764,6 +784,8 @@ class VajraGraphRAG:
                         "3rd_degree_connections": ["Syndicate Connection: Local Crime Cell (Grounded in shared FIRs)"],
                         "nodes": nodes,
                         "edges": edges,
+                        "centrality": centrality,
+                        "hub": hub,
                         "case_ids": case_ids
                     }
             except Exception as e:

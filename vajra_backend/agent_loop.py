@@ -1414,8 +1414,12 @@ class VajraAgentLoop:
                 )
                 citations.append({"type": "GraphRAG Syndicate Map", "id": suspect, "details": "Name matched multiple distinct accused records -- ambiguous, not traced"})
             else:
-                text_result = f"Syndicate network links for suspect {suspect}: Traced phone logs and {len(fin_txns)} logged bank transaction trails."
-                citations.append({"type": "GraphRAG Syndicate Map", "id": suspect, "details": "Traversed co-accused links"})
+                hub = network_info.get("hub") or {}
+                hub_txt = ""
+                if hub and hub.get("label"):
+                    hub_txt = f" Most-connected entity (likely hub): {hub['label']} with {hub.get('degree', 0)} direct link(s)."
+                text_result = f"Syndicate network links for suspect {suspect}: Traced phone logs and {len(fin_txns)} logged bank transaction trails.{hub_txt}"
+                citations.append({"type": "GraphRAG Syndicate Map", "id": suspect, "details": "Traversed co-accused links + degree centrality"})
             self._write_audit_log(employee_id, "Relational GraphRAG Traversal", suspect, f"Traced network of {suspect}", text_result, session_id)
 
         # 6. query_financial_links
