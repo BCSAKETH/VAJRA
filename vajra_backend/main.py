@@ -2095,10 +2095,18 @@ async def _run_ai_turn_and_persist(
     except Exception as e:
         logger.warning(f"Could not resolve investigation case context: {e}")
 
-    # Run query through IndicTrans2 translation layer if Kannada
+    # Translate the query kn->en ONLY when it actually contains Kannada script.
+    # An already-English query in Kannada mode (an English case-number search, or
+    # the auto-prepended English [Context:...] header) must NOT be forced through
+    # kn->en: it adds latency and, when the flaky Zia/GLM translate service
+    # hiccups, spuriously kills the whole turn with "translation unavailable"
+    # before any tool runs. The agent reasons in English internally and the answer
+    # is still translated back to Kannada at the end, so skipping this for
+    # English input costs nothing and removes a real failure point.
+    _query_has_kannada = bool(re.search(r"[ಀ-೿]", query_for_agent))
     processed_query = (
         await run_in_threadpool(translator.translate, query_for_agent, "kn", "en")
-        if lang == "kn" else query_for_agent
+        if (lang == "kn" and _query_has_kannada) else query_for_agent
     )
 
     # translator.translate()'s own honest-failure fallback (all three
