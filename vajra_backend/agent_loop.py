@@ -2518,6 +2518,25 @@ class VajraAgentLoop:
                 net_res = _out.get("net")
                 risk_res = _out.get("risk")
 
+                # GRACEFUL DEGRADATION: summarize_case is the one GLM-dependent
+                # panel; under an LLM outage it returns None. Without this, the
+                # headline step below (summ_res.get(...)) would CRASH the whole
+                # dossier, and the Case Summary panel would vanish. Fall back to a
+                # TEMPLATED summary built purely from the real case facts (never
+                # fabricated) so the dossier stays complete and useful even when
+                # the AI is down -- the deterministic core carries it.
+                _summ_ok = bool(summ_res and (((summ_res.get("data") or {}).get("summary")) or (summ_res.get("text_result") or "").strip()))
+                if not _summ_ok:
+                    _bf = (facts_data or {}).get("BriefFacts") or ""
+                    _templated = f"{(facts_data or {}).get('CrimeNo') or case_no} registered {(facts_data or {}).get('CrimeRegisteredDate') or 'date N/A'}. {_bf}".strip()
+                    if _templated:
+                        summ_res = {
+                            "data": {"summary": _templated},
+                            "text_result": _templated,
+                            "response_type": "text",
+                            "citations": [{"type": "CCTNS Database Record", "id": case_no, "details": "Templated summary — AI synthesis unavailable, built from case facts"}],
+                        }
+
                 # Assemble panels -- (type, EN title, KN title, source result).
                 # Only panels whose source actually returned data are kept.
                 panel_specs = [
@@ -2563,7 +2582,7 @@ class VajraAgentLoop:
                 # the old bulleted "\n • Case Facts \n • ..." dump was redundant
                 # (and rendered as literal \n). Lead with the one-line case
                 # summary; the sections render as panels below.
-                summary_text = (summ_res.get("data") or {}).get("summary") or summ_res.get("text_result") or ""
+                summary_text = ((summ_res or {}).get("data") or {}).get("summary") or (summ_res or {}).get("text_result") or ""
                 # Collapse any newlines to single spaces so the headline is a
                 # clean one/two-liner regardless of how the summary was stored.
                 summary_text = " ".join(summary_text.split())
