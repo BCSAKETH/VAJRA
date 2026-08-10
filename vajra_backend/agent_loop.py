@@ -2569,6 +2569,91 @@ class VajraAgentLoop:
                     })
                     agg_citations.extend(res.get("citations") or [])
 
+                # CROSS-SIGNAL ASSESSMENT [A3]: fuse the deterministic signals
+                # already computed above (conviction risk + top driver, network
+                # hub/centrality, co-accused count, similar-MO cases, applied
+                # sections, timeline recency) into ONE grounded assessment plus a
+                # prioritized "what to investigate next" list. Pure rules over
+                # already-fetched data -> no extra LLM call, works even when the
+                # AI is down, and every line is framed as a LEAD to verify.
+                try:
+                    _risk_d = (risk_res or {}).get("data") or {}
+                    _rs = _risk_d.get("risk_score")
+                    _drivers = _risk_d.get("shap_factors") or []
+                    # The strongest driver is only useful to an officer if it's a
+                    # SUBSTANTIVE feature (district, crime group, victim/accused
+                    # counts) -- the model's cyclic month/day and year-temporal
+                    # features are seasonality internals, not something you can
+                    # "strengthen evidence around". Surface the top NON-temporal
+                    # driver as actionable; note timing separately if it dominates.
+                    _temporal_re = re.compile(r"cyclic|sin|cos|temporal|year", re.I)
+                    _meaningful = [d.get("name") for d in _drivers if isinstance(d, dict) and d.get("name") and not _temporal_re.search(d.get("name"))]
+                    _top_driver = _meaningful[0] if _meaningful else None
+                    _timing_dominant = bool(_drivers) and not _top_driver
+                    _net_d = (net_res or {}).get("data") or {}
+                    _hub = _net_d.get("hub") or {}
+                    _coacc = len(_net_d.get("2nd_degree_connections") or [])
+                    _sim = len(((sim_res or {}).get("data") or {}).get("matches") or [])
+                    _secs = len(((sec_res or {}).get("data") or {}).get("sections") or [])
+                    _tl = ((tl_res or {}).get("data") or {}).get("timeline") or []
+                    _latest = _tl[-1].get("date") if _tl and isinstance(_tl[-1], dict) else None
+
+                    if _rs is None:
+                        _rating = "UNSCORED"
+                    elif _rs >= 65:
+                        _rating = "HIGH"
+                    elif _rs >= 45:
+                        _rating = "MEDIUM"
+                    else:
+                        _rating = "LOW"
+
+                    _assess = []
+                    if _rs is not None:
+                        _a = f"Conviction risk {_rs}% ({_rating})"
+                        if _top_driver:
+                            _a += f", driven mainly by {_top_driver}"
+                        elif _timing_dominant:
+                            _a += ", with timing/seasonality as the leading statistical factor"
+                        _assess.append(_a + ".")
+                    if _hub.get("label"):
+                        _who = "the primary accused" if _hub.get("label") == primary_accused else _hub.get("label")
+                        _assess.append(f"Network centres on {_who} ({_hub.get('degree', 0)} direct link(s)); {_coacc} co-accused traced.")
+                    if _sim:
+                        _assess.append(f"{_sim} case(s) with a similar MO on record.")
+                    if _secs:
+                        _assess.append(f"{_secs} statutory section(s) applied.")
+                    if _latest:
+                        _assess.append(f"Latest logged case activity: {_latest}.")
+
+                    _steps = []
+                    if _rating == "HIGH":
+                        _steps.append("Treat as high priority -- expedite the charge sheet and review custody/monitoring.")
+                    if _hub.get("label") and _hub.get("type") == "person" and _hub.get("label") != primary_accused:
+                        _steps.append(f"Probe {_hub.get('label')} as a likely network coordinator (highest connectivity in the cluster).")
+                    if _coacc:
+                        _steps.append(f"Interview the {_coacc} traced co-accused for corroboration and to map roles.")
+                    if _sim:
+                        _steps.append(f"Compare the {_sim} similar-MO case(s) for a serial pattern or shared offenders.")
+                    if _top_driver:
+                        _steps.append(f"Strengthen evidence around '{_top_driver}' (the strongest risk driver) for the prosecution file.")
+                    if _latest:
+                        _steps.append("Act promptly -- the most recent logged activity is recent.")
+                    _steps.append("Treat every AI-surfaced link and score as a LEAD to verify, not a confirmed fact.")
+
+                    _cs_text = ("ASSESSMENT: " + " ".join(_assess)) if _assess else "ASSESSMENT: insufficient signal to synthesize."
+                    _cs_text += "\n\nWHAT TO INVESTIGATE NEXT:\n" + "\n".join(f"{i + 1}. {s}" for i, s in enumerate(_steps))
+
+                    panels.append({
+                        "type": "next_steps",
+                        "panel_key": "next_steps",
+                        "title_en": "Cross-Signal Assessment & Next Steps",
+                        "title_kn": "ಸಮಗ್ರ ವಿಶ್ಲೇಷಣೆ ಮತ್ತು ಮುಂದಿನ ಕ್ರಮಗಳು",
+                        "data": None,
+                        "text": _cs_text,
+                    })
+                except Exception as ex:
+                    logger.warning(f"Cross-signal assessment panel skipped: {ex}")
+
                 # Anchor the legacy single-widget view on the richest panel.
                 anchor = next((p for p in panels if p["type"] in ("network", "risk", "timeline")), panels[0] if panels else None)
                 data = {"panels": panels, "case_no": case_no, "primary_accused": primary_accused}
