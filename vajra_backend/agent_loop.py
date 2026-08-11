@@ -324,11 +324,12 @@ class VajraAgentLoop:
         }
     ]
 
-    def __init__(self, dbscan_model=None, xgboost_model=None, shap_explainer=None, label_encoders=None):
+    def __init__(self, dbscan_model=None, xgboost_model=None, shap_explainer=None, label_encoders=None, risk_calibrator=None):
         self.dbscan_model = dbscan_model
         self.xgboost_model = xgboost_model
         self.shap_explainer = shap_explainer
         self.label_encoders = label_encoders
+        self.risk_calibrator = risk_calibrator
         self.llm = CatalystLLM()
         self.qwen = CatalystQwen()
         self._mo_profiler = None
@@ -1819,6 +1820,13 @@ class VajraAgentLoop:
             if self.xgboost_model:
                 try:
                     risk_score = float(self.xgboost_model.predict_proba(X)[0][1])
+                    # Apply isotonic calibration so the reported % matches the real
+                    # conviction rate (SHAP below still explains the raw booster).
+                    if self.risk_calibrator is not None:
+                        try:
+                            risk_score = float(self.risk_calibrator.predict([risk_score])[0])
+                        except Exception as cex:
+                            logger.warning(f"Risk calibration skipped: {cex}")
                 except Exception as ex:
                     logger.warning(f"XGBoost prediction failed: {ex}")
             
