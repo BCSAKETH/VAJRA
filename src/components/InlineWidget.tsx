@@ -153,6 +153,13 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                   <><span className="font-bold text-stone-200">{hotspots.length}</span> ಹಾಟ್‌ಸ್ಪಾಟ್ ಸಮೂಹಗಳನ್ನು ಗುರುತಿಸಲಾಗಿದೆ.</>
                 )}
               </p>
+              {data.trend && (data.trend.recent || data.trend.prior) ? (
+                <div className={`text-[11px] font-mono font-bold flex items-center gap-1 ${data.trend.direction === "rising" ? "text-rose-400" : data.trend.direction === "falling" ? "text-[#5DCAA5]" : "text-stone-400"}`}>
+                  <span>{data.trend.direction === "rising" ? "▲" : data.trend.direction === "falling" ? "▼" : "▬"}</span>
+                  <span>{lang === "en" ? "Incidents" : "ಘಟನೆಗಳು"} {data.trend.direction}{data.trend.pct_change != null ? ` ${data.trend.pct_change > 0 ? "+" : ""}${data.trend.pct_change}%` : ""}</span>
+                  <span className="text-stone-500 font-normal">({lang === "en" ? `last ${data.trend.window_days}d vs prior` : `ಕಳೆದ ${data.trend.window_days} ದಿನ`})</span>
+                </div>
+              ) : null}
               <div className="rounded-lg overflow-hidden border border-stone-800 h-[280px] relative z-0">
                 <MapContainer
                   center={[hotspots[0].lat, hotspots[0].lng]}

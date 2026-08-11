@@ -1611,16 +1611,51 @@ class VajraAgentLoop:
                 # the same method so hotspot clustering is never reimplemented).
                 centroids = self.cluster_hotspots(coordinates)
 
+                # Hotspot TREND DELTA [B4]: is incident volume in this scope RISING
+                # or FALLING? Compare the last 90 days to the prior 90 days using
+                # reliable COUNT aggregates (not the 300-row map sample) -- the
+                # actionable "where is it getting worse" signal on top of the
+                # static clusters. Best-effort: never blocks the map.
+                trend = None
+                if catalyst_app:
+                    try:
+                        from datetime import timedelta
+                        now = datetime.utcnow()
+                        w = 90
+                        d_mid = now.strftime("%Y-%m-%d")
+                        d_recent = (now - timedelta(days=w)).strftime("%Y-%m-%d")
+                        d_prior = (now - timedelta(days=2 * w)).strftime("%Y-%m-%d")
+                        scope_sql = f" AND PoliceStationID IN ({','.join(map(str, unit_ids))})" if unit_ids else ""
+
+                        def _win_count(start, end):
+                            rr = catalyst_app.zql().execute_query(
+                                f"SELECT COUNT(ROWID) c FROM CaseMaster WHERE CrimeRegisteredDate >= '{start}' AND CrimeRegisteredDate < '{end}'{scope_sql}"
+                            )
+                            return int(rr[0]["CaseMaster"]["COUNT(ROWID)"]) if rr else 0
+
+                        recent_n = _win_count(d_recent, d_mid)
+                        prior_n = _win_count(d_prior, d_recent)
+                        pct = round((recent_n - prior_n) / prior_n * 100, 1) if prior_n else None
+                        direction = "rising" if recent_n > prior_n else ("falling" if recent_n < prior_n else "flat")
+                        trend = {"recent": recent_n, "prior": prior_n, "window_days": w, "pct_change": pct, "direction": direction}
+                    except Exception as tex:
+                        logger.warning(f"Hotspot trend delta skipped: {tex}")
+
+                trend_txt = ""
+                if trend and (trend["recent"] or trend["prior"]):
+                    _pc = f" ({trend['pct_change']:+.1f}%)" if trend["pct_change"] is not None else ""
+                    trend_txt = f" Incident volume is {trend['direction']}{_pc} over the last {trend['window_days']} days vs the prior {trend['window_days']} ({trend['prior']} -> {trend['recent']})."
+
                 scope_label = f" in {district}" if district else ""
                 if centroids:
-                    data = {"hotspots": centroids}
-                    text_result = f"Plotted spatial crime density map{scope_label}. Detected {len(centroids)} active hotspot clusters containing dense incident concentrations."
+                    data = {"hotspots": centroids, "trend": trend}
+                    text_result = f"Plotted spatial crime density map{scope_label}. Detected {len(centroids)} active hotspot clusters containing dense incident concentrations.{trend_txt}"
                 else:
                     data = {"hotspots": coordinates if coordinates else [
                         {"lat": 13.02768, "lng": 77.5124, "label": "Peenya Hotspot A"},
                         {"lat": 12.9716, "lng": 77.5946, "label": "Cubbon Park Cluster"}
-                    ]}
-                    text_result = f"The CCTNS database does not currently contain enough dense incident coordinates{scope_label} to form statistical clusters using DBSCAN (requires at least 10 spatial points within an eps of 0.005). Displaying raw incident marker positions."
+                    ], "trend": trend}
+                    text_result = f"The CCTNS database does not currently contain enough dense incident coordinates{scope_label} to form statistical clusters using DBSCAN (requires at least 10 spatial points within an eps of 0.005). Displaying raw incident marker positions.{trend_txt}"
 
                 citations.append({"type": "Geospatial DBSCAN Analyst", "id": "KSP Hotspots", "details": f"Incident spatial coordinates{scope_label}"})
                 self._write_audit_log(employee_id, "Spatial Hotspot Query", district or "All Districts", "Get crime hotspots", text_result, session_id)
