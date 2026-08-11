@@ -485,7 +485,7 @@ class VajraAgentLoop:
             (["timeline", "chronology", "milestones"], "get_case_timeline", {"case_no": case_no}, case_no),
             (["summarize", "summary", "case dossier"], "summarize_case", {"case_no": case_no}, case_no),
             (["section", "ipc", "bns ", "legal provision"], "get_case_sections", {"case_no": case_no}, case_no),
-            (["hotspot", "cluster map", "crime map", "dbscan"], "query_hotspots", {}, "yes"),
+            (["hotspot", "cluster map", "crime map", "dbscan"], "query_hotspots", {"district": district}, "yes"),
             (["organized crime", "crime group", "gang", "criminal syndicate detect"], "detect_crime_groups", {}, "yes"),
             (["trend", "over time", "increasing", "decreasing", "seasonal pattern"], "get_crime_trends",
              {"district": district, "crime_group": crime_group}, "yes"),
