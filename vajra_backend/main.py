@@ -334,6 +334,36 @@ async def analyze_case(
         )
 
 
+class LensRequest(BaseModel):
+    context: str  # the already-grounded assessment/facts to reframe (never re-fetched blindly)
+    case_no: Optional[str] = ""
+
+
+@app.post("/api/intelligence/lenses")
+async def multi_lens(payload: LensRequest, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Multi-lens explainability [B7]: reframe ONE grounded case assessment into
+    audience-specific views (Investigator / Supervisor / Compliance) in a single
+    GLM call, then gate WHICH lenses are returned by the officer's role_tier.
+    The Compliance lens (bias flag + lead-not-fact) is always included as a
+    safety guardrail. Degrades to a deterministic reframing if the LLM is down.
+    """
+    role = getattr(request.state, "role_tier", "officer")
+    lenses = await run_in_threadpool(agent_loop.generate_multilens, payload.context, payload.case_no or "")
+    # Role gating: supervisors get all three (Supervisor lens leads); an
+    # investigating officer gets the tactical view + the compliance guardrail.
+    if role == "supervisor":
+        visible = ["supervisor", "investigator", "compliance"]
+    else:
+        visible = ["investigator", "compliance"]
+    return {
+        "role_tier": role,
+        "primary": visible[0],
+        "lenses": {k: lenses.get(k, "") for k in visible},
+        "engine": lenses.get("engine"),
+    }
+
+
 @app.post("/api/voice/process-stream")
 async def process_voice_stream(audio: UploadFile = File(...)):
     """

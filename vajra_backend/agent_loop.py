@@ -400,6 +400,59 @@ class VajraAgentLoop:
         "DACOITY", "ROBBERY", "MISSING PERSON", "CHAIN SNATCHING", "PUBLIC SAFETY",
     ]
 
+    def _multilens_fallback(self, context: str) -> Dict[str, Any]:
+        c = (context or "").strip()
+        return {
+            "investigator": c[:600] or "No grounded assessment was available to reframe.",
+            "supervisor": "AI reframing is temporarily unavailable -- review the grounded assessment above for priority, severity and resourcing.",
+            "compliance": "AI reframing unavailable. Standing rule: every AI-produced score or link is an investigative LEAD to verify, not proof of guilt -- confirm independently before any action.",
+            "engine": "Deterministic fallback (AI unavailable)",
+        }
+
+    def generate_multilens(self, context: str, case_no: str = "") -> Dict[str, Any]:
+        """
+        Reframe an ALREADY-GROUNDED case assessment into three audience-specific
+        lenses in ONE GLM call -- Investigator (tactical next actions), Supervisor
+        (severity / priority / resourcing / escalate?), Compliance (due process +
+        a proxy-bias flag + lead-not-fact). Uses ONLY the facts in `context`
+        (never invents names/numbers/charges). Degrades to a deterministic
+        fallback if the LLM is down, so it never fabricates or crashes.
+        """
+        if not context or not context.strip():
+            return self._multilens_fallback(context)
+        sys_prompt = (
+            "You are a Karnataka State Police intelligence assistant. Rewrite the "
+            "GIVEN grounded case assessment into three sections for three different "
+            "readers, using ONLY facts present in the assessment -- never invent "
+            "names, numbers, or charges. Output STRICT JSON with exactly these keys: "
+            "'investigator', 'supervisor', 'compliance'.\n"
+            "investigator: 2-3 imperative sentences on concrete next actions and who/what to pursue.\n"
+            "supervisor: 2 sentences on severity, priority, resource need and whether to escalate.\n"
+            "compliance: 2-3 sentences on due process. State plainly the score is a LEAD not proof, "
+            "and raise a BIAS FLAG only if a risk driver is a socio-economic, migration, caste, "
+            "religion or economic-stress proxy (name it); if the drivers are case/offence-based, say "
+            "there is no proxy-bias concern.\n"
+            "Keep each section under 60 words. Output ONLY the JSON object, no prose around it."
+        )
+        try:
+            res = self.llm.chat(
+                [{"role": "system", "content": sys_prompt},
+                 {"role": "user", "content": f"Case {case_no or '(unspecified)'}. Grounded assessment:\n{context.strip()[:1800]}"}],
+                use_agent_system_prompt=False, max_tokens=700,
+            )
+            if not res.get("error"):
+                content = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+                m = re.search(r"\{.*\}", content, re.DOTALL)
+                if m:
+                    parsed = json.loads(m.group(0))
+                    out = {k: str(parsed.get(k, "")).strip() for k in ("investigator", "supervisor", "compliance")}
+                    if all(out.values()):
+                        out["engine"] = "GLM multi-lens"
+                        return out
+        except Exception as ex:
+            logger.warning(f"Multi-lens GLM failed, using deterministic fallback: {ex}")
+        return self._multilens_fallback(context)
+
     def _keyword_route_tool(self, query: str) -> Optional[Dict[str, Any]]:
         """
         Deterministic, model-free last-resort tool picker for when BOTH GLM

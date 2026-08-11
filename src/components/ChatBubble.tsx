@@ -100,6 +100,33 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   // every message as citations. Collapsed by default so it never clutters
   // the calm chat, one click away when an officer needs to trust/verify.
   const [showEvidence, setShowEvidence] = useState(false);
+  // Multi-lens explainability [B7]: on-demand, so it never slows the dossier.
+  const [lenses, setLenses] = useState<{ role_tier?: string; primary?: string; engine?: string; lenses?: Record<string, string> } | null>(null);
+  const [lensLoading, setLensLoading] = useState(false);
+
+  const LENS_LABELS: Record<string, { en: string; kn: string }> = {
+    investigator: { en: "Investigator", kn: "ತನಿಖಾಧಿಕಾರಿ" },
+    supervisor: { en: "Supervisor", kn: "ಮೇಲ್ವಿಚಾರಕ" },
+    compliance: { en: "Compliance", kn: "ಅನುಸರಣೆ" },
+  };
+
+  const handleExplainLenses = async () => {
+    if (lensLoading) return;
+    const panels: any[] = (message.data as any)?.panels || [];
+    const ns = panels.find((p) => p.panel_key === "next_steps");
+    const context = (ns?.text || panels.map((p) => p.text).filter(Boolean).join(" ")).slice(0, 1800);
+    if (!context.trim()) return;
+    setLensLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/intelligence/lenses`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({ context, case_no: (message.data as any)?.case_no || "" }),
+      });
+      if (res.ok) setLenses(await res.json());
+    } catch { /* silent -- the button just won't populate */ }
+    finally { setLensLoading(false); }
+  };
   // Holds the currently-playing server-TTS audio so it can be stopped.
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
@@ -408,6 +435,36 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
                   </div>
                 );
               })}
+            </div>
+            {/* B7: on-demand multi-lens explainability (never auto-runs, so it
+                doesn't slow the dossier; role-gated + graceful fallback server-side). */}
+            <div className="px-4 py-3 border-t border-stone-850">
+              {!lenses ? (
+                <button
+                  onClick={handleExplainLenses}
+                  disabled={lensLoading}
+                  className="text-[11px] font-mono uppercase tracking-wider text-[#C79A4E] hover:underline disabled:opacity-50"
+                >
+                  {lensLoading
+                    ? (lang === "en" ? "Generating lenses…" : "ದೃಷ್ಟಿಕೋನಗಳನ್ನು ರಚಿಸಲಾಗುತ್ತಿದೆ…")
+                    : (lang === "en" ? "◈ Explain in 3 lenses (Investigator · Supervisor · Compliance)" : "◈ 3 ದೃಷ್ಟಿಕೋನಗಳಲ್ಲಿ ವಿವರಿಸಿ")}
+                </button>
+              ) : (
+                <div className="space-y-2">
+                  <div className="text-[10px] font-mono text-stone-500 uppercase tracking-wider">
+                    {lang === "en" ? "Multi-lens view" : "ಬಹು-ದೃಷ್ಟಿಕೋನ"}{lenses.role_tier ? ` · ${lenses.role_tier}` : ""}
+                    {lenses.engine?.includes("Deterministic") && <span className="text-amber-500 ml-1">({lang === "en" ? "AI reframing offline" : "AI ಆಫ್‌ಲೈನ್"})</span>}
+                  </div>
+                  {Object.entries(lenses.lenses || {}).map(([k, v]) => (
+                    <div key={k} className={`rounded-lg p-2.5 border ${k === "compliance" ? "bg-amber-500/5 border-amber-500/20" : "bg-stone-950/50 border-stone-900"}`}>
+                      <div className={`text-[10px] font-mono font-bold uppercase tracking-wider mb-1 ${k === "compliance" ? "text-amber-500" : "text-[#C79A4E]"}`}>
+                        {LENS_LABELS[k]?.[lang] || k}{k === lenses.primary ? " ★" : ""}
+                      </div>
+                      <p className="text-[12.5px] text-stone-300 leading-relaxed whitespace-pre-wrap">{decodeDisplayText(String(v))}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         ) : isAI && message.responseType && message.responseType !== "text" && message.data && (
