@@ -764,7 +764,13 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                     <div className="flex justify-between items-start gap-3">
                       <div className="flex flex-wrap gap-1.5">
                         {(g.members || []).map((m: string, mi: number) => (
-                          <span key={mi} className="px-2 py-0.5 rounded-full bg-amber-500/10 border border-amber-500/25 text-amber-450 text-[11px] font-bold">{m}</span>
+                          <span
+                            key={mi}
+                            title={m === g.hub ? (lang === "en" ? "Likely hub / coordinator (highest connectivity)" : "ಸಂಭವನೀಯ ಕೇಂದ್ರ / ಸಂಯೋಜಕ") : undefined}
+                            className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${m === g.hub ? "bg-[#C79A4E]/25 border border-[#C79A4E]/50 text-[#E4C590]" : "bg-amber-500/10 border border-amber-500/25 text-amber-450"}`}
+                          >
+                            {m === g.hub ? "★ " : ""}{m}
+                          </span>
                         ))}
                       </div>
                       <div className="shrink-0 text-right">

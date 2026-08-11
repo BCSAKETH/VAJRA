@@ -2192,9 +2192,22 @@ class VajraAgentLoop:
                         root = find(a)
                         members_by_root.setdefault(root, set()).update([a, b])
 
+                    # Intra-group degree centrality: how many OTHER members each
+                    # person shares cases with. The highest-degree member is the
+                    # group's likely hub/coordinator -- the "who runs this cell"
+                    # signal, not just a flat member list. Deterministic, no LLM.
+                    member_degree: Dict[str, set] = {}
+                    for (a, b) in pair_overlap.keys():
+                        member_degree.setdefault(a, set()).add(b)
+                        member_degree.setdefault(b, set()).add(a)
+
                     for root, members in members_by_root.items():
+                        ms = sorted(members)
+                        hub = max(ms, key=lambda m: len(member_degree.get(m, set()))) if ms else None
                         groups.append({
-                            "members": sorted(members),
+                            "members": ms,
+                            "hub": hub,
+                            "hub_links": len(member_degree.get(hub, set())) if hub else 0,
                             "shared_case_count": len(all_case_ids.get(root, set())),
                             "case_ids": sorted(all_case_ids.get(root, set()), key=str)[:10]
                         })
@@ -2205,10 +2218,13 @@ class VajraAgentLoop:
             data = {"groups": groups, "scan_scope": "First 300 Accused records (one database page)"}
             if groups:
                 top = groups[0]
+                hub_txt = ""
+                if top.get("hub"):
+                    hub_txt = f"Likely hub/coordinator: {top['hub']} (co-offends with {top.get('hub_links', 0)} of the group). "
                 text_result = (
                     f"Detected {len(groups)} likely organized-crime group(s) -- clusters of accused persons who "
                     f"repeatedly co-offend together (sharing 2+ separate cases, not just one). Largest: "
-                    f"{', '.join(top['members'])} ({top['shared_case_count']} shared cases). This scan covers the "
+                    f"{', '.join(top['members'])} ({top['shared_case_count']} shared cases). {hub_txt}This scan covers the "
                     f"first 300 Accused records in the database, not the full table."
                 )
             else:
