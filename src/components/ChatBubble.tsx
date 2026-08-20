@@ -191,14 +191,27 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
     }
     setIsSpeaking(true);
     try {
-      const res = await fetch(`${API_BASE}/api/voice/tts`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
-        },
-        body: JSON.stringify({ text: toSpeak, lang }),
-      });
+      // Fail FAST to the browser voice: the server Zia TTS can hang up to the
+      // AppSail ~37s request kill when the voice service is degraded, which left
+      // the officer staring at a "speaking" button for half a minute before any
+      // sound. Abort the server attempt after 9s and fall through so playback
+      // starts promptly (browser voice) instead of waiting out the timeout.
+      const _ctrl = new AbortController();
+      const _to = setTimeout(() => _ctrl.abort(), 9000);
+      let res: Response;
+      try {
+        res = await fetch(`${API_BASE}/api/voice/tts`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
+          },
+          body: JSON.stringify({ text: toSpeak, lang }),
+          signal: _ctrl.signal,
+        });
+      } finally {
+        clearTimeout(_to);
+      }
       if (res.ok) {
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
