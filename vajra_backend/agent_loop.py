@@ -438,10 +438,14 @@ class VajraAgentLoop:
             res = self.llm.chat(
                 [{"role": "system", "content": sys_prompt},
                  {"role": "user", "content": f"Case {case_no or '(unspecified)'}. Grounded assessment:\n{context.strip()[:1800]}"}],
-                use_agent_system_prompt=False, max_tokens=700,
+                use_agent_system_prompt=False, max_tokens=1600,
             )
             if not res.get("error"):
                 content = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+                # "Thinking" model: take only the answer AFTER </think>, so the
+                # reasoning trace never pollutes the JSON we parse.
+                if "</think>" in content:
+                    content = content.split("</think>")[-1]
                 m = re.search(r"\{.*\}", content, re.DOTALL)
                 if m:
                     parsed = json.loads(m.group(0))
@@ -452,6 +456,47 @@ class VajraAgentLoop:
         except Exception as ex:
             logger.warning(f"Multi-lens GLM failed, using deterministic fallback: {ex}")
         return self._multilens_fallback(context)
+
+    def _answer_from_case(self, question: str, case_bundle: str) -> str:
+        """
+        Answer the officer's ACTUAL question using ONLY the assembled, grounded
+        case facts -- so a dossier can LEAD with a real answer to what was asked
+        ("which station?", "who is the victim?") instead of a fixed template.
+        Never invents: if the facts don't contain the answer, it says so. Returns
+        "" on any GLM failure so the caller falls back to the deterministic
+        briefing (this is the single synthesis call; everything else is
+        deterministic, so an outage only costs this one direct answer).
+        """
+        if not question or not question.strip() or not (case_bundle or "").strip():
+            return ""
+        sys_prompt = (
+            "You are a Karnataka State Police case assistant. Answer the officer's "
+            "question using ONLY the CASE FACTS provided -- never invent names, "
+            "numbers, stations, dates or charges. If the facts do not contain the "
+            "answer, say plainly that the case record does not include it. Be "
+            "direct and concise (2-5 plain-language sentences), answer the specific "
+            "question first, and use NO headers, bullets or template."
+        )
+        try:
+            res = self.llm.chat(
+                [{"role": "system", "content": sys_prompt},
+                 {"role": "user", "content": f"CASE FACTS:\n{case_bundle.strip()[:2600]}\n\nOFFICER'S QUESTION: {question.strip()}"}],
+                use_agent_system_prompt=False, max_tokens=1600,
+            )
+            if not res.get("error"):
+                content = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+                # This GLM is a "thinking" model: it emits <think>...reasoning...
+                # </think> then the real answer. Take ONLY what's after </think>;
+                # no </think> means it was cut off mid-reasoning -> treat as a
+                # failure and fall back to the deterministic briefing (so the
+                # officer never sees the model's raw chain-of-thought).
+                if "</think>" in content:
+                    answer = content.split("</think>")[-1].strip()
+                    if answer and not answer.startswith("{") and "\\u" not in answer:
+                        return answer
+        except Exception as ex:
+            logger.warning(f"Case Q&A synthesis failed, falling back to deterministic briefing: {ex}")
+        return ""
 
     def _keyword_route_tool(self, query: str) -> Optional[Dict[str, Any]]:
         """
@@ -528,7 +573,7 @@ class VajraAgentLoop:
             # Self-identity -- must come first so "my details/profile" never
             # falls through to a suspect-lookup pattern. Takes no params.
             (["my name", "my profile", "my details", "who am i", "my rank", "my station", "my posting", "my assignment", "current assignment", "am i posted", "my designation"], "get_my_profile", {}, "yes"),
-            (["full dossier", "case dossier", "full report on case", "complete report on case", "deep dive", "full investigation", "everything about case", "complete case file", "full case file"], "generate_case_dossier", {"case_no": case_no}, case_no),
+            (["full dossier", "case dossier", "full report on case", "complete report on case", "deep dive", "full investigation", "everything about case", "complete case file", "full case file"], "generate_case_dossier", {"case_no": case_no, "user_query": query}, case_no),
             (["beat plan", "patrol deployment", "deploy patrol", "where should i send", "where to send patrol", "where to deploy", "where to focus", "proactive deployment", "patrol plan"], "plan_patrol_deployment", {"district": district}, "yes"),
             (["risk score", "conviction risk", "recidivism", "re-offend", "risk for", "risk of"], "get_offender_risk", {"suspect_name": name}, name),
             (["network", "syndicate", "co-accused", "connections for", "connections of", "connected to", "crimes is", "crimes does"], "query_graph_network", {"suspect_name": name}, name),
@@ -830,7 +875,10 @@ class VajraAgentLoop:
         forced_decision = None
         if answer_mode == "dossier":
             if entities.get("case_id"):
-                forced_decision = {"tool": "generate_case_dossier", "parameters": {"case_no": entities["case_id"]}}
+                # Thread the officer's ACTUAL question in so the dossier can lead
+                # with a grounded answer to what they asked (e.g. "which station?"),
+                # not a fixed template.
+                forced_decision = {"tool": "generate_case_dossier", "parameters": {"case_no": entities["case_id"], "user_query": officer_query}}
             elif entities.get("suspect"):
                 forced_decision = {"tool": "generate_full_report", "parameters": {"suspect_name": entities["suspect"]}}
             elif entities.get("district"):
@@ -2555,13 +2603,27 @@ class VajraAgentLoop:
             else:
                 # Resolve the primary accused so the network + risk panels have
                 # a subject (a case's intelligence value is largely about WHO).
+                # Also pull the accused's real details (age, gender) and how many
+                # cases they're linked to -- officers ask for "accused details all",
+                # and a bare name isn't that.
                 primary_accused = ""
+                accused_age, accused_gender, accused_case_count = None, None, None
                 try:
                     acc_res = catalyst_app.zql().execute_query(
-                        f"SELECT AccusedName FROM Accused WHERE CaseMasterID = {case_id} LIMIT 1"
+                        f"SELECT AccusedName, AgeYear, GenderID FROM Accused WHERE CaseMasterID = {case_id} LIMIT 1"
                     )
                     if acc_res:
-                        primary_accused = acc_res[0].get("Accused", {}).get("AccusedName") or ""
+                        a0 = acc_res[0].get("Accused", {})
+                        primary_accused = a0.get("AccusedName") or ""
+                        accused_age = a0.get("AgeYear")
+                        accused_gender = {"1": "Male", "2": "Female", "3": "Other"}.get(str(a0.get("GenderID") or ""), None)
+                    if primary_accused:
+                        try:
+                            esc = primary_accused.replace("'", "''")
+                            cnt = catalyst_app.zql().execute_query(f"SELECT COUNT(ROWID) c FROM Accused WHERE AccusedName = '{esc}'")
+                            accused_case_count = int(cnt[0]["Accused"]["COUNT(ROWID)"]) if cnt else None
+                        except Exception:
+                            pass
                 except Exception as ex:
                     logger.warning(f"Dossier: could not resolve primary accused for case {case_id}: {ex}")
 
@@ -2577,14 +2639,24 @@ class VajraAgentLoop:
                 # weakening of RLS on the query_case tool itself.
                 facts_data = {}
                 facts_text = ""
+                case_station = ""
                 try:
                     fr = catalyst_app.zql().execute_query(
-                        f"SELECT CrimeNo, CrimeRegisteredDate, BriefFacts FROM CaseMaster WHERE CaseMasterID = {case_id} LIMIT 1"
+                        f"SELECT CrimeNo, CrimeRegisteredDate, BriefFacts, PoliceStationID FROM CaseMaster WHERE CaseMasterID = {case_id} LIMIT 1"
                     )
                     if fr:
                         cm = fr[0].get("CaseMaster", {})
                         facts_data = {"CrimeNo": cm.get("CrimeNo"), "CrimeRegisteredDate": cm.get("CrimeRegisteredDate"), "BriefFacts": cm.get("BriefFacts")}
                         facts_text = f"CrimeNo {cm.get('CrimeNo')} - registered {cm.get('CrimeRegisteredDate')}. {cm.get('BriefFacts') or ''}".strip()
+                        # Resolve the filing station so "which station?" is answerable.
+                        ps = cm.get("PoliceStationID")
+                        if ps:
+                            try:
+                                u = catalyst_app.zql().execute_query(f"SELECT UnitName FROM Unit WHERE UnitID = {ps} LIMIT 1")
+                                if u:
+                                    case_station = u[0].get("Unit", {}).get("UnitName") or ""
+                            except Exception:
+                                pass
                 except Exception as ex:
                     logger.warning(f"Dossier: facts query failed for case {case_id}: {ex}")
                 facts_res = {"data": facts_data, "text_result": facts_text, "response_type": "text",
@@ -2616,13 +2688,25 @@ class VajraAgentLoop:
                 if primary_accused:
                     _specs["net"] = ("query_graph_network", {"suspect_name": primary_accused})
                     _specs["risk"] = ("get_offender_risk", {"suspect_name": primary_accused})
+                # Bound EACH concurrent sub-tool and never block on a hung one. A
+                # GLM-backed sub-tool (summarize_case) that HANGS during an LLM
+                # outage would otherwise stall the whole dossier: result() had no
+                # timeout, and a `with` pool waits for the hung thread on exit.
+                # Per-future timeout -> a stuck sub-tool degrades to a dropped
+                # panel; shutdown(wait=False) abandons the hung thread so the
+                # dossier still returns fast. This is what keeps it resilient to a
+                # SLOW/hanging LLM, not just one that errors quickly.
+                _ex = ThreadPoolExecutor(max_workers=len(_specs))
+                _out: Dict[str, Any] = {}
                 try:
-                    with ThreadPoolExecutor(max_workers=len(_specs)) as _ex:
-                        _futs = {k: _ex.submit(_run_subtool, t, p) for k, (t, p) in _specs.items()}
-                        _out = {k: f.result() for k, f in _futs.items()}
-                except Exception as ex:
-                    logger.warning(f"Dossier concurrent fetch failed, falling back to serial: {ex}")
-                    _out = {k: _run_subtool(t, p) for k, (t, p) in _specs.items()}
+                    _futs = {k: _ex.submit(_run_subtool, t, p) for k, (t, p) in _specs.items()}
+                    for k, f in _futs.items():
+                        try:
+                            _out[k] = f.result(timeout=20)
+                        except Exception:
+                            _out[k] = None
+                finally:
+                    _ex.shutdown(wait=False)
                 summ_res = _out.get("summ")
                 sec_res = _out.get("sec")
                 tl_res = _out.get("tl")
@@ -2688,6 +2772,7 @@ class VajraAgentLoop:
                 # prioritized "what to investigate next" list. Pure rules over
                 # already-fetched data -> no extra LLM call, works even when the
                 # AI is down, and every line is framed as a LEAD to verify.
+                case_briefing = ""
                 try:
                     _risk_d = (risk_res or {}).get("data") or {}
                     _rs = _risk_d.get("risk_score")
@@ -2755,6 +2840,42 @@ class VajraAgentLoop:
                     _cs_text = ("ASSESSMENT: " + " ".join(_assess)) if _assess else "ASSESSMENT: insufficient signal to synthesize."
                     _cs_text += "\n\nWHAT TO INVESTIGATE NEXT:\n" + "\n".join(f"{i + 1}. {s}" for i, s in enumerate(_steps))
 
+                    # WHAT NOT TO DO -- deterministic cautions (due process +
+                    # never-treat-AI-as-proof). Answers the officer's explicit
+                    # "what not to do" ask and doubles as a compliance guardrail.
+                    _risk_pct = f"{_rs}% " if _rs is not None else ""
+                    _dont = [
+                        f"Do NOT treat the {_risk_pct}risk score or any AI-surfaced link as proof of guilt -- they are leads to verify.",
+                        "Do NOT make an arrest or search without independent corroboration and proper legal authorisation.",
+                    ]
+                    if not _secs:
+                        _dont.append("Do NOT move to charge sheet before confirming the applicable BNS/IPC sections -- none are recorded on this case yet.")
+                    _dont.append("Do NOT let socio-economic, caste, religion or migration factors influence the decision -- they are not evidence of guilt.")
+                    _cs_text += "\n\nWHAT NOT TO DO:\n" + "\n".join(f"{i + 1}. {s}" for i, s in enumerate(_dont))
+
+                    # Plain-language BRIEFING that directly answers the officer's
+                    # natural question (what happened / who / why / do / don't), so
+                    # the dossier reads as an ANSWER, not just a fixed template.
+                    _acc_bits = []
+                    if accused_age:
+                        _acc_bits.append(f"age {accused_age}")
+                    if accused_gender:
+                        _acc_bits.append(accused_gender.lower())
+                    if accused_case_count and accused_case_count > 1:
+                        _acc_bits.append(f"linked to {accused_case_count} cases on record")
+                    _acc_detail = f" ({', '.join(_acc_bits)})" if _acc_bits else ""
+                    _facts_sentence = facts_text or (((facts_res or {}).get("data") or {}).get("BriefFacts") or "")
+                    _why = ""
+                    if _rs is not None:
+                        _why = f"Calibrated conviction likelihood is {_rs}% ({_rating})" + (f", driven mainly by {_top_driver}" if _top_driver else "") + f". {_sim} similar-MO case(s) on record."
+                    case_briefing = (
+                        f"WHAT HAPPENED: {_facts_sentence}\n"
+                        f"MAIN ACCUSED: {primary_accused or 'not recorded'}{_acc_detail}.\n"
+                        + (f"WHY IT MATTERS: {_why}\n" if _why else "")
+                        + f"WHAT TO DO: {_steps[0] if _steps else 'review the evidence sections below.'}\n"
+                        f"WHAT NOT TO DO: {_dont[0]}"
+                    )
+
                     panels.append({
                         "type": "next_steps",
                         "panel_key": "next_steps",
@@ -2780,16 +2901,65 @@ class VajraAgentLoop:
                 # (and rendered as literal \n). Lead with the one-line case
                 # summary; the sections render as panels below.
                 summary_text = ((summ_res or {}).get("data") or {}).get("summary") or (summ_res or {}).get("text_result") or ""
-                # Collapse any newlines to single spaces so the headline is a
-                # clean one/two-liner regardless of how the summary was stored.
+                # Collapse any newlines to single spaces so the fallback headline
+                # is a clean one/two-liner regardless of how the summary was stored.
                 summary_text = " ".join(summary_text.split())
-                headline = f"Full case dossier for {case_no}"
-                if primary_accused:
-                    headline += f" - primary accused: {primary_accused}"
-                headline += f". {len(panels)} intelligence sections below."
-                if summary_text:
-                    headline += f" {summary_text}"
-                text_result = headline.strip()
+
+                # ANSWER WHAT WAS ASKED: build a grounded knowledge bundle from the
+                # assembled case data and have the AI answer the officer's ACTUAL
+                # question first (e.g. "which station?"). This is the ONE synthesis
+                # call; if it fails or the officer just asked for "the dossier", we
+                # fall back to the deterministic plain-language briefing, then to
+                # the old headline -- so it never breaks and never fabricates.
+                user_query = params.get("user_query", "")
+                acc_line = primary_accused or "not recorded"
+                if accused_age or accused_gender or (accused_case_count and accused_case_count > 1):
+                    _b = []
+                    if accused_age: _b.append(f"age {accused_age}")
+                    if accused_gender: _b.append(accused_gender)
+                    if accused_case_count and accused_case_count > 1: _b.append(f"linked to {accused_case_count} cases")
+                    acc_line += f" ({', '.join(_b)})"
+                bundle = "\n".join(p for p in [
+                    f"Case number: {case_no}.",
+                    f"Filing police station: {case_station}." if case_station else "",
+                    f"Facts: {facts_text}" if facts_text else "",
+                    f"Official summary: {summary_text}" if summary_text else "",
+                    f"Primary accused: {acc_line}.",
+                    f"Applied BNS/IPC sections: {(sec_res or {}).get('text_result', '')}" if sec_res else "",
+                    f"Timeline: {(tl_res or {}).get('text_result', '')}" if tl_res else "",
+                    f"Network / linked cases: {(net_res or {}).get('text_result', '')}" if net_res else "",
+                    f"Similar past cases: {(sim_res or {}).get('text_result', '')}" if sim_res else "",
+                ] if p)
+                # Bound the one GLM synthesis to a hard wall-clock timeout so a
+                # slow/down LLM can NEVER stall the dossier (it stays fast and just
+                # falls back to the deterministic briefing). shutdown(wait=False)
+                # so we don't block on the abandoned call finishing.
+                # This GLM is a slow "thinking" model (writes a full reasoning
+                # trace before its answer), so give the one synthesis call a real
+                # but capped budget: a fast enough response yields the direct
+                # answer; anything slower/down times out to the deterministic
+                # briefing so the dossier still finishes.
+                direct_answer = ""
+                if user_query:
+                    _qa_ex = ThreadPoolExecutor(max_workers=1)
+                    try:
+                        direct_answer = _qa_ex.submit(self._answer_from_case, user_query, bundle).result(timeout=25)
+                    except Exception:
+                        direct_answer = ""
+                    finally:
+                        _qa_ex.shutdown(wait=False)
+
+                lead = direct_answer or case_briefing
+                if lead:
+                    text_result = lead.strip() + f"\n\n({len(panels)} detailed intelligence sections below.)"
+                else:
+                    headline = f"Full case dossier for {case_no}"
+                    if primary_accused:
+                        headline += f" - primary accused: {primary_accused}"
+                    headline += f". {len(panels)} intelligence sections below."
+                    if summary_text:
+                        headline += f" {summary_text}"
+                    text_result = headline.strip()
 
                 citations = agg_citations
                 citations.append({"type": "Full Case Dossier", "id": case_no, "details": f"{len(panels)} panels composed from real case records"})
