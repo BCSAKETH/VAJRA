@@ -919,8 +919,18 @@ async def get_firs(
                     accused_map[cm_id] = []
                 accused_map[cm_id].append(a_data)
 
-        # 2. Fetch CaseMaster records
-        cases_res = catalyst_app.zql().execute_query("SELECT CaseMasterID, CrimeNo, CrimeRegisteredDate, Latitude, Longitude, BriefFacts, PoliceStationID, CrimeMajorHeadID, CrimeMinorHeadID, CaseStatusID FROM CaseMaster LIMIT 250")
+        # 2. Fetch CaseMaster records -- ROW-LEVEL SECURITY: a line officer only
+        # sees their own station's FIRs; supervisors see all. Without this any
+        # constable could pull every station's FIRs statewide.
+        _role = getattr(request.state, "role_tier", "officer")
+        _uid = request.state.user_profile.get("UnitID") or request.state.user_profile.get("unitid")
+        if _role == "supervisor":
+            _rls = ""
+        elif _uid is not None and str(_uid).isdigit():
+            _rls = f" WHERE PoliceStationID = {int(_uid)}"
+        else:
+            _rls = " WHERE 1=0"  # fail closed: no resolvable jurisdiction -> no rows
+        cases_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID, CrimeNo, CrimeRegisteredDate, Latitude, Longitude, BriefFacts, PoliceStationID, CrimeMajorHeadID, CrimeMinorHeadID, CaseStatusID FROM CaseMaster{_rls} LIMIT 250")
         
         formatted_firs = []
         for r in cases_res:
@@ -1012,8 +1022,19 @@ async def get_fir_by_no(
     if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
     try:
-        # 1. Query CaseMaster record
-        cases_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID, CrimeNo, CrimeRegisteredDate, Latitude, Longitude, BriefFacts, PoliceStationID, CrimeMajorHeadID, CrimeMinorHeadID, CaseStatusID FROM CaseMaster WHERE CrimeNo = '{fir_no}' LIMIT 1")
+        # 1. Query CaseMaster record. Escape the path param (apostrophe names /
+        # injection) and apply RLS so an officer can't fetch a case outside their
+        # station just by knowing its number; supervisors are unrestricted.
+        _fir = str(fir_no).replace("'", "''")
+        _role = getattr(request.state, "role_tier", "officer")
+        _uid = request.state.user_profile.get("UnitID") or request.state.user_profile.get("unitid")
+        if _role == "supervisor":
+            _rls = ""
+        elif _uid is not None and str(_uid).isdigit():
+            _rls = f" AND PoliceStationID = {int(_uid)}"
+        else:
+            _rls = " AND 1=0"
+        cases_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID, CrimeNo, CrimeRegisteredDate, Latitude, Longitude, BriefFacts, PoliceStationID, CrimeMajorHeadID, CrimeMinorHeadID, CaseStatusID FROM CaseMaster WHERE CrimeNo = '{_fir}'{_rls} LIMIT 1")
         if not cases_res:
             raise HTTPException(status_code=404, detail=f"FIR file '{fir_no}' not found.")
             
@@ -1237,22 +1258,34 @@ async def get_accused_list(
         heads = {r.get("CrimeHead", {}).get("CrimeHeadID"): r.get("CrimeHead", {}).get("CrimeGroupName") for r in catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead")}
         statuses = {r.get("CaseStatusMaster", {}).get("CaseStatusID"): r.get("CaseStatusMaster", {}).get("CaseStatusName") for r in catalyst_app.zql().execute_query("SELECT CaseStatusID, CaseStatusName FROM CaseStatusMaster")}
         
-        # 2. Fetch CaseMaster mapping
-        cases = {r.get("CaseMaster", {}).get("CaseMasterID"): r.get("CaseMaster", {}) for r in catalyst_app.zql().execute_query("SELECT CaseMasterID, CrimeNo, CrimeRegisteredDate, PoliceStationID, CrimeMajorHeadID, CaseStatusID FROM CaseMaster")}
-        
-        # 3. Fetch Accused
+        # 2. Fetch CaseMaster mapping -- ROW-LEVEL SECURITY: scope to the officer's
+        # station so accused from other jurisdictions are excluded below;
+        # supervisors see all.
+        _role = getattr(request.state, "role_tier", "officer")
+        _uid = request.state.user_profile.get("UnitID") or request.state.user_profile.get("unitid")
+        if _role == "supervisor":
+            _cm_rls = ""
+        elif _uid is not None and str(_uid).isdigit():
+            _cm_rls = f" WHERE PoliceStationID = {int(_uid)}"
+        else:
+            _cm_rls = " WHERE 1=0"
+        cases = {r.get("CaseMaster", {}).get("CaseMasterID"): r.get("CaseMaster", {}) for r in catalyst_app.zql().execute_query(f"SELECT CaseMasterID, CrimeNo, CrimeRegisteredDate, PoliceStationID, CrimeMajorHeadID, CaseStatusID FROM CaseMaster{_cm_rls}")}
+
+        # 3. Fetch Accused (escape the search term -- injection / apostrophe names)
         q = "SELECT AccusedMasterID, AccusedName, AgeYear, GenderID, CaseMasterID FROM Accused"
         if search:
-            q += f" WHERE AccusedName LIKE '*{search}*'"
+            q += f" WHERE AccusedName LIKE '*{search.replace(chr(39), chr(39) * 2)}*'"
         q += f" LIMIT {limit}"
         accused_res = catalyst_app.zql().execute_query(q)
-        
+
         profiles = []
         for row in accused_res:
             a = row.get("Accused", {})
             cm_id = a.get("CaseMasterID")
             cm = cases.get(cm_id, {})
-            
+            if _role != "supervisor" and not cm:
+                continue  # accused's case is outside this officer's jurisdiction
+
             station_id = cm.get("PoliceStationID")
             major_id = cm.get("CrimeMajorHeadID")
             status_id = cm.get("CaseStatusID")

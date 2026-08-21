@@ -645,7 +645,11 @@ class VajraGraphRAG:
                 # ZCQL's LIKE wildcard is '*', not SQL-standard '%' -- confirmed
                 # live that every '%...%' pattern anywhere in this codebase
                 # silently matched zero rows regardless of real data present.
-                accused_query = f"SELECT AccusedName, CaseMasterID FROM Accused WHERE AccusedName LIKE '*{suspect_name}*'"
+                # Escape the name here so ALL callers (incl. the REST paths that
+                # pass it raw) are covered -- an apostrophe surname (D'Souza) would
+                # otherwise break the query or allow injection.
+                _sn = str(suspect_name).replace("'", "''")
+                accused_query = f"SELECT AccusedName, CaseMasterID FROM Accused WHERE AccusedName LIKE '*{_sn}*'"
                 accused_res = catalyst_app.zql().execute_query(accused_query)
 
                 if accused_res:
