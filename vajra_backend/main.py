@@ -2179,10 +2179,16 @@ async def _run_ai_turn_and_persist(
     # is still translated back to Kannada at the end, so skipping this for
     # English input costs nothing and removes a real failure point.
     _query_has_kannada = bool(re.search(r"[ಀ-೿]", query_for_agent))
-    processed_query = (
-        await run_in_threadpool(translator.translate, query_for_agent, "kn", "en")
-        if (lang == "kn" and _query_has_kannada) else query_for_agent
-    )
+    processed_query = query_for_agent
+    if lang == "kn" and _query_has_kannada:
+        # Bound it (same GLM-hang hazard as the answer translation below): on
+        # timeout, fall through to the raw query rather than stalling the turn.
+        try:
+            processed_query = await asyncio.wait_for(
+                run_in_threadpool(translator.translate, query_for_agent, "kn", "en"), timeout=18
+            )
+        except Exception:
+            processed_query = query_for_agent
 
     # translator.translate()'s own honest-failure fallback (all three
     # translation backends -- Zia fast-translate, GLM, Qwen -- unavailable)
@@ -2239,7 +2245,19 @@ async def _run_ai_turn_and_persist(
         # cheaper and more reliable to just hardcode once.
         text_kn = AI_UNAVAILABLE_TEXT_KN
     else:
-        text_kn = await run_in_threadpool(translator.translate, text_en, "en", "kn")
+        # BOUND this translation: translator.translate falls through to the GLM
+        # chat model, which under an outage can hang ~183s (retries) with NO
+        # timeout of its own. That would stall the WHOLE turn here -- after the
+        # answer is already computed -- and never persist, leaving the client on a
+        # permanent "pending" (the real cause of the "no dossier" hang, since
+        # text_kn is computed on EVERY turn, both languages). On timeout we fall
+        # back to the English text so the turn always finishes and persists.
+        try:
+            text_kn = await asyncio.wait_for(
+                run_in_threadpool(translator.translate, text_en, "en", "kn"), timeout=18
+            )
+        except Exception:
+            text_kn = text_en
     text = text_kn if lang == "kn" else text_en
 
     # Translate Full-Dossier panel BODIES to Kannada too, so every section reads
