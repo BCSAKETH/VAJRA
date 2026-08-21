@@ -72,18 +72,45 @@ def fetch_all(headers, select_clause, table, where_clause="", order_by="", max_p
     the same page across repeated calls, so two runs of this same query
     could each truncate a *different* few thousand rows.
     """
-    rows = []
-    offset = 0
-    where_sql = f" WHERE {where_clause}" if where_clause else ""
-    order_sql = f" ORDER BY {order_by}" if order_by else ""
+    # ROWID KEYSET pagination -- offset pagination (LIMIT offset,300) silently
+    # DUPLICATES and SKIPS rows past ~20k on this datastore (CaseMaster is already
+    # 20,900+), so district/offender counts came back off by thousands and fired
+    # false SPATIAL_SPIKE / REPEAT_OFFENDER alerts. Keyset on ROWID (the true
+    # unique, monotonic key) is stable and can't dupe/skip. order_by is ignored
+    # (we always page by ROWID); ROWID is injected into the projection so we can
+    # seek on it (callers ignore the extra column).
+    sel = select_clause
+    if "ROWID" not in [t.strip().upper() for t in select_clause.split(",")]:
+        sel = "ROWID, " + select_clause
+    base_where = (where_clause or "").strip()
+    rows, last, seen = [], None, set()
     for _ in range(max_pages):
-        q = f"SELECT {select_clause} FROM {table}{where_sql}{order_sql} LIMIT {offset}, 300"
+        conds = []
+        if base_where:
+            conds.append(f"({base_where})")
+        if last is not None:
+            conds.append(f"ROWID > {last}")
+        where_sql = (" WHERE " + " AND ".join(conds)) if conds else ""
+        q = f"SELECT {sel} FROM {table}{where_sql} ORDER BY ROWID ASC LIMIT 300"
         res = post_with_retry(ZCQL_URL, headers, {"query": q}, timeout=20)
         page = res.json().get("data", [])
-        rows.extend(page)
-        if len(page) < 300:
+        if not page:
             break
-        offset += 300
+        mx = last
+        for r in page:
+            rid = r.get(table, {}).get("ROWID")
+            if rid is None:
+                continue
+            rid = int(rid)
+            if rid in seen:
+                continue
+            seen.add(rid)
+            rows.append(r)
+            if mx is None or rid > mx:
+                mx = rid
+        if mx == last or len(page) < 300:
+            break
+        last = mx
     return rows
 
 

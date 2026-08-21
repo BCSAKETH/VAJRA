@@ -349,7 +349,17 @@ async def multi_lens(payload: LensRequest, request: Request, location_context: s
     safety guardrail. Degrades to a deterministic reframing if the LLM is down.
     """
     role = getattr(request.state, "role_tier", "officer")
-    lenses = await run_in_threadpool(agent_loop.generate_multilens, payload.context, payload.case_no or "")
+    # Bound the inline GLM call: generate_multilens hits the slow "thinking" model
+    # (~183s worst case with retries). Unbounded, AppSail kills the request at ~30s
+    # before the endpoint can return, so the deterministic fallback never reaches
+    # the officer. Cap at 22s and drop to the fallback on timeout.
+    try:
+        lenses = await asyncio.wait_for(
+            run_in_threadpool(agent_loop.generate_multilens, payload.context, payload.case_no or ""),
+            timeout=22,
+        )
+    except Exception:
+        lenses = agent_loop._multilens_fallback(payload.context)
     # Role gating: supervisors get all three (Supervisor lens leads); an
     # investigating officer gets the tactical view + the compliance guardrail.
     if role == "supervisor":
