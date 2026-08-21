@@ -240,7 +240,7 @@ class CatalystQwen:
             return None
 
         tool_lines = "\n".join(
-            f"- {t['name']}: {t['description']}. Parameters: {json.dumps(t['parameters'])}" for t in tools
+            f"- {t['name']}: {t.get('description', '')}. Parameters: {json.dumps(t.get('parameters', {}))}" for t in tools
         )
         context_line = ""
         if entity_context:
