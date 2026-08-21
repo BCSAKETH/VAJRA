@@ -48,3 +48,11 @@ video_full.mp4
 !*.woff2
 
 
+
+# Security: never publish secrets or dev scratch (case-insensitive)
+[Cc]redentials*
+Credentials.txt
+**/.token_cache
+.token_cache
+vajra_backend/scratch/
+**/scratch/
