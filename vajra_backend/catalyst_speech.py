@@ -62,7 +62,10 @@ def synthesize_speech(text: str, lang: str = "en") -> Optional[Tuple[bytes, str]
         "Content-Type": "application/json",
     }
     try:
-        res = requests.post(_TTS_URL, headers=headers, json=body, timeout=45)
+        # Cap UNDER the AppSail ~30-36s request kill so a slow/hanging Zia returns
+        # None here (-> soft 502 -> browser-voice fallback) instead of the request
+        # being killed at ~30s with a hard 408 before we can degrade gracefully.
+        res = requests.post(_TTS_URL, headers=headers, json=body, timeout=20)
         if res.status_code == 200 and res.content[:4] == b"RIFF":
             return res.content, "audio/wav"
         logger.warning(f"Zia TTS failed ({res.status_code}): {res.text[:200]}")
@@ -92,7 +95,7 @@ def transcribe_audio(audio_bytes: bytes, filename: str, content_type: str, lang:
         res = requests.post(
             _STT_URL, headers=headers,
             files={"file": (filename or "speech.wav", audio_bytes, content_type or "audio/wav")},
-            data={"language": lang}, timeout=60,
+            data={"language": lang}, timeout=25,  # under AppSail ~30s kill -> graceful None instead of hard 408
         )
         if res.status_code == 200:
             data = res.json()

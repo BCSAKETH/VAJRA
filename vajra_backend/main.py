@@ -2059,6 +2059,34 @@ def _is_cowork_session(session_id: str) -> bool:
         return False
 
 
+# Strong references to in-flight background AI tasks. asyncio keeps only a WEAK
+# reference to bare create_task() results, so without this a fire-and-forget turn
+# can be garbage-collected mid-run -- silently killing it and leaving the client
+# polling forever. We also attach a done-callback that, if the task crashed
+# before persisting an answer, writes an honest failure message so the poll
+# terminates instead of hanging on a permanent "pending".
+_BACKGROUND_AI_TASKS: set = set()
+
+
+def _ai_turn_done(task: "asyncio.Task", session_id: str) -> None:
+    _BACKGROUND_AI_TASKS.discard(task)
+    try:
+        exc = task.exception()
+    except Exception:
+        exc = None
+    if exc is None:
+        return
+    logger.error(f"Background AI turn crashed for session {session_id}: {exc!r}")
+    try:
+        _en = "The AI could not finish this request. Please try again."
+        _kn = "AI ಈ ವಿನಂತಿಯನ್ನು ಪೂರ್ಣಗೊಳಿಸಲಾಗಲಿಲ್ಲ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ."
+        # Persist an honest failure so the client's poll terminates. Both language
+        # variants ride in data; the frontend renders whichever the officer is in.
+        _persist_chat_message(session_id, "assistant", _en, "text", {"_text_en": _en, "_text_kn": _kn})
+    except Exception as _pe:
+        logger.error(f"Failed to persist AI-turn failure notice for {session_id}: {_pe}")
+
+
 async def _run_ai_turn_and_persist(
     session_id: str,
     message: str,
@@ -2357,11 +2385,13 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     # request at ~30-36s regardless of in-app timeouts, well short of this
     # model's real response times, so returning fast and finishing the work
     # after the response is sent is the only way a turn can ever complete.
-    asyncio.create_task(_run_ai_turn_and_persist(
+    _ai_task = asyncio.create_task(_run_ai_turn_and_persist(
         session_id, message, lang, employee_id, unit_id, payload.client_msg_id,
         officer_name=first_name, officer_badge=request.state.kgid,
         answer_mode=(payload.answer_mode or "standard")
     ))
+    _BACKGROUND_AI_TASKS.add(_ai_task)  # strong ref so it isn't GC'd mid-run
+    _ai_task.add_done_callback(lambda t: _ai_turn_done(t, session_id))
 
     return {
         "text": "",

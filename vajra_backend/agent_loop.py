@@ -400,6 +400,25 @@ class VajraAgentLoop:
         "DACOITY", "ROBBERY", "MISSING PERSON", "CHAIN SNATCHING", "PUBLIC SAFETY",
     ]
 
+    @staticmethod
+    def _strip_think(s: str) -> str:
+        """
+        Strip the "thinking" model's reasoning so the officer NEVER sees raw
+        chain-of-thought. If a closing </think> is present, keep only what's
+        after it. If it's MISSING (the model was truncated mid-reasoning under
+        load), drop the whole dangling <think>...  block -- returning "" rather
+        than leaking a partial "1. Analyze the Request..." trace. Callers must
+        treat "" as failure (fall through to an honest fallback), never surface
+        the raw content.
+        """
+        if not s:
+            return ""
+        if "</think>" in s:
+            s = s.split("</think>")[-1]
+        else:
+            s = re.sub(r"<think>.*\Z", "", s, flags=re.DOTALL)
+        return s.strip()
+
     def _multilens_fallback(self, context: str) -> Dict[str, Any]:
         c = (context or "").strip()
         return {
@@ -989,6 +1008,11 @@ class VajraAgentLoop:
                 if "tool" in decision:
                     tool_name = decision["tool"]
                     params = decision.get("parameters", {})
+                    # Thread the officer's ACTUAL question into the dossier even when
+                    # GLM (not the forced/keyword path) routed to it, so it leads with
+                    # a direct answer to what was asked instead of the fixed template.
+                    if tool_name == "generate_case_dossier" and not params.get("user_query"):
+                        params["user_query"] = officer_query
                     logger.info(f"Invoking tool (Iteration {current_iteration}): {tool_name} with params {params}")
 
                     # Execute specific tool based on function calling
@@ -1044,7 +1068,7 @@ class VajraAgentLoop:
                     # already handled by _extract_json stripping everything
                     # before the JSON itself).
                     raw_text = decision.get("text_response") or decision.get("text") or "Please clarify your request."
-                    response_text = raw_text.split("</think>")[-1].strip() or raw_text
+                    response_text = self._strip_think(raw_text) or "Could you please clarify your request?"
                     break
             except Exception as e:
                 logger.error(f"Error executing LLM agent loop choices on iteration {current_iteration}: {e}")
@@ -1064,9 +1088,8 @@ class VajraAgentLoop:
                 # already sitting right here. Try it as plain prose first.
                 try:
                     raw_content = llm_res["choices"][0]["message"]["content"]
-                    fallback_text = raw_content.split("</think>")[-1].strip() if "</think>" in raw_content else raw_content.strip()
-                    fallback_text = re.sub(r"^<think>.*?</think>", "", fallback_text, flags=re.DOTALL).strip()
-                    if fallback_text and len(fallback_text) > 2:
+                    fallback_text = self._strip_think(raw_content)
+                    if fallback_text and len(fallback_text) > 2 and not fallback_text.startswith("{"):
                         response_text = fallback_text
                         break
                 except Exception:
@@ -1093,14 +1116,13 @@ class VajraAgentLoop:
                         # raw_response fallback must still have its
                         # </think> preamble stripped, or the officer sees the
                         # model's full internal reasoning trace verbatim.
-                        fallback = raw_response.split("</think>")[-1].strip() or raw_response
+                        fallback = self._strip_think(raw_response)
                         response_text = desc.get("text_response") or desc.get("text") or fallback
                     except Exception:
-                        # Not JSON at all (plain prose answer) -- still strip any
-                        # </think> preamble before using it as-is, so the model's
-                        # internal reasoning trace never leaks into what the
-                        # officer sees.
-                        response_text = raw_response.split("</think>")[-1].strip() or raw_response
+                        # Not JSON at all (plain prose answer) -- strip any
+                        # </think> preamble (and drop an unclosed reasoning trace
+                        # entirely) so the model's internal reasoning never leaks.
+                        response_text = self._strip_think(raw_response)
             except Exception as e:
                 logger.error(f"Error on final synthesis turn: {e}")
                 response_text = "I have successfully retrieved the files. Let me know if you need specific details."
