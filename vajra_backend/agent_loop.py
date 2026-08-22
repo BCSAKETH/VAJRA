@@ -333,6 +333,31 @@ class VajraAgentLoop:
         self.llm = CatalystLLM()
         self.qwen = CatalystQwen()
         self._mo_profiler = None
+        self._section_map = None  # lazy {ordinal:int -> {code,desc,act}} for section resolution
+
+    def _get_section_ordinal_map(self) -> Dict[int, Dict[str, Any]]:
+        """
+        ActSectionAssociation.SectionID is a 1-BASED ORDINAL into the Section table
+        (30 rows), NOT Section.ROWID. The old lookup did `Section WHERE ROWID={sec_id}`
+        which matched nothing (SectionID is 1..30, ROWID is a huge int) -- so every
+        case's sections silently came back empty ("No sections applied"). Build the
+        real map once: sections ordered by ROWID, indexed 1..N.
+        """
+        if self._section_map is not None:
+            return self._section_map
+        m: Dict[int, Dict[str, Any]] = {}
+        if catalyst_app:
+            try:
+                rows = catalyst_app.zql().execute_query(
+                    "SELECT ROWID, SectionCode, SectionDescription, ActCode FROM Section ORDER BY ROWID ASC LIMIT 300"
+                )
+                for i, r in enumerate(rows, start=1):
+                    s = r.get("Section", {})
+                    m[i] = {"code": s.get("SectionCode"), "desc": s.get("SectionDescription"), "act": s.get("ActCode")}
+            except Exception as e:
+                logger.warning(f"Section ordinal map load failed: {e}")
+        self._section_map = m
+        return m
 
     def _get_mo_profiler(self) -> "MOBehavioralProfiler":
         """Built once per process (queries ~250 real cases) rather than
@@ -601,6 +626,12 @@ class VajraAgentLoop:
             (["mo profile", "modus operandi", "behavioral profile", "behaviour profile"], "get_mo_profile", {"suspect_name": name}, name),
             (["timeline", "chronology", "milestones"], "get_case_timeline", {"case_no": case_no}, case_no),
             (["summarize", "summary", "case dossier"], "summarize_case", {"case_no": case_no}, case_no),
+            # NOTE: a precedent-grounded section RECOMMENDER was built + tested but
+            # NOT wired -- the dataset's non-unique CaseMasterID conflates ~5
+            # different crimes per case-id and they share one section-set, so
+            # recommendations by crime type came out wrong (theft -> NDPS/Rape).
+            # Shipping wrong legal-section advice on a police tool is unsafe, so it
+            # stays disabled until the data has a reliable per-crime section link.
             (["section", "ipc", "bns ", "legal provision"], "get_case_sections", {"case_no": case_no}, case_no),
             (["hotspot", "cluster map", "crime map", "dbscan"], "query_hotspots", {"district": district}, "yes"),
             (["organized crime", "crime group", "gang", "criminal syndicate detect"], "detect_crime_groups", {}, "yes"),
@@ -1491,6 +1522,20 @@ class VajraAgentLoop:
             text_result = f"Suggested Sections: {suggestions.get('suggested_section')} (Confidence: {suggestions.get('confidence_score')}). {precedent_summary}\n\n{suggestions.get('disclaimer', '')}"
             citations.append({"type": "IPC / BNS Legal Guidelines", "id": "IPC-BNS-Registry", "details": "Section mapping engine"})
             self._write_audit_log(employee_id, "Legal Precedent Suggestion", "IPC/BNS Table", desc, text_result, session_id)
+
+        # 4b. recommend_sections -- precedent-grounded: what sections apply to a
+        # described crime / a case, with the real proof FIRs that used them.
+        elif tool_name == "recommend_sections":
+            rec = self.recommend_sections(
+                params.get("description", "") or params.get("crime_description", ""),
+                params.get("case_no", ""),
+            )
+            data = rec.get("data", {})
+            text_result = rec.get("text_result", "")
+            response_type = rec.get("response_type", "sections_advice")
+            for c in rec.get("citations", []):
+                citations.append(c)
+            self._write_audit_log(employee_id, "Section Recommendation (precedent)", params.get("case_no") or (params.get("description", "")[:40]), "Recommend applicable sections with proof FIRs", text_result, session_id)
 
         # 5. query_graph_network
         elif tool_name == "query_graph_network":
@@ -3352,19 +3397,121 @@ class VajraAgentLoop:
         try:
             query = f"SELECT SectionID, ActID FROM ActSectionAssociation WHERE CaseMasterID = {case_master_id}"
             res = catalyst_app.zql().execute_query(query)
+            smap = self._get_section_ordinal_map()
             sections_list = []
             for r in res:
                 assoc = r.get("ActSectionAssociation", {})
                 sec_id = assoc.get("SectionID")
-                if sec_id:
-                    sec_res = catalyst_app.zql().execute_query(f"SELECT SectionCode, ActCode FROM Section WHERE ROWID = {sec_id}")
-                    if sec_res:
-                        sec_data = sec_res[0].get("Section", {})
-                        sections_list.append(f"{sec_data.get('ActCode')} {sec_data.get('SectionCode')}")
+                if sec_id is None:
+                    continue
+                # SectionID is a 1-based ordinal into Section (see
+                # _get_section_ordinal_map) -- the old `WHERE ROWID={sec_id}` join
+                # matched nothing, which is why sections showed as empty everywhere.
+                sec = smap.get(int(sec_id))
+                if sec and sec.get("code"):
+                    label = f"{sec.get('act')} {sec.get('code')}"
+                    if sec.get("desc"):
+                        label += f" ({sec['desc']})"
+                    sections_list.append(label)
             return sections_list
         except Exception as e:
             logger.error(f"Error in get_sections_for_case: {e}")
             return []
+
+    def recommend_sections(self, description: str = "", case_no: str = "") -> Dict[str, Any]:
+        """
+        Recommend BNS/IPC sections for a described crime (or a given case),
+        GROUNDED IN PRECEDENT: find real cases of the same crime type, aggregate
+        the sections those cases actually had applied, and cite the real FIRs as
+        proof. Decision support ONLY -- never legal advice; the final charge is the
+        investigating officer's / prosecutor's call. Deterministic (no LLM), so it
+        works even when the model is down.
+        """
+        from collections import Counter, defaultdict
+        smap = self._get_section_ordinal_map()
+        empty = {"data": {"recommendations": []}, "text_result": "", "response_type": "sections_advice", "citations": []}
+        if not catalyst_app or not smap:
+            empty["text_result"] = "Section reference data is unavailable right now."
+            return empty
+        desc = self.sanitize_sql_input(description or "")
+        head_ids: List[str] = []
+        crime_label = ""
+        try:
+            if case_no:
+                cid = self._resolve_case_no(case_no)
+                if cid is not None:
+                    cm = catalyst_app.zql().execute_query(f"SELECT CrimeMajorHeadID FROM CaseMaster WHERE CaseMasterID = {cid} LIMIT 1")
+                    if cm and cm[0].get("CaseMaster", {}).get("CrimeMajorHeadID"):
+                        head_ids = [cm[0]["CaseMaster"]["CrimeMajorHeadID"]]
+            if not head_ids and desc:
+                heads = catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead")
+                dl = desc.lower()
+                for h in heads:
+                    hd = h.get("CrimeHead", {})
+                    name = hd.get("CrimeGroupName") or ""
+                    if name and any(len(w) > 3 and w in dl for w in name.lower().split()):
+                        head_ids.append(hd.get("CrimeHeadID"))
+                        crime_label = crime_label or name
+        except Exception as ex:
+            logger.warning(f"recommend_sections crime-group resolve failed: {ex}")
+
+        case_no_map: Dict[int, str] = {}
+        if head_ids:
+            try:
+                ids_sql = ",".join(str(h) for h in head_ids if h is not None)
+                crows = catalyst_app.zql().execute_query(
+                    f"SELECT CaseMasterID, CrimeNo FROM CaseMaster WHERE CrimeMajorHeadID IN ({ids_sql}) LIMIT 300"
+                )
+                for r in crows:
+                    cm = r.get("CaseMaster", {})
+                    if cm.get("CaseMasterID") is not None:
+                        case_no_map[int(cm["CaseMasterID"])] = cm.get("CrimeNo")
+            except Exception as ex:
+                logger.warning(f"recommend_sections candidate-case query failed: {ex}")
+
+        counts: "Counter" = Counter()
+        proof: "defaultdict" = defaultdict(list)
+        if case_no_map:
+            cids = list(case_no_map.keys())
+            for i in range(0, len(cids), 60):  # chunk to respect ZCQL's 300-row result cap
+                chunk = cids[i:i + 60]
+                try:
+                    assoc = catalyst_app.zql().execute_query(
+                        f"SELECT CaseMasterID, SectionID FROM ActSectionAssociation WHERE CaseMasterID IN ({','.join(str(c) for c in chunk)}) LIMIT 300"
+                    )
+                except Exception:
+                    continue
+                for r in assoc:
+                    a = r.get("ActSectionAssociation", {})
+                    sid = a.get("SectionID")
+                    if sid is None:
+                        continue
+                    sec = smap.get(int(sid))
+                    if not sec or not sec.get("code"):
+                        continue
+                    key = f"{sec['act']} {sec['code']}"
+                    counts[key] += 1
+                    fno = case_no_map.get(int(a["CaseMasterID"])) if a.get("CaseMasterID") is not None else None
+                    if fno and fno not in proof[key] and len(proof[key]) < 3:
+                        proof[key].append(fno)
+
+        recs = []
+        for key, n in counts.most_common(8):
+            d = next((s["desc"] for s in smap.values() if f"{s['act']} {s['code']}" == key), "")
+            recs.append({"section": key, "description": d, "applied_in": n, "proof_firs": proof[key]})
+
+        scope = f"case {case_no}" if case_no else (crime_label or description or "this crime type")
+        citations = [{"type": "Section Precedent (CCTNS)", "id": scope, "details": f"{sum(counts.values())} section applications across {len(case_no_map)} similar case(s)"}] if recs else []
+        if recs:
+            lines = [f"Sections commonly applied to {scope}, from real CCTNS precedents (decision support -- verify with the prosecution; the final charge is the IO's call):", ""]
+            for r in recs:
+                lbl = r["section"] + (f" ({r['description']})" if r["description"] else "")
+                pf = ", ".join(r["proof_firs"]) if r["proof_firs"] else "n/a"
+                lines.append(f"- {lbl}: applied in {r['applied_in']} similar case(s). Proof FIRs: {pf}")
+            text_result = "\n".join(lines)
+        else:
+            text_result = f"No section precedents were found for {scope} in the database. Try naming the crime type (e.g. 'theft', 'assault', 'cheating')."
+        return {"data": {"recommendations": recs, "scope": scope}, "text_result": text_result, "response_type": "sections_advice", "citations": citations}
 
     def suggest_sections_for_query(self, query: str) -> Dict[str, Any]:
         """
