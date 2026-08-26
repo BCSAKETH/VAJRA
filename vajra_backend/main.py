@@ -884,6 +884,50 @@ async def get_district_dashboard_detail(district_id: int, request: Request, loca
         raise HTTPException(status_code=500, detail=f"Failed to compute district detail: {str(e)}")
 
 
+@app.get("/api/intelligence/district-signals")
+async def get_district_signals(request: Request, district: str = "", district_id: int = 0,
+                               location_context: str = Depends(security_firewall)):
+    """
+    OPEN-SOURCE SIGNALS lane for a district -- live crime-relevant news that
+    the analytics tab renders BELOW the map, kept visually + structurally
+    separate from official CCTNS record (see the Round 2 trust boundary).
+
+    Everything returned is an unverified open-source LEAD (each item carries
+    source + timestamp + link + disclaimer), never a grounded FIR fact. The
+    feature is dormant (configured=False, empty items, a note) until a news
+    provider key is set in .env -- so this ships safely before a key exists.
+
+    Runs the fetch off the request thread and bounds it, so a slow/down news
+    provider degrades to an empty lane instead of tripping the ~30s AppSail
+    request kill.
+    """
+    name = (district or "").strip()
+    # Resolve a district_id to its name if the caller passed an id (the map
+    # click has the id; the agent has the name).
+    if not name and district_id and catalyst_app:
+        try:
+            d_res = catalyst_app.zql().execute_query(
+                f"SELECT DistrictName FROM District WHERE DistrictID = {int(district_id)} LIMIT 1")
+            if d_res:
+                name = d_res[0].get("District", {}).get("DistrictName", "") or ""
+        except Exception as e:
+            logger.warning(f"district-signals: could not resolve district_id {district_id}: {e}")
+    if not name:
+        return {"configured": False, "district": "", "items": [],
+                "note": "No district specified."}
+    try:
+        from internet_signals import get_district_news
+        result = await asyncio.wait_for(
+            run_in_threadpool(get_district_news, name, 5), timeout=12)
+    except asyncio.TimeoutError:
+        result = {"configured": True, "items": [], "note": "News provider slow — try again shortly."}
+    except Exception as e:
+        logger.warning(f"district-signals fetch failed for {name!r}: {e}")
+        result = {"configured": False, "items": [], "note": "Live signals temporarily unavailable."}
+    result["district"] = name
+    return result
+
+
 @app.get("/api/firs")
 async def get_firs(
     request: Request,

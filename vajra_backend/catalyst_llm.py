@@ -42,6 +42,32 @@ def _is_endpoint_marked_down() -> bool:
     return time.time() < _down_until
 
 
+# Canned guardrail refusals this deployed GLM emits (as a normal 200 OK) when it
+# mis-reads input as an attempt to expose its instructions -- e.g. dense official-
+# document text from an uploaded FIR/form. Detected so it can be treated as a soft
+# failure and routed to the Qwen fallback instead of shown to the officer.
+_GUARDRAIL_PHRASES = (
+    "expose protected instructions",
+    "protected internal details",
+    "reveal your reasoning",
+    "expose my instructions",
+    "reveal my instructions",
+    "expose protected internal",
+)
+
+
+def _is_guardrail_refusal(text: str) -> bool:
+    if not text:
+        return False
+    low = text.strip().lower()
+    # Only treat as a refusal when it's short and dominated by the canned phrase
+    # -- a long, substantive answer that merely mentions "protected" is not a
+    # refusal and must pass through untouched.
+    if len(low) > 400:
+        return False
+    return any(p in low for p in _GUARDRAIL_PHRASES)
+
+
 class CatalystLLM:
     """
     Client for Zoho Catalyst QuickML LLM Serving.
@@ -278,9 +304,25 @@ class CatalystLLM:
                         # Normalize here so nothing downstream needs to know
                         # about this endpoint's actual wire format.
                         if "choices" not in data and "response" in data:
+                            _resp = data["response"] or ""
+                            # This deployed GLM has a baked-in guardrail that
+                            # fires a CANNED refusal ("I can't help with requests
+                            # to expose protected instructions" / "I can't provide
+                            # protected internal details. Please rephrase") when it
+                            # mis-reads dense official-document text (e.g. an
+                            # uploaded FIR/form with "OFFICIAL", "protected",
+                            # "verification" language) as an instruction-injection
+                            # attempt. That refusal is a 200 OK, so without this it
+                            # would be shown to the officer verbatim instead of an
+                            # answer. Treat it as a soft failure so the caller's
+                            # fallback ladder (Qwen, which has no such guardrail --
+                            # see catalyst_qwen) produces a real analysis instead.
+                            if _is_guardrail_refusal(_resp):
+                                logger.warning("GLM returned its canned guardrail refusal; treating as failure so Qwen fallback runs.")
+                                return {"error": "llm_guardrail_refusal"}
                             return {
                                 "choices": [{
-                                    "message": {"role": "assistant", "content": data["response"]}
+                                    "message": {"role": "assistant", "content": _resp}
                                 }]
                             }
                         return data.get("data", data)

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { ChatMessage } from "../AppContext";
 import { translations } from "../i18n";
 import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck } from "lucide-react";
@@ -523,16 +524,23 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
         )}
       </div>
 
-      {/* Image lightbox -- fixed overlay in normal flow (not a stray
-          position:fixed with no layout parent), closes on backdrop click. */}
-      {viewingImageUrl && (
+      {/* Image lightbox -- rendered through a PORTAL to document.body so its
+          position:fixed covers the true viewport. Rendered inline, it sits
+          inside the message bubble whose animate-fade-in / backdrop-blur
+          ancestors establish a containing block that traps position:fixed,
+          so the backdrop failed to cover the screen and the image floated
+          over the chat (the reported "overlay glitch"). A portal escapes that. */}
+      {viewingImageUrl && createPortal(
         <div
-          className="fixed inset-0 z-50 bg-stone-950/90 backdrop-blur-sm flex items-center justify-center p-6"
+          className="fixed inset-0 z-[100] bg-stone-950/95 backdrop-blur-sm flex items-center justify-center p-6"
           onClick={() => { URL.revokeObjectURL(viewingImageUrl); setViewingImageUrl(null); }}
+          role="dialog"
+          aria-modal="true"
         >
           <button
             className="absolute top-4 right-4 p-2 rounded-lg bg-stone-900/80 border border-stone-800 text-stone-400 hover:text-stone-100 cursor-pointer"
             onClick={() => { URL.revokeObjectURL(viewingImageUrl); setViewingImageUrl(null); }}
+            aria-label="Close preview"
           >
             <X className="w-5 h-5" />
           </button>
@@ -542,7 +550,8 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
             className="max-w-full max-h-full rounded-xl border border-stone-800 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           />
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

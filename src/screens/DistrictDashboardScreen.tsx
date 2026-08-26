@@ -91,6 +91,11 @@ export const DistrictDashboardScreen: React.FC = () => {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<DistrictDetail | null>(null);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
+  // Open-Source Signals lane (live news) — kept in its OWN state and rendered
+  // in a visually separate band, never merged with the official CCTNS `detail`
+  // above. Dormant (configured=false) until a news key is set in .env.
+  const [signals, setSignals] = useState<{ configured: boolean; items: Array<{ title: string; source: string; published: string; url: string; snippet: string }>; note?: string } | null>(null);
+  const [isLoadingSignals, setIsLoadingSignals] = useState(false);
   const drilldownRef = useRef<HTMLDivElement | null>(null);
 
   // Plain SVG <path> elements per district (not a Leaflet layer), so hover/
@@ -153,6 +158,17 @@ export const DistrictDashboardScreen: React.FC = () => {
     requestAnimationFrame(() => {
       drilldownRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
+    // Fetch the Open-Source Signals lane in PARALLEL and independently — a slow
+    // or dormant news provider must never delay or fail the official charts.
+    setSignals(null);
+    setIsLoadingSignals(true);
+    fetch(`${API_BASE}/api/intelligence/district-signals?district_id=${districtId}`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((s) => setSignals(s))
+      .catch(() => setSignals(null))
+      .finally(() => setIsLoadingSignals(false));
     try {
       const res = await fetch(`${API_BASE}/api/dashboard/districts/${districtId}/detail`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
@@ -526,6 +542,57 @@ export const DistrictDashboardScreen: React.FC = () => {
                   </div>
                 </div>
               ) : null}
+
+              {/* ===== OPEN-SOURCE SIGNALS lane — the trust boundary made visible.
+                   Gold-tinted, explicitly labelled "unverified leads", always
+                   BELOW and separate from the official CCTNS charts above. ===== */}
+              <div className="rounded-2xl border border-[#C79A4E]/35 bg-[#C79A4E]/[0.05] p-4 space-y-3">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <h3 className="text-[11px] font-black uppercase tracking-wider font-mono flex items-center gap-1.5 text-[#E4C590]">
+                    <span className="w-2 h-2 rounded-full bg-[#C79A4E] animate-pulse" />
+                    {lang === "en" ? "Open-Source Signals · Live" : "ಮುಕ್ತ-ಮೂಲ ಸಂಕೇತಗಳು · ನೇರ"}
+                  </h3>
+                  <span className="text-[8.5px] font-mono text-[#C79A4E]/80 uppercase tracking-wide">
+                    {lang === "en" ? "Unverified leads — not official record" : "ಪರಿಶೀಲಿಸದ ಸುಳಿವುಗಳು — ಅಧಿಕೃತ ದಾಖಲೆ ಅಲ್ಲ"}
+                  </span>
+                </div>
+
+                {isLoadingSignals ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {[1, 2].map((n) => <div key={n} className="h-16 rounded-lg shimmer-bg" />)}
+                  </div>
+                ) : signals && signals.configured && signals.items.length > 0 ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {signals.items.map((it, i) => (
+                      <a
+                        key={i}
+                        href={it.url || undefined}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="block bg-stone-950/40 hover:bg-stone-950/70 border border-stone-850 hover:border-[#C79A4E]/40 rounded-lg p-3 transition-colors group"
+                      >
+                        <p className="text-[12px] font-semibold text-stone-100 leading-snug line-clamp-2 group-hover:text-[#E4C590]">{it.title}</p>
+                        {it.snippet && <p className="text-[10px] text-stone-500 mt-1 line-clamp-2">{it.snippet}</p>}
+                        <div className="flex items-center gap-2 mt-1.5 text-[9px] font-mono text-stone-500">
+                          <span className="text-[#C79A4E] truncate max-w-[45%]">{it.source}</span>
+                          {it.published && <span className="shrink-0">{it.published.split("T")[0]}</span>}
+                          <span className="ml-auto text-[#C79A4E]/70 group-hover:text-[#E4C590]">↗</span>
+                        </div>
+                      </a>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="text-[10.5px] text-stone-500 font-mono py-2 leading-relaxed">
+                    {signals && !signals.configured
+                      ? (lang === "en"
+                          ? "Live news is off. Add a free GNEWS_API_KEY in .env and redeploy to light up this lane."
+                          : "ನೇರ ಸುದ್ದಿ ಆಫ್ ಆಗಿದೆ. .env ನಲ್ಲಿ GNEWS_API_KEY ಸೇರಿಸಿ ಮರುನಿಯೋಜಿಸಿ.")
+                      : (lang === "en"
+                          ? "No recent crime-relevant news found for this district."
+                          : "ಈ ಜಿಲ್ಲೆಗೆ ಇತ್ತೀಚಿನ ಸಂಬಂಧಿತ ಸುದ್ದಿ ಕಂಡುಬಂದಿಲ್ಲ.")}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </>
