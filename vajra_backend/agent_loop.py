@@ -1846,6 +1846,28 @@ class VajraAgentLoop:
         if user_unit_id is not None and user_unit_id != 1:
             unit_filter_str = f"AND PoliceStationID = {user_unit_id}"
 
+        # NAME RESOLUTION for suspect tools: fuzzy-correct a (possibly misspelled
+        # / transliterated) name to the closest real AccusedName -- this catches
+        # both the fast-route path AND the GLM path (which _resolve_entities
+        # alone missed). If NOTHING in the database is close enough, don't run
+        # the lookup on a bad name and return an empty graph -- give a clear
+        # "not found in the database" answer so the officer knows the person is
+        # simply not on record (the requested behaviour).
+        if tool_name in ("query_graph_network", "get_offender_risk", "get_mo_profile", "generate_full_report") and (params.get("suspect_name") or "").strip():
+            _raw_name = str(params.get("suspect_name")).strip()
+            _canon = self._fuzzy_accused_match(_raw_name)
+            if _canon:
+                params["suspect_name"] = _canon
+            else:
+                return {
+                    "text_result": (f"\"{_raw_name}\" was not found in the database. No accused record matches this "
+                                    f"name — I also checked for spelling and transliteration variants and found none. "
+                                    f"Please verify the name, try a different spelling, or search by case number."),
+                    "response_type": "text", "data": {},
+                    "citations": [{"type": "Database Lookup", "id": _raw_name,
+                                   "details": "No matching accused record found, including fuzzy/transliteration match."}],
+                }
+
         # 0. get_my_profile -- the logged-in officer's OWN identity. Self-
         # contained (keyed by the employee_id already resolved from the
         # authenticated session and passed into every tool call), mirroring
