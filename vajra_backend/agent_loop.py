@@ -3277,12 +3277,7 @@ class VajraAgentLoop:
             if rc == 0 and pc == 0:
                 continue
             growth = ((rc - pc) / pc * 100.0) if pc > 0 else (100.0 if rc > 0 else 0.0)
-            # Concern score = recent volume scaled up by how fast it is rising, so
-            # a large + rising type outranks a small spike or a big-but-flat type.
-            score = rc * (1 + max(0.0, growth) / 100.0)
-            concerns.append({"type": name, "recent": rc, "prior": pc,
-                             "growth_pct": round(growth, 1), "score": round(score, 1)})
-        concerns.sort(key=lambda c: c["score"], reverse=True)
+            concerns.append({"type": name, "recent": rc, "prior": pc, "growth_pct": round(growth, 1)})
 
         total_recent = sum(recent.values())
         total_prior = sum(prior.values())
@@ -3292,23 +3287,35 @@ class VajraAgentLoop:
             return {"text_result": f"No recent case records were found for {scope}, so there is no priority-concern signal to report for the last 90 days.",
                     "response_type": "text", "data": {}, "citations": []}
 
-        top = concerns[:6]
+        # "Most concerning" has TWO honest dimensions that must not be conflated:
+        #   * the fastest-RISING type with real volume = the emerging threat (the
+        #     hero of the board), and
+        #   * the highest-VOLUME types = the biggest current load (the ranked bars).
+        # A big-but-FALLING type is a large load but improving, so it must not be
+        # dressed up as the top red-alert priority. Volume floor filters tiny
+        # spikes (2->5 = +150%) from hijacking the "rising" signal.
+        vol_floor = max(5, round(total_recent * 0.02))
+        rising = [c for c in concerns if c["growth_pct"] > 3 and c["recent"] >= vol_floor]
+        top_rising = max(rising, key=lambda c: c["growth_pct"]) if rising else None
+        concerns.sort(key=lambda c: c["recent"], reverse=True)  # bars ranked by volume
+
         lines = [f"Priority concerns for {scope} — last 90 days vs the prior 90 days "
-                 f"(overall {'+' if overall_growth >= 0 else ''}{overall_growth}% · {total_recent} recent incidents), "
-                 f"ranked by volume × momentum:"]
-        for i, c in enumerate(top, 1):
+                 f"(overall {'+' if overall_growth >= 0 else ''}{overall_growth}% · {total_recent} recent incidents):"]
+        if top_rising:
+            lines.append(f"Emerging threat (watch first): {top_rising['type']} — up +{top_rising['growth_pct']}% "
+                         f"({top_rising['recent']} incidents in the last 90d).")
+        else:
+            lines.append("No crime type is sharply accelerating; the concern is current load, not momentum.")
+        lines.append("Highest current volume:")
+        for i, c in enumerate(concerns[:6], 1):
             direction = "rising" if c["growth_pct"] > 3 else ("falling" if c["growth_pct"] < -3 else "steady")
-            lines.append(f"{i}. {c['type']}: {c['recent']} incidents in the last 90d "
+            lines.append(f"{i}. {c['type']}: {c['recent']} incidents "
                          f"({'+' if c['growth_pct'] >= 0 else ''}{c['growth_pct']}% vs prior 90d — {direction}).")
-        rising = [c for c in concerns if c["growth_pct"] > 3 and c["recent"] >= 3]
-        if rising:
-            fastest = max(rising, key=lambda c: c["growth_pct"])
-            lines.append(f"Fastest-accelerating: {fastest['type']} at +{fastest['growth_pct']}% — watch this first.")
         text = "\n".join(lines)
 
         data = {"scope": scope, "overall_growth_pct": overall_growth,
                 "total_recent": total_recent, "total_prior": total_prior,
-                "concerns": concerns[:10]}
+                "top_rising": top_rising, "concerns": concerns[:10]}
         citations = [{"type": "Priority Concern Analysis", "id": scope,
                       "details": "Crime-type momentum — real COUNT/GROUP BY over the full table, recent 90d vs prior 90d."}]
         return {"text_result": text, "response_type": "text", "data": data, "citations": citations}

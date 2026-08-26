@@ -44,7 +44,19 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
   const [voiceLang, setVoiceLang] = useState<"en" | "kn">(lang);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+
+  // Auto-grow the composer with its content (like Claude's input): expand to fit
+  // the text, then cap at a max height and scroll INSIDE the box -- instead of a
+  // fixed 2-row field that crams long queries. Recomputes whenever the value
+  // changes (typing, voice dictation, or reset-to-empty after send).
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+  }, [inputVal]);
   // MediaRecorder path -> real Zia STT (far better Kannada than the browser
   // recognizer). recognitionRef stays as the fallback when mic capture or the
   // STT endpoint is unavailable.
@@ -320,6 +332,7 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
 
         {/* Textarea Input */}
         <textarea
+          ref={textareaRef}
           value={inputVal}
           onChange={(e) => setInputVal(e.target.value)}
           onKeyDown={handleKeyDown}
@@ -328,8 +341,8 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
               ? "Query VAJRA AI copilot... (e.g., 'Show crimes connected to suspect Ramesh', 'Show hotspots in Mysuru')"
               : "ವಜ್ರ AI ನೊಂದಿಗೆ ವಿಚಾರಣೆ ನಡೆಸಿ... (ಉದಾ: 'ಶಂಕಿತ ರಮೇಶ್ ಸಂಪರ್ಕಿತ ಅಪರಾಧಗಳನ್ನು ತೋರಿಸಿ')"
           }
-          rows={2}
-          className="flex-1 bg-transparent border-none text-stone-100 placeholder-stone-500 text-sm focus:outline-none resize-none py-1 font-sans"
+          rows={1}
+          className="flex-1 bg-transparent border-none text-stone-100 placeholder-stone-500 text-sm focus:outline-none resize-none py-1 font-sans max-h-[200px] overflow-y-auto leading-relaxed"
         />
 
         {/* Voice-language pill -- independent of the display-language

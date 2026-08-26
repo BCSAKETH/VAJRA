@@ -53,30 +53,38 @@ const PriorityConcernsView: React.FC<{ data: any; lang: "en" | "kn" }> = ({ data
       </div>
     );
   }
-  const top = concerns[0];
-  const rest = concerns.slice(1, 6);
+  // Hero = the fastest-RISING type with real volume (the emerging threat). Only
+  // fall back to the biggest-volume type when nothing is sharply rising -- and
+  // then style it neutrally, never as a red alert, because a big-but-falling
+  // category is a load, not an escalating danger.
+  const rising = data?.top_rising || null;
+  const hero = rising || concerns[0];
+  const heroIsRising = !!rising;
   const maxRecent = Math.max(...concerns.map((c) => c.recent || 0), 1);
   const g = data?.overall_growth_pct ?? 0;
   return (
     <div className="space-y-3">
-      <div className="rounded-xl p-3.5 border border-rose-500/30 bg-rose-500/[0.07]">
+      <div className={`rounded-xl p-3.5 border ${heroIsRising ? "border-rose-500/30 bg-rose-500/[0.07]" : "border-stone-800 bg-stone-950/40"}`}>
         <div className="flex items-center justify-between gap-2">
-          <span className="text-[9px] font-mono uppercase tracking-widest text-rose-400/80">{lang === "en" ? "Top Priority" : "ಪ್ರಮುಖ ಆದ್ಯತೆ"}</span>
-          <span className="text-[10px] font-mono font-bold" style={{ color: momColor(top.growth_pct) }}>
-            {momArrow(top.growth_pct)} {top.growth_pct >= 0 ? "+" : ""}{top.growth_pct}%
+          <span className={`text-[9px] font-mono uppercase tracking-widest ${heroIsRising ? "text-rose-400/80" : "text-stone-500"}`}>
+            {heroIsRising ? (lang === "en" ? "Emerging Threat · Watch First" : "ಉದಯೋನ್ಮುಖ ಅಪಾಯ") : (lang === "en" ? "Highest Volume" : "ಗರಿಷ್ಠ ಪ್ರಮಾಣ")}
+          </span>
+          <span className="text-[10px] font-mono font-bold" style={{ color: momColor(hero.growth_pct) }}>
+            {momArrow(hero.growth_pct)} {hero.growth_pct >= 0 ? "+" : ""}{hero.growth_pct}%
           </span>
         </div>
         <div className="flex items-baseline justify-between gap-2 mt-1">
-          <span className="text-lg font-black text-stone-100 leading-tight">{top.type}</span>
-          <span className="font-mono text-sm font-bold text-rose-300 shrink-0">
-            {top.recent}<span className="text-[9px] text-stone-500 ml-1">{lang === "en" ? "in 90d" : "90ದಿನ"}</span>
+          <span className="text-lg font-black text-stone-100 leading-tight">{hero.type}</span>
+          <span className={`font-mono text-sm font-bold shrink-0 ${heroIsRising ? "text-rose-300" : "text-stone-300"}`}>
+            {hero.recent}<span className="text-[9px] text-stone-500 ml-1">{lang === "en" ? "in 90d" : "90ದಿನ"}</span>
           </span>
         </div>
       </div>
+      <div className="text-[9px] font-mono uppercase tracking-widest text-stone-500 pt-0.5">{lang === "en" ? "Highest current volume" : "ಗರಿಷ್ಠ ಪ್ರಸ್ತುತ ಪ್ರಮಾಣ"}</div>
       <div className="space-y-1.5">
-        {rest.map((c, i) => (
+        {concerns.slice(0, 6).map((c, i) => (
           <div key={i} className="flex items-center gap-2">
-            <span className="text-[10px] font-mono text-stone-600 w-3 shrink-0">{i + 2}</span>
+            <span className="text-[10px] font-mono text-stone-600 w-3 shrink-0">{i + 1}</span>
             <span className="text-[11px] text-stone-300 w-24 sm:w-28 truncate shrink-0" title={c.type}>{c.type}</span>
             <div className="flex-1 h-4 bg-stone-900/60 rounded overflow-hidden">
               <div className="h-full rounded" style={{ width: `${Math.max(6, (c.recent / maxRecent) * 100)}%`, background: momColor(c.growth_pct), opacity: 0.55 }} />
