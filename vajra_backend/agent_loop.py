@@ -1179,22 +1179,47 @@ class VajraAgentLoop:
                 })
 
         # ELABORATION follow-up: a vague "in detail" / "more" / "elaborate"
-        # after an answer should EXPAND the whole subject comprehensively, not
-        # re-run one narrow tool (confirmed live: "in detail" re-ran only the
-        # network graph). If a suspect/case is in context, route to the full
-        # composite dossier (risk + MO + network + history / full case file).
+        # should EXPAND THE PREVIOUS ANSWER conversationally -- explain what was
+        # just said in more depth -- NOT re-run a tool (confirmed live: "in
+        # detail" wrongly re-ran only the network graph). Feed GLM the
+        # conversation + a nudge to elaborate the prior answer using ONLY facts
+        # already established; no tool selection. If GLM is down, fall back to
+        # re-showing the previous answer rather than a hard failure.
         _elab = officer_query.lower().strip()
         if forced_decision is None and answer_mode != "dossier" and len(_elab) < 45 and any(
-            p in _elab for p in ("in detail", "more detail", "tell me more", "elaborate", "expand on",
-                                 "explain more", "explain further", "go deeper", "full detail",
-                                 "more info", "give me more", "in depth", "deep dive")):
-            if entities.get("suspect"):
-                forced_decision = {"tool": "generate_full_report", "parameters": {"suspect_name": entities["suspect"]}}
-                logger.info(f"Elaboration follow-up -> full report on {entities['suspect']}")
-            elif entities.get("case_id"):
-                forced_decision = {"tool": "generate_case_dossier",
-                                   "parameters": {"case_no": entities["case_id"], "user_query": officer_query}}
-                logger.info(f"Elaboration follow-up -> case dossier for {entities['case_id']}")
+            p in _elab for p in ("in detail", "more detail", "tell me more", "elaborate", "expand",
+                                 "explain more", "explain further", "explain that", "go deeper",
+                                 "more info", "give me more", "in depth", "in-depth")):
+            prev_ai = ""
+            for h in reversed(history[:-1]):   # history[-1] is the current "in detail"
+                content = (h.get("content") or "")
+                if h.get("role") == "assistant" and content.strip() and not content.strip().startswith("{"):
+                    prev_ai = content
+                    break
+            if prev_ai:
+                nudge = {"role": "user", "content": (
+                    "Expand and explain your previous answer in more detail for the officer -- add depth, "
+                    "context and clear reasoning. Use ONLY facts already stated earlier in this conversation; "
+                    "do NOT invent new names, numbers or case details.")}
+                elaborated = ""
+                try:
+                    res = self.llm.chat(history + [nudge], None, max_tokens=3500)
+                    if not res.get("error"):
+                        raw = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+                        elaborated = self._strip_think(raw)
+                except Exception as e:
+                    logger.warning(f"Elaboration GLM call failed: {e}")
+                mem_text = elaborated if elaborated else (
+                    "The AI is momentarily unavailable to expand further, so here is the previous answer again:\n\n" + prev_ai)
+                self._write_audit_log(employee_id, "Elaboration", "", officer_query, mem_text, session_id)
+                history.append({"role": "assistant", "content": mem_text})
+                context["messages"] = history
+                session_memory.update_session_context(session_id, context)
+                return {"text": mem_text, "response_type": "text", "data": {},
+                        "citations": [{"type": "Elaboration", "id": "",
+                                       "details": "Expanded the previous answer using this conversation's context."}],
+                        "is_simulated": not bool(elaborated),
+                        "simulated_reason": "" if elaborated else "AI expansion temporarily unavailable"}
 
         # A2 FAST-ROUTE: when the officer's command clearly maps to exactly one
         # tool ("network of X", "risk for X", "hotspots", "which sections for
