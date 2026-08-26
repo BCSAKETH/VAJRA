@@ -17,6 +17,9 @@ import {
   Cell,
   Legend,
   LabelList,
+  AreaChart,
+  Area,
+  CartesianGrid,
 } from "recharts";
 import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock } from "lucide-react";
 
@@ -30,6 +33,8 @@ interface DistrictSummaryRow {
 interface DistrictDetail {
   district_id: number;
   district: string;
+  monthly_trend?: { label: string; month: string; count: number }[];
+  trend_pct?: number;
   socio_economic_chart: { data: { name: string; value: number | null }[]; disclaimer: string };
   hotspots: { lat: number; lng: number; label: string; point_count?: number }[];
   crime_type_distribution: { name: string; value: number }[];
@@ -345,6 +350,51 @@ export const DistrictDashboardScreen: React.FC = () => {
                 </div>
               ) : detail ? (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* 12-month incident trend — the time dimension + benchmark vs state */}
+                  {detail.monthly_trend && detail.monthly_trend.length > 0 && (
+                    <div className="glass-card p-4 border border-stone-850 space-y-2 lg:col-span-2">
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono">
+                          {detail.district} — {lang === "en" ? "12-Month Incident Trend" : "12-ತಿಂಗಳ ಘಟನಾ ಪ್ರವೃತ್ತಿ"}
+                        </h3>
+                        <div className="flex items-center gap-3 text-[10px] font-mono">
+                          {typeof detail.trend_pct === "number" && (
+                            <span className={`font-bold ${detail.trend_pct > 3 ? "text-rose-400" : detail.trend_pct < -3 ? "text-[#5DCAA5]" : "text-stone-400"}`}>
+                              {detail.trend_pct > 3 ? "▲" : detail.trend_pct < -3 ? "▼" : "▬"} {detail.trend_pct >= 0 ? "+" : ""}{detail.trend_pct}% <span className="text-stone-500 font-normal">{lang === "en" ? "vs prior qtr" : "ಹಿಂದಿನ ತ್ರೈಮಾಸಿಕ"}</span>
+                            </span>
+                          )}
+                          {(() => {
+                            const stateAvg = rows.length ? Math.round(totalActiveCases / rows.length) : 0;
+                            const districtActive = rows.find((r) => r.district_id === selectedId)?.active_cases ?? 0;
+                            const vsAvg = stateAvg ? Math.round(((districtActive - stateAvg) / stateAvg) * 100) : 0;
+                            if (!stateAvg) return null;
+                            return (
+                              <span className={`font-bold ${vsAvg > 0 ? "text-rose-400" : "text-[#5DCAA5]"}`}>
+                                {vsAvg > 0 ? "+" : ""}{vsAvg}% <span className="text-stone-500 font-normal">{lang === "en" ? "vs state avg" : "ರಾಜ್ಯ ಸರಾಸರಿ"}</span>
+                              </span>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                      <div className="h-44">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <AreaChart data={detail.monthly_trend} margin={{ top: 8, right: 12, left: -18, bottom: 0 }}>
+                            <defs>
+                              <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor="#C79A4E" stopOpacity={0.35} />
+                                <stop offset="100%" stopColor="#C79A4E" stopOpacity={0} />
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="2 4" stroke="#2a2724" vertical={false} />
+                            <XAxis dataKey="label" tick={{ fontSize: 9, fill: "#94A3B8" }} tickLine={false} axisLine={false} />
+                            <YAxis tick={{ fontSize: 9, fill: "#94A3B8" }} tickLine={false} axisLine={false} width={30} />
+                            <Tooltip contentStyle={{ background: "#211f1d", border: "1px solid #37332e", fontSize: 11, borderRadius: 8 }} />
+                            <Area type="monotone" dataKey="count" stroke="#C79A4E" strokeWidth={2} fill="url(#trendFill)" dot={{ r: 2, fill: "#C79A4E" }} activeDot={{ r: 4 }} />
+                          </AreaChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )}
                   {/* Socio-economic bar chart */}
                   <div className="glass-card p-4 border border-stone-850 space-y-2">
                     <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono">

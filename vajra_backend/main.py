@@ -864,9 +864,46 @@ async def get_district_dashboard_detail(district_id: int, request: Request, loca
         except Exception as ex:
             logger.warning(f"Could not fetch recent cases for district {district_id}: {ex}")
 
+        # Monthly incident trend (12 months) — the time dimension the analytics
+        # tab lacked. Real COUNT per month over this district's stations
+        # (aggregate, not 300-capped). A momentum figure (last 3 mo vs prior 3)
+        # gives the panel a headline direction.
+        monthly_trend = []
+        trend_pct = 0.0
+        try:
+            now = datetime.utcnow()
+            yy, mm = now.year, now.month
+            months = []
+            for _ in range(12):
+                months.append((yy, mm))
+                mm -= 1
+                if mm == 0:
+                    mm = 12
+                    yy -= 1
+            months.reverse()
+            for (y2, m2) in months:
+                start = f"{y2:04d}-{m2:02d}-01"
+                end = f"{y2+1:04d}-01-01" if m2 == 12 else f"{y2:04d}-{m2+1:02d}-01"
+                cnt = 0
+                if unit_ids:
+                    tq = (f"SELECT COUNT(CaseMasterID) FROM CaseMaster WHERE CrimeRegisteredDate >= '{start}' "
+                          f"AND CrimeRegisteredDate < '{end}' AND PoliceStationID IN ({','.join(map(str, unit_ids))})")
+                    tr = catalyst_app.zql().execute_query(tq)
+                    if tr:
+                        cnt = int(tr[0].get("CaseMaster", {}).get("COUNT(CaseMasterID)") or 0)
+                monthly_trend.append({"label": datetime(y2, m2, 1).strftime("%b"), "month": f"{y2:04d}-{m2:02d}", "count": cnt})
+            if len(monthly_trend) >= 6:
+                recent3 = sum(x["count"] for x in monthly_trend[-3:])
+                prior3 = sum(x["count"] for x in monthly_trend[-6:-3])
+                trend_pct = round(((recent3 - prior3) / prior3 * 100.0), 1) if prior3 else 0.0
+        except Exception as ex:
+            logger.warning(f"district monthly trend failed for {district_id}: {ex}")
+
         return {
             "district_id": district_id,
             "district": district_name,
+            "monthly_trend": monthly_trend,
+            "trend_pct": trend_pct,
             "socio_economic_chart": socio_chart,
             "hotspots": hotspots,
             "crime_type_distribution": crime_types,
