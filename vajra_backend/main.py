@@ -1485,8 +1485,18 @@ class GLMTranslator:
         safety net: a mismatch means don't trust this result, fall back to
         the slower GLM path instead.
         """
-        src_nums = set(re.findall(r"\d+\.?\d*", source))
-        tgt_nums = set(re.findall(r"\d+\.?\d*", translated))
+        # Strip thousands-separator commas first, so "20,984" and "20984"
+        # compare as the SAME number. Confirmed live as the cause of Kannada
+        # responses silently falling back to English: the sanitized source keeps
+        # the comma, which re.findall splits into {"20","984"}, while Zia's fast
+        # (correct) translation renders "20984" -- the sets never matched, so a
+        # good 1.9s translation was discarded and the turn fell through to the
+        # slow/flaky GLM path and timed out to the untranslated text. This keeps
+        # the real safety net (a 10x decimal error like 0.1->0.01 still fails)
+        # while removing the false reject.
+        strip_sep = lambda s: re.sub(r"(?<=\d),(?=\d)", "", s or "")
+        src_nums = set(re.findall(r"\d+\.?\d*", strip_sep(source)))
+        tgt_nums = set(re.findall(r"\d+\.?\d*", strip_sep(translated)))
         return src_nums == tgt_nums
 
     def translate(self, text: str, source_lang: str, target_lang: str) -> str:

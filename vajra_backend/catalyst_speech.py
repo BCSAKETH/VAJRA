@@ -61,16 +61,20 @@ def synthesize_speech(text: str, lang: str = "en") -> Optional[Tuple[bytes, str]
         "Authorization": f"Zoho-oauthtoken {token}",
         "Content-Type": "application/json",
     }
-    try:
-        # Cap UNDER the AppSail ~30-36s request kill so a slow/hanging Zia returns
-        # None here (-> soft 502 -> browser-voice fallback) instead of the request
-        # being killed at ~30s with a hard 408 before we can degrade gracefully.
-        res = requests.post(_TTS_URL, headers=headers, json=body, timeout=20)
-        if res.status_code == 200 and res.content[:4] == b"RIFF":
-            return res.content, "audio/wav"
-        logger.warning(f"Zia TTS failed ({res.status_code}): {res.text[:200]}")
-    except Exception as e:
-        logger.warning(f"Zia TTS request error: {e}")
+    # Zia TTS flaps intermittently (502/500) even when the model is healthy --
+    # confirmed live that the SAME request 502s then succeeds seconds later, for
+    # both English and Kannada. A single immediate retry catches most of these
+    # transient failures so the officer actually hears the answer instead of the
+    # browser-voice fallback (which mispronounces Kannada). Two attempts x 12s
+    # stays under the AppSail ~30s request kill.
+    for attempt in range(2):
+        try:
+            res = requests.post(_TTS_URL, headers=headers, json=body, timeout=12)
+            if res.status_code == 200 and res.content[:4] == b"RIFF":
+                return res.content, "audio/wav"
+            logger.warning(f"Zia TTS failed (attempt {attempt + 1}, {res.status_code}): {res.text[:200]}")
+        except Exception as e:
+            logger.warning(f"Zia TTS request error (attempt {attempt + 1}): {e}")
     return None
 
 
