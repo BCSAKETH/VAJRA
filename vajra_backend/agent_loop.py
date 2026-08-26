@@ -865,6 +865,34 @@ class VajraAgentLoop:
         logger.info(f"Tool pre-filter: {len(filtered)}/{len(self.TOOLS)} tools sent to GLM -> {[t['name'] for t in filtered]}")
         return filtered
 
+    def _fuzzy_accused_match(self, name: str, cutoff: float = 0.82) -> str:
+        """
+        Transliteration-tolerant accused lookup. Exact substring first (cheap,
+        precise); if nothing matches, find the CLOSEST real AccusedName with
+        difflib (pure stdlib -- no vendor disk cost) so a spelling variant like
+        "Ramish"/"Rammesh" still resolves to "Ramesh". Returns the canonical DB
+        name, or "" if nothing is close enough (never guesses a wrong person).
+        """
+        if not name or not name.strip() or not catalyst_app:
+            return ""
+        safe = self.sanitize_sql_input(name)
+        try:
+            ex = catalyst_app.zql().execute_query(
+                f"SELECT AccusedName FROM Accused WHERE AccusedName LIKE '*{safe}*' LIMIT 1")
+            if ex:
+                return ex[0].get("Accused", {}).get("AccusedName") or name
+            import difflib
+            res = catalyst_app.zql().execute_query("SELECT AccusedName FROM Accused LIMIT 300")
+            names = list({r.get("Accused", {}).get("AccusedName") for r in res
+                          if r.get("Accused", {}).get("AccusedName")})
+            best = difflib.get_close_matches(name, names, n=1, cutoff=cutoff)
+            if best:
+                logger.info(f"Fuzzy accused match: '{name}' -> '{best[0]}'")
+                return best[0]
+        except Exception as e:
+            logger.warning(f"fuzzy accused match failed for {name!r}: {e}")
+        return ""
+
     def _resolve_entities(self, query: str, session_id: str, exclude_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Parses query to extract entities. Falls back to Session Memory if missing.
@@ -923,6 +951,16 @@ class VajraAgentLoop:
         case_id = case_match.group(1) if case_match else context.get("last_case_id")
         suspect = suspect_match if suspect_match else context.get("last_offender_id")
         district = resolved_district if resolved_district else context.get("last_location")
+
+        # Transliteration-tolerant correction: a suspect name freshly extracted
+        # from the query is resolved to the closest REAL AccusedName, so a
+        # spelling variant ("Ramish" -> "Ramesh") still finds the record -- the
+        # single most common reason a CCTNS search silently misses a match.
+        # Only fresh extractions (context names are already canonical).
+        if suspect_match:
+            canonical = self._fuzzy_accused_match(suspect_match)
+            if canonical:
+                suspect = canonical
 
         # Update cache context
         updated_ctx = {
