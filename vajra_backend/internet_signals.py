@@ -83,7 +83,8 @@ _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 
 
 def _strip_html(s: str) -> str:
-    return re.sub(r"<[^>]+>", "", s or "").strip()
+    import html as _html
+    return _html.unescape(re.sub(r"<[^>]+>", "", s or "")).strip()
 
 
 def _scrape_news_rss(query: str, limit: int) -> List[Dict[str, str]]:
@@ -271,5 +272,59 @@ def web_search(query: str, limit: int = 5) -> Dict[str, Any]:
 
     result = {"configured": True, "items": items,
               "note": "" if items else "No public results found."}
+    _cache_put(ck, result, _NEWS_TTL)
+    return result
+
+
+def _is_blocked_host(url: str) -> bool:
+    """SSRF guard: never let the reader hit internal/private hosts."""
+    try:
+        host = (urllib.parse.urlparse(url).hostname or "").lower()
+    except Exception:
+        return True
+    if not host or host in ("localhost", "127.0.0.1", "0.0.0.0", "::1", "metadata.google.internal"):
+        return True
+    if host.endswith((".internal", ".local")):
+        return True
+    if host.startswith(("10.", "192.168.", "169.254.", "172.16.", "172.17.", "172.18.",
+                        "172.19.", "172.2", "172.30.", "172.31.")):
+        return True
+    return False
+
+
+def fetch_page(url: str, max_chars: int = 4500) -> Dict[str, Any]:
+    """
+    VAJRA's own reader for ANY public web page -- fetches the URL and extracts
+    its readable text, so the agent can read a specific article / public page
+    (not just search-result snippets). Cached. SSRF-guarded (public http/https
+    only), size- and time-bounded, and fail-soft. The content is an OPEN-SOURCE
+    LEAD -- unverified, for context only, never official record.
+    """
+    url = (url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        return {"url": url, "ok": False, "title": "", "text": "", "note": "Only http/https URLs are supported."}
+    if _is_blocked_host(url):
+        return {"url": url, "ok": False, "title": "", "text": "", "note": "Blocked internal/private host."}
+    ck = f"page::{url}"
+    cached = _cache_get(ck)
+    if cached is not None:
+        return cached
+    result = {"url": url, "ok": False, "title": "", "text": "", "note": "Could not fetch this page."}
+    try:
+        r = requests.get(url, headers={"User-Agent": _UA}, timeout=_HTTP_TIMEOUT, allow_redirects=True)
+        ct = (r.headers.get("content-type") or "").lower()
+        if r.status_code != 200 or ("html" not in ct and "text" not in ct):
+            result["note"] = f"Unreadable page (status {r.status_code}, type {ct or 'unknown'})."
+        else:
+            html = r.text
+            tm = re.search(r"<title[^>]*>(.*?)</title>", html, re.DOTALL | re.I)
+            title = _strip_html(re.sub(r"<!\[CDATA\[|\]\]>", "", tm.group(1))) if tm else ""
+            # drop non-content blocks, then strip tags
+            body = re.sub(r"(?is)<(script|style|noscript|nav|header|footer|aside|svg|form)[^>]*>.*?</\1>", " ", html)
+            text = re.sub(r"\s+", " ", _strip_html(body)).strip()[:max_chars]
+            result = {"url": url, "ok": bool(text), "title": title, "text": text,
+                      "note": "Open-source content — unverified, read for context only."}
+    except Exception as e:
+        logger.warning(f"fetch_page error for {url!r}: {e}")
     _cache_put(ck, result, _NEWS_TTL)
     return result

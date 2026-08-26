@@ -965,6 +965,45 @@ async def get_district_signals(request: Request, district: str = "", district_id
     return result
 
 
+@app.get("/api/intelligence/web-search")
+async def intelligence_web_search(request: Request, q: str = "", location_context: str = Depends(security_firewall)):
+    """
+    Open-source WEB SEARCH via VAJRA's own key-free scraper (Google News RSS +
+    DDG fallback). Results are unverified open-source LEADS, never official
+    record. Bounded off-thread so a slow source can't trip the 30s AppSail kill.
+    """
+    q = (q or "").strip()
+    if not q:
+        return {"items": [], "note": "Empty query."}
+    try:
+        from internet_signals import web_search
+        return await asyncio.wait_for(run_in_threadpool(web_search, q, 6), timeout=12)
+    except asyncio.TimeoutError:
+        return {"items": [], "note": "Search source slow — try again shortly."}
+    except Exception as e:
+        logger.warning(f"web-search failed for {q!r}: {e}")
+        return {"items": [], "note": "Web search temporarily unavailable."}
+
+
+@app.get("/api/intelligence/read-page")
+async def intelligence_read_page(request: Request, url: str = "", location_context: str = Depends(security_firewall)):
+    """
+    Read ANY public web page's text via VAJRA's own reader (SSRF-guarded). The
+    content is an OPEN-SOURCE LEAD -- unverified, for context only.
+    """
+    url = (url or "").strip()
+    if not url:
+        return {"ok": False, "note": "No URL provided."}
+    try:
+        from internet_signals import fetch_page
+        return await asyncio.wait_for(run_in_threadpool(fetch_page, url, 4500), timeout=12)
+    except asyncio.TimeoutError:
+        return {"ok": False, "url": url, "note": "Page slow to load — try again shortly."}
+    except Exception as e:
+        logger.warning(f"read-page failed for {url!r}: {e}")
+        return {"ok": False, "url": url, "note": "Could not read this page."}
+
+
 @app.get("/api/firs")
 async def get_firs(
     request: Request,
