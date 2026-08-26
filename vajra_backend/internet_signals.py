@@ -22,9 +22,11 @@ No key configured == feature off, gracefully. Provisioning GNEWS_API_KEY (or
 NEWSAPI_KEY) in .env activates live news with zero code change.
 """
 import os
+import re
 import time
 import logging
 import threading
+import urllib.parse
 import requests
 from typing import Any, Dict, List, Optional
 
@@ -69,7 +71,86 @@ def news_configured() -> bool:
 
 
 def search_configured() -> bool:
-    return bool(_SEARCH_KEY)
+    # Always available: we ship our OWN scraper (DuckDuckGo HTML) that needs no
+    # third-party API key. A SerpAPI key, if set, is used as a higher-quality
+    # upgrade. Confidentiality note: any web search inevitably sends the query
+    # to a search engine -- our scraper just removes the paid middleman.
+    return True
+
+
+_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+       "(KHTML, like Gecko) Chrome/122.0 Safari/537.36")
+
+
+def _strip_html(s: str) -> str:
+    return re.sub(r"<[^>]+>", "", s or "").strip()
+
+
+def _scrape_news_rss(query: str, limit: int) -> List[Dict[str, str]]:
+    """
+    VAJRA's OWN news/search scraper -- Google News RSS. A stable, key-free,
+    no-bot-block XML feed of news matching the query (ideal for VAJRA's
+    crime-news / name-in-news use cases). Fail-soft: any error returns [].
+    Results are open-source LEADS, never official record.
+    """
+    out: List[Dict[str, str]] = []
+    try:
+        url = ("https://news.google.com/rss/search?q=" + urllib.parse.quote(query)
+               + "&hl=en-IN&gl=IN&ceid=IN:en")
+        r = requests.get(url, headers={"User-Agent": _UA}, timeout=_HTTP_TIMEOUT)
+        if r.status_code != 200:
+            logger.warning(f"News RSS {r.status_code}")
+            return out
+        for block in re.findall(r"<item>(.*?)</item>", r.text, re.DOTALL)[:limit]:
+            def grab(tag):
+                m = re.search(rf"<{tag}[^>]*>(.*?)</{tag}>", block, re.DOTALL)
+                return _strip_html(re.sub(r"<!\[CDATA\[|\]\]>", "", m.group(1))) if m else ""
+            title = grab("title")
+            link = grab("link")
+            pub = grab("pubDate")
+            src = grab("source") or "Google News"
+            if title and link:
+                out.append(_signal(title, src, pub, link, ""))
+    except Exception as e:
+        logger.warning(f"News RSS scrape error for {query!r}: {e}")
+    return out
+
+
+def _scrape_duckduckgo(query: str, limit: int) -> List[Dict[str, str]]:
+    """
+    VAJRA's OWN web scraper -- no third-party API. Fetches DuckDuckGo's HTML
+    results page and parses the result links, titles and snippets. Bounded and
+    fail-soft: any block/change returns [] (the caller degrades to an empty
+    lane), never an error. Results are open-source LEADS, never official record.
+    """
+    out: List[Dict[str, str]] = []
+    try:
+        r = requests.post("https://html.duckduckgo.com/html/",
+                          data={"q": query}, headers={"User-Agent": _UA},
+                          timeout=_HTTP_TIMEOUT)
+        if r.status_code != 200:
+            logger.warning(f"DDG scrape {r.status_code}")
+            return out
+        html = r.text
+        # each result: <a ... class="result__a" href="URL">TITLE</a>
+        blocks = re.findall(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html, re.DOTALL)
+        snippets = re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
+        for i, (href, title) in enumerate(blocks[:limit]):
+            # DDG wraps links as //duckduckgo.com/l/?uddg=<url-encoded target>
+            m = re.search(r"uddg=([^&]+)", href)
+            url = urllib.parse.unquote(m.group(1)) if m else href
+            if url.startswith("//"):
+                url = "https:" + url
+            snip = _strip_html(snippets[i]) if i < len(snippets) else ""
+            src = ""
+            try:
+                src = urllib.parse.urlparse(url).netloc
+            except Exception:
+                src = "web"
+            out.append(_signal(_strip_html(title), src or "web", "", url, snip))
+    except Exception as e:
+        logger.warning(f"DDG scrape error for {query!r}: {e}")
+    return out
 
 
 def _signal(title: str, source: str, published: str, url: str, snippet: str = "") -> Dict[str, str]:
@@ -94,12 +175,7 @@ def get_district_news(district: str, limit: int = 5) -> Dict[str, Any]:
     """
     district = (district or "").strip()
     if not district:
-        return {"configured": news_configured(), "items": [], "note": "No district specified."}
-    if not news_configured():
-        return {
-            "configured": False, "items": [],
-            "note": "Live news is off — set GNEWS_API_KEY (or NEWSAPI_KEY) in .env to activate.",
-        }
+        return {"configured": True, "items": [], "note": "No district specified."}
 
     ck = f"news::{district.lower()}::{limit}"
     cached = _cache_get(ck)
@@ -138,6 +214,10 @@ def get_district_news(district: str, limit: int = 5) -> Dict[str, Any]:
                     ))
             else:
                 logger.warning(f"NewsAPI {r.status_code}: {r.text[:160]}")
+        if not items:
+            # No key (or the key returned nothing) -> VAJRA's OWN scraper. Google
+            # News RSS needs no key, so live district news works out of the box.
+            items = _scrape_news_rss(f"{district} (crime OR police OR arrest OR fraud OR FIR)", limit)
     except Exception as e:
         logger.warning(f"News fetch error for {district!r}: {e}")
 
@@ -159,12 +239,7 @@ def web_search(query: str, limit: int = 5) -> Dict[str, Any]:
     """
     query = (query or "").strip()
     if not query:
-        return {"configured": search_configured(), "items": [], "note": "Empty query."}
-    if not search_configured():
-        return {
-            "configured": False, "items": [],
-            "note": "Web search is off — set WEB_SEARCH_API_KEY in .env to activate.",
-        }
+        return {"configured": True, "items": [], "note": "Empty query."}
     ck = f"search::{query.lower()}::{limit}"
     cached = _cache_get(ck)
     if cached is not None:
@@ -172,7 +247,8 @@ def web_search(query: str, limit: int = 5) -> Dict[str, Any]:
 
     items: List[Dict[str, str]] = []
     try:
-        if _SEARCH_ENGINE == "serpapi":
+        if _SEARCH_KEY and _SEARCH_ENGINE == "serpapi":
+            # Optional higher-quality upgrade if an operator provides a key.
             r = requests.get(
                 "https://serpapi.com/search.json",
                 params={"q": query, "num": limit, "hl": "en", "gl": "in", "api_key": _SEARCH_KEY},
@@ -186,6 +262,10 @@ def web_search(query: str, limit: int = 5) -> Dict[str, Any]:
                     ))
             else:
                 logger.warning(f"SerpAPI {r.status_code}: {r.text[:160]}")
+        if not items:
+            # Default: VAJRA's own scraper -- no key, no paid middleman. Google
+            # News RSS is the reliable primary; DDG HTML is a secondary fallback.
+            items = _scrape_news_rss(query, limit) or _scrape_duckduckgo(query, limit)
     except Exception as e:
         logger.warning(f"Web search error for {query!r}: {e}")
 
