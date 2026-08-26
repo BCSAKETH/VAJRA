@@ -1087,6 +1087,44 @@ class VajraAgentLoop:
         response_type = "text"
         data_payload = {}
         citations = []
+
+        # CONVERSATIONAL MEMORY: meta questions ("what did I ask?", "repeat
+        # that") match no tool, so they used to fall through to the (flaky) GLM
+        # and fail with "AI reasoning temporarily unavailable" (confirmed live).
+        # Answer them DETERMINISTICALLY from this session's history so they
+        # always work instantly, with no model call.
+        _meta = officer_query.lower().strip()
+        _prev_q_pat = ("what did i ask", "what i asked", "previous query", "previous question",
+                       "my last question", "my last query", "what was my question", "last query",
+                       "last question", "earlier query", "earlier question", "what was my last")
+        _repeat_pat = ("repeat that", "say that again", "repeat the answer", "what did you say",
+                       "say again", "repeat your answer", "come again", "read that again")
+        if len(_meta) < 60 and (any(p in _meta for p in _prev_q_pat) or any(p in _meta for p in _repeat_pat)):
+            prior_user, prior_ai = "", ""
+            for h in reversed(history[:-1]):   # history[-1] is the current query
+                role = h.get("role")
+                content = (h.get("content") or "")
+                if role == "assistant" and not prior_ai and not content.strip().startswith("{"):
+                    prior_ai = content
+                if role == "user" and not prior_user and not content.startswith("Tool '") and not content.strip().startswith("[Context"):
+                    prior_user = re.sub(r'^\s*(?:\[Context:[^\]]*\]\s*)+', '', content, flags=re.DOTALL).strip()
+                if prior_user and prior_ai:
+                    break
+            if any(p in _meta for p in _repeat_pat) and prior_ai:
+                mem_text = prior_ai
+            elif prior_user:
+                mem_text = f"In your previous message you asked: \"{prior_user}\""
+            else:
+                mem_text = "There's no earlier message in this conversation yet."
+            self._write_audit_log(employee_id, "Conversational Memory", "", officer_query, mem_text, session_id)
+            history.append({"role": "assistant", "content": mem_text})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            return {"text": mem_text, "response_type": "text", "data": {},
+                    "citations": [{"type": "Conversation Memory", "id": "",
+                                   "details": "Answered directly from this session's history — no model call."}],
+                    "is_simulated": False, "simulated_reason": ""}
+
         # True only if GLM, Qwen, AND the keyword router all failed to even
         # pick a tool (see the fallback ladder below), or a later synthesis
         # step fails with nothing to fall back to. A police intelligence
