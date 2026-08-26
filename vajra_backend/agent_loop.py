@@ -1178,6 +1178,24 @@ class VajraAgentLoop:
                     "details": "Officer selected the deep Full Dossier view; the complete composite was assembled directly.",
                 })
 
+        # ELABORATION follow-up: a vague "in detail" / "more" / "elaborate"
+        # after an answer should EXPAND the whole subject comprehensively, not
+        # re-run one narrow tool (confirmed live: "in detail" re-ran only the
+        # network graph). If a suspect/case is in context, route to the full
+        # composite dossier (risk + MO + network + history / full case file).
+        _elab = officer_query.lower().strip()
+        if forced_decision is None and answer_mode != "dossier" and len(_elab) < 45 and any(
+            p in _elab for p in ("in detail", "more detail", "tell me more", "elaborate", "expand on",
+                                 "explain more", "explain further", "go deeper", "full detail",
+                                 "more info", "give me more", "in depth", "deep dive")):
+            if entities.get("suspect"):
+                forced_decision = {"tool": "generate_full_report", "parameters": {"suspect_name": entities["suspect"]}}
+                logger.info(f"Elaboration follow-up -> full report on {entities['suspect']}")
+            elif entities.get("case_id"):
+                forced_decision = {"tool": "generate_case_dossier",
+                                   "parameters": {"case_no": entities["case_id"], "user_query": officer_query}}
+                logger.info(f"Elaboration follow-up -> case dossier for {entities['case_id']}")
+
         # A2 FAST-ROUTE: when the officer's command clearly maps to exactly one
         # tool ("network of X", "risk for X", "hotspots", "which sections for
         # case Y"), pick it deterministically and SKIP the slow GLM tool-
