@@ -1539,6 +1539,14 @@ class VajraAgentLoop:
                     # whole value. The ambiguous-name graph case deliberately
                     # resets response_type to "text", so it correctly does NOT
                     # short-circuit and still routes through synthesis.
+                    # A tool can mark its result "final" (e.g. a definitive
+                    # "not found in the database") -- a complete answer that
+                    # needs no GLM narration. Use it directly and skip synthesis,
+                    # so it returns instantly instead of waiting out GLM's
+                    # timeout when the model is slow/down.
+                    if tool_output.get("final") and last_tool_text_result:
+                        response_text = last_tool_text_result
+                        break
                     if response_type != "text" and last_tool_text_result:
                         response_text = last_tool_text_result
                         break
@@ -1866,6 +1874,7 @@ class VajraAgentLoop:
                     "response_type": "text", "data": {},
                     "citations": [{"type": "Database Lookup", "id": _raw_name,
                                    "details": "No matching accused record found, including fuzzy/transliteration match."}],
+                    "final": True,   # definitive -> skip GLM synthesis (which would just hang when GLM is slow)
                 }
 
         # 0. get_my_profile -- the logged-in officer's OWN identity. Self-
