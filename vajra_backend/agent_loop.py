@@ -268,6 +268,11 @@ class VajraAgentLoop:
             }
         },
         {
+            "name": "get_database_overview",
+            "description": "Answer broad 'show me everything / all the FIRs / complete details about all cases / what is in the database / how many FIRs / total cases / database summary' questions. Returns the grounded total count and crime-type breakdown of the WHOLE database plus guidance on how to narrow down -- because no one can list ~20k individual FIRs. Use for any all-encompassing 'everything / all records / entire database' request.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        },
+        {
             "name": "get_priority_concerns",
             "description": "Answer 'what crime patterns should I be most concerned about right now', 'what should I worry about', 'top priorities', 'what's getting worse', 'what to watch'. Ranks crime TYPES by volume AND recent momentum (last 90 days vs the prior 90 days) so the fastest-rising, highest-volume concerns surface first with real numbers -- unlike get_crime_trends which returns one overall aggregate. Use this for any 'what is concerning / a priority / worsening right now' question.",
             "parameters": {
@@ -681,6 +686,11 @@ class VajraAgentLoop:
             (["section", "ipc", "bns ", "legal provision"], "get_case_sections", {"case_no": case_no}, case_no),
             (["hotspot", "cluster map", "crime map", "dbscan"], "query_hotspots", {"district": district}, "yes"),
             (["organized crime", "crime group", "gang", "criminal syndicate detect"], "detect_crime_groups", {}, "yes"),
+            (["all the firs", "all firs", "all the fir", "all cases", "all the cases", "entire database",
+              "whole database", "everything in the database", "all records", "complete details about all",
+              "full details about all", "total firs", "total cases", "how many firs", "how many cases",
+              "database overview", "database summary", "list all firs", "show me everything", "everything about all"],
+             "get_database_overview", {}, "yes"),
             (["concerned about", "concern", "worried about", "worry about", "most concerning", "should i be concerned",
               "what to watch", "watch out", "priorit", "getting worse", "what's worsening", "biggest threat",
               "patterns should i", "what should i focus", "top risks", "alarming"], "get_priority_concerns",
@@ -750,6 +760,9 @@ class VajraAgentLoop:
                                         "unemployment", "poverty", "literacy"],
         "get_repeat_offenders": ["repeat offender", "habitual", "frequent offender", "most active"],
         "detect_crime_groups": ["organized crime", "crime group", "gang", "criminal syndicate", "groups operating"],
+        "get_database_overview": ["all firs", "all cases", "entire database", "whole database", "everything",
+                                  "all records", "how many firs", "how many cases", "total firs", "database overview",
+                                  "database summary", "complete details about all", "show me everything"],
         "get_priority_concerns": ["concerned", "concern", "worried", "worry", "most concerning", "priority", "priorities",
                                   "getting worse", "worsening", "watch out", "biggest threat", "top risks", "alarming",
                                   "patterns should i", "what should i focus", "focus on"],
@@ -2655,6 +2668,33 @@ class VajraAgentLoop:
                 employee_id, "Priority Concern Analysis", district or "All Districts",
                 f"Priority concerns: district={district or 'all'}",
                 text_result, session_id
+            )
+
+        elif tool_name == "get_database_overview":
+            # Answers impossible-to-list-all asks ("complete details about ALL
+            # the FIRs") with a grounded, always-available overview + how to
+            # narrow -- instead of dead-ending on GLM (which produced the hard
+            # "AI reasoning temporarily unavailable" wall). Pure COUNT/GROUP BY,
+            # no model dependency, so it never fails on a GLM outage.
+            ov = self._compute_case_types_distribution("")
+            ov_data = ov["data"]
+            total = ov_data.get("total", 0)
+            series = (ov_data.get("series") or [])[:6]
+            lines = [f"The database holds {total:,} FIRs/cases in total. I can't list every record individually, "
+                     f"but here is the complete picture at a glance — then narrow by district, crime type, a specific "
+                     f"case number (e.g. CR-2024-81977), or say 'recent cases' for the latest.", "", "By crime type:"]
+            for s in series:
+                pct = round(s["value"] / total * 100, 1) if total else 0.0
+                lines.append(f"- {s['name']}: {s['value']:,} ({pct}%)")
+            lines += ["", "To drill in, try: 'hotspots in <district>', 'crime trends in <district>', "
+                      "'full dossier for case <no>', 'repeat offenders', or 'what should I be most concerned about'."]
+            text_result = "\n".join(lines)
+            data = ov_data
+            response_type = "case_distribution"
+            citations.append(ov["citation"])
+            self._write_audit_log(
+                employee_id, "Database Overview", "All FIRs",
+                "Database-wide FIR overview requested", text_result, session_id
             )
 
         # 20. generate_full_report -- a composite dossier. The agent loop only
