@@ -268,6 +268,17 @@ class VajraAgentLoop:
             }
         },
         {
+            "name": "get_priority_concerns",
+            "description": "Answer 'what crime patterns should I be most concerned about right now', 'what should I worry about', 'top priorities', 'what's getting worse', 'what to watch'. Ranks crime TYPES by volume AND recent momentum (last 90 days vs the prior 90 days) so the fastest-rising, highest-volume concerns surface first with real numbers -- unlike get_crime_trends which returns one overall aggregate. Use this for any 'what is concerning / a priority / worsening right now' question.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "district": {"type": "string", "description": "Optional district name to scope the concerns to (e.g. Bengaluru City). Omit for all districts."}
+                },
+                "required": []
+            }
+        },
+        {
             "name": "generate_full_report",
             "description": "Generate a COMPREHENSIVE investigative dossier on a named suspect in one response, combining conviction risk score + SHAP factors, Modus Operandi behavioral match, criminal/syndicate network, and repeat-offense history together. Use this (instead of a single narrower tool) whenever the officer asks for a 'full report', 'complete profile', 'everything about', 'comprehensive dossier', 'detailed profile', or similar composite request about one suspect -- a single narrow tool only covers one facet and under-answers a composite ask.",
             "parameters": {
@@ -670,6 +681,10 @@ class VajraAgentLoop:
             (["section", "ipc", "bns ", "legal provision"], "get_case_sections", {"case_no": case_no}, case_no),
             (["hotspot", "cluster map", "crime map", "dbscan"], "query_hotspots", {"district": district}, "yes"),
             (["organized crime", "crime group", "gang", "criminal syndicate detect"], "detect_crime_groups", {}, "yes"),
+            (["concerned about", "concern", "worried about", "worry about", "most concerning", "should i be concerned",
+              "what to watch", "watch out", "priorit", "getting worse", "what's worsening", "biggest threat",
+              "patterns should i", "what should i focus", "top risks", "alarming"], "get_priority_concerns",
+             {"district": district}, "yes"),
             (["trend", "over time", "increasing", "decreasing", "seasonal pattern"], "get_crime_trends",
              {"district": district, "crime_group": crime_group}, "yes"),
             (["pie chart", "case types", "types of cases", "distribution of cases", "cases by type", "crime categories"], "get_case_types_distribution",
@@ -735,6 +750,9 @@ class VajraAgentLoop:
                                         "unemployment", "poverty", "literacy"],
         "get_repeat_offenders": ["repeat offender", "habitual", "frequent offender", "most active"],
         "detect_crime_groups": ["organized crime", "crime group", "gang", "criminal syndicate", "groups operating"],
+        "get_priority_concerns": ["concerned", "concern", "worried", "worry", "most concerning", "priority", "priorities",
+                                  "getting worse", "worsening", "watch out", "biggest threat", "top risks", "alarming",
+                                  "patterns should i", "what should i focus", "focus on"],
         "get_crime_trends": ["trend", "over time", "increasing", "decreasing", "seasonal", "rising", "falling", "growth"],
         "generate_full_report": ["full report", "complete report on suspect", "full profile",
                                  "everything about suspect", "deep dive on suspect", "dossier on suspect"],
@@ -2624,6 +2642,19 @@ class VajraAgentLoop:
                 text_result, session_id
             )
 
+        elif tool_name == "get_priority_concerns":
+            district = self.sanitize_sql_input(params.get("district", ""))
+            response_type = "text"
+            pc_res = self._compute_priority_concerns(district)
+            data = pc_res["data"]
+            text_result = pc_res["text_result"]
+            citations.extend(pc_res.get("citations", []))
+            self._write_audit_log(
+                employee_id, "Priority Concern Analysis", district or "All Districts",
+                f"Priority concerns: district={district or 'all'}",
+                text_result, session_id
+            )
+
         # 20. generate_full_report -- a composite dossier. The agent loop only
         # ever calls ONE tool per user turn (offering the full tool catalog
         # on iteration 2+ was confirmed live to time out under load, see the
@@ -3172,6 +3203,113 @@ class VajraAgentLoop:
             "data": data,
             "citations": citations
         }
+
+    def _compute_priority_concerns(self, district: str = "") -> Dict[str, Any]:
+        """
+        Answers "what should I be most concerned about right now" with SPECIFICS
+        instead of a generic all-crime aggregate: ranks crime TYPES by a concern
+        score that fuses recent momentum (last 90 days vs the prior 90 days) with
+        current volume, so a type that is BOTH large AND rising surfaces first.
+
+        Grounded in real COUNT/GROUP BY aggregates over the full CaseMaster table
+        (the 300-row SELECT cap does not apply to aggregates). Never fabricates --
+        if there is no data it says so plainly rather than inventing a briefing.
+        Returns a detailed, ranked text_result so the answer is specific even if
+        the later GLM narrative step is unavailable.
+        """
+        from datetime import timedelta
+        unit_ids: List[str] = []
+        scope = "all districts"
+        if district and catalyst_app:
+            try:
+                d_res = catalyst_app.zql().execute_query(
+                    f"SELECT DistrictID FROM District WHERE DistrictName LIKE '*{self.sanitize_sql_input(district)}*' LIMIT 1")
+                if d_res:
+                    dist_id = d_res[0].get("District", {}).get("DistrictID")
+                    u_res = catalyst_app.zql().execute_query(f"SELECT UnitID FROM Unit WHERE DistrictID = {dist_id}")
+                    unit_ids = [u.get("Unit", {}).get("UnitID") for u in u_res if u.get("Unit", {}).get("UnitID")]
+                    scope = district
+            except Exception as e:
+                logger.warning(f"priority-concerns: district resolve failed for {district!r}: {e}")
+
+        heads: Dict[Any, str] = {}
+        if catalyst_app:
+            try:
+                h_res = catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead")
+                heads = {r.get("CrimeHead", {}).get("CrimeHeadID"): r.get("CrimeHead", {}).get("CrimeGroupName") for r in h_res}
+            except Exception as e:
+                logger.warning(f"priority-concerns: crime heads load failed: {e}")
+
+        now = datetime.utcnow()
+        recent_start = (now - timedelta(days=90)).strftime("%Y-%m-%d")
+        prior_start = (now - timedelta(days=180)).strftime("%Y-%m-%d")
+        now_str = now.strftime("%Y-%m-%d")
+        station_filter = f" AND PoliceStationID IN ({','.join(map(str, unit_ids))})" if unit_ids else ""
+
+        def counts_by_type(start: str, end: str) -> Dict[str, int]:
+            out: Dict[str, int] = {}
+            if not catalyst_app:
+                return out
+            try:
+                q = (f"SELECT CrimeMajorHeadID, COUNT(CaseMasterID) FROM CaseMaster "
+                     f"WHERE CrimeRegisteredDate >= '{start}' AND CrimeRegisteredDate < '{end}'{station_filter} "
+                     f"GROUP BY CrimeMajorHeadID")
+                res = catalyst_app.zql().execute_query(q)
+                for r in res:
+                    cm = r.get("CaseMaster", {})
+                    hid = cm.get("CrimeMajorHeadID")
+                    c = int(cm.get("COUNT(CaseMasterID)") or 0)
+                    if c > 0:
+                        name = heads.get(hid) or f"Category {hid}"
+                        out[name] = out.get(name, 0) + c
+            except Exception as e:
+                logger.warning(f"priority-concerns: type-count query failed ({start}..{end}): {e}")
+            return out
+
+        recent = counts_by_type(recent_start, now_str)
+        prior = counts_by_type(prior_start, recent_start)
+
+        concerns: List[Dict[str, Any]] = []
+        for name in set(list(recent.keys()) + list(prior.keys())):
+            rc, pc = recent.get(name, 0), prior.get(name, 0)
+            if rc == 0 and pc == 0:
+                continue
+            growth = ((rc - pc) / pc * 100.0) if pc > 0 else (100.0 if rc > 0 else 0.0)
+            # Concern score = recent volume scaled up by how fast it is rising, so
+            # a large + rising type outranks a small spike or a big-but-flat type.
+            score = rc * (1 + max(0.0, growth) / 100.0)
+            concerns.append({"type": name, "recent": rc, "prior": pc,
+                             "growth_pct": round(growth, 1), "score": round(score, 1)})
+        concerns.sort(key=lambda c: c["score"], reverse=True)
+
+        total_recent = sum(recent.values())
+        total_prior = sum(prior.values())
+        overall_growth = round(((total_recent - total_prior) / total_prior * 100.0), 1) if total_prior else 0.0
+
+        if not concerns:
+            return {"text_result": f"No recent case records were found for {scope}, so there is no priority-concern signal to report for the last 90 days.",
+                    "response_type": "text", "data": {}, "citations": []}
+
+        top = concerns[:6]
+        lines = [f"Priority concerns for {scope} — last 90 days vs the prior 90 days "
+                 f"(overall {'+' if overall_growth >= 0 else ''}{overall_growth}% · {total_recent} recent incidents), "
+                 f"ranked by volume × momentum:"]
+        for i, c in enumerate(top, 1):
+            direction = "rising" if c["growth_pct"] > 3 else ("falling" if c["growth_pct"] < -3 else "steady")
+            lines.append(f"{i}. {c['type']}: {c['recent']} incidents in the last 90d "
+                         f"({'+' if c['growth_pct'] >= 0 else ''}{c['growth_pct']}% vs prior 90d — {direction}).")
+        rising = [c for c in concerns if c["growth_pct"] > 3 and c["recent"] >= 3]
+        if rising:
+            fastest = max(rising, key=lambda c: c["growth_pct"])
+            lines.append(f"Fastest-accelerating: {fastest['type']} at +{fastest['growth_pct']}% — watch this first.")
+        text = "\n".join(lines)
+
+        data = {"scope": scope, "overall_growth_pct": overall_growth,
+                "total_recent": total_recent, "total_prior": total_prior,
+                "concerns": concerns[:10]}
+        citations = [{"type": "Priority Concern Analysis", "id": scope,
+                      "details": "Crime-type momentum — real COUNT/GROUP BY over the full table, recent 90d vs prior 90d."}]
+        return {"text_result": text, "response_type": "text", "data": data, "citations": citations}
 
     def _compute_crime_trends(self, district: str, crime_group: str, months: int) -> Dict[str, Any]:
         """
