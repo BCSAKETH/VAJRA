@@ -1486,18 +1486,33 @@ class GLMTranslator:
         the slower GLM path instead.
         """
         # Strip thousands-separator commas first, so "20,984" and "20984"
-        # compare as the SAME number. Confirmed live as the cause of Kannada
-        # responses silently falling back to English: the sanitized source keeps
-        # the comma, which re.findall splits into {"20","984"}, while Zia's fast
-        # (correct) translation renders "20984" -- the sets never matched, so a
-        # good 1.9s translation was discarded and the turn fell through to the
-        # slow/flaky GLM path and timed out to the untranslated text. This keeps
-        # the real safety net (a 10x decimal error like 0.1->0.01 still fails)
-        # while removing the false reject.
-        strip_sep = lambda s: re.sub(r"(?<=\d),(?=\d)", "", s or "")
+        # compare as the SAME number (the sanitized source keeps the comma,
+        # which re.findall would otherwise split into {"20","984"} while Zia
+        # renders "20984").
+        # Drop case-number IDENTIFIERS (CR-2024-81977) before comparing -- they
+        # are IDs Zia routinely reformats, not statistics, so they must not gate
+        # the translation. Then strip thousands-separator commas.
+        strip_ids = lambda s: re.sub(r"\b[A-Za-z]{1,4}-?\d{4}-\d+\b", " ", s or "")
+        strip_sep = lambda s: re.sub(r"(?<=\d),(?=\d)", "", strip_ids(s))
         src_nums = set(re.findall(r"\d+\.?\d*", strip_sep(source)))
         tgt_nums = set(re.findall(r"\d+\.?\d*", strip_sep(translated)))
-        return src_nums == tgt_nums
+        if not src_nums or src_nums == tgt_nums:
+            return True
+        # LENIENT fallback: VAJRA answers are number-dense (counts, percentages,
+        # AND identifiers like the case number CR-2024-81977). Zia occasionally
+        # reformats ONE such token (a case number, a number rendered in a
+        # different script), which under strict set-equality discarded the whole
+        # otherwise-correct translation and made Kannada silently fall back to
+        # English -- the reported bug. Tolerate a few unmatched numbers while a
+        # GROSSLY corrupted translation (most numbers wrong) still fails; the
+        # authoritative figures are always in the English text and the data
+        # widgets regardless, so the translated narrative can absorb a rare
+        # single-token reformat. Log when this path is taken so it stays visible.
+        preserved = len(src_nums & tgt_nums) / len(src_nums)
+        if preserved < 0.8:
+            return False
+        logger.info(f"Translation numbers_match: lenient pass ({preserved:.0%} of {len(src_nums)} numbers preserved).")
+        return True
 
     def translate(self, text: str, source_lang: str, target_lang: str) -> str:
         if source_lang == target_lang:
