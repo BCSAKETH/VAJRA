@@ -900,7 +900,7 @@ export const AIChatScreen: React.FC = () => {
             </div>
           </div>
         ) : (
-          chatMessages.map((msg) => (
+          chatMessages.map((msg, idx) => (
             <ChatBubble
               key={msg.id}
               message={msg}
@@ -908,6 +908,7 @@ export const AIChatScreen: React.FC = () => {
               onExpandWidget={(widgetType, widgetData) => setExpandedWidget({ type: widgetType as any, data: widgetData })}
               onRetry={msg.retryText ? () => handleSend(msg.retryText!) : undefined}
               addToast={addToast}
+              isLast={idx === chatMessages.length - 1}
             />
           ))
         )}

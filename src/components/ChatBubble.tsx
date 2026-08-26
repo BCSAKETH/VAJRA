@@ -12,6 +12,7 @@ interface ChatBubbleProps {
   onExpandWidget: (type: string, data: any) => void;
   onRetry?: () => void;
   addToast?: (title: string, message: string, severity: "Critical" | "Warning" | "Info" | "Success") => void;
+  isLast?: boolean;
 }
 
 // Panel types that InlineWidget can render as a visual (everything else in a
@@ -89,6 +90,21 @@ const renderRich = (text: string): React.ReactNode => {
   return <div className="leading-relaxed [&>*:first-child]:mt-0">{blocks}</div>;
 };
 
+// Pre-generated TTS audio cache so clicking "speak" plays INSTANTLY (no ~5s
+// server-synthesis wait, and the flaky-Zia retry happens off the click path).
+// Keyed by message id + lang, bounded so blob URLs don't accumulate.
+const _ttsCache = new Map<string, string>();
+const _ttsOrder: string[] = [];
+const _ttsPut = (key: string, url: string) => {
+  if (_ttsCache.has(key)) { try { URL.revokeObjectURL(url); } catch { /* noop */ } return; }
+  _ttsCache.set(key, url);
+  _ttsOrder.push(key);
+  while (_ttsOrder.length > 8) {
+    const old = _ttsOrder.shift();
+    if (old) { const u = _ttsCache.get(old); if (u) { try { URL.revokeObjectURL(u); } catch { /* noop */ } } _ttsCache.delete(old); }
+  }
+};
+
 type SpeakResult = "started" | "unsupported" | "no_kannada_voice";
 
 // Confirmed live: when no real Kannada voice is installed on the device,
@@ -128,7 +144,7 @@ const speakText = (text: string, lang: "en" | "kn", onEnd: () => void): SpeakRes
   return "started";
 };
 
-export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang, onExpandWidget, onRetry, addToast }) => {
+export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang, onExpandWidget, onRetry, addToast, isLast }) => {
   const t = translations[lang];
   const isAI = message.sender === "assistant";
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -206,38 +222,82 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   // English/Hindi voice, device-independent) -- this is the fix for browser
   // SpeechSynthesis mispronouncing Kannada when no Kannada voice is installed.
   // Falls back to the browser voice only if the server call fails.
+  // The exact text spoken -- capped to a summary length at a sentence boundary
+  // (a full multi-panel dossier is slow to synthesize and rarely wanted whole).
+  // Shared by the click handler AND the background pre-generator so the cached
+  // audio matches exactly what a click requests.
+  const getSpeakText = React.useCallback((): string => {
+    const cleaned = cleanTextForSpeech(displayText);
+    if (!cleaned) return "";
+    const MAX_SPEAK = 700;
+    if (cleaned.length <= MAX_SPEAK) return cleaned;
+    const slice = cleaned.slice(0, MAX_SPEAK);
+    const lastStop = Math.max(
+      slice.lastIndexOf(". "), slice.lastIndexOf("? "), slice.lastIndexOf("! "),
+      slice.lastIndexOf("। "), slice.lastIndexOf("\n")
+    );
+    return (lastStop > 200 ? slice.slice(0, lastStop + 1) : slice).trim();
+  }, [displayText]);
+
+  const playUrl = async (url: string, revokeOnEnd: boolean): Promise<boolean> => {
+    try {
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      const done = () => { if (revokeOnEnd) { try { URL.revokeObjectURL(url); } catch { /* noop */ } } audioRef.current = null; setIsSpeaking(false); };
+      audio.onended = done;
+      audio.onerror = done;
+      await audio.play();
+      return true;
+    } catch { return false; }
+  };
+
+  // Pre-generate the LATEST AI answer's audio in the background so "speak" plays
+  // INSTANTLY from cache instead of waiting ~5s for synthesis -- and the flaky-
+  // Zia retry runs here, off the click path, which is also what makes Kannada
+  // voice reliable. Best-effort: any failure just means the click falls back to
+  // synthesizing on demand.
+  React.useEffect(() => {
+    if (!isLast || !isAI || message.isSimulated) return;
+    const key = `${message.id}:${lang}`;
+    if (_ttsCache.has(key)) return;
+    const toSpeak = getSpeakText();
+    if (!toSpeak) return;
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), lang === "kn" ? 26000 : 12000);
+    let cancelled = false;
+    fetch(`${API_BASE}/api/voice/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      body: JSON.stringify({ text: toSpeak, lang }),
+      signal: ctrl.signal,
+    }).then((r) => (r.ok ? r.blob() : null)).then((blob) => {
+      if (!cancelled && blob) _ttsPut(key, URL.createObjectURL(blob));
+    }).catch(() => { /* best-effort */ }).finally(() => clearTimeout(to));
+    return () => { cancelled = true; ctrl.abort(); clearTimeout(to); };
+  }, [isLast, isAI, message.id, message.isSimulated, lang, getSpeakText]);
+
   const handleToggleSpeak = async () => {
     if (isSpeaking) {
       stopPlayback();
       return;
     }
-    const cleaned = cleanTextForSpeech(displayText);
-    if (!cleaned) return;
-    // Synthesizing a full multi-panel dossier aloud is slow (seconds of audio to
-    // generate before playback can even start) and rarely what an officer wants
-    // to hear end-to-end. Cap the spoken text to a summary length, cut at a
-    // sentence boundary so it never stops mid-word. The on-screen answer still
-    // shows everything -- this only affects what's read aloud, and makes "speak"
-    // start talking fast instead of after a long synthesis wait.
-    const MAX_SPEAK = 700;
-    let toSpeak = cleaned;
-    if (toSpeak.length > MAX_SPEAK) {
-      const slice = toSpeak.slice(0, MAX_SPEAK);
-      const lastStop = Math.max(
-        slice.lastIndexOf(". "), slice.lastIndexOf("? "), slice.lastIndexOf("! "),
-        slice.lastIndexOf("। "), slice.lastIndexOf("\n")
-      );
-      toSpeak = (lastStop > 200 ? slice.slice(0, lastStop + 1) : slice).trim();
-    }
+    const toSpeak = getSpeakText();
+    if (!toSpeak) return;
     setIsSpeaking(true);
+    // INSTANT path: pre-generated audio already cached -> play immediately.
+    const cachedUrl = _ttsCache.get(`${message.id}:${lang}`);
+    if (cachedUrl && (await playUrl(cachedUrl, false))) return;
     try {
-      // Fail FAST to the browser voice: the server Zia TTS can hang up to the
-      // AppSail ~37s request kill when the voice service is degraded, which left
-      // the officer staring at a "speaking" button for half a minute before any
-      // sound. Abort the server attempt after 9s and fall through so playback
-      // starts promptly (browser voice) instead of waiting out the timeout.
+      // Abort the server attempt and fall through to the browser voice if it
+      // takes too long -- BUT the deadline is language-dependent. For English
+      // the browser voice is a fine fallback, so fail fast (9s) and never leave
+      // the officer waiting. For KANNADA the browser has no Kannada voice on
+      // most devices (speakText returns "no_kannada_voice" -> silence), so the
+      // server is the ONLY source of real Kannada speech; a 9s abort was cutting
+      // off the server's retry-through-Zia's-flaky-502s and killing Kannada
+      // voice entirely. Give Kannada room for the backend's 2x12s retry.
       const _ctrl = new AbortController();
-      const _to = setTimeout(() => _ctrl.abort(), 9000);
+      const _to = setTimeout(() => _ctrl.abort(), lang === "kn" ? 26000 : 9000);
       let res: Response;
       try {
         res = await fetch(`${API_BASE}/api/voice/tts`, {
