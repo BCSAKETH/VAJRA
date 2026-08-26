@@ -95,6 +95,8 @@ export const DistrictDashboardScreen: React.FC = () => {
   const [hoveredId, setHoveredId] = useState<number | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<DistrictDetail | null>(null);
+  const [stateOv, setStateOv] = useState<{ total_incidents: number; monthly_trend: { label: string; count: number }[]; trend_pct: number; crime_mix: { name: string; value: number }[] } | null>(null);
+  const [stateNews, setStateNews] = useState<{ title: string; source: string; url: string }[]>([]);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   // Open-Source Signals lane (live news) — kept in its OWN state and rendered
   // in a visually separate band, never merged with the official CCTNS `detail`
@@ -147,6 +149,13 @@ export const DistrictDashboardScreen: React.FC = () => {
 
   useEffect(() => {
     fetchSummary();
+    // State-level detail for the Direction-3 dashboard cards (trend, crime mix,
+    // live news) -- fetched once on load, best-effort.
+    const H = { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` };
+    fetch(`${API_BASE}/api/dashboard/state-overview`, { headers: H })
+      .then((r) => (r.ok ? r.json() : null)).then((d) => d && setStateOv(d)).catch(() => {});
+    fetch(`${API_BASE}/api/intelligence/district-signals?district=Karnataka`, { headers: H })
+      .then((r) => (r.ok ? r.json() : null)).then((d) => d?.items && setStateNews(d.items.slice(0, 3))).catch(() => {});
     const onFocus = () => fetchSummary();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
@@ -257,6 +266,56 @@ export const DistrictDashboardScreen: React.FC = () => {
               value={isLoadingSummary ? "—" : flaggedSuspectCount}
               label={lang === "en" ? "Districts w/ Most-Wanted" : "ಅತಿ ಬೇಕಾದ ಜಿಲ್ಲೆಗಳು"}
             />
+          </div>
+
+          {/* Direction-3 state detail cards: 12-month trend · crime mix · live news */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            <div className="glass-card p-4 border border-stone-850">
+              <div className="flex items-center justify-between mb-1">
+                <h3 className="text-[10px] font-black text-stone-300 uppercase tracking-wider font-mono">{lang === "en" ? "State · 12-Month Trend" : "ರಾಜ್ಯ · 12-ತಿಂಗಳ ಪ್ರವೃತ್ತಿ"}</h3>
+                {stateOv && <span className={`text-[10px] font-mono font-bold ${stateOv.trend_pct > 3 ? "text-rose-400" : stateOv.trend_pct < -3 ? "text-[#5DCAA5]" : "text-stone-400"}`}>{stateOv.trend_pct >= 0 ? "+" : ""}{stateOv.trend_pct}%</span>}
+              </div>
+              <div className="h-28">
+                {stateOv?.monthly_trend?.length ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={stateOv.monthly_trend} margin={{ top: 6, right: 6, left: -24, bottom: 0 }}>
+                      <defs><linearGradient id="stFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#C79A4E" stopOpacity={0.35} /><stop offset="100%" stopColor="#C79A4E" stopOpacity={0} /></linearGradient></defs>
+                      <XAxis dataKey="label" tick={{ fontSize: 8, fill: "#94A3B8" }} tickLine={false} axisLine={false} />
+                      <YAxis tick={{ fontSize: 8, fill: "#94A3B8" }} tickLine={false} axisLine={false} width={26} />
+                      <Tooltip contentStyle={{ background: "#211f1d", border: "1px solid #37332e", fontSize: 10, borderRadius: 8 }} />
+                      <Area type="monotone" dataKey="count" stroke="#C79A4E" strokeWidth={2} fill="url(#stFill)" dot={false} />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                ) : <div className="h-full shimmer-bg rounded-lg" />}
+              </div>
+            </div>
+            <div className="glass-card p-4 border border-stone-850">
+              <h3 className="text-[10px] font-black text-stone-300 uppercase tracking-wider font-mono mb-2">{lang === "en" ? "State · Crime Mix" : "ರಾಜ್ಯ · ಅಪರಾಧ ಮಿಶ್ರಣ"}</h3>
+              {stateOv?.crime_mix?.length ? (() => {
+                const mx = Math.max(...stateOv.crime_mix.map((c) => c.value), 1);
+                return (
+                  <div className="space-y-1.5">
+                    {stateOv.crime_mix.map((c, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <span className="text-[10px] text-stone-400 w-24 truncate" title={c.name}>{c.name}</span>
+                        <div className="flex-1 h-3 bg-stone-900/60 rounded overflow-hidden"><div className="h-full rounded bg-[#C79A4E]" style={{ width: `${Math.max(6, (c.value / mx) * 100)}%`, opacity: 0.6 }} /></div>
+                        <span className="text-[9px] font-mono text-stone-500 w-10 text-right tabular-nums">{c.value.toLocaleString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })() : <div className="h-28 shimmer-bg rounded-lg" />}
+            </div>
+            <div className="glass-card p-4 border border-[#C79A4E]/25 bg-[#C79A4E]/[0.04]">
+              <h3 className="text-[10px] font-black text-[#E4C590] uppercase tracking-wider font-mono mb-2 flex items-center gap-1.5"><span className="w-2 h-2 rounded-full bg-[#C79A4E] animate-pulse" />{lang === "en" ? "Live Signals · Karnataka" : "ನೇರ ಸಂಕೇತಗಳು · ಕರ್ನಾಟಕ"}</h3>
+              {stateNews.length ? (
+                <div className="space-y-1.5">
+                  {stateNews.map((n, i) => (
+                    <a key={i} href={n.url || undefined} target="_blank" rel="noopener noreferrer" className="block text-[11.5px] text-stone-300 hover:text-[#E4C590] leading-snug line-clamp-2">{n.title} <span className="text-[8.5px] font-mono text-[#C79A4E]/70">↗ {n.source}</span></a>
+                  ))}
+                </div>
+              ) : <div className="text-[10px] text-stone-500 font-mono py-2">{lang === "en" ? "Loading live signals…" : "ನೇರ ಸಂಕೇತಗಳನ್ನು ಲೋಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ…"}</div>}
+            </div>
           </div>
 
           {/* Standalone Karnataka cutout map -- no basemap/tiles at all, just

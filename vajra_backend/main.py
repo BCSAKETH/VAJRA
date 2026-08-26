@@ -639,6 +639,66 @@ def _classify_case_status(status_name: str) -> str:
     return "unclassified"
 
 
+@app.get("/api/dashboard/state-overview")
+async def get_state_overview(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    State-level headline metrics for the analytics tab's top-level grid: total
+    incidents, a 12-month trend (+ quarter-over-quarter momentum), and the
+    crime-type mix. Live COUNT/GROUP-BY aggregates over the full CaseMaster
+    table (not 300-row samples). One dashboard-load call; the client caches it.
+    """
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    out: Dict[str, Any] = {"total_incidents": 0, "monthly_trend": [], "trend_pct": 0.0, "crime_mix": []}
+    try:
+        tot = catalyst_app.zql().execute_query("SELECT COUNT(CaseMasterID) FROM CaseMaster")
+        if tot:
+            out["total_incidents"] = int(tot[0].get("CaseMaster", {}).get("COUNT(CaseMasterID)") or 0)
+    except Exception as e:
+        logger.warning(f"state-overview total failed: {e}")
+    try:
+        now = datetime.utcnow()
+        yy, mm = now.year, now.month
+        months = []
+        for _ in range(12):
+            months.append((yy, mm))
+            mm -= 1
+            if mm == 0:
+                mm = 12
+                yy -= 1
+        months.reverse()
+        for (y2, m2) in months:
+            start = f"{y2:04d}-{m2:02d}-01"
+            end = f"{y2+1:04d}-01-01" if m2 == 12 else f"{y2:04d}-{m2+1:02d}-01"
+            cnt = 0
+            r = catalyst_app.zql().execute_query(
+                f"SELECT COUNT(CaseMasterID) FROM CaseMaster WHERE CrimeRegisteredDate >= '{start}' AND CrimeRegisteredDate < '{end}'")
+            if r:
+                cnt = int(r[0].get("CaseMaster", {}).get("COUNT(CaseMasterID)") or 0)
+            out["monthly_trend"].append({"label": datetime(y2, m2, 1).strftime("%b"), "count": cnt})
+        if len(out["monthly_trend"]) >= 6:
+            recent3 = sum(x["count"] for x in out["monthly_trend"][-3:])
+            prior3 = sum(x["count"] for x in out["monthly_trend"][-6:-3])
+            out["trend_pct"] = round((recent3 - prior3) / prior3 * 100.0, 1) if prior3 else 0.0
+    except Exception as e:
+        logger.warning(f"state-overview trend failed: {e}")
+    try:
+        h = catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead")
+        heads = {r.get("CrimeHead", {}).get("CrimeHeadID"): r.get("CrimeHead", {}).get("CrimeGroupName") for r in h}
+        res = catalyst_app.zql().execute_query("SELECT CrimeMajorHeadID, COUNT(CaseMasterID) FROM CaseMaster GROUP BY CrimeMajorHeadID")
+        mix: Dict[str, int] = {}
+        for r in res:
+            cm = r.get("CaseMaster", {})
+            nm = heads.get(cm.get("CrimeMajorHeadID")) or f"Category {cm.get('CrimeMajorHeadID')}"
+            cnt = int(cm.get("COUNT(CaseMasterID)") or 0)
+            if cnt > 0:
+                mix[nm] = mix.get(nm, 0) + cnt
+        out["crime_mix"] = sorted([{"name": k, "value": v} for k, v in mix.items()], key=lambda x: x["value"], reverse=True)[:6]
+    except Exception as e:
+        logger.warning(f"state-overview mix failed: {e}")
+    return out
+
+
 @app.get("/api/dashboard/districts/summary")
 async def get_district_dashboard_summary(request: Request, location_context: str = Depends(security_firewall)):
     """

@@ -230,7 +230,12 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   const getSpeakText = React.useCallback((): string => {
     const cleaned = cleanTextForSpeech(displayText);
     if (!cleaned) return "";
-    const MAX_SPEAK = 700;
+    // Speak a SHORT summary (first ~2 sentences) rather than the whole answer.
+    // Server TTS takes ~1s per ~150 chars, so a 320-char cap synthesises in
+    // ~2s -- fast enough that the background pre-generation finishes before the
+    // officer clicks, making playback feel instant. The full answer stays on
+    // screen; only what's read aloud is trimmed.
+    const MAX_SPEAK = 320;
     if (cleaned.length <= MAX_SPEAK) return cleaned;
     const slice = cleaned.slice(0, MAX_SPEAK);
     const lastStop = Math.max(
