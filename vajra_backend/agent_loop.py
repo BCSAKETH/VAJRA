@@ -442,6 +442,41 @@ class VajraAgentLoop:
             s = s.split("</think>")[-1]
         else:
             s = re.sub(r"<think>.*\Z", "", s, flags=re.DOTALL)
+        s = s.strip()
+        # UNTAGGED reasoning leak: this deployed GLM sometimes emits a numbered
+        # meta-analysis of the request BEFORE its answer with NO <think> tags at
+        # all -- confirmed live via a raw endpoint probe: "1. **Analyze the
+        # User's Input:** ... 2. **Analyze the System Instructions:** ...". The
+        # <think> handling above can't catch that. Detect a LEADING block of
+        # such reasoning and drop only that block, keeping the real answer that
+        # follows. Deliberately conservative: only triggers when the FIRST
+        # non-empty line is clearly meta-reasoning (a genuine numbered answer
+        # like "1. Suspect Ramesh has 3 cases" does NOT match), and stops
+        # dropping at the first substantive line so a real list is never eaten.
+        if s:
+            # Tight signature: "analyze/assess/examine" only counts as reasoning
+            # when it's clearly ABOUT the request itself ("Analyze the User's
+            # Input", "Assess the request") -- a real answer that happens to open
+            # "Analyzing the network shows..." must NOT match and be eaten.
+            reasoning_sig = re.compile(
+                r"^\s*(?:\d+[\.\)]\s*)?\*{0,2}\s*(?:"
+                r"(?:analyz\w*|assess\w*|examin\w*|interpret\w*|understand\w*)\s+(?:the\s+)?"
+                r"(?:user|request|query|input|instruction|question|officer|system|task)"
+                r"|the user(?:'s)?\b|user (?:said|asked|wants|is asking|input)"
+                r"|system instruction|my instruction|the request\b|the query\b"
+                r"|the officer(?:'s)? (?:query|question|request)|step \d)",
+                re.IGNORECASE)
+            lines = s.split("\n")
+            first = next((ln for ln in lines if ln.strip()), "")
+            if reasoning_sig.match(first):
+                out, dropping = [], True
+                for ln in lines:
+                    if dropping:
+                        if not ln.strip() or reasoning_sig.match(ln):
+                            continue
+                        dropping = False  # first non-reasoning line = the answer
+                    out.append(ln)
+                s = "\n".join(out).strip()
         return s.strip()
 
     def _multilens_fallback(self, context: str) -> Dict[str, Any]:
@@ -666,6 +701,83 @@ class VajraAgentLoop:
                 return {"tool": tool_name, "parameters": clean_params}
 
         return None
+
+    # Per-tool trigger words used ONLY to pre-filter which tool schemas get
+    # sent to GLM (see _relevant_tools). Measured: sending all 25 schemas is a
+    # ~3,240-token system prompt EVERY turn, which is why the 30B "thinking"
+    # model was taking 30-140s and dropping the connection. Trimming to the few
+    # tools a query could plausibly need cuts that to ~800 tokens so GLM
+    # answers in seconds. This is a SPEED filter, not the decision itself --
+    # GLM still reasons over and picks from whatever survives the filter.
+    _TOOL_HINTS = {
+        "get_my_profile": ["my name", "my profile", "my details", "who am i", "my rank",
+                           "my station", "my posting", "my assignment", "my designation", "am i posted"],
+        "query_case": ["case", "cr-", "fir", "case number", "case no", "about case", "details of case"],
+        "get_case_sections": ["section", "ipc", "bns", "legal provision", "charges", "act", "which section"],
+        "suggest_sections": ["what section", "which section", "sections can be applied", "applicable section",
+                             "suggest section", "section for", "sections for", "sections apply"],
+        "query_graph_network": ["network", "syndicate", "co-accused", "connection", "connected to", "linked",
+                                "associate", "gang member", "crimes is", "crimes does", "accomplice"],
+        "query_financial_links": ["financial", "money trail", "transaction", "bank account", "payment"],
+        "detect_financial_ring": ["money laundering", "hawala", "mule account", "financial ring",
+                                  "money network", "laundering", "money ring"],
+        "query_hotspots": ["hotspot", "cluster map", "crime map", "dbscan", "where are crimes", "concentration"],
+        "get_forecast": ["forecast", "predict", "early warning", "next month", "projection", "expected", "future crime"],
+        "get_offender_risk": ["risk score", "conviction risk", "recidivism", "re-offend", "reoffend",
+                             "risk for", "risk of", "dangerous", "threat level"],
+        "get_mo_profile": ["mo profile", "modus operandi", "behavioral profile", "behaviour profile", "method of"],
+        "summarize_case": ["summarize", "summary", "brief on case", "overview of case"],
+        "find_similar_cases": ["similar case", "similar to", "past cases", "cases like", "find cases", "find case",
+                               "find all", "list cases", "show cases", "cases near", "cases in", "cases involving",
+                               "related cases", "murder case", "cybercrime", "cyber crime"],
+        "get_case_timeline": ["timeline", "chronology", "milestones", "sequence of events", "when did"],
+        "get_demographic_correlation": ["demographic", "socio-economic", "socio economic", "correlation",
+                                        "unemployment", "poverty", "literacy"],
+        "get_repeat_offenders": ["repeat offender", "habitual", "frequent offender", "most active"],
+        "detect_crime_groups": ["organized crime", "crime group", "gang", "criminal syndicate", "groups operating"],
+        "get_crime_trends": ["trend", "over time", "increasing", "decreasing", "seasonal", "rising", "falling", "growth"],
+        "generate_full_report": ["full report", "complete report on suspect", "full profile",
+                                 "everything about suspect", "deep dive on suspect", "dossier on suspect"],
+        "get_case_types_distribution": ["pie chart", "case types", "types of cases", "distribution of cases",
+                                        "cases by type", "crime categories", "breakdown"],
+        "generate_case_dossier": ["full dossier", "case dossier", "full report on case", "complete report on case",
+                                  "full case file", "complete case file", "full investigation"],
+        "plan_patrol_deployment": ["beat plan", "patrol deployment", "deploy patrol", "where should i send",
+                                   "where to send patrol", "where to deploy", "where to focus", "patrol plan"],
+        "generate_crime_overview": ["crime overview", "overview of district", "district overview",
+                                    "situation in", "picture of crime"],
+    }
+    # Compact generalist set for genuinely ambiguous queries that hint at no
+    # specific tool -- still far smaller than the full catalog.
+    _DEFAULT_TOOLS = ["query_case", "find_similar_cases", "query_graph_network", "get_offender_risk",
+                      "query_hotspots", "get_crime_trends", "get_demographic_correlation", "resolve_vague_query"]
+    # Always-available safety nets so a mis-scored query still has a catch-all
+    # and a way to ask for clarification.
+    _ALWAYS_TOOLS = {"find_similar_cases", "resolve_vague_query", "ask_clarifying_question"}
+
+    def _relevant_tools(self, query: str) -> List[Dict[str, Any]]:
+        """
+        Return only the TOOL schemas a query could plausibly need, instead of
+        all 25, so the GLM tool-selection prompt is small and fast. Scoring is
+        blunt on purpose (keyword hits + tool-name-word hits); when nothing
+        scores, fall back to a compact generalist set -- never the full 25.
+        """
+        q = (query or "").lower()
+        scores: Dict[str, int] = {}
+        for t in self.TOOLS:
+            name = t["name"]
+            score = sum(2 for kw in self._TOOL_HINTS.get(name, []) if kw in q)
+            score += sum(1 for w in name.split("_") if len(w) > 3 and w in q)
+            if score:
+                scores[name] = score
+        if not scores:
+            keep = set(self._DEFAULT_TOOLS) | self._ALWAYS_TOOLS
+        else:
+            ranked = sorted(scores, key=lambda n: scores[n], reverse=True)[:6]
+            keep = set(ranked) | self._ALWAYS_TOOLS
+        filtered = [t for t in self.TOOLS if t["name"] in keep]
+        logger.info(f"Tool pre-filter: {len(filtered)}/{len(self.TOOLS)} tools sent to GLM -> {[t['name'] for t in filtered]}")
+        return filtered
 
     def _resolve_entities(self, query: str, session_id: str, exclude_name: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -942,6 +1054,23 @@ class VajraAgentLoop:
                     "details": "Officer selected the deep Full Dossier view; the complete composite was assembled directly.",
                 })
 
+        # A2 FAST-ROUTE: when the officer's command clearly maps to exactly one
+        # tool ("network of X", "risk for X", "hotspots", "which sections for
+        # case Y"), pick it deterministically and SKIP the slow GLM tool-
+        # selection call entirely. GLM still writes the full analysis on the
+        # next iteration (synthesis), so the ANSWER is fully AI-reasoned -- only
+        # the "which tool?" guess is short-circuited. That is why NO "AI
+        # unavailable" citation is added here, unlike the last-resort use of the
+        # same router when GLM is genuinely down (see _keyword_route_tool): the
+        # required-parameter gate in that router (returns None when a needed
+        # name/case/district is missing) keeps this from grabbing queries that
+        # actually need the model to reason.
+        if forced_decision is None and answer_mode != "dossier":
+            fast = self._keyword_route_tool(officer_query)
+            if fast:
+                forced_decision = fast
+                logger.info(f"Fast-route: '{fast['tool']}' chosen deterministically, skipping GLM tool-selection")
+
         max_iterations = 4
         current_iteration = 0
 
@@ -980,9 +1109,14 @@ class VajraAgentLoop:
             if allow_tools and forced_decision is not None:
                 llm_res = {"choices": [{"message": {"content": json.dumps(forced_decision)}}]}
             else:
+                # A1: on the tool-selection iteration, send GLM only the tools
+                # this query could plausibly need (~6) instead of all 25 --
+                # cuts the prompt from ~3,240 to ~800 tokens so the model
+                # answers in seconds instead of dropping the connection.
+                tools_for_call = self._relevant_tools(officer_query) if allow_tools else None
                 llm_res = self.llm.chat(
                     history,
-                    self.TOOLS if allow_tools else None,
+                    tools_for_call,
                     max_tokens=3500
                 )
 
