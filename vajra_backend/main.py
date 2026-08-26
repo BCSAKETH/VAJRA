@@ -3409,6 +3409,49 @@ async def process_voice_endpoint(payload: VoiceProcessRequest, request: Request,
     return await chat_endpoint(payload, request, location_context)
 
 
+class FeedbackRequest(BaseModel):
+    session_id: Optional[str] = None
+    message_id: Optional[str] = None
+    query: Optional[str] = ""
+    response: Optional[str] = ""
+    rating: str           # "up" or "down"
+    correction: Optional[str] = ""
+
+
+@app.post("/api/feedback")
+async def submit_feedback(payload: FeedbackRequest, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Records an officer's thumbs-up/down (and optional correction) on an answer.
+    This is the FOUNDATION of VAJRA's auto-learning: the captured signal drives
+    routing/prompt tuning and the Answer-Quality loop. Stored in a dedicated
+    Feedback table (see docs/SCHEMA.md); if that table isn't provisioned in the
+    console yet, the endpoint soft-acks instead of failing so the UI stays
+    responsive -- feedback is optional telemetry, never a hard dependency of a
+    turn.
+    """
+    rating = (payload.rating or "").strip().lower()
+    if rating not in ("up", "down"):
+        raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
+    prof = request.state.user_profile or {}
+    kgid = prof.get("KGID") or prof.get("EmployeeID") or prof.get("EmployeeId") or ""
+    row = {
+        "kgid": str(kgid),
+        "session_id": (payload.session_id or "")[:64],
+        "message_id": (payload.message_id or "")[:64],
+        "query_text": (payload.query or "")[:2000],
+        "response_summary": (payload.response or "")[:2000],
+        "rating": rating,
+        "correction": (payload.correction or "")[:2000],
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    try:
+        zcql_insert_row("Feedback", row)
+        return {"status": "recorded"}
+    except Exception as e:
+        logger.warning(f"Feedback insert failed (Feedback table not provisioned yet?): {e}")
+        return {"status": "unavailable", "detail": "Feedback storage not configured yet."}
+
+
 class PDFExportRequest(BaseModel):
     transcript: List[Dict[str, Any]]
     badge_id: str = "KSP-2026"

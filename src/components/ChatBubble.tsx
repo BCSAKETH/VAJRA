@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ChatMessage } from "../AppContext";
 import { translations } from "../i18n";
-import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 import { API_BASE } from "../config";
 
@@ -149,6 +149,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   const isAI = message.sender === "assistant";
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
   const [loadingAttachmentId, setLoadingAttachmentId] = useState<string | null>(null);
   // USP-3 "explainable by default" -- one tap reveals the evidence trail
@@ -348,6 +349,25 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
     } catch (err) {
       console.error("Copy failed:", err);
     }
+  };
+
+  // Officer rates the answer -- the seed signal for auto-learning. Optimistic UI
+  // (mark selected immediately); the POST is best-effort and never blocks.
+  const submitFeedback = (rating: "up" | "down") => {
+    const next = feedback === rating ? null : rating;   // click again to undo
+    setFeedback(next);
+    if (!next) return;
+    fetch(`${API_BASE}/api/feedback`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      body: JSON.stringify({
+        session_id: (message as any).sessionId || "",
+        message_id: String(message.id || ""),
+        query: (message as any).forQuery || "",
+        response: displayText.slice(0, 2000),
+        rating: next,
+      }),
+    }).catch(() => { /* best-effort telemetry */ });
   };
 
   // Attachments are embedded inline as a data URI at upload time (see
@@ -621,6 +641,26 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
             >
               {isSpeaking ? <Volume2 className="w-3 h-3 animate-pulse text-[#C79A4E]" /> : <VolumeX className="w-3 h-3" />}
             </button>
+          )}
+          {isAI && !message.isSimulated && (
+            <>
+              <button
+                onClick={() => submitFeedback("up")}
+                title={lang === "en" ? "Good answer" : "ಉತ್ತಮ ಉತ್ತರ"}
+                aria-pressed={feedback === "up"}
+                className={`p-1 rounded hover:bg-stone-800 transition-colors cursor-pointer ${feedback === "up" ? "text-[#5DCAA5]" : "text-stone-600 hover:text-stone-300"}`}
+              >
+                <ThumbsUp className="w-3 h-3" />
+              </button>
+              <button
+                onClick={() => submitFeedback("down")}
+                title={lang === "en" ? "Needs improvement" : "ಸುಧಾರಣೆ ಅಗತ್ಯ"}
+                aria-pressed={feedback === "down"}
+                className={`p-1 rounded hover:bg-stone-800 transition-colors cursor-pointer ${feedback === "down" ? "text-rose-400" : "text-stone-600 hover:text-stone-300"}`}
+              >
+                <ThumbsDown className="w-3 h-3" />
+              </button>
+            </>
           )}
         </div>
         </>

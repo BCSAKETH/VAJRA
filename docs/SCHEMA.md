@@ -235,3 +235,22 @@ collision type, etc.) — separate from `CaseMaster`, read by `/api/analytics/ac
   explicit "Investigator vs Analyst vs Supervisor vs Policymaker" access-tier field;
   today's role gating is by which screen you navigate to, not a real data-layer scope
   keyed off rank.
+
+---
+
+## `Feedback` (NEW — Round 2, auto-learning foundation)
+
+**Must be created in the Catalyst console before ratings persist.** Backs the
+`POST /api/feedback` endpoint (👍/👎 + optional correction on each answer). This is
+the seed signal for auto-learning (routing/prompt tuning + the Answer-Quality loop).
+Until it exists the endpoint soft-acks (UI still works, ratings just aren't stored).
+
+Columns (all text unless noted):
+- `kgid` — officer badge/employee id who rated
+- `session_id` — chat session id
+- `message_id` — the rated message's id
+- `query_text` — the officer's question (≤2000)
+- `response_summary` — the answer text (≤2000)
+- `rating` — `up` or `down`
+- `correction` — optional free-text of what was wrong (≤2000)
+- `created_at` — ISO timestamp
