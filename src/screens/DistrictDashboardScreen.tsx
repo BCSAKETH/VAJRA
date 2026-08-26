@@ -316,6 +316,32 @@ export const DistrictDashboardScreen: React.FC = () => {
                     </g>
                   );
                 })}
+
+                {/* Radar sweep from the map centre — an ops-room "live scan" feel. */}
+                <g className="pointer-events-none">
+                  <line x1={MAP_WIDTH / 2} y1={MAP_HEIGHT / 2} x2={MAP_WIDTH / 2} y2={MAP_HEIGHT * 0.06}
+                    stroke="#C79A4E" strokeWidth={1.5} opacity={0.22}>
+                    <animateTransform attributeName="transform" type="rotate"
+                      from={`0 ${MAP_WIDTH / 2} ${MAP_HEIGHT / 2}`} to={`360 ${MAP_WIDTH / 2} ${MAP_HEIGHT / 2}`}
+                      dur="9s" repeatCount="indefinite" />
+                  </line>
+                </g>
+
+                {/* Pulsing "live threat" markers on the 3 hottest districts. */}
+                {[...rows].sort((a, b) => b.active_cases - a.active_cases).slice(0, 3).map((r, i) => {
+                  const dp = districtPaths.find((p) => p.dbName === r.district);
+                  if (!dp) return null;
+                  const [cx, cy] = dp.centroid;
+                  return (
+                    <g key={`pulse-${r.district_id}`} className="pointer-events-none">
+                      <circle cx={cx} cy={cy} r={5} fill="#E24B4A" opacity={0.95} />
+                      <circle cx={cx} cy={cy} r={5} fill="none" stroke="#E24B4A" strokeWidth={2}>
+                        <animate attributeName="r" from="5" to="28" dur="2.4s" begin={`${i * 0.6}s`} repeatCount="indefinite" />
+                        <animate attributeName="opacity" from="0.75" to="0" dur="2.4s" begin={`${i * 0.6}s`} repeatCount="indefinite" />
+                      </circle>
+                    </g>
+                  );
+                })}
               </svg>
             )}
 
