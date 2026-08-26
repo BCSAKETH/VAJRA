@@ -254,3 +254,20 @@ Columns (all text unless noted):
 - `rating` — `up` or `down`
 - `correction` — optional free-text of what was wrong (≤2000)
 - `created_at` — ISO timestamp
+
+---
+
+## `AccusedContact` (NEW — Round 2, synthetic; unlocks shared-attribute network linking)
+
+**Create in the Catalyst console, then seed via `POST /api/admin/seed-accused-links`
+(supervisor-only).** Holds a synthetic phone + vehicle per accused, with intentional
+overlaps (~25 clusters share one phone/vehicle) so the criminal-network tool can
+surface people linked by a SHARED phone/vehicle across DIFFERENT cases — the
+"linked though never in the same FIR" signal flat co-accused analysis misses.
+Clearly synthetic demo data, consistent with the rest of VAJRA's dataset. The
+network tool reads it if present and silently skips if absent.
+
+Columns (all text):
+- `AccusedName` — matches `Accused.AccusedName`
+- `PhoneNumber` — synthetic
+- `VehicleNumber` — synthetic

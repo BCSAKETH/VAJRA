@@ -3489,6 +3489,64 @@ async def submit_feedback(payload: FeedbackRequest, request: Request, location_c
         return {"status": "unavailable", "detail": "Feedback storage not configured yet."}
 
 
+@app.post("/api/admin/seed-accused-links")
+async def seed_accused_links(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    ONE-TIME (supervisor-only) generator of SYNTHETIC contact attributes -- a
+    phone and a vehicle per accused -- into the AccusedContact table, with
+    INTENTIONAL overlaps: ~25 clusters of 3-5 accused are given a SHARED phone
+    or vehicle to simulate syndicates operating on common burner phones /
+    getaway vehicles. This unlocks shared-attribute network linking ("linked by
+    a shared phone across different cases" -- the Tier-2 depth the base data
+    lacked). Clearly synthetic demo data, consistent with the rest of VAJRA's
+    synthetic dataset; requires the AccusedContact table to exist (see
+    docs/SCHEMA.md). Re-running re-seeds fresh overlaps.
+    """
+    role = getattr(request.state, "role_tier", "") or (request.state.user_profile or {}).get("role_tier", "")
+    if role not in ("supervisor", "admin"):
+        raise HTTPException(status_code=403, detail="Supervisor tier required to seed synthetic link data.")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    import random
+    try:
+        rows = catalyst_app.zql().execute_query("SELECT AccusedName FROM Accused LIMIT 400")
+        names = sorted({r.get("Accused", {}).get("AccusedName") for r in rows
+                        if r.get("Accused", {}).get("AccusedName") and "unknown" not in (r.get("Accused", {}).get("AccusedName") or "").lower()})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not read accused names: {e}")
+    if not names:
+        return {"status": "no_names", "seeded": 0}
+    random.shuffle(names)
+    phone = {n: f"+91-9{random.randint(100000000, 999999999)}" for n in names}
+    vehicle = {n: f"KA-{random.randint(1,53):02d}-{random.choice('ABKLMNPQ')}{random.choice('ABCHJKLR')}-{random.randint(1000,9999)}" for n in names}
+    # intentional syndicate overlaps: clusters share ONE phone or vehicle
+    clusters = 0
+    i = 0
+    while i + 3 <= len(names) and clusters < 25:
+        size = random.randint(3, 5)
+        grp = names[i:i + size]
+        if random.random() < 0.6:
+            shared = phone[grp[0]]
+            for n in grp:
+                phone[n] = shared
+        else:
+            shared = vehicle[grp[0]]
+            for n in grp:
+                vehicle[n] = shared
+        clusters += 1
+        i += size
+    seeded = 0
+    for n in names:
+        try:
+            zcql_insert_row("AccusedContact", {"AccusedName": n, "PhoneNumber": phone[n], "VehicleNumber": vehicle[n]})
+            seeded += 1
+        except Exception as e:
+            logger.warning(f"AccusedContact insert failed for {n!r} (table missing?): {e}")
+            if seeded == 0:
+                raise HTTPException(status_code=503, detail="AccusedContact table not found -- create it in the console first (see docs/SCHEMA.md).")
+    return {"status": "seeded", "accused": seeded, "syndicate_clusters": clusters}
+
+
 class PDFExportRequest(BaseModel):
     transcript: List[Dict[str, Any]]
     badge_id: str = "KSP-2026"

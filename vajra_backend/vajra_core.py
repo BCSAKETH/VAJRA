@@ -780,6 +780,39 @@ class VajraGraphRAG:
                     person_centrality = [c for c in centrality if c["type"] in ("suspect", "person")]
                     hub = person_centrality[0] if person_centrality else (centrality[0] if centrality else None)
 
+                    # SHARED-ATTRIBUTE (Tier-2) LINKS: people connected by a
+                    # shared phone or vehicle across DIFFERENT cases -- the
+                    # "linked though never in the same FIR" signal that flat
+                    # co-accused analysis misses. Reads the AccusedContact table
+                    # if it has been seeded; silently skips when absent, so the
+                    # base network still works unchanged.
+                    shared_links = []
+                    try:
+                        sn = suspect_name.replace("'", "''")
+                        mine = catalyst_app.zql().execute_query(
+                            f"SELECT PhoneNumber, VehicleNumber FROM AccusedContact WHERE AccusedName LIKE '*{sn}*' LIMIT 1")
+                        if mine:
+                            m = mine[0].get("AccusedContact", {})
+                            seen = {x.lower() for x in ([suspect_name] + co_accused_names)}
+                            for attr_val, attr_kind, col in (
+                                (m.get("PhoneNumber"), "phone", "PhoneNumber"),
+                                (m.get("VehicleNumber"), "vehicle", "VehicleNumber")):
+                                if not attr_val:
+                                    continue
+                                av = str(attr_val).replace("'", "''")
+                                others = catalyst_app.zql().execute_query(
+                                    f"SELECT AccusedName FROM AccusedContact WHERE {col} = '{av}'")
+                                for o in others:
+                                    onm = o.get("AccusedContact", {}).get("AccusedName")
+                                    if onm and onm.lower() not in seen:
+                                        seen.add(onm.lower())
+                                        nid = f"shared_{len(nodes)}"
+                                        nodes.append({"id": nid, "label": onm, "type": "shared_link", "sublabel": f"shared {attr_kind}"})
+                                        edges.append({"source": "suspect", "target": nid, "kind": "shared_attribute", "label": f"shared {attr_kind}"})
+                                        shared_links.append({"name": onm, "via": attr_kind, "value": attr_val})
+                    except Exception as e:
+                        logger.info(f"Shared-attribute linking skipped (AccusedContact not seeded?): {e}")
+
                     return {
                         "target_suspect": suspect_name,
                         "engine_mode": "Live Zoho Catalyst ZQL Tracing",
@@ -790,6 +823,7 @@ class VajraGraphRAG:
                         "edges": edges,
                         "centrality": centrality,
                         "hub": hub,
+                        "shared_links": shared_links,
                         "case_ids": case_ids
                     }
             except Exception as e:
