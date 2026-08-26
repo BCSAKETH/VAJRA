@@ -36,8 +36,70 @@ const InlineMapFitter: React.FC<{ points: { lat: number; lng: number }[] }> = ({
   return null;
 };
 
+// Colour + arrow encode MOMENTUM (rising = danger, falling = good, else muted)
+// so an officer reads the concern board at a glance without parsing numbers.
+const momColor = (g: number) => (g > 3 ? "#E24B4A" : g < -3 ? "#5DCAA5" : "#A8A096");
+const momArrow = (g: number) => (g > 3 ? "▲" : g < -3 ? "▼" : "▬");
+
+// Scannable "what should I be most concerned about" board: a hero for the #1
+// concern, then ranked bars sized by volume and coloured by momentum. Full
+// detail stays in the AI narrative above; this is the at-a-glance layer.
+const PriorityConcernsView: React.FC<{ data: any; lang: "en" | "kn" }> = ({ data, lang }) => {
+  const concerns: any[] = Array.isArray(data?.concerns) ? data.concerns : [];
+  if (concerns.length === 0) {
+    return (
+      <div className="bg-stone-950/65 rounded-lg p-3 font-mono text-[11px] text-stone-400 border border-stone-900">
+        {lang === "en" ? "No priority-concern signal for this scope." : "ಈ ವ್ಯಾಪ್ತಿಗೆ ಆದ್ಯತಾ ಕಾಳಜಿ ಸಂಕೇತ ಇಲ್ಲ."}
+      </div>
+    );
+  }
+  const top = concerns[0];
+  const rest = concerns.slice(1, 6);
+  const maxRecent = Math.max(...concerns.map((c) => c.recent || 0), 1);
+  const g = data?.overall_growth_pct ?? 0;
+  return (
+    <div className="space-y-3">
+      <div className="rounded-xl p-3.5 border border-rose-500/30 bg-rose-500/[0.07]">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[9px] font-mono uppercase tracking-widest text-rose-400/80">{lang === "en" ? "Top Priority" : "ಪ್ರಮುಖ ಆದ್ಯತೆ"}</span>
+          <span className="text-[10px] font-mono font-bold" style={{ color: momColor(top.growth_pct) }}>
+            {momArrow(top.growth_pct)} {top.growth_pct >= 0 ? "+" : ""}{top.growth_pct}%
+          </span>
+        </div>
+        <div className="flex items-baseline justify-between gap-2 mt-1">
+          <span className="text-lg font-black text-stone-100 leading-tight">{top.type}</span>
+          <span className="font-mono text-sm font-bold text-rose-300 shrink-0">
+            {top.recent}<span className="text-[9px] text-stone-500 ml-1">{lang === "en" ? "in 90d" : "90ದಿನ"}</span>
+          </span>
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        {rest.map((c, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <span className="text-[10px] font-mono text-stone-600 w-3 shrink-0">{i + 2}</span>
+            <span className="text-[11px] text-stone-300 w-24 sm:w-28 truncate shrink-0" title={c.type}>{c.type}</span>
+            <div className="flex-1 h-4 bg-stone-900/60 rounded overflow-hidden">
+              <div className="h-full rounded" style={{ width: `${Math.max(6, (c.recent / maxRecent) * 100)}%`, background: momColor(c.growth_pct), opacity: 0.55 }} />
+            </div>
+            <span className="text-[10px] font-mono text-stone-400 w-8 text-right shrink-0">{c.recent}</span>
+            <span className="text-[10px] font-mono font-bold w-12 text-right shrink-0" style={{ color: momColor(c.growth_pct) }}>
+              {momArrow(c.growth_pct)}{c.growth_pct >= 0 ? "+" : ""}{c.growth_pct}%
+            </span>
+          </div>
+        ))}
+      </div>
+      <div className="flex items-center justify-between text-[10px] font-mono text-stone-500 pt-1.5 border-t border-stone-850">
+        <span className="truncate">{data.scope}</span>
+        <span className="shrink-0 ml-2">
+          {lang === "en" ? "Overall" : "ಒಟ್ಟಾರೆ"}: <span style={{ color: momColor(g) }}>{g >= 0 ? "+" : ""}{g}%</span> · {data.total_recent} {lang === "en" ? "in 90d" : "90ದಿನ"}
+        </span>
+      </div>
+    </div>
+  );
+};
+
 interface InlineWidgetProps {
-  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution";
+  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "priority_concerns";
   data: any;
   onExpand: () => void;
 }
@@ -113,6 +175,12 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
             <>
               <PieChart className="w-4 h-4 text-[#C79A4E]" />
               <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Case Types Distribution" : "ಪ್ರಕರಣಗಳ ಪ್ರಕಾರ ವಿತರಣೆ"}</span>
+            </>
+          )}
+          {type === "priority_concerns" && (
+            <>
+              <ShieldAlert className="w-4 h-4 text-rose-400" />
+              <span className="text-xs font-bold text-rose-400 tracking-wider uppercase font-mono">{lang === "en" ? "Priority Concern Board" : "ಆದ್ಯತಾ ಕಾಳಜಿ ಫಲಕ"}</span>
             </>
           )}
         </div>
@@ -196,7 +264,9 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
               </div>
             </div>
           );
-        })() : (
+        })() : type === "priority_concerns" ? (
+          <PriorityConcernsView data={data} lang={lang} />
+        ) : (
           <ExpandedOverlay inline type={type} data={data} onClose={() => {}} />
         )}
       </div>

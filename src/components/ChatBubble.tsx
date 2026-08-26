@@ -50,6 +50,45 @@ const cleanTextForSpeech = (rawText: string): string => {
     .trim();
 };
 
+// Lightweight, dependency-free renderer for the small subset of markdown the
+// GLM emits -- **bold**, #/##/### headings, bullet lists (* - •), numbered
+// lists, and blank-line paragraphs. Builds JSX (never dangerouslySetInnerHTML),
+// so it's CSP-safe and can't inject HTML. Without this the raw "**...**" and
+// "* " markers show literally in the bubble (the reported rough look).
+const renderInline = (s: string, kb: string): React.ReactNode[] => {
+  return s.split(/(\*\*[^*]+\*\*)/g).map((p, i) => {
+    if (p.startsWith("**") && p.endsWith("**")) {
+      return <strong key={kb + i} className="font-semibold text-stone-100">{p.slice(2, -2)}</strong>;
+    }
+    return <React.Fragment key={kb + i}>{p}</React.Fragment>;
+  });
+};
+
+const renderRich = (text: string): React.ReactNode => {
+  const lines = (text || "").split("\n");
+  const blocks: React.ReactNode[] = [];
+  let bullets: React.ReactNode[] = [];
+  const flush = (k: string) => {
+    if (bullets.length) {
+      blocks.push(<ul key={"ul" + k} className="list-disc pl-5 space-y-0.5 my-1.5">{bullets}</ul>);
+      bullets = [];
+    }
+  };
+  lines.forEach((raw, idx) => {
+    const t = raw.trim();
+    if (!t) { flush("e" + idx); return; }
+    const h = t.match(/^(#{1,3})\s+(.*)$/);
+    const bul = t.match(/^[*\-•]\s+(.*)$/);
+    const num = t.match(/^(\d+)\.\s+(.*)$/);
+    if (h) { flush("h" + idx); blocks.push(<div key={idx} className="font-bold text-stone-100 mt-2.5 mb-0.5 text-[14.5px]">{renderInline(h[2], idx + "h")}</div>); }
+    else if (bul) { bullets.push(<li key={idx}>{renderInline(bul[1], idx + "b")}</li>); }
+    else if (num) { flush("n" + idx); blocks.push(<div key={idx} className="mt-2 flex gap-1.5"><span className="text-[#C79A4E] font-bold shrink-0">{num[1]}.</span><span>{renderInline(num[2], idx + "n")}</span></div>); }
+    else { flush("p" + idx); blocks.push(<p key={idx} className="my-1.5">{renderInline(t, idx + "p")}</p>); }
+  });
+  flush("end");
+  return <div className="leading-relaxed [&>*:first-child]:mt-0">{blocks}</div>;
+};
+
 type SpeakResult = "started" | "unsupported" | "no_kannada_voice";
 
 // Confirmed live: when no real Kannada voice is installed on the device,
@@ -310,8 +349,12 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
               : "bg-stone-900 border-[#C79A4E]/20 text-stone-100 shadow-sm"
           }`}
         >
-          {/* Main Text Content */}
-          <div className="whitespace-pre-wrap font-sans text-stone-200">{displayText}</div>
+          {/* Main Text Content -- AI answers render light markdown (bold /
+              headings / bullets / numbered) so they read as a scannable brief,
+              not a raw-asterisk wall of text. User messages stay verbatim. */}
+          {isAI
+            ? <div className="font-sans text-stone-200 text-[13.5px]">{renderRich(displayText)}</div>
+            : <div className="whitespace-pre-wrap font-sans text-stone-200">{displayText}</div>}
 
           {/* Attachment indicator -- clickable when an inline thumbnail or a
               Stratus reference exists, so an officer can actually view what

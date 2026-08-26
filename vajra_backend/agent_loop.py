@@ -2644,10 +2644,12 @@ class VajraAgentLoop:
 
         elif tool_name == "get_priority_concerns":
             district = self.sanitize_sql_input(params.get("district", ""))
-            response_type = "text"
             pc_res = self._compute_priority_concerns(district)
             data = pc_res["data"]
             text_result = pc_res["text_result"]
+            # Only emit the visual widget when there's real ranked data; the
+            # honest empty state renders as a plain text note instead.
+            response_type = "priority_concerns" if (data or {}).get("concerns") else "text"
             citations.extend(pc_res.get("citations", []))
             self._write_audit_log(
                 employee_id, "Priority Concern Analysis", district or "All Districts",
