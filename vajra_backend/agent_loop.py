@@ -727,6 +727,61 @@ class VajraAgentLoop:
 
         return None
 
+    def _keyword_route_multi(self, query: str) -> Optional[List[Dict[str, Any]]]:
+        """
+        MULTI-TOOL per turn (mandate 1 to its limit). When ONE query asks for
+        several FACETS of the same subject -- "network AND risk of Ramesh",
+        "risk and MO of X", "sections and timeline of case Y" -- return a list
+        of tool decisions so the loop runs each and stacks them as panels,
+        instead of answering only one facet (the "thin answer" problem). Only
+        fires for facet tools that share ONE resolved entity (a name or a case
+        number), so an ambiguous query never fans out. Returns None unless >=2
+        distinct facets match.
+        """
+        q = query.lower()
+        name = ""
+        m = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", query)
+        if m:
+            name = m.group(1)
+        else:
+            for cue in ("suspect", "of", "for", "on", "about"):
+                m2 = re.search(rf"\b{cue}\s+([a-zA-Z]+)\b", query, re.IGNORECASE)
+                if m2 and m2.group(1).lower() not in (
+                    "suspect", "the", "a", "this", "that", "reoffending", "crime", "him", "her", "them", "case"):
+                    name = m2.group(1).title()
+                    break
+        cm = re.search(r"\bCR-\d{4}-\d+\b", query, re.IGNORECASE)
+        case_no = cm.group(0).upper() if cm else ""
+
+        def has(*kws):
+            return any(k in q for k in kws)
+
+        facets: List[Tuple[str, Dict[str, Any]]] = []
+        if name:
+            if has("network", "connection", "syndicate", "co-accused", "linked", "connected to", "associate"):
+                facets.append(("query_graph_network", {"suspect_name": name}))
+            if has("risk", "conviction", "recidiv", "re-offend", "reoffend", "dangerous", "threat"):
+                facets.append(("get_offender_risk", {"suspect_name": name}))
+            if has("mo ", "modus operandi", "behavioral", "behaviour", "method of"):
+                facets.append(("get_mo_profile", {"suspect_name": name}))
+            if has("financial", "money", "transaction", "bank account", "hawala"):
+                facets.append(("query_financial_links", {"entity_id": name}))
+        if case_no:
+            if has("section", "ipc", "bns", "legal provision", "charge"):
+                facets.append(("get_case_sections", {"case_no": case_no}))
+            if has("timeline", "chronology", "milestone", "sequence"):
+                facets.append(("get_case_timeline", {"case_no": case_no}))
+
+        seen, out = set(), []
+        for tool, params in facets:
+            if tool in seen:
+                continue
+            seen.add(tool)
+            out.append({"tool": tool, "parameters": params})
+            if len(out) >= 3:
+                break
+        return out if len(out) >= 2 else None
+
     # Per-tool trigger words used ONLY to pre-filter which tool schemas get
     # sent to GLM (see _relevant_tools). Measured: sending all 25 schemas is a
     # ~3,240-token system prompt EVERY turn, which is why the 30B "thinking"
@@ -1096,13 +1151,66 @@ class VajraAgentLoop:
         # required-parameter gate in that router (returns None when a needed
         # name/case/district is missing) keeps this from grabbing queries that
         # actually need the model to reason.
+        multi_decisions = None
         if forced_decision is None and answer_mode != "dossier":
-            fast = self._keyword_route_tool(officer_query)
-            if fast:
-                forced_decision = fast
-                logger.info(f"Fast-route: '{fast['tool']}' chosen deterministically, skipping GLM tool-selection")
+            multi_decisions = self._keyword_route_multi(officer_query)
+            if multi_decisions:
+                logger.info(f"Multi-tool route: {[d['tool'] for d in multi_decisions]}")
+            else:
+                fast = self._keyword_route_tool(officer_query)
+                if fast:
+                    forced_decision = fast
+                    logger.info(f"Fast-route: '{fast['tool']}' chosen deterministically, skipping GLM tool-selection")
 
-        max_iterations = 4
+        # MULTI-TOOL execution: run every requested facet and stack the results
+        # as panels (reusing the dossier's panel rendering), with the grounded
+        # summaries fused into one answer. Pure grounded execution -- no extra
+        # GLM round-trip -- so a two-facet answer stays fast and reliable.
+        multi_done = False
+        if multi_decisions:
+            _MULTI_TITLES = {
+                "query_graph_network": ("Criminal Network", "ಅಪರಾಧ ಜಾಲ"),
+                "get_offender_risk": ("Conviction Risk", "ಶಿಕ್ಷೆ ಅಪಾಯ"),
+                "get_mo_profile": ("Modus Operandi", "ಕಾರ್ಯ ವಿಧಾನ"),
+                "query_financial_links": ("Financial Links", "ಆರ್ಥಿಕ ಸಂಪರ್ಕಗಳು"),
+                "get_case_sections": ("Applied Sections", "ಅನ್ವಯಿತ ವಿಭಾಗಗಳು"),
+                "get_case_timeline": ("Case Timeline", "ಪ್ರಕರಣ ಕಾಲಾನುಕ್ರಮ"),
+            }
+            panels, combined = [], []
+            for dec in multi_decisions:
+                tn = dec["tool"]
+                try:
+                    out = self._execute_tool(tn, dec.get("parameters", {}), employee_id, session_id, user_unit_id)
+                except Exception as e:
+                    logger.warning(f"Multi-tool: {tn} failed: {e}")
+                    continue
+                if out.get("citations"):
+                    citations.extend(out["citations"])
+                rt = out.get("response_type") or "text"
+                r_text = (out.get("text_result") or "").strip()
+                r_data = out.get("data")
+                has_data = bool(r_data) and (not isinstance(r_data, dict) or any(v for v in r_data.values()))
+                if not has_data and len(r_text) < 3:
+                    continue
+                t_en, t_kn = _MULTI_TITLES.get(tn, (tn, tn))
+                panels.append({"type": rt if rt != "text" else "text", "panel_key": tn,
+                               "title_en": t_en, "title_kn": t_kn, "data": r_data, "text": r_text})
+                if r_text:
+                    combined.append(f"{t_en}: {r_text}")
+            if len(panels) >= 2:
+                response_text = "\n\n".join(combined) if combined else f"Assembled {len(panels)} facets."
+                response_type = "dossier"
+                data_payload = {"panels": panels}
+                subject = (multi_decisions[0].get("parameters") or {}).get("suspect_name") \
+                    or (multi_decisions[0].get("parameters") or {}).get("entity_id") \
+                    or (multi_decisions[0].get("parameters") or {}).get("case_no") or ""
+                citations.append({"type": "Multi-Facet Answer", "id": subject,
+                                  "details": f"{len(panels)} facets fused in one turn: {', '.join(p['panel_key'] for p in panels)}"})
+                self._write_audit_log(employee_id, "Multi-Facet Answer", subject,
+                                      f"Multi-tool: {[d['tool'] for d in multi_decisions]}", response_text, session_id)
+                multi_done = True
+
+        max_iterations = 0 if multi_done else 4
         current_iteration = 0
 
         while current_iteration < max_iterations:
