@@ -882,9 +882,23 @@ class VajraAgentLoop:
             if ex:
                 return ex[0].get("Accused", {}).get("AccusedName") or name
             import difflib
-            res = catalyst_app.zql().execute_query("SELECT AccusedName FROM Accused LIMIT 300")
-            names = list({r.get("Accused", {}).get("AccusedName") for r in res
-                          if r.get("Accused", {}).get("AccusedName")})
+            # Candidate pool: names sharing a PREFIX with the query's first word
+            # (a spelling variant almost always keeps the first 2-3 letters --
+            # "Sanaia"/"Sanaya" both start "San"). Far better recall than a blind
+            # LIMIT sample that may not even contain the target. Falls back to a
+            # broad sample only if the prefix yields nothing.
+            first = re.split(r"\s+", name.strip())[0]
+            prefix = self.sanitize_sql_input(first[:3])
+            names: List[str] = []
+            if len(prefix) >= 2:
+                res = catalyst_app.zql().execute_query(
+                    f"SELECT AccusedName FROM Accused WHERE AccusedName LIKE '{prefix}*' LIMIT 300")
+                names = list({r.get("Accused", {}).get("AccusedName") for r in res
+                              if r.get("Accused", {}).get("AccusedName")})
+            if not names:
+                res = catalyst_app.zql().execute_query("SELECT AccusedName FROM Accused LIMIT 300")
+                names = list({r.get("Accused", {}).get("AccusedName") for r in res
+                              if r.get("Accused", {}).get("AccusedName")})
             best = difflib.get_close_matches(name, names, n=1, cutoff=cutoff)
             if best:
                 logger.info(f"Fuzzy accused match: '{name}' -> '{best[0]}'")
