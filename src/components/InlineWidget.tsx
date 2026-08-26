@@ -248,26 +248,39 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                   />
                   <InlineMapFitter points={hotspots} />
-                  {hotspots.map((marker, idx) => {
-                    const countMatch = marker.label?.match(/\((\d+)\s*incidents?\)/i);
-                    const incidentCount = countMatch ? parseInt(countMatch[1], 10) : null;
-                    const radius = incidentCount ? Math.min(26, 9 + incidentCount * 1.4) : 11;
-                    return (
-                      <CircleMarker
-                        key={idx}
-                        center={[marker.lat, marker.lng]}
-                        radius={radius}
-                        pathOptions={{ color: "#C79A4E", weight: 2, fillColor: "#C79A4E", fillOpacity: 0.35 }}
-                      >
-                        <Popup>
-                          <div className="text-xs font-sans text-stone-900">
-                            <span className="font-bold block">{marker.label || (lang === "en" ? "Hotspot" : "ಹಾಟ್‌ಸ್ಪಾಟ್")}</span>
-                            {marker.lat.toFixed(5)}, {marker.lng.toFixed(5)}
-                          </div>
-                        </Popup>
-                      </CircleMarker>
-                    );
-                  })}
+                  {(() => {
+                    // Pinpoint accuracy: instead of one big vague blob per
+                    // cluster, plot the EXACT centre as a small solid dot, with a
+                    // subtle intensity halo behind it, colour-coded by how hot the
+                    // cluster is relative to the others. The precise location reads
+                    // at a glance; the halo only hints at density.
+                    const counts = hotspots.map((h) => {
+                      const m = h.label?.match(/\((\d+)\s*incidents?\)/i);
+                      return m ? parseInt(m[1], 10) : 0;
+                    });
+                    const maxC = Math.max(1, ...counts);
+                    return hotspots.map((marker, idx) => {
+                      const c = counts[idx];
+                      const intensity = c ? c / maxC : 0.35;
+                      const color = intensity > 0.66 ? "#E24B4A" : intensity > 0.33 ? "#E4C590" : "#C79A4E";
+                      const halo = c ? Math.min(18, 7 + c * 0.5) : 8;
+                      return (
+                        <React.Fragment key={idx}>
+                          <CircleMarker center={[marker.lat, marker.lng]} radius={halo}
+                            pathOptions={{ color, weight: 1, fillColor: color, fillOpacity: 0.1, opacity: 0.35 }} />
+                          <CircleMarker center={[marker.lat, marker.lng]} radius={4}
+                            pathOptions={{ color: "#161412", weight: 1.5, fillColor: color, fillOpacity: 1 }}>
+                            <Popup>
+                              <div className="text-xs font-sans text-stone-900">
+                                <span className="font-bold block">{marker.label || (lang === "en" ? "Hotspot" : "ಹಾಟ್‌ಸ್ಪಾಟ್")}</span>
+                                <span className="font-mono">{marker.lat.toFixed(5)}, {marker.lng.toFixed(5)}</span>
+                              </div>
+                            </Popup>
+                          </CircleMarker>
+                        </React.Fragment>
+                      );
+                    });
+                  })()}
                 </MapContainer>
               </div>
             </div>
