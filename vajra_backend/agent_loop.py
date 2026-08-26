@@ -1043,6 +1043,36 @@ class VajraAgentLoop:
             end = content_str.rfind("}", 0, end)
         return content_str
 
+    def _load_durable_history(self, session_id: str, limit: int = 14) -> List[Dict[str, str]]:
+        """
+        Load recent conversation from the DURABLE ChatMessage store, ordered
+        chronologically. The in-process session_memory silently loses cross-turn
+        context on AppSail (not shared across workers / lost on restart --
+        confirmed live: a "what did I ask?" follow-up found no history even
+        though the messages were durably persisted). Reading straight from
+        ChatMessage makes multi-turn memory reliable. Returns [{role, content}]
+        where role is 'user' or 'assistant'.
+        """
+        out: List[Dict[str, str]] = []
+        if not catalyst_app or not session_id:
+            return out
+        try:
+            sid = str(session_id).replace("'", "''")
+            rows = catalyst_app.zql().execute_query(
+                f"SELECT sender, text, sent_at FROM ChatMessage WHERE session_id = '{sid}'")
+            recs = []
+            for r in rows:
+                cm = r.get("ChatMessage", {})
+                recs.append((cm.get("sent_at") or "", cm.get("sender") or "", cm.get("text") or ""))
+            recs.sort(key=lambda x: x[0])  # chronological by timestamp
+            for _, sender, text in recs[-limit:]:
+                if not (text or "").strip():
+                    continue
+                out.append({"role": "assistant" if sender == "assistant" else "user", "content": text})
+        except Exception as e:
+            logger.warning(f"durable history load failed for {session_id}: {e}")
+        return out
+
     def run_agent_loop(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None, answer_mode: str = "standard") -> Dict[str, Any]:
         """
         Primary execution entry point. Decides what tools to run in sequence using LLM function calling.
@@ -1069,6 +1099,18 @@ class VajraAgentLoop:
         history = context.get("messages", [])
         if not history:
             history = []
+        # In-process session_memory is unreliable on AppSail (not shared across
+        # workers / lost on restart), which silently dropped multi-turn context.
+        # If it's empty/thin, rebuild prior turns from the DURABLE ChatMessage
+        # store so EVERY follow-up keeps context, not just meta questions. The
+        # durable list ends with the current query (persisted before this turn),
+        # so drop that last user entry to avoid duplicating the one appended next.
+        if len(history) < 2:
+            durable = self._load_durable_history(session_id, 16)
+            if durable and durable[-1]["role"] == "user":
+                durable = durable[:-1]
+            if len(durable) > len(history):
+                history = durable
 
         # Append user message
         history.append({"role": "user", "content": query})
@@ -1100,16 +1142,17 @@ class VajraAgentLoop:
         _repeat_pat = ("repeat that", "say that again", "repeat the answer", "what did you say",
                        "say again", "repeat your answer", "come again", "read that again")
         if len(_meta) < 60 and (any(p in _meta for p in _prev_q_pat) or any(p in _meta for p in _repeat_pat)):
-            prior_user, prior_ai = "", ""
-            for h in reversed(history[:-1]):   # history[-1] is the current query
-                role = h.get("role")
-                content = (h.get("content") or "")
-                if role == "assistant" and not prior_ai and not content.strip().startswith("{"):
-                    prior_ai = content
-                if role == "user" and not prior_user and not content.startswith("Tool '") and not content.strip().startswith("[Context"):
-                    prior_user = re.sub(r'^\s*(?:\[Context:[^\]]*\]\s*)+', '', content, flags=re.DOTALL).strip()
-                if prior_user and prior_ai:
-                    break
+            # Read from the DURABLE store, not in-process history (which is empty
+            # across AppSail workers). The durable list ends with the CURRENT
+            # query (persisted before this background turn ran), so the prior
+            # user query is the second-to-last user message.
+            durable = self._load_durable_history(session_id, 16)
+            users = [h["content"] for h in durable if h["role"] == "user" and h["content"].strip()
+                     and not h["content"].startswith("Tool '")]
+            ais = [h["content"] for h in durable if h["role"] == "assistant" and h["content"].strip()
+                   and not h["content"].strip().startswith("{")]
+            prior_user = re.sub(r'^\s*(?:\[Context:[^\]]*\]\s*)+', '', users[-2], flags=re.DOTALL).strip() if len(users) >= 2 else ""
+            prior_ai = ais[-1] if ais else ""
             if any(p in _meta for p in _repeat_pat) and prior_ai:
                 mem_text = prior_ai
             elif prior_user:
@@ -1190,12 +1233,10 @@ class VajraAgentLoop:
             p in _elab for p in ("in detail", "more detail", "tell me more", "elaborate", "expand",
                                  "explain more", "explain further", "explain that", "go deeper",
                                  "more info", "give me more", "in depth", "in-depth")):
-            prev_ai = ""
-            for h in reversed(history[:-1]):   # history[-1] is the current "in detail"
-                content = (h.get("content") or "")
-                if h.get("role") == "assistant" and content.strip() and not content.strip().startswith("{"):
-                    prev_ai = content
-                    break
+            durable = self._load_durable_history(session_id, 16)
+            ais = [h["content"] for h in durable if h["role"] == "assistant" and h["content"].strip()
+                   and not h["content"].strip().startswith("{")]
+            prev_ai = ais[-1] if ais else ""
             if prev_ai:
                 nudge = {"role": "user", "content": (
                     "Expand and explain your previous answer in more detail for the officer -- add depth, "
@@ -1203,10 +1244,28 @@ class VajraAgentLoop:
                     "do NOT invent new names, numbers or case details.")}
                 elaborated = ""
                 try:
-                    res = self.llm.chat(history + [nudge], None, max_tokens=3500)
+                    res = self.llm.chat(durable + [nudge], None, max_tokens=3500)
                     if not res.get("error"):
                         raw = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
                         elaborated = self._strip_think(raw)
+                        # GLM often wraps a plain answer in the tool-JSON format
+                        # ({"text_response": "..."}) or a ```json fence -- unwrap
+                        # it so the officer sees prose, not raw JSON (the leak
+                        # seen live). Strip fences, then pull text_response if it
+                        # parsed as a JSON object.
+                        if elaborated:
+                            elaborated = re.sub(r'^```[a-zA-Z]*\s*', '', elaborated.strip())
+                            elaborated = re.sub(r'\s*```$', '', elaborated).strip()
+                            if elaborated.startswith("{"):
+                                try:
+                                    _p = json.loads(elaborated)
+                                    if isinstance(_p, dict):
+                                        elaborated = (_p.get("text_response") or _p.get("text")
+                                                      or _p.get("answer") or elaborated).strip()
+                                except Exception:
+                                    _m = re.search(r'"text_response"\s*:\s*"((?:[^"\\]|\\.)*)"', elaborated, re.DOTALL)
+                                    if _m:
+                                        elaborated = _m.group(1).replace('\\n', '\n').replace('\\"', '"').replace('\\', '').strip()
                 except Exception as e:
                     logger.warning(f"Elaboration GLM call failed: {e}")
                 mem_text = elaborated if elaborated else (
