@@ -435,6 +435,38 @@ export const DistrictDashboardScreen: React.FC = () => {
                 </div>
               ) : detail ? (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Threat Index hero — a transparent composite (load vs state × recent momentum). */}
+                  {(() => {
+                    const stateAvg = rows.length ? Math.round(totalActiveCases / rows.length) : 0;
+                    const districtActive = rows.find((r) => r.district_id === selectedId)?.active_cases ?? 0;
+                    const vsAvg = stateAvg ? Math.round(((districtActive - stateAvg) / stateAvg) * 100) : 0;
+                    const tp = typeof detail.trend_pct === "number" ? detail.trend_pct : 0;
+                    const threat = Math.max(5, Math.min(99, Math.round(45 + vsAvg * 0.35 + tp * 1.2)));
+                    const tColor = threat > 66 ? "#E24B4A" : threat > 40 ? "#E4C590" : "#5DCAA5";
+                    const dash = (threat / 100) * 158;
+                    return (
+                      <div className="glass-card p-4 border border-stone-850 lg:col-span-2 flex items-center gap-5 flex-wrap">
+                        <div className="flex items-center gap-4">
+                          <svg viewBox="0 0 120 72" width="128" height="78">
+                            <path d="M10,64 A54,54 0 0,1 110,64" fill="none" stroke="#2A2724" strokeWidth="9" strokeLinecap="round" />
+                            <path d="M10,64 A54,54 0 0,1 110,64" fill="none" stroke={tColor} strokeWidth="9" strokeLinecap="round" strokeDasharray={`${dash} 999`} />
+                            <text x="60" y="56" textAnchor="middle" style={{ fontFamily: "'JetBrains Mono',monospace" }} fontSize="26" fontWeight="800" fill={tColor}>{threat}</text>
+                          </svg>
+                          <div>
+                            <div className="text-[9px] font-mono uppercase tracking-widest text-stone-500">{lang === "en" ? "Composite Threat Index" : "ಸಂಯುಕ್ತ ಅಪಾಯ ಸೂಚ್ಯಂಕ"}</div>
+                            <div className="text-xl font-black text-stone-100 leading-tight">{detail.district}</div>
+                            <div className="text-[9px] font-mono text-stone-600">{lang === "en" ? "load vs state × momentum · 0–100" : "ಹೊರೆ × ವೇಗ · 0–100"}</div>
+                          </div>
+                        </div>
+                        <div className="flex gap-5 ml-auto flex-wrap">
+                          <div><div className="text-[9px] font-mono uppercase tracking-wide text-stone-500">{lang === "en" ? "Active" : "ಸಕ್ರಿಯ"}</div><div className="text-lg font-black text-[#C79A4E] font-mono tabular-nums">{districtActive}</div></div>
+                          <div><div className="text-[9px] font-mono uppercase tracking-wide text-stone-500">{lang === "en" ? "Trend" : "ಪ್ರವೃತ್ತಿ"}</div><div className="text-lg font-black font-mono tabular-nums" style={{ color: tp > 3 ? "#E24B4A" : tp < -3 ? "#5DCAA5" : "#A8A096" }}>{tp >= 0 ? "+" : ""}{tp}%</div></div>
+                          <div><div className="text-[9px] font-mono uppercase tracking-wide text-stone-500">{lang === "en" ? "vs State" : "ರಾಜ್ಯ"}</div><div className="text-lg font-black font-mono tabular-nums" style={{ color: vsAvg > 0 ? "#E24B4A" : "#5DCAA5" }}>{vsAvg >= 0 ? "+" : ""}{vsAvg}%</div></div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {/* 12-month incident trend — the time dimension + benchmark vs state */}
                   {detail.monthly_trend && detail.monthly_trend.length > 0 && (
                     <div className="glass-card p-4 border border-stone-850 space-y-2 lg:col-span-2">

@@ -268,6 +268,15 @@ class VajraAgentLoop:
             }
         },
         {
+            "name": "analyze_online_abuse",
+            "description": "Triage an ONLINE HARASSMENT / cyber-abuse complaint. Use when an officer describes or pastes abusive online content — a threat, obscene/explicit image, cyber-stalking, a fake/impersonation profile, blackmail/sextortion, or online defamation — and wants to know what offence it is, which legal provisions likely apply (IT Act / BNS), and how to preserve evidence. Pass the described content/message in 'content'.",
+            "parameters": {
+                "type": "object",
+                "properties": {"content": {"type": "string", "description": "The abusive message/content or the officer's description of what happened."}},
+                "required": ["content"]
+            }
+        },
+        {
             "name": "get_database_overview",
             "description": "Answer broad 'show me everything / all the FIRs / complete details about all cases / what is in the database / how many FIRs / total cases / database summary' questions. Returns the grounded total count and crime-type breakdown of the WHOLE database plus guidance on how to narrow down -- because no one can list ~20k individual FIRs. Use for any all-encompassing 'everything / all records / entire database' request.",
             "parameters": {"type": "object", "properties": {}, "required": []}
@@ -686,6 +695,10 @@ class VajraAgentLoop:
             (["section", "ipc", "bns ", "legal provision"], "get_case_sections", {"case_no": case_no}, case_no),
             (["hotspot", "cluster map", "crime map", "dbscan"], "query_hotspots", {"district": district}, "yes"),
             (["organized crime", "crime group", "gang", "criminal syndicate detect"], "detect_crime_groups", {}, "yes"),
+            (["online abuse", "online harassment", "cyber abuse", "cyberbully", "cyber bully", "harassing me online",
+              "threatening me online", "obscene message", "morphed", "fake profile", "blackmail", "sextort",
+              "online defam", "sections for this abuse", "someone is threatening", "abusive message", "trolling me",
+              "harassment case", "cyberstalking", "cyber stalking"], "analyze_online_abuse", {"content": query}, "yes"),
             (["all the firs", "all firs", "all the fir", "all cases", "all the cases", "entire database",
               "whole database", "everything in the database", "all records", "complete details about all",
               "full details about all", "total firs", "total cases", "how many firs", "how many cases",
@@ -815,6 +828,9 @@ class VajraAgentLoop:
                                         "unemployment", "poverty", "literacy"],
         "get_repeat_offenders": ["repeat offender", "habitual", "frequent offender", "most active"],
         "detect_crime_groups": ["organized crime", "crime group", "gang", "criminal syndicate", "groups operating"],
+        "analyze_online_abuse": ["online abuse", "online harassment", "cyber abuse", "cyberbully", "harassing",
+                                 "obscene message", "morphed", "fake profile", "blackmail", "sextort", "cyberstalking",
+                                 "abusive message", "trolling", "threatening online", "online defamation"],
         "get_database_overview": ["all firs", "all cases", "entire database", "whole database", "everything",
                                   "all records", "how many firs", "how many cases", "total firs", "database overview",
                                   "database summary", "complete details about all", "show me everything"],
@@ -3001,6 +3017,12 @@ class VajraAgentLoop:
                 text_result, session_id
             )
 
+        elif tool_name == "analyze_online_abuse":
+            ab = self._analyze_online_abuse(params.get("content", "") or "")
+            self._write_audit_log(employee_id, "Online-Abuse Triage", "",
+                                  "Online-abuse triage requested", ab["text_result"], session_id)
+            return ab   # carries final:True -> deterministic answer, no GLM synthesis
+
         elif tool_name == "get_database_overview":
             # Answers impossible-to-list-all asks ("complete details about ALL
             # the FIRs") with a grounded, always-available overview + how to
@@ -3576,6 +3598,69 @@ class VajraAgentLoop:
             "data": data,
             "citations": citations
         }
+
+    # Curated offence-type -> legal-area map for online-abuse triage. Cites the
+    # STABLE IT Act section numbers (66C/66D/66E/67/67A/67B) and names the
+    # well-known IPC predecessor; the BNS successor number is left to verify (we
+    # never assert an unverified section number). Keyword-driven, deterministic.
+    _ABUSE_LEGAL = {
+        "threat": {"label": "Criminal intimidation / threat to life or safety",
+                   "prov": "BNS criminal-intimidation provision (successor to IPC 503/506); IT Act §66 where a computer resource is used",
+                   "kw": ["kill", "murder you", "hurt you", "harm you", "threat", "beat you", "acid", "rape you", "burn you", "finish you"]},
+        "obscene": {"label": "Obscene / sexually explicit content or image abuse",
+                    "prov": "IT Act §67 (obscene) · §67A (sexually explicit) · §67B (minors) · §66E (capturing/sharing private images); BNS voyeurism / sexual-harassment provision",
+                    "kw": ["nude", "naked", "obscene", "sexual", "explicit", "morph", "porn", "intimate photo", "leaked photo", "revenge porn", "private video"]},
+        "stalking": {"label": "Cyber-stalking / repeated unwanted contact",
+                     "prov": "BNS stalking provision (successor to IPC 354D); IT Act §66 for the electronic means",
+                     "kw": ["stalk", "following me", "keeps messaging", "repeatedly messaging", "won't stop", "wont stop", "monitoring me", "tracking me", "keeps calling"]},
+        "impersonation": {"label": "Impersonation / fake profile / identity theft",
+                          "prov": "IT Act §66C (identity theft) · §66D (cheating by personation using a computer resource); BNS cheating / forgery provision",
+                          "kw": ["fake profile", "fake account", "impersonat", "pretending to be", "using my name", "using my photo", "cloned my account"]},
+        "defamation": {"label": "Online defamation / reputation harm",
+                       "prov": "BNS defamation provision (successor to IPC 499/500); IT Act §66 for the electronic medium",
+                       "kw": ["defam", "false allegation", "spreading lies", "damaging my reputation", "rumor", "rumour", "character assassination"]},
+        "extortion": {"label": "Sextortion / blackmail / extortion",
+                      "prov": "BNS extortion provision (successor to IPC 384/385); IT Act §67/§66E where images are involved",
+                      "kw": ["blackmail", "extort", "sextort", "pay or", "money or i", "demanding money", "threatening to leak", "leak your"]},
+    }
+    _ABUSE_EVIDENCE = [
+        "Screenshot every message WITH the visible URL/handle and on-screen date-time.",
+        "Do NOT delete or reply-then-delete — preserve the original thread and media.",
+        "Save the profile link + platform account id; note the platform.",
+        "Screen-record scrolling the thread where possible (harder to dispute).",
+        "Report to the platform in parallel and keep the complaint/reference number.",
+        "For image abuse, keep the file exactly as received (no re-saving/editing).",
+    ]
+
+    def _analyze_online_abuse(self, content: str) -> Dict[str, Any]:
+        """
+        Triages an online-harassment complaint: classifies the offence type from
+        the described content, maps it to the likely legal provisions, and lists
+        evidence-preservation steps. Deterministic (keyword-driven) so it never
+        fabricates a classification; legal provisions are framed as GUIDANCE to
+        verify against the current statute, never asserted as the final charge.
+        """
+        text = (content or "").lower()
+        detected = [spec for spec in self._ABUSE_LEGAL.values() if any(kw in text for kw in spec["kw"])]
+        lines: List[str] = []
+        if detected:
+            lines.append(f"**Online-abuse triage** — {len(detected)} likely offence type(s) from the described content:")
+            for i, d in enumerate(detected, 1):
+                lines.append(f"{i}. **{d['label']}**")
+                lines.append(f"   Likely provisions: {d['prov']}")
+        else:
+            lines.append("**Online-abuse triage:** I couldn't pin a specific offence type from the words given. "
+                         "Tell me what was said/done — a threat, an obscene image, stalking, a fake profile, blackmail, or defamation — and I'll map it to the provisions.")
+        lines.append("")
+        lines.append("**Evidence to preserve now:**")
+        lines += [f"- {s}" for s in self._ABUSE_EVIDENCE]
+        lines.append("")
+        lines.append("⚠ Section numbers are guidance to **verify against the current gazette** (BNS/BNSS/BSA 2023 + IT Act) before charging — the exact provision turns on the facts and intent.")
+        return {"text_result": "\n".join(lines), "response_type": "text",
+                "data": {"detected": [d["label"] for d in detected]},
+                "citations": [{"type": "Online-Abuse Triage", "id": "",
+                               "details": "Offence classification + evidence guidance; provisions to verify against the statute."}],
+                "final": True}
 
     def _compute_priority_concerns(self, district: str = "") -> Dict[str, Any]:
         """
