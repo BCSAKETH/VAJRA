@@ -3649,6 +3649,10 @@ async def seed_accused_links(request: Request, location_context: str = Depends(s
 class PDFExportRequest(BaseModel):
     transcript: List[Dict[str, Any]]
     badge_id: str = "KSP-2026"
+    # Two-person approval co-signer (a supervisor). Required server-side when the
+    # requester is not themselves a supervisor.
+    approver_badge: Optional[str] = None
+    approver_password: Optional[str] = None
 
 
 @app.post("/api/chat/export-pdf")
@@ -3662,11 +3666,43 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
     with no login. Now (1) gated behind the security firewall, and (2) the
     badge is derived from the authenticated session (request.state.kgid), never
     the client payload, so the operator attribution on the document is real and
-    unforgeable. NOTE: server-side enforcement of the two-person-approval
-    workflow for non-supervisor exports is a separate follow-up (the approval
-    gate currently lives only in the UI).
+    unforgeable. TWO-PERSON APPROVAL is now enforced SERVER-SIDE (not just the
+    UI): a non-supervisor export must carry a valid supervisor co-signer's badge
+    + password, verified here against OfficerCredentials -- a junior can no
+    longer bypass the gate by calling the API directly.
     """
     authed_badge = request.state.kgid or "UNKNOWN"
+
+    # --- Two-person approval (server-side enforcement) ---
+    req_role = getattr(request.state, "role_tier", "officer") or "officer"
+    if req_role not in ("supervisor", "admin"):
+        approver = (payload.approver_badge or "").strip()
+        appwd = payload.approver_password or ""
+        if not approver or not appwd:
+            raise HTTPException(status_code=403, detail="Two-person approval required: a supervisor must co-sign this export.")
+        if approver == str(authed_badge):
+            raise HTTPException(status_code=403, detail="The co-signer must be a DIFFERENT officer (two-person rule).")
+        if not catalyst_app:
+            raise HTTPException(status_code=500, detail="Database client offline.")
+        try:
+            import bcrypt as _bcrypt
+            from vajra_core import derive_role_tier as _drt
+            _safe = approver.replace("'", "''")
+            cr = catalyst_app.zql().execute_query(f"SELECT KGID, PasswordHash FROM OfficerCredentials WHERE KGID = '{_safe}'")
+            stored = cr[0].get("OfficerCredentials", {}).get("PasswordHash") if cr else None
+            if not stored or not _bcrypt.checkpw(appwd.encode("utf-8"), stored.encode("utf-8")):
+                raise HTTPException(status_code=403, detail="Co-signer credentials are invalid.")
+            emp = catalyst_app.zql().execute_query(f"SELECT RankID FROM Employee WHERE KGID = '{_safe}'")
+            app_role = _drt(emp[0].get("Employee", {}).get("RankID")) if emp else "officer"
+            if app_role not in ("supervisor", "admin"):
+                raise HTTPException(status_code=403, detail="The co-signer must be a supervisor-tier officer.")
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"Two-person co-sign verification failed: {e}")
+            raise HTTPException(status_code=500, detail="Could not verify the co-signer.")
+        logger.info(f"Two-person export approved: requester {authed_badge} co-signed by supervisor {approver}")
+
     try:
         from fpdf import FPDF
         from datetime import datetime

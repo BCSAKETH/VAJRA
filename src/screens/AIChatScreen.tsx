@@ -754,30 +754,40 @@ export const AIChatScreen: React.FC = () => {
     if (isExportingPdf) return;
     setIsExportingPdf(true);
     try {
-      const response = await fetch(`${API_BASE}/api/chat/export-pdf`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
-        },
-        body: JSON.stringify({
-          transcript: chatMessages.map((m) => ({
-            role: m.sender,
-            // Respect the officer's CURRENTLY selected language, not
-            // whichever one was active when each message first came in --
-            // otherwise toggling language mid-conversation and exporting
-            // would produce a transcript mixing both languages per message.
-            content: m.sender === "assistant"
-              ? (lang === "kn" ? (m.textKn || m.text) : (m.textEn || m.text))
-              : m.text,
-            timestamp: m.timestamp || "",
-          })),
-          badge_id: badgeNumber || "KSP-4003385",
-        }),
-      });
+      const transcript = chatMessages.map((m) => ({
+        role: m.sender,
+        // Respect the officer's CURRENTLY selected language, not whichever one
+        // was active when each message first came in.
+        content: m.sender === "assistant"
+          ? (lang === "kn" ? (m.textKn || m.text) : (m.textEn || m.text))
+          : m.text,
+        timestamp: m.timestamp || "",
+      }));
+      const doExport = (approver?: { badge: string; password: string }) =>
+        fetch(`${API_BASE}/api/chat/export-pdf`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+          body: JSON.stringify({
+            transcript,
+            badge_id: badgeNumber || "KSP-4003385",
+            ...(approver ? { approver_badge: approver.badge, approver_password: approver.password } : {}),
+          }),
+        });
+
+      let response = await doExport();
+      // Two-person approval enforced server-side: a non-supervisor export needs
+      // a supervisor to co-sign. Collect the co-signer and retry.
+      if (response.status === 403) {
+        const badge = window.prompt(lang === "en" ? "Two-person approval — enter a SUPERVISOR's badge (KGID) to co-sign this export:" : "ದ್ವಿ-ವ್ಯಕ್ತಿ ಅನುಮೋದನೆ — ಮೇಲ್ವಿಚಾರಕರ ಬ್ಯಾಡ್ಜ್ (KGID) ನಮೂದಿಸಿ:");
+        if (!badge) { setIsExportingPdf(false); return; }
+        const pwd = window.prompt(lang === "en" ? "Enter the supervisor's password to co-sign:" : "ಮೇಲ್ವಿಚಾರಕರ ಪಾಸ್‌ವರ್ಡ್ ನಮೂದಿಸಿ:");
+        if (!pwd) { setIsExportingPdf(false); return; }
+        response = await doExport({ badge: badge.trim(), password: pwd });
+      }
 
       if (!response.ok) {
-        throw new Error("Failed to compile PDF.");
+        const d = await response.json().catch(() => ({}));
+        throw new Error(d.detail || "Failed to compile PDF.");
       }
 
       const blob = await response.blob();
