@@ -319,16 +319,32 @@ def verify_catalyst_token_direct(jwt_token: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def derive_role_tier(rank_id: Optional[int]) -> str:
+# Explicit allowlist of badges (KGIDs) that hold the Supervisor tier. Kept as
+# a hard allowlist rather than a rank cutoff because the deployment requires
+# exactly ONE supervisor account -- badge 2346836 -- with every other officer
+# (regardless of their seeded rank) confined to the officer tier. This gates
+# the Supervisor dashboard tab (hidden in the frontend for non-supervisors),
+# the supervisor-only endpoints, and two-person co-sign eligibility.
+SUPERVISOR_KGIDS = {"2346836"}
+
+
+def derive_role_tier(rank_id: Optional[int], kgid: Optional[str] = None) -> str:
     """
-    RANKS in migrate_to_catalyst.py is seeded in ascending order of seniority
-    (["Constable", "Head Constable", "ASI", "PSI", "PI", "DySP", "SP", "DIG",
-    "IGP", "DGP"], RankID 1-10, 1-indexed). PI (RankID 5) and above are
-    gazetted supervisory ranks in the real KSP hierarchy, so that's the
-    cutoff for "Supervisor-tier+". Shared by the firewall (per-request) and
-    the login endpoint (so TwoPersonApprovalModal can verify a co-signing
-    badge is actually a supervisor, not just a different badge).
+    Resolve an officer's access tier.
+
+    When a badge (kgid) is supplied, the SUPERVISOR_KGIDS allowlist is the sole
+    authority: only those exact badges are Supervisor-tier, everyone else is an
+    officer no matter their rank. This is what the login endpoint and firewall
+    use, so the app shows the Supervisor tab (and honours supervisor-only
+    endpoints) for badge 2346836 alone.
+
+    When no kgid is available, fall back to the legacy rank cutoff: RANKS is
+    seeded ascending (Constable..DGP, RankID 1-10); PI (RankID 5) and above are
+    gazetted supervisory ranks. This path exists only for callers that have a
+    rank but no badge in hand.
     """
+    if kgid is not None:
+        return "supervisor" if str(kgid).strip() in SUPERVISOR_KGIDS else "officer"
     return "supervisor" if rank_id and int(rank_id) >= 5 else "officer"
 
 
@@ -444,7 +460,7 @@ class VajraSecurityFirewall:
                     if desig_res:
                         designation_name = desig_res[0].get("Designation", {}).get("DesignationName") or designation_name
 
-                role_tier = derive_role_tier(rank_id)
+                role_tier = derive_role_tier(rank_id, kgid)
 
                 _profile_cache[kgid] = {
                     "profile": profile, "unit_name": unit_name, "rank_name": rank_name,

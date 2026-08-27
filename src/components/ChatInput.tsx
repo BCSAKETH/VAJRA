@@ -32,16 +32,13 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
   const [isRecording, setIsRecording] = useState(false);
   const [recordingStatus, setRecordingStatus] = useState("");
   const [voiceAvailable, setVoiceAvailable] = useState(true);
-  // Which language the mic listens for -- previously hard-wired to the
-  // display-language toggle (lang), meaning an officer had to switch the
-  // ENTIRE UI to Kannada just to have voice input understand Kannada
-  // speech, and vice versa. Starts matching the display language (the
-  // common case) but is independently overridable via the small pill next
-  // to the mic button, and stays as set rather than snapping back on every
-  // display-language change -- the browser's speech recognition can only
-  // listen for one language per session, so this picks which one deliberately
-  // instead of assuming it's always whatever the UI happens to show.
-  const [voiceLang, setVoiceLang] = useState<"en" | "kn">(lang);
+  // The mic AUTO-DETECTS the spoken language and is fully DECOUPLED from the
+  // top-right app-language toggle (which only changes the whole UI). The server
+  // transcribes the audio under both English and Kannada and returns whichever
+  // was actually spoken -- the officer just talks in either language. `lang` is
+  // used only as the fall-back language for the browser Web Speech recognizer
+  // (used when mic capture / the Zia endpoint is unavailable), which cannot
+  // auto-detect on its own.
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -57,12 +54,20 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   }, [inputVal]);
-  // MediaRecorder path -> real Zia STT (far better Kannada than the browser
-  // recognizer). recognitionRef stays as the fallback when mic capture or the
-  // STT endpoint is unavailable.
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const audioChunksRef = useRef<Blob[]>([]);
+  // Web Audio capture -> real Zia STT (far better Kannada than the browser
+  // recognizer). We DON'T use MediaRecorder: on Chrome it emits webm/opus, and
+  // Zia STT gates on the file EXTENSION and rejects .webm/.mp4 with
+  // INVALID_FILE_EXTENSION (confirmed live; it accepts .wav/.mp3/.ogg/.flac).
+  // So we capture raw PCM via an AudioContext + ScriptProcessor, downsample to
+  // 16 kHz mono, and encode a real .wav that Zia accepts. recognitionRef stays
+  // as the fallback when mic capture or the STT endpoint is unavailable.
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const audioSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const audioProcessorRef = useRef<ScriptProcessorNode | null>(null);
+  const pcmChunksRef = useRef<Float32Array[]>([]);
+  const inputSampleRateRef = useRef<number>(48000);
+  const capturingRef = useRef<boolean>(false);
 
   useEffect(() => {
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -120,55 +125,130 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
   // transcript into the composer. Far better Kannada than the browser
   // recognizer. Falls back to the browser recognizer if mic capture or the
   // endpoint isn't available.
+  // Encode collected mono Float32 PCM (downsampled to 16 kHz) into a 16-bit WAV
+  // blob -- the format Zia STT accepts. Written inline (no dep) so the mic works
+  // cross-browser without relying on MediaRecorder's container.
+  const encodeWav = (samples: Float32Array, sampleRate: number): Blob => {
+    const buffer = new ArrayBuffer(44 + samples.length * 2);
+    const view = new DataView(buffer);
+    const writeStr = (off: number, s: string) => { for (let i = 0; i < s.length; i++) view.setUint8(off + i, s.charCodeAt(i)); };
+    writeStr(0, "RIFF");
+    view.setUint32(4, 36 + samples.length * 2, true);
+    writeStr(8, "WAVE");
+    writeStr(12, "fmt ");
+    view.setUint32(16, 16, true);      // PCM chunk size
+    view.setUint16(20, 1, true);       // PCM format
+    view.setUint16(22, 1, true);       // mono
+    view.setUint32(24, sampleRate, true);
+    view.setUint32(28, sampleRate * 2, true); // byte rate
+    view.setUint16(32, 2, true);       // block align
+    view.setUint16(34, 16, true);      // bits per sample
+    writeStr(36, "data");
+    view.setUint32(40, samples.length * 2, true);
+    let off = 44;
+    for (let i = 0; i < samples.length; i++, off += 2) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      view.setInt16(off, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    }
+    return new Blob([view], { type: "audio/wav" });
+  };
+
+  const downsampleTo16k = (chunks: Float32Array[], inRate: number): Float32Array => {
+    let total = 0;
+    for (const c of chunks) total += c.length;
+    const merged = new Float32Array(total);
+    let o = 0;
+    for (const c of chunks) { merged.set(c, o); o += c.length; }
+    const outRate = 16000;
+    if (inRate <= outRate) return merged;
+    const ratio = inRate / outRate;
+    const outLen = Math.floor(merged.length / ratio);
+    const out = new Float32Array(outLen);
+    for (let i = 0; i < outLen; i++) {
+      // simple average over the source window -> cheap anti-alias
+      const start = Math.floor(i * ratio);
+      const end = Math.min(merged.length, Math.floor((i + 1) * ratio));
+      let sum = 0, n = 0;
+      for (let j = start; j < end; j++) { sum += merged[j]; n++; }
+      out[i] = n ? sum / n : 0;
+    }
+    return out;
+  };
+
+  const finishCaptureAndUpload = async () => {
+    // Tear down the audio graph + mic.
+    try { audioProcessorRef.current?.disconnect(); } catch { /* ignore */ }
+    try { audioSourceRef.current?.disconnect(); } catch { /* ignore */ }
+    try { await audioCtxRef.current?.close(); } catch { /* ignore */ }
+    mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
+    const chunks = pcmChunksRef.current;
+    const inRate = inputSampleRateRef.current;
+    audioProcessorRef.current = null;
+    audioSourceRef.current = null;
+    audioCtxRef.current = null;
+    mediaStreamRef.current = null;
+    pcmChunksRef.current = [];
+    capturingRef.current = false;
+
+    const totalSamples = chunks.reduce((s, c) => s + c.length, 0);
+    if (totalSamples < 1600) { setIsRecording(false); setRecordingStatus(""); return; } // <0.1s -> nothing said
+    setRecordingStatus(lang === "en" ? "Transcribing..." : "ಪ್ರತಿಲಿಪಿ ಮಾಡಲಾಗುತ್ತಿದೆ...");
+    try {
+      const pcm16k = downsampleTo16k(chunks, inRate);
+      const wav = encodeWav(pcm16k, 16000);
+      const form = new FormData();
+      form.append("audio", wav, "speech.wav");
+      const res = await fetch(`${API_BASE}/api/voice/stt?language=auto`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: form,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.text && data.text.trim()) setInputVal((prev) => (prev ? prev + " " : "") + data.text.trim());
+      } else {
+        addToast(
+          lang === "en" ? "Transcription Unavailable" : "ಪ್ರತಿಲಿಪಿ ಲಭ್ಯವಿಲ್ಲ",
+          lang === "en" ? "Voice transcription is temporarily unavailable. Please type instead." : "ಧ್ವನಿ ಪ್ರತಿಲಿಪಿ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ. ದಯವಿಟ್ಟು ಟೈಪ್ ಮಾಡಿ.",
+          "Warning"
+        );
+      }
+    } catch {
+      // silent -- officer can type
+    } finally {
+      setIsRecording(false);
+      setRecordingStatus("");
+    }
+  };
+
   const startRecording = async () => {
-    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!navigator.mediaDevices?.getUserMedia || !AudioCtx) {
       startBrowserRecording();
       return;
     }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       mediaStreamRef.current = stream;
-      audioChunksRef.current = [];
-      const recorder = new MediaRecorder(stream);
-      mediaRecorderRef.current = recorder;
-      recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data); };
-      recorder.onstop = async () => {
-        const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || "audio/webm" });
-        mediaStreamRef.current?.getTracks().forEach((t) => t.stop());
-        mediaStreamRef.current = null;
-        mediaRecorderRef.current = null;
-        if (blob.size === 0) { setIsRecording(false); setRecordingStatus(""); return; }
-        setRecordingStatus(lang === "en" ? "Transcribing..." : "ಪ್ರತಿಲಿಪಿ ಮಾಡಲಾಗುತ್ತಿದೆ...");
-        try {
-          const form = new FormData();
-          const ext = (recorder.mimeType || "").includes("wav") ? "wav" : "webm";
-          form.append("audio", blob, `speech.${ext}`);
-          const res = await fetch(`${API_BASE}/api/voice/stt?language=${voiceLang}`, {
-            method: "POST",
-            headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-            body: form,
-          });
-          if (res.ok) {
-            const data = await res.json();
-            if (data.text) setInputVal((prev) => (prev ? prev + " " : "") + data.text.trim());
-          } else {
-            addToast(
-              lang === "en" ? "Transcription Unavailable" : "ಪ್ರತಿಲಿಪಿ ಲಭ್ಯವಿಲ್ಲ",
-              lang === "en" ? "Voice transcription is temporarily unavailable. Please type instead." : "ಧ್ವನಿ ಪ್ರತಿಲಿಪಿ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ. ದಯವಿಟ್ಟು ಟೈಪ್ ಮಾಡಿ.",
-              "Warning"
-            );
-          }
-        } catch {
-          // silent -- officer can type
-        } finally {
-          setIsRecording(false);
-          setRecordingStatus("");
-        }
+      pcmChunksRef.current = [];
+      const ctx = new AudioCtx();
+      audioCtxRef.current = ctx;
+      inputSampleRateRef.current = ctx.sampleRate;
+      const source = ctx.createMediaStreamSource(stream);
+      audioSourceRef.current = source;
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
+      audioProcessorRef.current = processor;
+      capturingRef.current = true;
+      processor.onaudioprocess = (e) => {
+        if (!capturingRef.current) return;
+        // copy -- the underlying buffer is reused by the audio thread
+        pcmChunksRef.current.push(new Float32Array(e.inputBuffer.getChannelData(0)));
       };
-      recorder.start();
+      source.connect(processor);
+      processor.connect(ctx.destination); // required for onaudioprocess to fire in some browsers
       setIsRecording(true);
       setRecordingStatus(
-        voiceLang === "kn" ? "ಕನ್ನಡದಲ್ಲಿ ರೆಕಾರ್ಡ್ ಆಗುತ್ತಿದೆ... (ನಿಲ್ಲಿಸಲು ಮೈಕ್ ಟ್ಯಾಪ್ ಮಾಡಿ)" : "Recording English... (tap mic to stop)"
+        lang === "kn" ? "ರೆಕಾರ್ಡ್ ಆಗುತ್ತಿದೆ... (ನಿಲ್ಲಿಸಲು ಮೈಕ್ ಟ್ಯಾಪ್ ಮಾಡಿ)" : "Recording... (tap mic to stop)"
       );
     } catch (err) {
       // permission denied / no mic -> try the browser recognizer
@@ -188,8 +268,10 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
     }
     const recognition = new SpeechRecognitionCtor();
     // Bound to the independent voice-language pill, NOT the display-language
-    // toggle -- see voiceLang declaration above for why.
-    recognition.lang = voiceLang === "kn" ? "kn-IN" : "en-US";
+    // Browser recognizer can't auto-detect; fall back to the app display
+    // language as the best guess (this path only runs when the Zia auto-detect
+    // endpoint / mic capture is unavailable).
+    recognition.lang = lang === "kn" ? "kn-IN" : "en-US";
     recognition.continuous = true;
     recognition.interimResults = true;
     recognitionRef.current = recognition;
@@ -230,16 +312,16 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
     recognition.start();
     setIsRecording(true);
     setRecordingStatus(
-      voiceLang === "en" ? "Listening for English (Speech STT)..." : "ಕನ್ನಡಕ್ಕಾಗಿ ಆಲಿಸಲಾಗುತ್ತಿದೆ (ಧ್ವನಿ STT)..."
+      lang === "kn" ? "ಆಲಿಸಲಾಗುತ್ತಿದೆ (ಧ್ವನಿ STT)..." : "Listening (Speech STT)..."
     );
   };
 
   const stopRecording = () => {
-    // MediaRecorder path -> its onstop handler uploads + transcribes, so don't
-    // clear isRecording here (the "Transcribing..." state continues until the
-    // transcript returns).
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
-      mediaRecorderRef.current.stop();
+    // Web Audio path -> encode WAV + upload; the "Transcribing..." state
+    // continues until the transcript returns (finishCaptureAndUpload clears it).
+    if (capturingRef.current) {
+      capturingRef.current = false;
+      void finishCaptureAndUpload();
       return;
     }
     // Browser-recognizer fallback path.
@@ -345,25 +427,8 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
           className="flex-1 bg-transparent border-none text-stone-100 placeholder-stone-500 text-sm focus:outline-none resize-none py-1 font-sans max-h-[200px] overflow-y-auto leading-relaxed"
         />
 
-        {/* Voice-language pill -- independent of the display-language
-            toggle, so speaking Kannada doesn't require switching the whole
-            UI. Disabled mid-recording since the recognition session is
-            already bound to whichever language it started with. */}
-        {voiceAvailable && (
-          <button
-            type="button"
-            onClick={() => setVoiceLang((v) => (v === "en" ? "kn" : "en"))}
-            disabled={isRecording || isThinking || isUploading}
-            className="px-1.5 py-1 rounded-lg text-[10px] font-mono font-bold tracking-wide text-stone-400 border border-stone-750 hover:text-stone-200 hover:border-stone-600 transition-colors disabled:opacity-50 cursor-pointer shrink-0"
-            title={
-              voiceLang === "en"
-                ? "Mic is listening for English -- tap to switch to Kannada"
-                : "ಮೈಕ್ ಕನ್ನಡಕ್ಕಾಗಿ ಆಲಿಸುತ್ತಿದೆ -- ಇಂಗ್ಲಿಷ್‌ಗೆ ಬದಲಾಯಿಸಲು ಟ್ಯಾಪ್ ಮಾಡಿ"
-            }
-          >
-            {voiceLang === "en" ? "EN" : "ಕನ್"}
-          </button>
-        )}
+        {/* Mic language follows the app's main language toggle automatically --
+            no separate voice-language pill (removed). */}
 
         {/* Mic Toggle Button */}
         {voiceAvailable && (
@@ -376,7 +441,7 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
                 ? "bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse"
                 : "text-stone-400 hover:text-stone-200 hover:bg-stone-850"
             }`}
-            title={isRecording ? "Stop voice listening" : `Start voice listening (STT) -- ${voiceLang === "en" ? "English" : "Kannada"}`}
+            title={isRecording ? "Stop voice listening" : "Start voice listening (auto-detects English / Kannada)"}
           >
             {isRecording ? <MicOff className="w-4 h-4 text-rose-400" /> : <Mic className="w-4 h-4" />}
           </button>

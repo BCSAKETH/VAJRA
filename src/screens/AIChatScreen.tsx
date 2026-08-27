@@ -763,27 +763,17 @@ export const AIChatScreen: React.FC = () => {
           : m.text,
         timestamp: m.timestamp || "",
       }));
-      const doExport = (approver?: { badge: string; password: string }) =>
-        fetch(`${API_BASE}/api/chat/export-pdf`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-          body: JSON.stringify({
-            transcript,
-            badge_id: badgeNumber || "KSP-4003385",
-            ...(approver ? { approver_badge: approver.badge, approver_password: approver.password } : {}),
-          }),
-        });
-
-      let response = await doExport();
-      // Two-person approval enforced server-side: a non-supervisor export needs
-      // a supervisor to co-sign. Collect the co-signer and retry.
-      if (response.status === 403) {
-        const badge = window.prompt(lang === "en" ? "Two-person approval — enter a SUPERVISOR's badge (KGID) to co-sign this export:" : "ದ್ವಿ-ವ್ಯಕ್ತಿ ಅನುಮೋದನೆ — ಮೇಲ್ವಿಚಾರಕರ ಬ್ಯಾಡ್ಜ್ (KGID) ನಮೂದಿಸಿ:");
-        if (!badge) { setIsExportingPdf(false); return; }
-        const pwd = window.prompt(lang === "en" ? "Enter the supervisor's password to co-sign:" : "ಮೇಲ್ವಿಚಾರಕರ ಪಾಸ್‌ವರ್ಡ್ ನಮೂದಿಸಿ:");
-        if (!pwd) { setIsExportingPdf(false); return; }
-        response = await doExport({ badge: badge.trim(), password: pwd });
-      }
+      // Export is available to any authenticated officer -- no supervisor
+      // co-sign. The document is still authenticated and attributed to the
+      // real logged-in badge server-side.
+      const response = await fetch(`${API_BASE}/api/chat/export-pdf`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({
+          transcript,
+          badge_id: badgeNumber || "KSP-4003385",
+        }),
+      });
 
       if (!response.ok) {
         const d = await response.json().catch(() => ({}));

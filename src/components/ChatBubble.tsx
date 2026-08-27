@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ChatMessage } from "../AppContext";
 import { translations } from "../i18n";
-import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown } from "lucide-react";
+import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 import { API_BASE } from "../config";
 
@@ -188,9 +188,54 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
 
-  const rawDisplayText = isAI
-    ? (lang === "kn" ? (message.textKn || message.text) : (message.textEn || message.text))
-    : message.text;
+  // Per-message ⇄ Translate (independent of the app-wide language toggle up top).
+  // It translates THIS message LIVE on demand rather than flipping a pre-stored
+  // value: English answers are no longer eagerly translated every turn (that was
+  // wasted latency), and old messages whose stored Kannada was a bad/looping
+  // translation get re-translated correctly. English is always the reliable
+  // source; when the officer wants Kannada we fetch a fresh translation once and
+  // cache it locally for instant re-toggles.
+  const [showTranslated, setShowTranslated] = useState(false);
+  const [liveKn, setLiveKn] = useState<string | null>(null);
+  const [translating, setTranslating] = useState(false);
+  const englishSource = isAI ? (message.textEn || message.text) : message.text;
+  const canTranslate = isAI && !message.isSimulated && !!(englishSource && englishSource.trim());
+
+  // effectiveLang drives panel bodies too, so the whole message flips together.
+  const effectiveLang: "en" | "kn" = !showTranslated ? lang : (lang === "en" ? "kn" : "en");
+  let rawDisplayText: string;
+  if (!isAI) {
+    rawDisplayText = message.text;
+  } else if (!showTranslated) {
+    rawDisplayText = lang === "kn" ? (message.textKn || message.text) : englishSource;
+  } else if (lang === "en") {
+    rawDisplayText = liveKn ?? englishSource;      // toggled to Kannada (fetched live)
+  } else {
+    rawDisplayText = englishSource;                // toggled to English (source, always reliable)
+  }
+
+  const handleTranslate = async () => {
+    if (showTranslated) { setShowTranslated(false); return; }
+    // Toggling to English, or Kannada already fetched -> instant, no call.
+    if (lang === "kn" || liveKn) { setShowTranslated(true); return; }
+    setTranslating(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/translate`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ text: englishSource, source_lang: "en", target_lang: "kn" }),
+      });
+      if (res.ok) {
+        const d = await res.json();
+        setLiveKn(d.text || englishSource);
+        setShowTranslated(true);
+      }
+    } catch {
+      /* silent -- officer still has the original */
+    } finally {
+      setTranslating(false);
+    }
+  };
   // Multiline answers are stored with the newline SQL-escaped to a literal
   // "\n" (two chars) on insert and never un-escaped on read, so they render
   // as visible backslash-n instead of line breaks. Convert them back here for
@@ -264,23 +309,28 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   // synthesizing on demand.
   React.useEffect(() => {
     if (!isLast || !isAI || message.isSimulated) return;
-    const key = `${message.id}:${lang}`;
+    // Voice language = the language actually being DISPLAYED (effectiveLang), not
+    // the app toggle: after the ⇄ button translates this message the shown text
+    // is in the other language, and the TTS voice must match it or Zia speaks the
+    // wrong language (the reported "Kannada speaking not working").
+    const vlang = effectiveLang;
+    const key = `${message.id}:${vlang}`;
     if (_ttsCache.has(key)) return;
     const toSpeak = getSpeakText();
     if (!toSpeak) return;
     const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), lang === "kn" ? 26000 : 12000);
+    const to = setTimeout(() => ctrl.abort(), vlang === "kn" ? 26000 : 12000);
     let cancelled = false;
     fetch(`${API_BASE}/api/voice/tts`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-      body: JSON.stringify({ text: toSpeak, lang }),
+      body: JSON.stringify({ text: toSpeak, lang: vlang }),
       signal: ctrl.signal,
     }).then((r) => (r.ok ? r.blob() : null)).then((blob) => {
       if (!cancelled && blob) _ttsPut(key, URL.createObjectURL(blob));
     }).catch(() => { /* best-effort */ }).finally(() => clearTimeout(to));
     return () => { cancelled = true; ctrl.abort(); clearTimeout(to); };
-  }, [isLast, isAI, message.id, message.isSimulated, lang, getSpeakText]);
+  }, [isLast, isAI, message.id, message.isSimulated, effectiveLang, getSpeakText]);
 
   const handleToggleSpeak = async () => {
     if (isSpeaking) {
@@ -290,8 +340,9 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
     const toSpeak = getSpeakText();
     if (!toSpeak) return;
     setIsSpeaking(true);
+    const vlang = effectiveLang;  // voice must match the DISPLAYED language, not the app toggle
     // INSTANT path: pre-generated audio already cached -> play immediately.
-    const cachedUrl = _ttsCache.get(`${message.id}:${lang}`);
+    const cachedUrl = _ttsCache.get(`${message.id}:${vlang}`);
     if (cachedUrl && (await playUrl(cachedUrl, false))) return;
     try {
       // Abort the server attempt and fall through to the browser voice if it
@@ -303,7 +354,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
       // off the server's retry-through-Zia's-flaky-502s and killing Kannada
       // voice entirely. Give Kannada room for the backend's 2x12s retry.
       const _ctrl = new AbortController();
-      const _to = setTimeout(() => _ctrl.abort(), lang === "kn" ? 26000 : 9000);
+      const _to = setTimeout(() => _ctrl.abort(), vlang === "kn" ? 26000 : 9000);
       let res: Response;
       try {
         res = await fetch(`${API_BASE}/api/voice/tts`, {
@@ -312,7 +363,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
             "Content-Type": "application/json",
             "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
           },
-          body: JSON.stringify({ text: toSpeak, lang }),
+          body: JSON.stringify({ text: toSpeak, lang: vlang }),
           signal: _ctrl.signal,
         });
       } finally {
@@ -332,7 +383,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
       // fall through to browser TTS
     }
     // Server TTS unavailable -- fall back to the browser voice (same trimmed text).
-    const result = speakText(toSpeak, lang, () => setIsSpeaking(false));
+    const result = speakText(toSpeak, vlang, () => setIsSpeaking(false));
     if (result === "started") return;
     setIsSpeaking(false);
     if (result === "no_kannada_voice") {
@@ -571,7 +622,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
                       />
                     ) : (
                       <p className="text-[13px] text-stone-300 leading-relaxed whitespace-pre-wrap">
-                        {decodeDisplayText((lang === "kn" ? (panel.text_kn || panel.text) : panel.text)).trim() || (lang === "en" ? "No data for this section." : "ಈ ವಿಭಾಗಕ್ಕೆ ಡೇಟಾ ಇಲ್ಲ.")}
+                        {decodeDisplayText((effectiveLang === "kn" ? (panel.text_kn || panel.text) : panel.text)).trim() || (lang === "en" ? "No data for this section." : "ಈ ವಿಭಾಗಕ್ಕೆ ಡೇಟಾ ಇಲ್ಲ.")}
                       </p>
                     )}
                   </div>
@@ -645,6 +696,26 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
               className={`p-1 rounded hover:bg-stone-800 transition-colors cursor-pointer ${isSpeaking ? "text-[#C79A4E]" : "text-stone-600 hover:text-stone-300"}`}
             >
               {isSpeaking ? <Volume2 className="w-3 h-3 animate-pulse text-[#C79A4E]" /> : <VolumeX className="w-3 h-3" />}
+            </button>
+          )}
+          {/* Per-message ⇄ Translate: translates THIS answer live on demand,
+              independent of the whole-app language toggle. */}
+          {canTranslate && (
+            <button
+              onClick={handleTranslate}
+              disabled={translating}
+              aria-pressed={showTranslated}
+              title={
+                showTranslated
+                  ? (lang === "en" ? "Show original (English)" : "ಮೂಲವನ್ನು ತೋರಿಸಿ (ಕನ್ನಡ)")
+                  : (lang === "en" ? "Translate this message to Kannada" : "ಈ ಸಂದೇಶವನ್ನು ಇಂಗ್ಲಿಷ್‌ನಲ್ಲಿ ತೋರಿಸಿ")
+              }
+              className={`flex items-center gap-1 px-1.5 py-1 rounded hover:bg-stone-800 transition-colors cursor-pointer disabled:opacity-50 ${showTranslated ? "text-[#C79A4E]" : "text-stone-600 hover:text-stone-300"}`}
+            >
+              {translating ? <Loader2 className="w-3 h-3 animate-spin" /> : <Languages className="w-3 h-3" />}
+              <span className="text-[9px] font-mono font-bold tracking-wide">
+                {showTranslated ? (lang === "en" ? "EN" : "ಕನ್") : (lang === "en" ? "ಕನ್" : "EN")}
+              </span>
             </button>
           )}
           {isAI && !message.isSimulated && (

@@ -456,7 +456,7 @@ async def login(payload: AuthRequest):
             f"SELECT RankID FROM Employee WHERE KGID = '{payload.badge_no}'"
         )
         if emp_res:
-            role_tier = derive_role_tier(emp_res[0].get("Employee", {}).get("RankID"))
+            role_tier = derive_role_tier(emp_res[0].get("Employee", {}).get("RankID"), payload.badge_no)
     except Exception as e:
         logger.warning(f"Could not resolve role_tier for {payload.badge_no}: {e}")
 
@@ -1650,7 +1650,94 @@ class GLMTranslator:
         logger.info(f"Translation numbers_match: lenient pass ({preserved:.0%} of {len(src_nums)} numbers preserved).")
         return True
 
+    # Matches a leading list/heading marker so it survives translation verbatim
+    # (we translate the CONTENT, keep the marker): ordered "1." / "2)", bullets
+    # "-" "*" "•", markdown headings "#".
+    _LINE_MARKER_RE = re.compile(r"^(\s*(?:\d+[.)]|[-*•▪◦‣·]|#{1,6})\s+)(.*)$")
+    # A line that is entirely a bold heading, e.g. "**Criminal intimidation**".
+    _FULL_BOLD_RE = re.compile(r"^\*\*(.+?)\*\*[\s:.]*$")
+
     def translate(self, text: str, source_lang: str, target_lang: str) -> str:
+        if source_lang == target_lang:
+            return text
+        # Normalise ESCAPED newlines to real ones first. Persisted answers store
+        # newlines as the literal two-char "\n" (SQL-escaped on insert), so text
+        # arriving from the per-message ⇄ Translate button (which sends the stored
+        # text_en) has literal "\n", not real newlines -- without this the
+        # structure check below misses them and the whole answer collapses into
+        # one flat paragraph (the reported bug). Fresh in-turn answers already
+        # have real newlines, so this is a no-op for them.
+        text = text.replace("\\n", "\n")
+        # Structure-preserving dispatch. Zia's fast-translate (and the GLM/Qwen
+        # fallbacks) collapse EVERY newline into a single space -- confirmed
+        # live: a 3-item numbered list came back as one flat line. For a
+        # multi-line answer (numbered offence lists, evidence bullets, dossier
+        # sections) that turned the Kannada view into an unreadable wall of text
+        # while English kept its numbered/bulleted structure. So translate each
+        # line's CONTENT on its own and rejoin with the ORIGINAL newlines + list
+        # markers, so Kannada renders with the exact same structure as English.
+        if "\n" in text.strip():
+            result = self._translate_structured(text, source_lang, target_lang)
+        else:
+            result = self._translate_line(text, source_lang, target_lang)
+        # Reject a repetition-loop translation. Confirmed live: a clean English
+        # answer ("Please provide your case number ...") came back as Kannada
+        # "ಇದು ಅಪರಾಧವಲ್ಲ, ಅಪರಾಧವಲ್ಲ, ..." x40 -- a degenerate loop from the
+        # translation model. Showing the untranslated source is more honest and
+        # far more useful than a wall of one repeated word.
+        try:
+            from catalyst_speech import _looks_degenerate
+            if _looks_degenerate(result) and not _looks_degenerate(text):
+                logger.warning(f"Discarded degenerate {source_lang}->{target_lang} translation loop; returning source text.")
+                return text
+        except Exception:
+            pass
+        return result
+
+    def _translate_structured(self, text: str, source_lang: str, target_lang: str) -> str:
+        from concurrent.futures import ThreadPoolExecutor
+        lines = text.split("\n")
+        # Each content line is a separate ~0.2-0.4s Zia round trip. Beyond a sane
+        # cap, fall back to one flat translation (structure lost, turn stays
+        # fast) rather than firing dozens of calls.
+        if sum(1 for ln in lines if ln.strip()) > 40:
+            return self._translate_line(
+                " ".join(l.strip() for l in lines if l.strip()), source_lang, target_lang
+            )
+        # Parse each line into (prefix, inner-text, is_bold); collect the inner
+        # texts that actually need translating so they can all be sent to Zia
+        # CONCURRENTLY -- N sequential ~0.3s calls would blow the turn's 18s
+        # budget, but fired in parallel they cost ~one call. Blank and
+        # marker-only lines are kept verbatim to preserve paragraph structure.
+        parsed = []  # (prefix, inner, is_bold, needs_translation)
+        for ln in lines:
+            if not ln.strip():
+                parsed.append(("", "", False, False)); continue
+            m = self._LINE_MARKER_RE.match(ln)
+            prefix, content = (m.group(1), m.group(2)) if m else ("", ln)
+            bold = self._FULL_BOLD_RE.match(content.strip())
+            inner = bold.group(1) if bold else content
+            if not inner.strip():
+                parsed.append((ln, "", False, False))  # keep marker-only line as-is
+            else:
+                parsed.append((prefix, inner, bool(bold), True))
+        to_translate = [p[1] for p in parsed if p[3]]
+        if not to_translate:
+            return text
+        with ThreadPoolExecutor(max_workers=min(8, len(to_translate))) as ex:
+            results = list(ex.map(
+                lambda s: self._translate_line(s, source_lang, target_lang), to_translate
+            ))
+        out, ri = [], 0
+        for prefix, inner, is_bold, needs in parsed:
+            if not needs:
+                out.append("" if (prefix == "" and inner == "") else prefix)
+                continue
+            tr = results[ri]; ri += 1
+            out.append(f"{prefix}**{tr}**" if is_bold else f"{prefix}{tr}")
+        return "\n".join(out)
+
+    def _translate_line(self, text: str, source_lang: str, target_lang: str) -> str:
         if source_lang == target_lang:
             return text
         normalized_text = self.normalize_slang(text) if source_lang == "kn" else text
@@ -2492,20 +2579,27 @@ async def _run_ai_turn_and_persist(
         # endpoint that was just confirmed unreachable, for a string that's
         # cheaper and more reliable to just hardcode once.
         text_kn = AI_UNAVAILABLE_TEXT_KN
-    else:
-        # BOUND this translation: translator.translate falls through to the GLM
-        # chat model, which under an outage can hang ~183s (retries) with NO
-        # timeout of its own. That would stall the WHOLE turn here -- after the
-        # answer is already computed -- and never persist, leaving the client on a
-        # permanent "pending" (the real cause of the "no dossier" hang, since
-        # text_kn is computed on EVERY turn, both languages). On timeout we fall
-        # back to the English text so the turn always finishes and persists.
+    elif lang == "kn":
+        # LAZY TRANSLATION: only translate to Kannada NOW when the officer is
+        # actually viewing in Kannada. Previously text_kn was computed on EVERY
+        # turn including English display -- a wasted ~18s (the multi-line line-by-
+        # line translation routinely hit the timeout below), which was the real
+        # cause of the ~20s latency on English turns. For English display we skip
+        # it entirely; the per-message ⇄ Translate button fetches a FRESH, correct
+        # Kannada translation on demand via /api/translate (which also means old
+        # messages with a bad stored text_kn re-translate correctly).
+        # BOUND this call: translator.translate can fall through to the GLM chat
+        # model, which under an outage hangs; on timeout we fall back to English
+        # so the turn always finishes and persists.
         try:
             text_kn = await asyncio.wait_for(
                 run_in_threadpool(translator.translate, text_en, "en", "kn"), timeout=18
             )
         except Exception:
             text_kn = text_en
+    else:
+        # English display -> no eager Kannada; the ⇄ button translates on demand.
+        text_kn = text_en
     text = text_kn if lang == "kn" else text_en
 
     # Translate Full-Dossier panel BODIES to Kannada too, so every section reads
@@ -3511,6 +3605,37 @@ async def tts_endpoint(payload: TTSRequest, request: Request, location_context: 
     return Response(content=audio_bytes, media_type=media_type)
 
 
+class TranslateRequest(BaseModel):
+    text: str
+    source_lang: str = "en"
+    target_lang: str = "kn"
+
+
+@app.post("/api/translate")
+async def translate_endpoint(payload: TranslateRequest, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    On-demand translation for the per-message ⇄ Translate button. Translates a
+    single message's text when the officer asks, instead of eagerly translating
+    every answer on every turn (which was wasted latency on English display).
+    Because it re-translates the English source live, it also fixes OLD messages
+    whose stored Kannada was a bad/looping translation -- the button always shows
+    a fresh, correct result. Uses the same translator (Zia fast-translate -> GLM
+    -> Qwen, with the repetition-loop guard) as the rest of the app.
+    """
+    src = (payload.source_lang or "en").strip()
+    tgt = (payload.target_lang or "kn").strip()
+    text = payload.text or ""
+    if not text.strip() or src == tgt:
+        return {"text": text, "source_lang": src, "target_lang": tgt}
+    try:
+        out = await asyncio.wait_for(
+            run_in_threadpool(translator.translate, text, src, tgt), timeout=25
+        )
+    except Exception:
+        raise HTTPException(status_code=502, detail="Translation is temporarily unavailable.")
+    return {"text": out, "source_lang": src, "target_lang": tgt}
+
+
 @app.post("/api/voice/stt")
 async def stt_endpoint(audio: UploadFile = File(...), language: str = "en", location_context: str = Depends(security_firewall)):
     """
@@ -3519,14 +3644,29 @@ async def stt_endpoint(audio: UploadFile = File(...), language: str = "en", loca
     the browser Web Speech recognizer for far better Kannada accuracy. Auth-
     gated. Returns the transcript, or 502 (soft) so the frontend can fall back.
     """
-    from catalyst_speech import transcribe_audio
+    from catalyst_speech import transcribe_audio, detect_spoken_language
     try:
         content = await audio.read()
     except Exception:
         raise HTTPException(status_code=400, detail="Could not read the audio upload.")
     if not content:
         raise HTTPException(status_code=400, detail="Empty audio upload.")
-    text = await run_in_threadpool(transcribe_audio, content, audio.filename or "speech.wav", audio.content_type or "audio/wav", language)
+    fn = audio.filename or "speech.wav"
+    ct = audio.content_type or "audio/wav"
+    if language == "auto":
+        # Zia STT has no auto-detect, so transcribe under BOTH languages in
+        # parallel and pick the one actually spoken. This decouples the mic
+        # entirely from the app's display-language toggle -- the officer just
+        # speaks, in either language, and gets the right transcript.
+        text_en, text_kn = await asyncio.gather(
+            run_in_threadpool(transcribe_audio, content, fn, ct, "en"),
+            run_in_threadpool(transcribe_audio, content, fn, ct, "kn"),
+        )
+        text, detected = detect_spoken_language(text_en, text_kn)
+        if not text:
+            raise HTTPException(status_code=502, detail="Transcription is temporarily unavailable.")
+        return {"text": text, "language": detected}
+    text = await run_in_threadpool(transcribe_audio, content, fn, ct, language)
     if text is None:
         raise HTTPException(status_code=502, detail="Transcription is temporarily unavailable.")
     return {"text": text, "language": language}
@@ -3588,43 +3728,214 @@ async def submit_feedback(payload: FeedbackRequest, request: Request, location_c
         return {"status": "unavailable", "detail": "Feedback storage not configured yet."}
 
 
-@app.post("/api/admin/seed-accused-links")
-async def seed_accused_links(request: Request, location_context: str = Depends(security_firewall)):
-    """
-    ONE-TIME (supervisor-only) generator of SYNTHETIC contact attributes -- a
-    phone and a vehicle per accused -- into the AccusedContact table, with
-    INTENTIONAL overlaps: ~25 clusters of 3-5 accused are given a SHARED phone
-    or vehicle to simulate syndicates operating on common burner phones /
-    getaway vehicles. This unlocks shared-attribute network linking ("linked by
-    a shared phone across different cases" -- the Tier-2 depth the base data
-    lacked). Clearly synthetic demo data, consistent with the rest of VAJRA's
-    synthetic dataset; requires the AccusedContact table to exist (see
-    docs/SCHEMA.md). Re-running re-seeds fresh overlaps.
-    """
-    role = getattr(request.state, "role_tier", "") or (request.state.user_profile or {}).get("role_tier", "")
-    if role not in ("supervisor", "admin"):
-        raise HTTPException(status_code=403, detail="Supervisor tier required to seed synthetic link data.")
-    if not catalyst_app:
-        raise HTTPException(status_code=500, detail="Database client offline.")
-    import random
+def _resolve_district_name(district_id: int) -> str:
+    """District id -> name (empty string when 0/unknown). Shared by the analytics endpoints."""
+    if not district_id or not catalyst_app:
+        return ""
     try:
-        rows = catalyst_app.zql().execute_query("SELECT AccusedName FROM Accused LIMIT 400")
-        names = sorted({r.get("Accused", {}).get("AccusedName") for r in rows
-                        if r.get("Accused", {}).get("AccusedName") and "unknown" not in (r.get("Accused", {}).get("AccusedName") or "").lower()})
+        r = catalyst_app.zql().execute_query(
+            f"SELECT DistrictName FROM District WHERE DistrictID = {int(district_id)} LIMIT 1")
+        return (r[0].get("District", {}).get("DistrictName") or "") if r else ""
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Could not read accused names: {e}")
-    if not names:
-        return {"status": "no_names", "seeded": 0}
-    random.shuffle(names)
-    phone = {n: f"+91-9{random.randint(100000000, 999999999)}" for n in names}
-    vehicle = {n: f"KA-{random.randint(1,53):02d}-{random.choice('ABKLMNPQ')}{random.choice('ABCHJKLR')}-{random.randint(1000,9999)}" for n in names}
-    # intentional syndicate overlaps: clusters share ONE phone or vehicle
-    clusters = 0
-    i = 0
+        logger.warning(f"analytics: could not resolve district_id {district_id}: {e}")
+        return ""
+
+
+@app.get("/api/admin/feedback")
+async def admin_feedback(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Supervisor-only: the officer 👍/👎 feedback (+ corrections) captured on answers,
+    newest first. This is the human review surface for the model-improvement loop
+    -- negative ratings and corrections are what a supervisor reviews and what
+    later drives routing/prompt tuning and the answer-quality loop.
+    """
+    role = getattr(request.state, "role_tier", "officer") or "officer"
+    if role not in ("supervisor", "admin"):
+        raise HTTPException(status_code=403, detail="Supervisor tier required.")
+    if not catalyst_app:
+        return {"feedback": []}
+    out = []
+    try:
+        rows = catalyst_app.zql().execute_query(
+            "SELECT kgid, query_text, response_summary, rating, correction, created_at "
+            "FROM Feedback ORDER BY created_at DESC LIMIT 200")
+        for r in rows:
+            f = r.get("Feedback", {})
+            out.append({
+                "kgid": f.get("kgid") or "",
+                "query_text": f.get("query_text") or "",
+                "response_summary": f.get("response_summary") or "",
+                "rating": (f.get("rating") or "").lower(),
+                "correction": (f.get("correction") or None),
+                "created_at": f.get("created_at") or "",
+            })
+    except Exception as e:
+        logger.warning(f"admin feedback list failed (Feedback table not provisioned?): {e}")
+        return {"feedback": []}
+    return {"feedback": out}
+
+
+@app.get("/api/admin/access-oversight")
+async def admin_access_oversight(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Supervisor-only accountability view: aggregates the recent AuditLog into
+    per-officer query activity (volume + how many distinct subjects they pulled)
+    and flags anomalously broad access -- the internal-affairs signal that one
+    officer querying many unrelated subjects should be reviewed. Bounded to the
+    most recent audit window (ZCQL caps a non-aggregate SELECT at 300 rows).
+    """
+    role = getattr(request.state, "role_tier", "officer") or "officer"
+    if role not in ("supervisor", "admin"):
+        raise HTTPException(status_code=403, detail="Supervisor tier required.")
+    if not catalyst_app:
+        return {"officers": []}
+    agg: Dict[Any, Dict[str, Any]] = {}
+    try:
+        rows = catalyst_app.zql().execute_query(
+            "SELECT employee_id, target_entity, logged_at FROM AuditLog ORDER BY logged_at DESC LIMIT 300")
+        for r in rows:
+            a = r.get("AuditLog", {})
+            eid = a.get("employee_id")
+            if eid is None:
+                continue
+            d = agg.setdefault(eid, {"count": 0, "subjects": set(), "last": ""})
+            d["count"] += 1
+            tgt = (a.get("target_entity") or "").strip().lower()
+            if tgt and tgt not in ("", "all districts", "all firs"):
+                d["subjects"].add(tgt)
+            la = a.get("logged_at") or ""
+            if la > d["last"]:
+                d["last"] = la
+    except Exception as e:
+        logger.warning(f"access-oversight audit read failed: {e}")
+        return {"officers": []}
+    officers = []
+    for eid, d in agg.items():
+        name, kgid = f"Officer {eid}", str(eid)
+        try:
+            er = catalyst_app.zql().execute_query(
+                f"SELECT FirstName, KGID FROM Employee WHERE EmployeeID = {int(eid)} LIMIT 1")
+            if er:
+                ed = er[0].get("Employee", {})
+                name = ed.get("FirstName") or name
+                kgid = str(ed.get("KGID") or kgid)
+        except Exception:
+            pass
+        qc, ds = d["count"], len(d["subjects"])
+        flagged = ds >= 20 or qc >= 40
+        reason = None
+        if flagged:
+            reason = f"Broad access: {qc} queries across {ds} distinct subjects in the recent window"
+        officers.append({
+            "kgid": kgid, "name": name, "query_count": qc, "distinct_subjects": ds,
+            "flagged": flagged, "flag_reason": reason, "last_active": d["last"],
+        })
+    officers.sort(key=lambda o: o["query_count"], reverse=True)
+    return {"officers": officers}
+
+
+@app.get("/api/analytics/spikes")
+async def analytics_spikes(request: Request, district_id: int = 0, location_context: str = Depends(security_firewall)):
+    """
+    Per-crime-category momentum for the Emerging Spike Alerts panel: each crime
+    type's last-90-day count vs its own prior-90-day baseline, so a category that
+    is sharply rising surfaces as a red alert. Reuses the grounded priority-
+    concerns computation (real COUNT/GROUP BY, cached).
+    """
+    district = _resolve_district_name(district_id)
+    try:
+        pc = await run_in_threadpool(agent_loop._compute_priority_concerns, district)
+    except Exception as e:
+        logger.warning(f"analytics spikes failed: {e}")
+        return {"spikes": []}
+    spikes = []
+    for c in ((pc.get("data") or {}).get("concerns") or []):
+        change = c.get("growth_pct", 0.0)
+        recent = c.get("recent", 0)
+        prior = c.get("prior", 0)
+        if change > 50 and recent >= 5:
+            sev = "high"
+        elif change > 10:
+            sev = "medium"
+        else:
+            sev = "low"
+        spikes.append({"category": c.get("type", ""), "recent": recent,
+                       "baseline": prior, "change_pct": change, "severity": sev})
+    spikes.sort(key=lambda s: s["change_pct"], reverse=True)
+    return {"spikes": spikes}
+
+
+@app.get("/api/analytics/anomalies")
+async def analytics_anomalies(request: Request, district_id: int = 0, location_context: str = Depends(security_firewall)):
+    """
+    Statistical anomaly call-outs for the Analytics tab: (1) a monthly-volume
+    outlier (last month vs a z-score baseline of the prior months) and (2) crime
+    types whose momentum is a sharp break from their own history. Every callout
+    states the baseline and delta so it is auditable -- no fabrication.
+    """
+    district = _resolve_district_name(district_id)
+    anomalies = []
+    try:
+        tr = await run_in_threadpool(agent_loop._compute_crime_trends, district, "", 12)
+        series = (tr.get("data") or {}).get("series") or []
+        counts = [int(s.get("count") or 0) for s in series]
+        if len(counts) >= 4:
+            base = counts[:-1]
+            mu = float(np.mean(base))
+            sd = float(np.std(base)) or 1.0
+            last = counts[-1]
+            z = (last - mu) / sd
+            if abs(z) >= 2:
+                direction = "spike" if z > 0 else "drop"
+                anomalies.append({
+                    "label": f"Unusual monthly {direction}",
+                    "detail": f"The latest month had {last} incidents versus a {round(mu)} average (±{round(sd)}) over the prior months.",
+                    "metric": "monthly incidents", "z_score": round(z, 1),
+                })
+    except Exception as e:
+        logger.warning(f"analytics anomalies (trend) failed: {e}")
+    try:
+        pc = await run_in_threadpool(agent_loop._compute_priority_concerns, district)
+        for c in ((pc.get("data") or {}).get("concerns") or []):
+            g = c.get("growth_pct", 0.0)
+            recent = c.get("recent", 0)
+            prior = c.get("prior", 0)
+            if g >= 100 and recent >= 5:
+                anomalies.append({
+                    "label": f"Sharp rise in {c.get('type', 'a crime type')}",
+                    "detail": f"{c.get('type','')} rose to {recent} incidents in the last 90 days from {prior} in the prior 90 (+{g}%).",
+                    "metric": c.get("type", ""), "z_score": round(min(g / 50.0, 9.0), 1),
+                })
+    except Exception as e:
+        logger.warning(f"analytics anomalies (momentum) failed: {e}")
+    return {"anomalies": anomalies[:8]}
+
+
+def _build_accused_link_plan():
+    """
+    DETERMINISTIC generator of the synthetic phone/vehicle assignment (fixed RNG
+    seed) so it is identical on every call -- essential for the CHUNKED seeder
+    below, where each request inserts a different slice of the SAME plan and
+    they must agree on names, contacts, and syndicate overlaps. Reads accused
+    names (ZCQL caps LIMIT at 300), assigns a unique phone + vehicle to each,
+    then forces ~25 clusters of 3-5 accused to SHARE one phone or vehicle to
+    simulate syndicates on common burner phones / getaway vehicles -- the
+    shared-attribute depth that unlocks hidden-network linking.
+    """
+    import random
+    rows = catalyst_app.zql().execute_query("SELECT AccusedName FROM Accused LIMIT 300")
+    names = sorted({r.get("Accused", {}).get("AccusedName") for r in rows
+                    if r.get("Accused", {}).get("AccusedName")
+                    and "unknown" not in (r.get("Accused", {}).get("AccusedName") or "").lower()})
+    rng = random.Random(20260827)  # fixed seed -> reproducible across chunked calls
+    rng.shuffle(names)
+    phone = {n: f"+91-9{rng.randint(100000000, 999999999)}" for n in names}
+    vehicle = {n: f"KA-{rng.randint(1,53):02d}-{rng.choice('ABKLMNPQ')}{rng.choice('ABCHJKLR')}-{rng.randint(1000,9999)}" for n in names}
+    clusters, i = 0, 0
     while i + 3 <= len(names) and clusters < 25:
-        size = random.randint(3, 5)
+        size = rng.randint(3, 5)
         grp = names[i:i + size]
-        if random.random() < 0.6:
+        if rng.random() < 0.6:
             shared = phone[grp[0]]
             for n in grp:
                 phone[n] = shared
@@ -3634,16 +3945,66 @@ async def seed_accused_links(request: Request, location_context: str = Depends(s
                 vehicle[n] = shared
         clusters += 1
         i += size
+    return names, phone, vehicle, clusters
+
+
+@app.post("/api/admin/seed-accused-links")
+async def seed_accused_links(request: Request, start: int = 0, count: int = 100,
+                             location_context: str = Depends(security_firewall)):
+    """
+    Supervisor-only generator of SYNTHETIC contact attributes (phone + vehicle
+    per accused, with intentional syndicate overlaps) into AccusedContact.
+
+    CHUNKED + RESUMABLE: inserting all ~300 rows in one request exceeds AppSail's
+    ~30s execution ceiling (confirmed live: 408 EXECUTION_TIME_EXCEEDED). Each
+    call seeds `count` rows starting at `start` and returns `next_offset` / `done`
+    so the client loops until done. The assignment is deterministic (fixed RNG
+    seed) so every slice agrees. On the FIRST chunk (start==0) the table is
+    cleared so a re-run does not duplicate a partially-seeded previous attempt.
+    Clearly synthetic demo data (see docs/SCHEMA.md); the table must already exist.
+    """
+    role = getattr(request.state, "role_tier", "") or (request.state.user_profile or {}).get("role_tier", "")
+    if role not in ("supervisor", "admin"):
+        raise HTTPException(status_code=403, detail="Supervisor tier required to seed synthetic link data.")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    try:
+        names, phone, vehicle, clusters = _build_accused_link_plan()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not read accused names: {e}")
+    if not names:
+        return {"status": "no_names", "seeded": 0}
+
+    count = max(1, min(count, 120))  # keep each chunk safely under the ~30s ceiling
+    if start == 0:
+        # Clear any rows from a prior (possibly partial) seed so re-running is idempotent.
+        try:
+            catalyst_app.zql().execute_query("DELETE FROM AccusedContact")
+        except Exception as e:
+            logger.warning(f"AccusedContact clear before reseed skipped: {e}")
+
+    slice_names = names[start:start + count]
     seeded = 0
-    for n in names:
+    for n in slice_names:
         try:
             zcql_insert_row("AccusedContact", {"AccusedName": n, "PhoneNumber": phone[n], "VehicleNumber": vehicle[n]})
             seeded += 1
         except Exception as e:
             logger.warning(f"AccusedContact insert failed for {n!r} (table missing?): {e}")
-            if seeded == 0:
+            if start == 0 and seeded == 0:
                 raise HTTPException(status_code=503, detail="AccusedContact table not found -- create it in the console first (see docs/SCHEMA.md).")
-    return {"status": "seeded", "accused": seeded, "syndicate_clusters": clusters}
+    next_offset = start + count
+    done = next_offset >= len(names)
+    return {
+        "status": "seeded",
+        "seeded_this_chunk": seeded,
+        "from": start,
+        "to": min(next_offset, len(names)),
+        "total": len(names),
+        "next_offset": None if done else next_offset,
+        "done": done,
+        "syndicate_clusters": clusters,
+    }
 
 
 class PDFExportRequest(BaseModel):
@@ -3666,42 +4027,15 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
     with no login. Now (1) gated behind the security firewall, and (2) the
     badge is derived from the authenticated session (request.state.kgid), never
     the client payload, so the operator attribution on the document is real and
-    unforgeable. TWO-PERSON APPROVAL is now enforced SERVER-SIDE (not just the
-    UI): a non-supervisor export must carry a valid supervisor co-signer's badge
-    + password, verified here against OfficerCredentials -- a junior can no
-    longer bypass the gate by calling the API directly.
+    unforgeable.
+
+    Exporting the report (the chat transcript in report form) is available to
+    ANY authenticated officer -- the two-person supervisor co-sign that used to
+    gate it was removed per product decision: the document only contains the
+    officer's own conversation, not privileged bulk data, and the export is still
+    authenticated, attributed to the real logged-in badge, and audit-logged.
     """
     authed_badge = request.state.kgid or "UNKNOWN"
-
-    # --- Two-person approval (server-side enforcement) ---
-    req_role = getattr(request.state, "role_tier", "officer") or "officer"
-    if req_role not in ("supervisor", "admin"):
-        approver = (payload.approver_badge or "").strip()
-        appwd = payload.approver_password or ""
-        if not approver or not appwd:
-            raise HTTPException(status_code=403, detail="Two-person approval required: a supervisor must co-sign this export.")
-        if approver == str(authed_badge):
-            raise HTTPException(status_code=403, detail="The co-signer must be a DIFFERENT officer (two-person rule).")
-        if not catalyst_app:
-            raise HTTPException(status_code=500, detail="Database client offline.")
-        try:
-            import bcrypt as _bcrypt
-            from vajra_core import derive_role_tier as _drt
-            _safe = approver.replace("'", "''")
-            cr = catalyst_app.zql().execute_query(f"SELECT KGID, PasswordHash FROM OfficerCredentials WHERE KGID = '{_safe}'")
-            stored = cr[0].get("OfficerCredentials", {}).get("PasswordHash") if cr else None
-            if not stored or not _bcrypt.checkpw(appwd.encode("utf-8"), stored.encode("utf-8")):
-                raise HTTPException(status_code=403, detail="Co-signer credentials are invalid.")
-            emp = catalyst_app.zql().execute_query(f"SELECT RankID FROM Employee WHERE KGID = '{_safe}'")
-            app_role = _drt(emp[0].get("Employee", {}).get("RankID")) if emp else "officer"
-            if app_role not in ("supervisor", "admin"):
-                raise HTTPException(status_code=403, detail="The co-signer must be a supervisor-tier officer.")
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Two-person co-sign verification failed: {e}")
-            raise HTTPException(status_code=500, detail="Could not verify the co-signer.")
-        logger.info(f"Two-person export approved: requester {authed_badge} co-signed by supervisor {approver}")
 
     try:
         from fpdf import FPDF

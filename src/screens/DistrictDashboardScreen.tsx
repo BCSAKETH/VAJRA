@@ -21,7 +21,7 @@ import {
   Area,
   CartesianGrid,
 } from "recharts";
-import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock } from "lucide-react";
+import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity } from "lucide-react";
 
 interface DistrictSummaryRow {
   district_id: number;
@@ -42,6 +42,25 @@ interface DistrictDetail {
   police_presence: { employee_headcount: number; station_count: number };
   most_wanted: { suspect: string; case_count: number } | null;
   recent_cases: { crime_no: string; registered_date: string; brief_facts: string }[];
+}
+
+// Per-category momentum vs its own historical baseline — powers the "Emerging
+// Spike Alerts" panel (red-zone pulsing when a category spikes vs its average).
+interface SpikeRow {
+  category: string;
+  recent: number;
+  baseline: number;
+  change_pct: number;
+  severity: "high" | "medium" | "low";
+}
+
+// Statistical outliers surfaced as auditable callouts (baseline/delta carried in
+// `detail`) — powers the "Anomaly Callouts" panel.
+interface AnomalyRow {
+  label: string;
+  detail: string;
+  metric: string;
+  z_score: number;
 }
 
 // Fixed SVG coordinate space the map is drawn into (see MAP_PROJECTION
@@ -103,6 +122,11 @@ export const DistrictDashboardScreen: React.FC = () => {
   // above. Dormant (configured=false) until a news key is set in .env.
   const [signals, setSignals] = useState<{ configured: boolean; items: Array<{ title: string; source: string; published: string; url: string; snippet: string }>; note?: string } | null>(null);
   const [isLoadingSignals, setIsLoadingSignals] = useState(false);
+  // Emerging Spike Alerts + Anomaly Callouts — official-analytics side-panels,
+  // fetched per selected district. Best-effort like the rest of `detail`; a
+  // slow/failed analytics call must never blank the charts. null = still loading.
+  const [spikes, setSpikes] = useState<SpikeRow[] | null>(null);
+  const [anomalies, setAnomalies] = useState<AnomalyRow[] | null>(null);
   const drilldownRef = useRef<HTMLDivElement | null>(null);
 
   // Plain SVG <path> elements per district (not a Leaflet layer), so hover/
@@ -183,6 +207,20 @@ export const DistrictDashboardScreen: React.FC = () => {
       .then((s) => setSignals(s))
       .catch(() => setSignals(null))
       .finally(() => setIsLoadingSignals(false));
+    // Emerging Spike Alerts + Anomaly Callouts — fetched in PARALLEL and
+    // best-effort, keyed on the same selected district id. Empty/failed → calm
+    // empty state, never a thrown error that could disturb the charts.
+    const analyticsHeaders = { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` };
+    setSpikes(null);
+    fetch(`${API_BASE}/api/analytics/spikes?district_id=${districtId}`, { headers: analyticsHeaders })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setSpikes(Array.isArray(d?.spikes) ? d.spikes : []))
+      .catch(() => setSpikes([]));
+    setAnomalies(null);
+    fetch(`${API_BASE}/api/analytics/anomalies?district_id=${districtId}`, { headers: analyticsHeaders })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setAnomalies(Array.isArray(d?.anomalies) ? d.anomalies : []))
+      .catch(() => setAnomalies([]));
     try {
       const res = await fetch(`${API_BASE}/api/dashboard/districts/${districtId}/detail`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
@@ -702,6 +740,100 @@ export const DistrictDashboardScreen: React.FC = () => {
                             <span className="text-[10px] font-black text-[#C79A4E] shrink-0 w-24 truncate">{c.crime_no}</span>
                             <span className="text-[9.5px] text-stone-500 shrink-0 w-20">{c.registered_date?.split(" ")[0]}</span>
                             <span className="text-[10.5px] text-stone-400 truncate flex-1">{c.brief_facts || "—"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Emerging Spike Alerts — per crime-CATEGORY momentum vs its
+                      own historical baseline. High + rising pulses in danger red
+                      (the problem-statement's "red-zone pulsing when a category
+                      spikes vs its historical average"); medium = gold; a falling
+                      category reads teal, because a shrinking type is relief. */}
+                  <div className="glass-card p-4 border border-stone-850 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                        <TrendingUp className="w-3.5 h-3.5 text-[#C79A4E]" />
+                        {lang === "en" ? "Emerging Spike Alerts" : "ಉದಯೋನ್ಮುಖ ಏರಿಕೆ ಎಚ್ಚರಿಕೆಗಳು"}
+                      </h3>
+                      <span className="text-[9px] font-mono text-stone-500 uppercase tracking-wide">
+                        {lang === "en" ? "vs historical avg" : "ಐತಿಹಾಸಿಕ ಸರಾಸರಿ"}
+                      </span>
+                    </div>
+                    {spikes === null ? (
+                      <div className="space-y-2">
+                        {[1, 2, 3, 4].map((n) => <div key={n} className="h-6 rounded shimmer-bg" />)}
+                      </div>
+                    ) : spikes.length === 0 ? (
+                      <div className="text-[10.5px] text-stone-500 font-mono py-3 leading-relaxed flex items-center gap-2">
+                        <Activity className="w-3.5 h-3.5 text-[#5DCAA5] shrink-0" />
+                        {lang === "en" ? "No categories are sharply accelerating." : "ಯಾವುದೇ ವರ್ಗಗಳು ತೀವ್ರವಾಗಿ ಏರುತ್ತಿಲ್ಲ."}
+                      </div>
+                    ) : (() => {
+                      const sorted = [...spikes].sort((a, b) => b.change_pct - a.change_pct);
+                      const maxRecent = Math.max(1, ...sorted.map((s) => s.recent || 0));
+                      return (
+                        <div className="space-y-1.5">
+                          {sorted.map((s, i) => {
+                            // change_pct < 0 → teal (relief); else severity drives
+                            // it: high = danger red + pulse, medium = gold, low = muted.
+                            const rising = s.change_pct > 0;
+                            const isHot = rising && s.severity === "high";
+                            const color = !rising ? "#5DCAA5" : s.severity === "high" ? "#E24B4A" : s.severity === "medium" ? "#C79A4E" : "#A8A096";
+                            return (
+                              <div
+                                key={i}
+                                className={`flex items-center gap-2 rounded-lg px-2 py-1.5 border ${isHot ? "border-[#E24B4A]/30 bg-[#E24B4A]/[0.06] animate-pulse" : "border-transparent"}`}
+                              >
+                                <span className="text-[11px] text-stone-300 w-24 sm:w-28 truncate shrink-0" title={s.category}>{s.category}</span>
+                                <div className="flex-1 h-3.5 bg-stone-900/60 rounded overflow-hidden">
+                                  <div className="h-full rounded" style={{ width: `${Math.max(6, (s.recent / maxRecent) * 100)}%`, background: color, opacity: 0.55 }} />
+                                </div>
+                                <span className="text-[10px] font-mono text-stone-400 w-8 text-right shrink-0 tabular-nums" title={lang === "en" ? "recent count" : "ಇತ್ತೀಚಿನ ಎಣಿಕೆ"}>{s.recent}</span>
+                                <span
+                                  className="text-[10px] font-mono font-black w-14 text-right shrink-0 tabular-nums"
+                                  style={{ color }}
+                                  title={`${lang === "en" ? "baseline" : "ಆಧಾರ"} ${s.baseline}`}
+                                >
+                                  {rising ? "▲" : s.change_pct < 0 ? "▼" : "▬"}{s.change_pct >= 0 ? "+" : ""}{s.change_pct}%
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Anomaly Callouts — statistical outliers as auditable, red-tinted
+                      cards. Each detail sentence carries its own baseline/delta so a
+                      reviewer can check the claim; the z-score chip shows how far out. */}
+                  <div className="glass-card p-4 border border-stone-850 space-y-3">
+                    <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 text-rose-450" />
+                      {lang === "en" ? "Anomaly Callouts" : "ಅಸಂಗತ ಸೂಚನೆಗಳು"}
+                    </h3>
+                    {anomalies === null ? (
+                      <div className="space-y-2">
+                        {[1, 2, 3].map((n) => <div key={n} className="h-14 rounded-lg shimmer-bg" />)}
+                      </div>
+                    ) : anomalies.length === 0 ? (
+                      <div className="text-[10.5px] text-stone-500 font-mono py-3 leading-relaxed">
+                        {lang === "en" ? "No statistical anomalies detected for this district." : "ಈ ಜಿಲ್ಲೆಗೆ ಯಾವುದೇ ಸಾಂಖ್ಯಿಕ ಅಸಂಗತಿಗಳು ಕಂಡುಬಂದಿಲ್ಲ."}
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        {anomalies.map((a, i) => (
+                          <div key={i} className="bg-rose-500/[0.06] border border-rose-500/20 rounded-lg p-2.5">
+                            <div className="flex items-start justify-between gap-2">
+                              <span className="text-[11.5px] font-bold text-stone-100 leading-snug">{a.label}</span>
+                              <span className="text-[9px] font-mono font-black text-rose-400 shrink-0 px-1.5 py-0.5 rounded bg-rose-500/10 border border-rose-500/20 tabular-nums">
+                                z={a.z_score}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-stone-400 mt-1 leading-relaxed">{a.detail}</p>
+                            {a.metric && <div className="text-[8.5px] font-mono text-stone-600 uppercase tracking-wide mt-1">{a.metric}</div>}
                           </div>
                         ))}
                       </div>

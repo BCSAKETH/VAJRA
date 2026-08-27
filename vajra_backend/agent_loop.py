@@ -2,6 +2,8 @@ import os
 import json
 import logging
 import re
+import time
+import copy
 import hashlib
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
@@ -21,6 +23,26 @@ graph_rag = VajraGraphRAG()
 semantic_memory = VajraSemanticMemory()
 
 _real_districts_cache: Optional[List[str]] = None
+
+# Short-TTL cache for expensive full-table aggregate computations (crime-type
+# distribution, priority concerns). Those GROUP BY queries over the whole
+# ~21k-row CaseMaster take ~10-20s each (confirmed live) and their results barely
+# change minute to minute, so caching turns the very common repeat asks from a
+# 20s wait into an instant answer. In-process + per-worker (a cold AppSail worker
+# still pays once), TTL-bounded so the numbers never go stale for long.
+_AGG_CACHE: Dict[str, Tuple[float, Any]] = {}
+_AGG_TTL_SECONDS = 900  # 15 minutes
+
+
+def _agg_cache_get(key: str):
+    hit = _AGG_CACHE.get(key)
+    if hit and (time.time() - hit[0]) < _AGG_TTL_SECONDS:
+        return copy.deepcopy(hit[1])  # copy so callers can't corrupt the cached value
+    return None
+
+
+def _agg_cache_put(key: str, value: Any) -> None:
+    _AGG_CACHE[key] = (time.time(), copy.deepcopy(value))
 
 
 def get_real_districts() -> List[str]:
@@ -1878,6 +1900,13 @@ class VajraAgentLoop:
         response_type = "text"
         data = {}
         citations = []
+        # When True, run_agent_loop uses text_result verbatim and SKIPS the GLM
+        # synthesis pass. Set by tools whose text_result is already a complete,
+        # well-formed answer and whose data widget carries the visual -- so their
+        # latency is deterministic (~just the query) instead of hostage to the
+        # GLM "thinking" model's 3-20s variance. Bilingual text_kn is still
+        # generated downstream in main.py, so nothing bilingual is lost.
+        final_answer = False
         
         # Enforce role-scoped station boundary
         unit_filter_str = ""
@@ -2255,6 +2284,7 @@ class VajraAgentLoop:
                     logger.warning(f"Could not resolve district '{district}' for hotspot map: {ex}")
 
             response_type = "map"
+            final_answer = True  # map + descriptive text_result is complete; skip GLM synthesis
             coordinates = []
             if catalyst_app:
                 try:
@@ -3010,6 +3040,7 @@ class VajraAgentLoop:
             # Only emit the visual widget when there's real ranked data; the
             # honest empty state renders as a plain text note instead.
             response_type = "priority_concerns" if (data or {}).get("concerns") else "text"
+            final_answer = True  # computed ranking + widget is complete; skip GLM synthesis
             citations.extend(pc_res.get("citations", []))
             self._write_audit_log(
                 employee_id, "Priority Concern Analysis", district or "All Districts",
@@ -3044,6 +3075,7 @@ class VajraAgentLoop:
             text_result = "\n".join(lines)
             data = ov_data
             response_type = "case_distribution"
+            final_answer = True  # complete grounded overview + narrowing guidance; skip GLM synthesis
             citations.append(ov["citation"])
             self._write_audit_log(
                 employee_id, "Database Overview", "All FIRs",
@@ -3596,7 +3628,8 @@ class VajraAgentLoop:
             "text_result": text_result,
             "response_type": response_type,
             "data": data,
-            "citations": citations
+            "citations": citations,
+            "final": final_answer,
         }
 
     # Curated offence-type -> legal-area map for online-abuse triage. Cites the
@@ -3675,6 +3708,10 @@ class VajraAgentLoop:
         Returns a detailed, ranked text_result so the answer is specific even if
         the later GLM narrative step is unavailable.
         """
+        _ck = f"concerns:{district or 'all'}"
+        _cached = _agg_cache_get(_ck)
+        if _cached is not None:
+            return _cached
         from datetime import timedelta
         unit_ids: List[str] = []
         scope = "all districts"
@@ -3774,7 +3811,9 @@ class VajraAgentLoop:
                 "top_rising": top_rising, "concerns": concerns[:10]}
         citations = [{"type": "Priority Concern Analysis", "id": scope,
                       "details": "Crime-type momentum — real COUNT/GROUP BY over the full table, recent 90d vs prior 90d."}]
-        return {"text_result": text, "response_type": "text", "data": data, "citations": citations}
+        result = {"text_result": text, "response_type": "text", "data": data, "citations": citations}
+        _agg_cache_put(_ck, result)
+        return result
 
     def _compute_crime_trends(self, district: str, crime_group: str, months: int) -> Dict[str, Any]:
         """
@@ -3927,6 +3966,10 @@ class VajraAgentLoop:
         }
 
     def _compute_case_types_distribution(self, district: str) -> Dict[str, Any]:
+        _ck = f"casedist:{district or 'all'}"
+        _cached = _agg_cache_get(_ck)
+        if _cached is not None:
+            return _cached
         unit_ids: List[str] = []
         if district and catalyst_app:
             try:
@@ -4009,7 +4052,7 @@ class VajraAgentLoop:
         if len(data_list) > 5:
             text_result += f"- and {len(data_list) - 5} other crime categories."
 
-        return {
+        result = {
             "data": {
                 "series": data_list,
                 "total": total_cases,
@@ -4022,6 +4065,9 @@ class VajraAgentLoop:
                 "details": "Aggregated crime classification distribution using CaseMaster record index."
             }
         }
+        if data_list:  # only cache a real result, never an empty/failed one
+            _agg_cache_put(_ck, result)
+        return result
 
     def resolve_vague_query(self, text: str, user_unit_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """
