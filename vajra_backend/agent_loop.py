@@ -1438,6 +1438,27 @@ class VajraAgentLoop:
         # unchanged for English.
         routing_query = officer_query
 
+        # ATTACHMENT TURNS: the frontend prepends the uploaded file's analysis as
+        # "Attachment analysis: <analysis>\n\n<what the officer typed>". That prose is
+        # ABOUT a document and must NEVER be mined for suspect names -- a resume that
+        # mentions "criminal network" + a proper noun made the router run
+        # network/risk/MO on a non-existent accused and answer "not found" 3x
+        # (confirmed live). Route on ONLY what the officer actually typed; if they
+        # asked nothing specific, present the analysis itself as the answer.
+        _att_analysis, _att_present = "", False
+        if officer_query.lower().lstrip().startswith("attachment analysis:"):
+            _ap = officer_query.split("\n\n", 1)
+            _lead = _ap[0].strip()
+            _att_analysis = _lead.split(":", 1)[1].strip() if ":" in _lead else _lead
+            _asked = _ap[1].strip() if len(_ap) > 1 else ""
+            if (not _asked) or _asked.lower() in (
+                "analyze this", "analyse this", "analyze", "analyse", "summarize", "summarise",
+                "what is this", "read this", "explain this", "analyze the attached file",
+                "analyse the attached file", "analyze this file", "analyse this file"):
+                _att_present = True          # nothing specific asked -> just show the analysis
+            else:
+                routing_query = _asked        # a real question -> route on the officer's words only
+
         # 1. Resolve Entities & Context
         entities = self._resolve_entities(routing_query, session_id, exclude_name=officer_name)
 
@@ -1458,6 +1479,17 @@ class VajraAgentLoop:
                 durable = durable[:-1]
             if len(durable) > len(history):
                 history = durable
+
+        # Attachment turn with no specific question: present the already-generated
+        # document analysis directly -- fast, and no suspect/entity lookups on prose.
+        if _att_present and _att_analysis:
+            history.append({"role": "assistant", "content": _att_analysis})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            return {"text": _att_analysis, "response_type": "text", "data": {},
+                    "citations": [{"type": "Attachment Analysis", "id": "uploaded document",
+                                   "details": "Summary of the file the officer attached (not a database record)."}],
+                    "is_simulated": False, "simulated_reason": ""}
 
         # Append user message
         history.append({"role": "user", "content": query})
