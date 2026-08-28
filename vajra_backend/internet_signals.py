@@ -232,15 +232,20 @@ def get_district_news(district: str, limit: int = 5) -> Dict[str, Any]:
     return result
 
 
-def web_search(query: str, limit: int = 5) -> Dict[str, Any]:
+def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
     """
     Generic public web search for OSINT / spike-explainer. Same dormant-without-
     key contract as news. Supports SerpAPI (default) via WEB_SEARCH_API_KEY.
     Every result is an open-source signal (unverified lead), never official.
+
+    "Go deep": rather than one source, this sweeps BOTH of VAJRA's key-free
+    scrapers (Google News RSS + DuckDuckGo HTML), merges and de-duplicates them
+    by URL/title, and returns as many distinct results as it can up to `limit`.
     """
     query = (query or "").strip()
     if not query:
         return {"configured": True, "items": [], "note": "Empty query."}
+    limit = max(1, min(int(limit or 24), 40))  # hard ceiling to stay within request budget
     ck = f"search::{query.lower()}::{limit}"
     cached = _cache_get(ck)
     if cached is not None:
@@ -249,7 +254,6 @@ def web_search(query: str, limit: int = 5) -> Dict[str, Any]:
     items: List[Dict[str, str]] = []
     try:
         if _SEARCH_KEY and _SEARCH_ENGINE == "serpapi":
-            # Optional higher-quality upgrade if an operator provides a key.
             r = requests.get(
                 "https://serpapi.com/search.json",
                 params={"q": query, "num": limit, "hl": "en", "gl": "in", "api_key": _SEARCH_KEY},
@@ -263,17 +267,39 @@ def web_search(query: str, limit: int = 5) -> Dict[str, Any]:
                     ))
             else:
                 logger.warning(f"SerpAPI {r.status_code}: {r.text[:160]}")
-        if not items:
-            # Default: VAJRA's own scraper -- no key, no paid middleman. Google
-            # News RSS is the reliable primary; DDG HTML is a secondary fallback.
-            items = _scrape_news_rss(query, limit) or _scrape_duckduckgo(query, limit)
+        if len(items) < limit:
+            # Default deep sweep: both key-free scrapers, merged + de-duplicated.
+            merged: List[Dict[str, str]] = list(items)
+            seen = {(_norm(i.get("url")) or _norm(i.get("title"))) for i in merged}
+            for scraper in (_scrape_news_rss, _scrape_duckduckgo):
+                try:
+                    for it in scraper(query, limit):
+                        key = _norm(it.get("url")) or _norm(it.get("title"))
+                        if key and key not in seen:
+                            seen.add(key); merged.append(it)
+                            if len(merged) >= limit:
+                                break
+                except Exception as ie:
+                    logger.warning(f"deep web scrape ({scraper.__name__}) error: {ie}")
+                if len(merged) >= limit:
+                    break
+            items = merged
     except Exception as e:
         logger.warning(f"Web search error for {query!r}: {e}")
 
-    result = {"configured": True, "items": items,
+    result = {"configured": True, "items": items[:limit],
               "note": "" if items else "No public results found."}
     _cache_put(ck, result, _NEWS_TTL)
     return result
+
+
+def _norm(s: Optional[str]) -> str:
+    """Normalize a URL/title for de-duplication across sources."""
+    if not s:
+        return ""
+    s = s.strip().lower().rstrip("/")
+    s = re.sub(r"^https?://(www\.)?", "", s)
+    return s[:180]
 
 
 def _is_blocked_host(url: str) -> bool:
