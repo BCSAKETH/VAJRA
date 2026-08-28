@@ -2,7 +2,7 @@ import React, { useEffect } from "react";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { useApp } from "../AppContext";
-import { Maximize2, ShieldAlert, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart } from "lucide-react";
+import { Maximize2, ShieldAlert, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart, Newspaper, ExternalLink, Radio } from "lucide-react";
 import { ExpandedOverlay } from "./ExpandedOverlay";
 
 // Fit the inline map to the ACTUAL hotspot coordinates every render, and force
@@ -44,6 +44,84 @@ const momArrow = (g: number) => (g > 3 ? "▲" : g < -3 ? "▼" : "▬");
 // Scannable "what should I be most concerned about" board: a hero for the #1
 // concern, then ranked bars sized by volume and coloured by momentum. Full
 // detail stays in the AI narrative above; this is the at-a-glance layer.
+// Open-source news / web-search results as a scannable feed of source-cited
+// cards -- deliberately framed as UNVERIFIED leads (gold "open-source" boundary),
+// separate from official CCTNS records.
+const NewsView: React.FC<{ data: any; lang: "en" | "kn" }> = ({ data, lang }) => {
+  const items: any[] = Array.isArray(data?.news) ? data.news : (Array.isArray(data?.results) ? data.results : []);
+  const scope: string = data?.scope || data?.query || "";
+  const relDate = (s?: string): string => {
+    if (!s) return "";
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return "";
+    const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+    if (days <= 0) return lang === "en" ? "today" : "ಇಂದು";
+    if (days === 1) return lang === "en" ? "yesterday" : "ನಿನ್ನೆ";
+    if (days < 30) return lang === "en" ? `${days}d ago` : `${days} ದಿನ`;
+    return d.toLocaleDateString();
+  };
+  if (items.length === 0) {
+    return (
+      <div className="bg-stone-950/65 rounded-lg p-3 font-mono text-[11px] text-stone-400 border border-stone-900">
+        {lang === "en" ? "No open-source signals found right now." : "ಸದ್ಯಕ್ಕೆ ಯಾವುದೇ ಮುಕ್ತ-ಮೂಲ ಸಂಕೇತಗಳು ಸಿಗಲಿಲ್ಲ."}
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-xl border border-[#C79A4E]/30 bg-[#C79A4E]/[0.04] p-3 space-y-2.5">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-1.5">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#C79A4E] opacity-60" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-[#C79A4E]" />
+          </span>
+          <span className="text-[10px] font-black uppercase tracking-widest font-mono text-[#E4C590]">
+            {lang === "en" ? "Open-Source Signals · Live" : "ಮುಕ್ತ-ಮೂಲ ಸಂಕೇತಗಳು · ನೇರ"}{scope ? ` · ${scope}` : ""}
+          </span>
+        </div>
+        <span className="text-[8.5px] font-mono uppercase tracking-wide text-[#C79A4E]/80">
+          {lang === "en" ? `${items.length} unverified leads` : `${items.length} ಪರಿಶೀಲಿಸದ ಸುಳಿವುಗಳು`}
+        </span>
+      </div>
+      <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">
+        {items.map((it, i) => {
+          const title = (it.title || it.headline || "").trim();
+          const src = it.source || "source";
+          const url = it.url || it.link || "";
+          const snip = (it.snippet || it.description || "").trim();
+          const card = (
+            <div className="group bg-stone-950/50 hover:bg-stone-900/70 border border-stone-850 hover:border-[#C79A4E]/40 rounded-lg p-2.5 transition-colors">
+              <div className="flex items-start gap-2">
+                <span className="mt-0.5 shrink-0 text-[9px] font-mono font-black text-[#C79A4E] w-5 tabular-nums">{String(i + 1).padStart(2, "0")}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12.5px] font-semibold text-stone-100 leading-snug group-hover:text-[#E4C590] transition-colors flex items-start gap-1.5">
+                    <span className="flex-1">{title}</span>
+                    {url && <ExternalLink className="w-3 h-3 mt-0.5 shrink-0 text-stone-500 group-hover:text-[#C79A4E]" />}
+                  </div>
+                  {snip && <p className="text-[10.5px] text-stone-400 leading-snug mt-1 line-clamp-2">{snip}</p>}
+                  <div className="flex items-center gap-2 mt-1.5">
+                    <span className="text-[9px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded bg-[#C79A4E]/12 text-[#E4C590] truncate max-w-[160px]">{src}</span>
+                    {relDate(it.published || it.date) && <span className="text-[9px] font-mono text-stone-500">{relDate(it.published || it.date)}</span>}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+          return url ? (
+            <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="block">{card}</a>
+          ) : (
+            <div key={i}>{card}</div>
+          );
+        })}
+      </div>
+      <div className="flex items-center gap-1.5 text-[9px] font-mono text-[#C79A4E]/70 pt-0.5">
+        <Radio className="w-3 h-3" />
+        {lang === "en" ? "Open-source leads to verify independently — not official CCTNS records." : "ಸ್ವತಂತ್ರವಾಗಿ ಪರಿಶೀಲಿಸಬೇಕಾದ ಮುಕ್ತ-ಮೂಲ ಸುಳಿವುಗಳು — ಅಧಿಕೃತ ದಾಖಲೆ ಅಲ್ಲ."}
+      </div>
+    </div>
+  );
+};
+
 const PriorityConcernsView: React.FC<{ data: any; lang: "en" | "kn" }> = ({ data, lang }) => {
   const concerns: any[] = Array.isArray(data?.concerns) ? data.concerns : [];
   if (concerns.length === 0) {
@@ -191,6 +269,12 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
               <span className="text-xs font-bold text-rose-400 tracking-wider uppercase font-mono">{lang === "en" ? "Priority Concern Board" : "ಆದ್ಯತಾ ಕಾಳಜಿ ಫಲಕ"}</span>
             </>
           )}
+          {type === "news" && (
+            <>
+              <Newspaper className="w-4 h-4 text-[#C79A4E]" />
+              <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Open-Source Signals" : "ಮುಕ್ತ-ಮೂಲ ಸಂಕೇತಗಳು"}</span>
+            </>
+          )}
         </div>
 
         {/* Subtle pop-out to the full-screen artifact view (optional -- the rich
@@ -287,6 +371,8 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
           );
         })() : type === "priority_concerns" ? (
           <PriorityConcernsView data={data} lang={lang} />
+        ) : type === "news" ? (
+          <NewsView data={data} lang={lang} />
         ) : (
           <ExpandedOverlay inline type={type} data={data} onClose={() => {}} />
         )}

@@ -702,8 +702,17 @@ class VajraAgentLoop:
             return m.group(0).upper() if m else ""
 
         def guess_district() -> str:
-            for d in sorted(get_real_districts(), key=len, reverse=True):
+            real = get_real_districts()
+            for d in sorted(real, key=len, reverse=True):
                 if d and d.lower() in q:
+                    return d
+            # Partial / colloquial fallback so "Bengaluru" -> "Bengaluru Urban",
+            # "Mysore" -> "Mysuru", "Gulbarga" -> "Kalaburagi", etc. resolve
+            # (exact-substring alone missed these, so scoped queries like
+            # "anomalies in Bengaluru" silently fell back to all-districts).
+            for m in re.finditer(r"[a-z]{4,}", q):
+                d = self._resolve_district_token(m.group(0), real)
+                if d:
                     return d
             return ""
 
@@ -3239,21 +3248,17 @@ class VajraAgentLoop:
             scope = q or "Karnataka"
             items = []
             try:
-                res = internet_signals.get_district_news(scope, 6)
+                res = internet_signals.get_district_news(scope, 12)
                 items = res.get("items") or []
             except Exception as e:
                 logger.warning(f"get_live_news failed for {scope!r}: {e}")
-            response_type = "text"
             if items:
-                lines = [f"Live open-source news for {scope} — UNVERIFIED public leads, NOT official CCTNS records:"]
-                for it in items[:6]:
-                    src = it.get("source") or "source"
-                    pub = (it.get("published") or "").split("T")[0]
-                    lines.append(f"- {(it.get('title') or '').strip()} ({src}{', ' + pub if pub else ''})")
-                lines.append("\nThese are open-source leads to verify independently, not confirmed facts.")
-                text_result = "\n".join(lines)
+                response_type = "news"
+                text_result = (f"{len(items)} live open-source news leads for {scope} -- unverified public sources, "
+                               f"not official CCTNS records. See the feed below.")
                 data = {"news": items, "scope": scope}
             else:
+                response_type = "text"
                 text_result = (f"No recent open-source news found for {scope} right now. "
                                f"(Live news is scraped from public sources; nothing matched just now.)")
             citations.append({"type": "Open-Source News (Google News)", "id": scope,
@@ -3330,17 +3335,12 @@ class VajraAgentLoop:
                     items = (internet_signals.web_search(q, 6) or {}).get("items") or []
                 except Exception as e:
                     logger.warning(f"web_search failed for {q!r}: {e}")
-            response_type = "text"
             if items:
-                lines = [f"Web search results for '{q}' — UNVERIFIED open-source, NOT official records:"]
-                for it in items[:6]:
-                    src = it.get("source") or "web"
-                    lines.append(f"- {(it.get('title') or '').strip()} ({src})")
-                    if it.get("url"):
-                        lines.append(f"  {it.get('url')}")
-                text_result = "\n".join(lines)
-                data = {"results": items, "query": q}
+                response_type = "news"
+                text_result = f"{len(items)} open-source web results for '{q}' -- unverified, not official records. See below."
+                data = {"news": items, "scope": q}
             else:
+                response_type = "text"
                 text_result = f"No web results found for '{q}'." if q else "Please say what to search the web for."
             citations.append({"type": "Open-Source Web Search", "id": q or "search",
                               "details": "Live public web search -- unverified leads, not official record."})
