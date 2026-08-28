@@ -4802,24 +4802,40 @@ class VajraAgentLoop:
         acc_desc = accused + (f" (age {age}{', ' + gender if gender else ''}"
                               f"{', appears in ' + str(prior) + ' cases' if prior and prior > 1 else ''})" if accused else "")
         rt, data = "text", {"case_no": crimeno}
-        if any(w in ql for w in ("dangerous", "risk", "threat")) and accused:
+        if any(w in ql for w in ("dangerous", "risk", "threat", "ಅಪಾಯ", "ಅಪಾಯಕಾರಿ")) and accused:
             rr = self._execute_tool("get_offender_risk", {"suspect_name": accused}, employee_id, session_id, user_unit_id)
             ans = (f"The accused in {crimeno} is {acc_desc}. {(rr.get('text_result') or '').strip()} "
                    f"Note: this is a model-derived lead to verify, not proof of guilt.")
             rt, data = "risk", (rr.get("data") or {})
-        elif any(w in ql for w in ("which station", "what station", "filed at", "registered at", "where was", "station")):
+        elif any(w in ql for w in ("which station", "what station", "filed at", "registered at", "where was", "station", "ಠಾಣೆ")):
             ans = f"Case {crimeno} was filed at {station or 'the registering unit (station name not on record)'}."
             data = {"case_no": crimeno, "station": station}
-        elif "victim" in ql or "complainant" in ql:
+        elif any(w in ql for w in ("victim", "complainant", "ಸಂತ್ರಸ್ತ", "ದೂರುದಾರ", "ಬಲಿಪಶು")):
             victim, complainant = _name_from("Victim"), _name_from("ComplainantDetails")
             lines = [f"Victim: {victim}" if victim else "Victim: not separately recorded (see the FIR narrative below)."]
             lines.append(f"Complainant: {complainant}" if complainant else "Complainant: not separately recorded.")
             ans = f"For case {crimeno}:\n- " + "\n- ".join(lines) + (f"\n\nBrief facts: {brief}" if brief else "")
             data = {"case_no": crimeno, "victim": victim, "complainant": complainant}
-        elif "linked" in ql or "other case" in ql or "related case" in ql or "connected case" in ql:
+        elif any(w in ql for w in ("linked", "other case", "related case", "connected case", "ಸಂಬಂಧಿತ", "ಇತರ ಪ್ರಕರಣ")):
             sr = self._execute_tool("find_similar_cases", {"query": brief or case_no}, employee_id, session_id, user_unit_id)
-            ans = (sr.get("text_result") or "No linked cases found.")
-            rt, data = (sr.get("response_type") or "text"), (sr.get("data") or {})
+            matches = [(mm.get("fir_id") or "") for mm in ((sr.get("data") or {}).get("matches") or [])]
+            linked = [c for c in matches if c and c.upper() != crimeno.upper()]  # never list the case itself
+            if linked:
+                lines = [f"Cases linked to {crimeno} by shared characteristics (leads to verify, not proof):"]
+                for cno in linked[:5]:
+                    bf = ""
+                    try:
+                        rr = catalyst_app.zql().execute_query(
+                            f"SELECT BriefFacts FROM CaseMaster WHERE CrimeNo = '{cno.replace(chr(39), chr(39) * 2)}' LIMIT 1")
+                        if rr:
+                            bf = (rr[0].get("CaseMaster", {}).get("BriefFacts") or "")[:90]
+                    except Exception:
+                        pass
+                    lines.append(f"- {cno}{' -- ' + bf if bf else ''}")
+                ans = "\n".join(lines)
+            else:
+                ans = f"No other cases are linked to {crimeno} in the current data."
+            rt, data = "text", {"case_no": crimeno, "linked": linked}
         elif "what should i do" in ql or "what do i do" in ql or " next" in ql or "not do" in ql:
             steps = [f"Case {crimeno} filed at {station or 'the station'}{', registered ' + str(reg).split()[0] if reg else ''}."]
             if accused:
