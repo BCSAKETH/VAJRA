@@ -726,6 +726,17 @@ class VajraAgentLoop:
         # Time window: "last/past 6 months" -> honour it instead of the 12-month default.
         _mo = re.search(r"(?:last|past|previous|recent)\s+(\d{1,2})\s+month", q)
         months_g = int(_mo.group(1)) if _mo else 0
+        # Year scope: "in 2025" / "this year" / "last year" -> honour it for counts
+        # instead of silently answering all-time (which drops the qualifier).
+        _yr = re.search(r"\b(20\d{2})\b", q)
+        if _yr:
+            year_g = _yr.group(1)
+        elif "this year" in q or "current year" in q:
+            year_g = str(datetime.now().year)
+        elif "last year" in q or "previous year" in q:
+            year_g = str(datetime.now().year - 1)
+        else:
+            year_g = ""
 
         # (keywords, tool_name, params, required_guess) -- required_guess is
         # checked truthy before this pattern is allowed to match at all.
@@ -777,7 +788,7 @@ class VajraAgentLoop:
               "patterns should i", "what should i focus", "top risks", "alarming"], "get_priority_concerns",
              {"district": district}, "yes"),
             (["how many", "number of", "count of", "total number of", "how many cases"], "count_cases",
-             {"district": district, "crime_group": crime_group}, crime_group or district),
+             {"district": district, "crime_group": crime_group, "year": year_g}, crime_group or district or year_g),
             (["trend", "over time", "increasing", "decreasing", "seasonal pattern"], "get_crime_trends",
              {"district": district, "crime_group": crime_group, "months": months_g}, "yes"),
             (["pie chart", "case types", "types of cases", "distribution of cases", "cases by type", "crime categories"], "get_case_types_distribution",
@@ -796,10 +807,12 @@ class VajraAgentLoop:
             (["worst crime district", "worst districts", "worst district for crime", "worst affected district",
               "which districts have the worst", "which district has the worst", "most dangerous district",
               "most dangerous districts", "highest crime district", "highest crime districts", "top crime district",
-              "top crime districts", "rank districts", "rank the districts", "district ranking", "districts by crime"],
+              "top crime districts", "rank districts", "rank the districts", "district ranking", "districts by crime",
+              "most crime", "most crimes", "which districts have the most", "which district has the most",
+              "districts with the most", "highest crime", "highest number of crimes", "worst for crime"],
              "rank_districts", {}, "yes"),
             (["forecast", "predict", "early warning"], "get_forecast",
-             {"district": district, "crime_type": crime_group}, district or crime_group),
+             {"district": district, "crime_type": crime_group}, "yes"),
             # find_similar_cases is the LAST pattern and takes the whole query
             # as a semantic search string, so it's the natural catch-all for
             # "find/list/show ... cases" phrasings that no more-specific tool
@@ -2568,7 +2581,10 @@ class VajraAgentLoop:
 
         # 8. get_forecast
         elif tool_name == "get_forecast":
-            district = self.sanitize_sql_input(params.get("district", "Bengaluru Urban"))
+            # No district named -> forecast STATEWIDE (all districts), not a
+            # presumptuous single-district default that silently narrows scope.
+            district = self.sanitize_sql_input(params.get("district", "") or "")
+            district_label = district or "Karnataka (statewide, all districts)"
             # crime_type is OPTIONAL: "forecast crime in <district>" (no type)
             # forecasts OVERALL crime for the district rather than dead-ending on
             # a clarify prompt or a presumptuous default. Empty crime_type means
@@ -2608,12 +2624,12 @@ class VajraAgentLoop:
                 pct = trend["data"]["trend"]["pct_per_month"]
                 projected = max(0.0, round(avg * (1 + pct / 100), 1))
                 forecast_results = [{
-                    "district": district, "crime_type": crime_type, "period": "Next 30 Days",
+                    "district": district_label, "crime_type": crime_type, "period": "Next 30 Days",
                     "predicted": projected, "historical_avg": avg, "confidence": None,
                     "method": "baseline_trend_extrapolation",
                 }]
                 text_result = (
-                    f"Projected {crime_label} in {district} for the next month: ~{projected} incidents. "
+                    f"Projected {crime_label} in {district_label} for the next month: ~{projected} incidents. "
                     f"Derived from real recent data -- the {trend['data']['months']}-month average is {avg}/month, "
                     f"trending {trend['data']['trend']['direction']} ({pct:+.1f}%/month). This is a trend-extrapolation "
                     f"estimate, not a trained time-series model; treat as directional guidance, not a precise probability."
@@ -3325,6 +3341,7 @@ class VajraAgentLoop:
         elif tool_name == "count_cases":
             district = self.sanitize_sql_input(params.get("district", "") or "")
             cg = (params.get("crime_group") or "").strip()
+            year = re.sub(r"[^0-9]", "", str(params.get("year", "") or ""))[:4]
             unit_ids, head_id, cg_name = [], None, cg
             if catalyst_app:
                 try:
@@ -3336,10 +3353,24 @@ class VajraAgentLoop:
                             u_res = catalyst_app.zql().execute_query(f"SELECT UnitID FROM Unit WHERE DistrictID = {did}")
                             unit_ids = [u.get("Unit", {}).get("UnitID") for u in u_res if u.get("Unit", {}).get("UnitID")]
                     if cg:
+                        # Prefer an EXACT crime-group name match before any substring
+                        # match, so a generic "theft" resolves to the "THEFT" head
+                        # and not the first head that merely CONTAINS the word
+                        # (e.g. "MOTOR VEHICLE THEFT"). Fall back to substring only
+                        # when no exact match exists.
+                        exact = None; loose = None
                         for h in catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead"):
                             gn = (h.get("CrimeHead", {}) or {}).get("CrimeGroupName") or ""
-                            if gn and (cg.lower() in gn.lower() or gn.lower() in cg.lower()):
-                                head_id = h.get("CrimeHead", {}).get("CrimeHeadID"); cg_name = gn; break
+                            hid = h.get("CrimeHead", {}).get("CrimeHeadID")
+                            if not gn:
+                                continue
+                            if gn.lower() == cg.lower():
+                                exact = (hid, gn); break
+                            if loose is None and (cg.lower() in gn.lower() or gn.lower() in cg.lower()):
+                                loose = (hid, gn)
+                        pick = exact or loose
+                        if pick:
+                            head_id, cg_name = pick[0], pick[1]
                 except Exception as e:
                     logger.warning(f"count_cases resolve failed: {e}")
             where = []
@@ -3347,6 +3378,8 @@ class VajraAgentLoop:
                 where.append(f"CrimeMajorHeadID = {head_id}")
             if unit_ids:
                 where.append(f"PoliceStationID IN ({','.join(map(str, unit_ids))})")
+            if year and len(year) == 4:
+                where.append(f"CrimeRegisteredDate >= '{year}-01-01' AND CrimeRegisteredDate < '{int(year)+1}-01-01'")
             wc = (" WHERE " + " AND ".join(where)) if where else ""
             n = 0
             try:
@@ -3361,13 +3394,14 @@ class VajraAgentLoop:
             else:
                 label = (f"{cg_name} cases" if cg_name else "cases")
                 scope = f" in {district}" if district else " across all districts"
-                text_result = f"There are {n:,} {label}{scope} on record."
-            data = {"count": n, "crime_group": cg_name, "district": district}
-            citations.append({"type": "Case Count", "id": f"{cg_name or 'all'}/{district or 'all'}",
+                period = f" registered in {year}" if (year and len(year) == 4) else " on record"
+                text_result = f"There are {n:,} {label}{scope}{period}."
+            data = {"count": n, "crime_group": cg_name, "district": district, "year": year}
+            citations.append({"type": "Case Count", "id": f"{cg_name or 'all'}/{district or 'all'}/{year or 'all-time'}",
                               "details": "Exact COUNT over CaseMaster -- grounded aggregate."})
             final_answer = True
-            self._write_audit_log(employee_id, "Case Count", f"{cg_name}/{district}",
-                                  f"Count {cg_name or 'all'} in {district or 'all'}", text_result, session_id)
+            self._write_audit_log(employee_id, "Case Count", f"{cg_name}/{district}/{year}",
+                                  f"Count {cg_name or 'all'} in {district or 'all'} {year or 'all-time'}", text_result, session_id)
 
         elif tool_name == "shared_attribute_links":
             # SYNDICATE RADAR: other accused who SHARE a named suspect's phone or
@@ -4437,7 +4471,7 @@ class VajraAgentLoop:
         {"name": "get_demographic_correlation", "does": "socio-economic correlation with crime for a district", "params": {"district": "required"}},
         {"name": "rank_districts", "does": "rank ALL districts by crime volume, worst first", "params": {}},
         {"name": "get_database_overview", "does": "total FIRs + crime-type overview for the whole database", "params": {}},
-        {"name": "count_cases", "does": "exact COUNT of cases, optionally filtered by crime type and/or district (answers 'how many X in Y')", "params": {"district": "optional", "crime_group": "optional crime type"}},
+        {"name": "count_cases", "does": "exact COUNT of cases, optionally filtered by crime type, district, and/or a 4-digit year (answers 'how many X in Y in YYYY')", "params": {"district": "optional", "crime_group": "optional crime type", "year": "optional 4-digit year"}},
         {"name": "query_case", "does": "details of ONE case by its case number", "params": {"case_no": "required"}},
         {"name": "get_case_timeline", "does": "chronological timeline of ONE case", "params": {"case_no": "required"}},
         {"name": "get_case_sections", "does": "legal sections applied to ONE case", "params": {"case_no": "required"}},
