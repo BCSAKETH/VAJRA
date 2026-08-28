@@ -207,24 +207,17 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   const [translating, setTranslating] = useState(false);
   const englishSource = isAI ? (message.textEn || message.text) : message.text;
   const canTranslate = isAI && !message.isSimulated && !!(englishSource && englishSource.trim());
+  // A message has REAL Kannada only if its stored textKn is genuinely Kannada
+  // script and not just a copy of the English (English turns don't pre-compute
+  // Kannada, so textKn == englishSource there).
+  const hasRealKannada = !!message.textKn && message.textKn !== englishSource && /[ಀ-೿]/.test(message.textKn);
 
-  // effectiveLang drives panel bodies too, so the whole message flips together.
+  // Which language to actually show: the app-wide toggle, flipped by the ⇄ button.
   const effectiveLang: "en" | "kn" = !showTranslated ? lang : (lang === "en" ? "kn" : "en");
-  let rawDisplayText: string;
-  if (!isAI) {
-    rawDisplayText = message.text;
-  } else if (!showTranslated) {
-    rawDisplayText = lang === "kn" ? (message.textKn || message.text) : englishSource;
-  } else if (lang === "en") {
-    rawDisplayText = liveKn ?? englishSource;      // toggled to Kannada (fetched live)
-  } else {
-    rawDisplayText = englishSource;                // toggled to English (source, always reliable)
-  }
 
-  const handleTranslate = async () => {
-    if (showTranslated) { setShowTranslated(false); return; }
-    // Toggling to English, or Kannada already fetched -> instant, no call.
-    if (lang === "kn" || liveKn) { setShowTranslated(true); return; }
+  // Fetch a live Kannada translation of the English source once, cached in liveKn.
+  const fetchKn = React.useCallback(async () => {
+    if (liveKn || translating || !canTranslate) return;
     setTranslating(true);
     try {
       const res = await fetch(`${API_BASE}/api/translate`, {
@@ -232,16 +225,27 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
         headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`, "Content-Type": "application/json" },
         body: JSON.stringify({ text: englishSource, source_lang: "en", target_lang: "kn" }),
       });
-      if (res.ok) {
-        const d = await res.json();
-        setLiveKn(d.text || englishSource);
-        setShowTranslated(true);
-      }
-    } catch {
-      /* silent -- officer still has the original */
-    } finally {
-      setTranslating(false);
-    }
+      if (res.ok) { const d = await res.json(); setLiveKn(d.text || englishSource); }
+    } catch { /* silent -- officer still has the original */ } finally { setTranslating(false); }
+  }, [liveKn, translating, canTranslate, englishSource]);
+
+  // WHOLE-APP language switch: when the top-right toggle is on Kannada (or the ⇄
+  // asks for Kannada) and this message has no real stored Kannada, translate it
+  // live so the ENTIRE conversation switches language -- without the per-turn
+  // eager translation that made English answers slow.
+  React.useEffect(() => {
+    if (effectiveLang === "kn" && !hasRealKannada && !liveKn && canTranslate) { void fetchKn(); }
+  }, [effectiveLang, hasRealKannada, liveKn, canTranslate, fetchKn]);
+
+  const kannadaText = hasRealKannada ? (message.textKn as string) : (liveKn ?? englishSource);
+  const rawDisplayText: string = !isAI
+    ? message.text
+    : (effectiveLang === "kn" ? kannadaText : englishSource);
+
+  const handleTranslate = () => {
+    // The effect above fetches Kannada when needed; the button just flips which
+    // language this one message shows, independent of the app-wide toggle.
+    setShowTranslated((v) => !v);
   };
   // Multiline answers are stored with the newline SQL-escaped to a literal
   // "\n" (two chars) on insert and never un-escaped on read, so they render
