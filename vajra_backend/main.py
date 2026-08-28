@@ -3923,10 +3923,28 @@ def _build_accused_link_plan():
     shared-attribute depth that unlocks hidden-network linking.
     """
     import random
+    import re as _re
     rows = catalyst_app.zql().execute_query("SELECT AccusedName FROM Accused LIMIT 300")
     names = sorted({r.get("Accused", {}).get("AccusedName") for r in rows
                     if r.get("Accused", {}).get("AccusedName")
                     and "unknown" not in (r.get("Accused", {}).get("AccusedName") or "").lower()})
+    # ALSO include the known REPEAT OFFENDERS (from ProactiveAlerts) so the
+    # Syndicate Radar lights up for the suspects officers actually query -- the
+    # base 300 accused rows rarely overlap the repeat-offender set, so without
+    # this a "who shares a phone with <top offender>" query found no contact row.
+    repeat_names = []
+    try:
+        alerts = catalyst_app.zql().execute_query(
+            "SELECT AlertMessage FROM ProactiveAlerts WHERE AlertType = 'REPEAT_OFFENDER' ORDER BY TriggerTime DESC LIMIT 100")
+        for a in alerts:
+            m = _re.search(r"Suspect '(.+?)' detected in", (a.get("ProactiveAlerts", {}) or {}).get("AlertMessage") or "")
+            if m:
+                repeat_names.append(m.group(1))
+    except Exception as e:
+        logger.warning(f"seed plan: repeat-offender fetch failed: {e}")
+    for rn in repeat_names:
+        if rn and rn not in names:
+            names.append(rn)
     rng = random.Random(20260827)  # fixed seed -> reproducible across chunked calls
     rng.shuffle(names)
     phone = {n: f"+91-9{rng.randint(100000000, 999999999)}" for n in names}
@@ -3945,6 +3963,19 @@ def _build_accused_link_plan():
                 vehicle[n] = shared
         clusters += 1
         i += size
+    # Group EVERY repeat offender into a shared-phone syndicate cluster (4 per
+    # group) so any repeat offender an officer queries demonstrably links to
+    # others on the Syndicate Radar -- these are exactly the suspects that get
+    # looked up, so partial coverage left the radar empty for them.
+    ro = [n for n in repeat_names if n in phone]
+    j = 0
+    while j + 2 <= len(ro):
+        grp = ro[j:j + 4]
+        shared = phone[grp[0]]
+        for n in grp:
+            phone[n] = shared
+        clusters += 1
+        j += 4
     return names, phone, vehicle, clusters
 
 
