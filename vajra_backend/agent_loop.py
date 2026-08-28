@@ -524,6 +524,28 @@ class VajraAgentLoop:
                         dropping = False  # first non-reasoning line = the answer
                     out.append(ln)
                 s = "\n".join(out).strip()
+        # HARD leak guard: some generations are ENTIRELY untagged reasoning that
+        # exposes the model's plumbing -- tool names, the system prompt, "I don't
+        # have a tool to...", numbered "Check Capabilities / Response Strategy /
+        # Drafting / Refining" steps (confirmed live: "make this as bar graph"
+        # leaked the whole chain-of-thought + tool list + an ASCII draft). The
+        # leading-line stripper above misses these (they open with "User:" or a
+        # bullet). No genuine police answer contains this plumbing, so if any
+        # strong marker survives, discard the whole generation ("" -> honest
+        # fallback) rather than show the model's internals to an officer.
+        low = s.lower()
+        _leak_markers = (
+            "system prompt", "text_response", "'tool' field", '"tool" field',
+            "resolve_vague_query", "query_graph_network", "ask_clarifying_question",
+            "find_similar_cases", "generate_chart", "visualize_data",
+            "check capabilities", "response strategy", "drafting the content",
+            "refining the output", "i do not have a tool", "i don't have a tool",
+            "i have access to specific tools", "i cannot generate a", "as a text-based llm",
+            "i must provide a text", "the prompt says", "the system says",
+        )
+        if any(m in low for m in _leak_markers):
+            logger.warning("Discarded a leaked reasoning/plumbing generation from GLM (strip_think hard guard).")
+            return ""
         return s.strip()
 
     def _multilens_fallback(self, context: str) -> Dict[str, Any]:
@@ -736,8 +758,13 @@ class VajraAgentLoop:
              {"district": district}, "yes"),
             (["demographic", "socio-economic", "socio economic", "correlation"], "get_demographic_correlation", {"district": district}, district),
             (["repeat offender", "habitual"], "get_repeat_offenders", {"district": district}, "yes"),
+            (["worst crime district", "worst districts", "worst district for crime", "worst affected district",
+              "which districts have the worst", "which district has the worst", "most dangerous district",
+              "most dangerous districts", "highest crime district", "highest crime districts", "top crime district",
+              "top crime districts", "rank districts", "rank the districts", "district ranking", "districts by crime"],
+             "rank_districts", {}, "yes"),
             (["forecast", "predict", "early warning"], "get_forecast",
-             {"district": district, "crime_type": crime_group}, district and crime_group),
+             {"district": district, "crime_type": crime_group}, district or crime_group),
             # find_similar_cases is the LAST pattern and takes the whole query
             # as a semantic search string, so it's the natural catch-all for
             # "find/list/show ... cases" phrasings that no more-specific tool
@@ -944,6 +971,51 @@ class VajraAgentLoop:
         except Exception as e:
             logger.warning(f"fuzzy accused match failed for {name!r}: {e}")
         return ""
+
+    # Descriptive/superlative ways an officer refers to a person WITHOUT naming
+    # them. Matched case-insensitively as substrings of the officer's own query.
+    # Kept deliberately specific (each includes "offender"/"criminal"/"wanted")
+    # so it never collides with descriptive phrases about places or crimes
+    # (e.g. "most active district", "biggest crime spike").
+    _DESCRIPTIVE_SUBJECT_PHRASES = (
+        "most active offender", "most active criminal", "most wanted",
+        "top repeat offender", "top offender", "biggest offender",
+    )
+
+    def _resolve_descriptive_subject(self, query: str, employee_id: int, session_id: str,
+                                     user_unit_id: Optional[int]) -> Optional[str]:
+        """
+        Resolve a DESCRIPTIVE reference to a person ("the most active offender",
+        "the top repeat offender", "the most wanted") to the REAL name of the
+        current top repeat offender, so suspect-facet tools (MO / risk / network)
+        run on a concrete name instead of dead-ending on "identifier missing".
+
+        The name is NEVER fabricated: it comes straight from the existing
+        grounded get_repeat_offenders computation (which reads the scheduled
+        ProactiveAlerts REPEAT_OFFENDER analysis), so it is always a real accused
+        already ranked by case count. Returns None when the query carries no
+        descriptive phrase, or when the grounded list is empty -- in which case
+        the caller keeps the existing honest behaviour rather than inventing a
+        subject.
+        """
+        if not query:
+            return None
+        q = query.lower()
+        if not any(p in q for p in self._DESCRIPTIVE_SUBJECT_PHRASES):
+            return None
+        try:
+            ro = self._execute_tool("get_repeat_offenders", {}, employee_id, session_id, user_unit_id)
+        except Exception as ex:
+            logger.warning(f"_resolve_descriptive_subject: repeat-offender computation failed: {ex}")
+            return None
+        offenders = ((ro or {}).get("data") or {}).get("offenders") or []
+        if not offenders:
+            return None
+        top = (offenders[0].get("suspect") or "").strip()
+        if top:
+            logger.info(f"Descriptive subject in query resolved to grounded top repeat offender: '{top}'")
+            return top
+        return None
 
     def _resolve_entities(self, query: str, session_id: str, exclude_name: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -1370,6 +1442,54 @@ class VajraAgentLoop:
                         "is_simulated": not bool(elaborated),
                         "simulated_reason": "" if elaborated else "AI expansion temporarily unavailable"}
 
+        # THINKING-LANE: contextual re-presentation -- "make this a pie chart",
+        # "show this as a bar chart", "visualize this". Resolves "this" to the
+        # PREVIOUS answer's real data and re-charts THAT, instead of the router
+        # keyword-matching "pie chart" to an unrelated tool. Runs first so it
+        # wins over the fast-route.
+        represent = self._handle_represent_previous(officer_query, session_id)
+        if represent is not None:
+            response_text = represent["text_result"]
+            history.append({"role": "assistant", "content": response_text})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            return {"text": response_text, "response_type": represent["response_type"],
+                    "data": represent["data"], "citations": represent["citations"],
+                    "is_simulated": False, "simulated_reason": ""}
+
+        # THINKING-LANE: compound + quantified "risk profiles of the top N repeat
+        # offenders" -- honour BOTH the "top N" quantifier and the risk intent by
+        # ranking the grounded repeat offenders and scoring each with the real
+        # risk model, instead of the router's keyword-matched plain roster.
+        offenders_risk = self._handle_offenders_with_risk(officer_query, employee_id, session_id, user_unit_id)
+        if offenders_risk is not None:
+            response_text = offenders_risk["text_result"]
+            history.append({"role": "assistant", "content": response_text})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            return {"text": response_text, "response_type": offenders_risk["response_type"],
+                    "data": offenders_risk["data"], "citations": offenders_risk["citations"],
+                    "is_simulated": False, "simulated_reason": ""}
+
+        # DISTRICT COMPARISON short-circuit: "compare X and Y", "X vs Y", "X
+        # versus Y", "difference between X and Y". A single get_crime_trends
+        # tool call resolves only ONE district, so comparison queries silently
+        # answered for just one side (confirmed live: "compare crime between
+        # Mysuru and Bengaluru" returned a Mysuru-only trend). This runs the
+        # SAME grounded 12-month COUNT aggregation for BOTH districts and fuses
+        # them into one side-by-side dossier. Returns None (fall through) unless
+        # a comparison cue AND two distinct real districts are present, so every
+        # existing single-district query is untouched.
+        comparison = self._handle_district_comparison(officer_query, employee_id, session_id, user_unit_id)
+        if comparison is not None:
+            response_text = comparison["text_result"]
+            history.append({"role": "assistant", "content": response_text})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            return {"text": response_text, "response_type": comparison["response_type"],
+                    "data": comparison["data"], "citations": comparison["citations"],
+                    "is_simulated": False, "simulated_reason": ""}
+
         # A2 FAST-ROUTE: when the officer's command clearly maps to exactly one
         # tool ("network of X", "risk for X", "hotspots", "which sections for
         # case Y"), pick it deterministically and SKIP the slow GLM tool-
@@ -1542,6 +1662,23 @@ class VajraAgentLoop:
                 if "tool" in decision:
                     tool_name = decision["tool"]
                     params = decision.get("parameters", {})
+                    # DESCRIPTIVE-SUBJECT RESOLUTION: when a suspect-facet tool is
+                    # chosen but the officer named the person only by description
+                    # ("the most active offender", "the top repeat offender"),
+                    # resolve it to the REAL top repeat offender's name from the
+                    # grounded computation -- so MO/risk/network run on a concrete
+                    # name instead of dead-ending on "identifier missing". Only fills
+                    # a blank slot or a descriptive placeholder that isn't a real
+                    # accused; a concrete name the officer typed still fuzzy-matches
+                    # and is left untouched. When no descriptive phrase is present
+                    # the resolver returns None immediately (no DB work), so normal
+                    # named lookups are unchanged.
+                    if tool_name in ("get_mo_profile", "get_offender_risk", "query_graph_network", "generate_full_report"):
+                        _resolved_subject = self._resolve_descriptive_subject(officer_query, employee_id, session_id, user_unit_id)
+                        if _resolved_subject:
+                            _given_name = (params.get("suspect_name") or "").strip()
+                            if not _given_name or not self._fuzzy_accused_match(_given_name):
+                                params["suspect_name"] = _resolved_subject
                     # Thread the officer's ACTUAL question into the dossier even when
                     # GLM (not the forced/keyword path) routed to it, so it leads with
                     # a direct answer to what was asked instead of the fixed template.
@@ -2373,10 +2510,15 @@ class VajraAgentLoop:
         # 8. get_forecast
         elif tool_name == "get_forecast":
             district = self.sanitize_sql_input(params.get("district", "Bengaluru Urban"))
-            crime_type = self.sanitize_sql_input(params.get("crime_type", "THEFT"))
+            # crime_type is OPTIONAL: "forecast crime in <district>" (no type)
+            # forecasts OVERALL crime for the district rather than dead-ending on
+            # a clarify prompt or a presumptuous default. Empty crime_type means
+            # all crime types -- _compute_crime_trends("", ...) aggregates them.
+            crime_type = self.sanitize_sql_input(params.get("crime_type", "")).strip()
+            crime_label = crime_type or "all crime types"
             response_type = "forecast"
             forecast_results = []
-            if catalyst_app:
+            if catalyst_app and crime_type:  # precomputed rows are per crime_type; skip lookup when forecasting overall
                 try:
                     fc_query = f"SELECT * FROM ForecastResults WHERE district = '{district}' AND crime_type = '{crime_type}' LIMIT 10"
                     fc_res = catalyst_app.zql().execute_query(fc_query)
@@ -2412,16 +2554,15 @@ class VajraAgentLoop:
                     "method": "baseline_trend_extrapolation",
                 }]
                 text_result = (
-                    f"No precomputed seasonal forecast exists for {crime_type} in {district}. Derived a baseline "
-                    f"projection instead from real recent data: {trend['data']['months']}-month average is {avg}/month, "
-                    f"trending {trend['data']['trend']['direction']} ({pct:+.1f}%/month) -- projecting ~{projected} "
-                    f"incidents next month. This is a trend-extrapolation estimate, not a trained time-series model; "
-                    f"treat as directional guidance, not a precise probability."
+                    f"Projected {crime_label} in {district} for the next month: ~{projected} incidents. "
+                    f"Derived from real recent data -- the {trend['data']['months']}-month average is {avg}/month, "
+                    f"trending {trend['data']['trend']['direction']} ({pct:+.1f}%/month). This is a trend-extrapolation "
+                    f"estimate, not a trained time-series model; treat as directional guidance, not a precise probability."
                 )
-                citations.append({"type": "Baseline Trend Extrapolation", "id": f"{district}-{crime_type}", "details": "Derived from real CaseMaster monthly COUNT aggregation (see get_crime_trends), not fabricated"})
+                citations.append({"type": "Baseline Trend Extrapolation", "id": f"{district}-{crime_label}", "details": "Derived from real CaseMaster monthly COUNT aggregation (see get_crime_trends), not fabricated"})
             else:
-                text_result = f"Early Warning Forecast: Projecting {forecast_results[0]['predicted']} incidents for {crime_type} in {district} over the next month (Baseline average: {forecast_results[0]['historical_avg']})."
-                citations.append({"type": "Seasonal Time-Series Predictor", "id": f"{district}-{crime_type}", "details": "Forecasting results table"})
+                text_result = f"Early Warning Forecast: Projecting {forecast_results[0]['predicted']} incidents for {crime_label} in {district} over the next month (Baseline average: {forecast_results[0]['historical_avg']})."
+                citations.append({"type": "Seasonal Time-Series Predictor", "id": f"{district}-{crime_label}", "details": "Forecasting results table"})
             data = {"forecast": forecast_results}
             self._write_audit_log(employee_id, "Crime Trend Forecast", f"{district}-{crime_type}", f"Forecast {crime_type} in {district}", text_result, session_id)
 
@@ -3047,6 +3188,16 @@ class VajraAgentLoop:
                 f"Priority concerns: district={district or 'all'}",
                 text_result, session_id
             )
+
+        elif tool_name == "rank_districts":
+            rank_out = self._rank_districts_by_crime()
+            text_result = rank_out["text_result"]
+            response_type = rank_out["response_type"]
+            data = rank_out["data"]
+            citations.extend(rank_out.get("citations", []))
+            final_answer = bool(rank_out.get("final"))
+            self._write_audit_log(employee_id, "District Crime Ranking", "All Districts",
+                                  "Rank districts by crime volume", text_result, session_id)
 
         elif tool_name == "analyze_online_abuse":
             ab = self._analyze_online_abuse(params.get("content", "") or "")
@@ -3815,6 +3966,344 @@ class VajraAgentLoop:
         _agg_cache_put(_ck, result)
         return result
 
+    # District words that are geographic qualifiers, not identifiers -- they
+    # appear as tokens inside multi-word district names ("Bengaluru Urban",
+    # "Bengaluru Rural") and must never be treated on their own as a district
+    # mention, or every "urban vs rural" phrasing would false-match.
+    _DISTRICT_GENERIC_TOKENS = {
+        "urban", "rural", "city", "district", "districts", "north", "south",
+        "east", "west", "central", "division", "range", "commissionerate", "dist",
+    }
+    # Common colloquial / pre-merger spellings the officer may type that are not
+    # the exact DistrictName. Mapped to a distinctive word that DOES appear in a
+    # real DistrictName so the resolver below can match it.
+    _DISTRICT_ALIASES = {
+        "bangalore": "bengaluru", "bengalooru": "bengaluru", "bengaluru": "bengaluru",
+        "mysore": "mysuru", "belgaum": "belagavi", "bijapur": "vijayapura",
+        "gulbarga": "kalaburagi", "bellary": "ballari", "hospet": "vijayanagara",
+        "mangalore": "dakshina", "chikmagalur": "chikkamagaluru", "shimoga": "shivamogga",
+        "tumkur": "tumakuru", "hubli": "dharwad", "dharwar": "dharwad",
+    }
+
+    def _resolve_district_token(self, token: str, real: List[str]) -> Optional[str]:
+        """
+        Resolve one query word to a real DistrictName (or None). Handles exact
+        names, distinctive-word matches ("bengaluru" -> a Bengaluru district),
+        and common colloquial spellings via _DISTRICT_ALIASES. When a token is
+        ambiguous across two real districts (Bengaluru Urban vs Rural), it
+        prefers the Urban district (the officer's default when they type just
+        "Bengaluru"), otherwise the shortest-named match.
+        """
+        tl = (token or "").strip().lower()
+        if not tl or tl in self._DISTRICT_GENERIC_TOKENS:
+            return None
+        tl = self._DISTRICT_ALIASES.get(tl, tl)
+        for d in sorted(real, key=len, reverse=True):
+            if d.lower() == tl:
+                return d
+        matches = [d for d in real if re.search(r'\b' + re.escape(tl) + r'\b', d.lower())]
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0]
+        urban = [d for d in matches if "urban" in d.lower()]
+        return urban[0] if urban else sorted(matches, key=len)[0]
+
+    def _detect_two_districts(self, text: str) -> List[str]:
+        """
+        Find the distinct real districts an officer named, in the order they
+        appear. Full DistrictName substrings are matched first (and blanked so
+        they can't be re-counted), then any remaining distinctive tokens are
+        resolved. Returns the canonical DistrictNames (deduped, source order).
+        """
+        real = get_real_districts()
+        ql = text.lower()
+        found: List[Tuple[int, str]] = []
+        # 1. Exact full-name substrings (longest first so "Bengaluru Urban"
+        #    wins over a bare "Bengaluru" token match).
+        for d in sorted(real, key=len, reverse=True):
+            idx = ql.find(d.lower())
+            if idx != -1:
+                found.append((idx, d))
+                ql = ql[:idx] + (" " * len(d)) + ql[idx + len(d):]
+        # 2. Remaining word tokens (colloquial names, "Bengaluru" alone, etc.).
+        already = {d for _, d in found}
+        for m in re.finditer(r'[a-z]{4,}', ql):
+            d = self._resolve_district_token(m.group(0), real)
+            if d and d not in already:
+                found.append((m.start(), d))
+                already.add(d)
+        found.sort(key=lambda t: t[0])
+        ordered: List[str] = []
+        for _, d in found:
+            if d not in ordered:
+                ordered.append(d)
+        return ordered
+
+    @staticmethod
+    def _extract_chartable_series(response_type: str, d: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Pull a {name, value} series out of a previous answer's data payload so
+        it can be re-charted. Handles the common grounded shapes; returns [] when
+        the previous answer has nothing meaningfully chartable."""
+        d = d or {}
+        if d.get("offenders"):
+            return [{"name": o.get("suspect") or "?", "value": int(o.get("case_count") or 0)}
+                    for o in d["offenders"] if o.get("suspect")]
+        if d.get("series"):  # case_distribution / district ranking / trend already a series
+            out = []
+            for s in d["series"]:
+                nm = s.get("name") or s.get("label")
+                val = s.get("value", s.get("count"))
+                if nm is not None and val is not None:
+                    out.append({"name": nm, "value": int(val)})
+            return out
+        if d.get("concerns"):
+            return [{"name": c.get("type") or "?", "value": int(c.get("recent") or 0)} for c in d["concerns"]]
+        if d.get("hotspots"):
+            return [{"name": h.get("label") or f"Cluster {i+1}", "value": int(h.get("point_count") or 1)}
+                    for i, h in enumerate(d["hotspots"])]
+        return []
+
+    def _handle_represent_previous(self, query: str, session_id: str) -> Optional[Dict[str, Any]]:
+        """
+        THINKING-LANE handler for a CONTEXTUAL re-presentation: "make this a pie
+        chart", "show this as a bar chart", "visualize this", "chart it". The
+        keyword router matched only "pie chart" and fired the crime-type tool,
+        charting the WRONG data and ignoring that "this" meant the PREVIOUS
+        answer. This resolves "this" to the last answer that carried data (from
+        the persisted ChatMessage history) and re-charts THAT data. Returns None
+        when there's no re-present intent or no prior chartable answer.
+        """
+        q = (query or "").lower()
+        cues = ("make this", "make it a", "as a pie", "as a bar", "as a line", "as a chart",
+                "as a graph", "pie chart", "bar chart", "line chart", "visualize this",
+                "visualise this", "chart this", "chart it", "graph this", "graph it",
+                "plot this", "plot it", "show this as", "show it as", "turn this into",
+                "turn it into", "represent this", "represent it")
+        if not any(c in q for c in cues):
+            return None
+        if not catalyst_app:
+            return None
+        prev = None
+        try:
+            safe_sid = self.sanitize_sql_input(session_id)
+            rows = catalyst_app.zql().execute_query(
+                f"SELECT response_type, data_json, text FROM ChatMessage "
+                f"WHERE session_id = '{safe_sid}' AND sender = 'assistant' ORDER BY sent_at DESC LIMIT 8")
+            for r in rows:
+                cm = r.get("ChatMessage", {})
+                dj = cm.get("data_json")
+                if not dj:
+                    continue
+                try:
+                    parsed = json.loads(dj)
+                except Exception:
+                    continue
+                series = self._extract_chartable_series(cm.get("response_type") or "", parsed) if isinstance(parsed, dict) else []
+                if series:
+                    prev = {"series": series, "text": cm.get("text") or ""}
+                    break
+        except Exception as e:
+            logger.warning(f"_handle_represent_previous: history read failed: {e}")
+            return None
+        if not prev or not prev["series"]:
+            return None
+        series = prev["series"][:12]
+        chart = "pie"
+        if "bar" in q:
+            chart = "bar"
+        elif "line" in q:
+            chart = "line"
+        label = {"pie": "pie chart", "bar": "bar chart", "line": "line chart"}[chart]
+        total = sum(s["value"] for s in series)
+        lines = [f"Re-charting the previous answer as a {label}:"]
+        for s in series[:10]:
+            pct = f" ({round(s['value'] / total * 100, 1)}%)" if total else ""
+            lines.append(f"- {s['name']}: {s['value']}{pct}")
+        return {
+            "text_result": "\n".join(lines),
+            "response_type": "case_distribution",  # the frontend renders this as a pie/donut chart
+            "data": {"series": series, "total": total, "district": "", "chart_hint": chart},
+            "citations": [{"type": "Re-visualization", "id": "previous answer",
+                           "details": "Charted the data from your previous answer, re-plotted on request."}],
+            "final": True,
+        }
+
+    def _handle_offenders_with_risk(self, query: str, employee_id: int, session_id: str,
+                                    user_unit_id: Optional[int]) -> Optional[Dict[str, Any]]:
+        """
+        THINKING-LANE handler for a compound + quantified ask: "risk profiles of
+        the top N repeat offenders". The keyword router matched only "repeat
+        offender" and returned a plain roster of ALL of them with no risk -- it
+        never read "top N" or "risk". This reads the whole query: honours the
+        "top N" quantifier AND the risk intent, pulls the grounded repeat-offender
+        ranking, takes the top N, and runs the REAL conviction-risk model for
+        each, presenting one ranked answer. Grounded end to end (real names + real
+        model scores). Returns None when the query isn't this compound shape, so
+        nothing else changes.
+        """
+        q = (query or "").lower()
+        wants_offenders = ("repeat offender" in q or "habitual offender" in q
+                           or "most active offender" in q or "top offender" in q)
+        wants_risk = "risk" in q
+        if not (wants_offenders and wants_risk):
+            return None
+        n = 5  # sensible default for "top ... offenders" with no explicit number
+        m = re.search(r"top\s+(\d{1,2})", q) or re.search(r"\b(\d{1,2})\s+(?:repeat|habitual|most active|top)\b", q)
+        if m:
+            n = max(1, min(int(m.group(1)), 15))
+        ro = self._execute_tool("get_repeat_offenders", {}, employee_id, session_id, user_unit_id)
+        offenders = ((ro or {}).get("data") or {}).get("offenders") or []
+        if not offenders:
+            return None  # honest empty -> let the normal path give the real "none found" answer
+        top = offenders[:n]
+        enriched: List[Dict[str, Any]] = []
+        lines = [f"Risk profiles of the top {len(top)} repeat offenders "
+                 f"(ranked by case count, each scored by the conviction-risk model):"]
+        for i, o in enumerate(top, 1):
+            name = o.get("suspect", "")
+            risk_pct = None
+            try:
+                rr = self._execute_tool("get_offender_risk", {"suspect_name": name}, employee_id, session_id, user_unit_id)
+                rd = rr.get("data") or {}
+                risk_pct = rd.get("risk_score")
+                if risk_pct is None:
+                    mm = re.search(r"(\d+\.?\d*)\s*%", rr.get("text_result") or "")
+                    if mm:
+                        risk_pct = float(mm.group(1))
+            except Exception as ex:
+                logger.warning(f"offenders-with-risk: risk for {name!r} failed: {ex}")
+            risk_txt = f"{risk_pct}% conviction risk" if risk_pct is not None else "risk score unavailable"
+            lines.append(f"{i}. {name} — {o.get('case_count', 0)} cases ({o.get('district', '')}) · {risk_txt}")
+            eo = dict(o)
+            eo["risk_score"] = risk_pct
+            enriched.append(eo)
+        self._write_audit_log(employee_id, "Top Offenders + Risk", "",
+                              f"Risk profiles of top {len(top)} repeat offenders", "\n".join(lines), session_id)
+        return {
+            "text_result": "\n".join(lines),
+            "response_type": "repeat_offenders",
+            "data": {"offenders": enriched, "district_filter": None, "with_risk": True},
+            "citations": [
+                {"type": "ProactiveAlerts Repeat-Offender Analysis", "id": "All Districts",
+                 "details": "Grounded repeat-offender ranking (scheduled detection job)"},
+                {"type": "XGBoost Conviction-Risk Model", "id": f"top {len(top)}",
+                 "details": "Per-offender conviction-risk score from the trained model"},
+            ],
+            "final": True,
+        }
+
+    def _handle_district_comparison(self, query: str, employee_id: int, session_id: str,
+                                    user_unit_id: Optional[int]) -> Optional[Dict[str, Any]]:
+        """
+        Deterministic short-circuit for "compare X and Y" / "X vs Y" / "X versus
+        Y" / "difference between X and Y". Fires ONLY when the query carries an
+        explicit comparison cue AND two DISTINCT real districts resolve;
+        otherwise returns None and existing behavior is untouched.
+
+        It runs the SAME grounded computation (_compute_crime_trends, real
+        month-by-month CaseMaster COUNT() aggregation over 12 months) once per
+        district and merges the two into a genuine side-by-side answer -- totals,
+        monthly averages, trend direction, peak month, and which district is
+        higher and by how much. Every number traces to a real aggregate; nothing
+        is estimated. Renders as a 2-panel "dossier" (one trend panel per
+        district) so both charts show, with the comparison text fused on top.
+        """
+        ql = (query or "").lower()
+        cues = (" vs ", " vs. ", " v/s ", " versus ", "compare", "comparison",
+                "compared to", "compared with", "difference between",
+                "differences between", " against ", "higher crime", "more crime",
+                "which district", "who has more")
+        if not any(c in ql for c in cues):
+            return None
+        districts = self._detect_two_districts(query)
+        if len(districts) < 2:
+            return None
+        a_name, b_name = districts[0], districts[1]
+
+        # Same grounded computation for BOTH districts (12-month real COUNT).
+        try:
+            a = self._compute_crime_trends(a_name, "", 12)
+            b = self._compute_crime_trends(b_name, "", 12)
+        except Exception as e:
+            logger.warning(f"District comparison computation failed for {a_name} vs {b_name}: {e}")
+            return None
+        a_data, b_data = a.get("data") or {}, b.get("data") or {}
+
+        def _summary_line(name: str, d: Dict[str, Any]) -> str:
+            trend = d.get("trend") or {}
+            peak = d.get("peak") or {}
+            parts = [
+                f"{name.upper()}: {d.get('total', 0)} total incidents",
+                f"averaging {d.get('avg_per_month', 0)}/month",
+                f"trend {trend.get('direction', 'stable')} ({trend.get('pct_per_month', 0):+.1f}%/month)",
+            ]
+            line = ", ".join(parts) + "."
+            if peak and peak.get("label"):
+                line += f" Peak month: {peak.get('label')} ({peak.get('count', 0)} incidents)."
+            return line
+
+        a_total = int(a_data.get("total") or 0)
+        b_total = int(b_data.get("total") or 0)
+        if a_total >= b_total:
+            hi_name, hi_total, lo_name, lo_total = a_name, a_total, b_name, b_total
+        else:
+            hi_name, hi_total, lo_name, lo_total = b_name, b_total, a_name, a_total
+        diff = hi_total - lo_total
+        if lo_total > 0:
+            pct = round((diff / lo_total) * 100, 1)
+            bottom = (f"Bottom line: {hi_name} recorded {diff} more incidents than {lo_name} "
+                      f"over the last 12 months ({pct}% higher).")
+        elif hi_total > 0:
+            bottom = (f"Bottom line: {hi_name} recorded {diff} incidents over the last 12 months, "
+                      f"while {lo_name} had none on record.")
+        else:
+            bottom = ("Bottom line: neither district has incidents on record for the last 12 months "
+                      "in the aggregated data.")
+
+        text_result = (
+            f"Side-by-side crime comparison of {a_name} vs {b_name} "
+            f"(real monthly CaseMaster COUNT aggregation, last 12 months):\n\n"
+            f"1. {_summary_line(a_name, a_data)}\n\n"
+            f"2. {_summary_line(b_name, b_data)}\n\n"
+            f"{bottom}"
+        )
+
+        panels = [
+            {"type": "trend", "panel_key": "get_crime_trends", "title_en": f"{a_name} — Crime Trend",
+             "title_kn": f"{a_name} — ಅಪರಾಧ ಪ್ರವೃತ್ತಿ", "data": a_data, "text": a.get("text_result") or ""},
+            {"type": "trend", "panel_key": "get_crime_trends", "title_en": f"{b_name} — Crime Trend",
+             "title_kn": f"{b_name} — ಅಪರಾಧ ಪ್ರವೃತ್ತಿ", "data": b_data, "text": b.get("text_result") or ""},
+        ]
+
+        citations = []
+        if a.get("citation"):
+            citations.append(a["citation"])
+        if b.get("citation"):
+            citations.append(b["citation"])
+        citations.append({
+            "type": "District Comparison", "id": f"{a_name} vs {b_name}",
+            "details": ("Two districts compared side-by-side; each figure is a real 12-month "
+                        "CaseMaster COUNT aggregation computed independently per district."),
+        })
+
+        self._write_audit_log(
+            employee_id, "District Comparison", f"{a_name} vs {b_name}",
+            f"Compare crime: {a_name} vs {b_name}", text_result, session_id
+        )
+
+        return {
+            "text_result": text_result,
+            "response_type": "dossier",
+            "data": {"panels": panels, "comparison": {
+                "districts": [a_name, b_name],
+                "totals": {a_name: a_total, b_name: b_total},
+                "higher": hi_name, "difference": diff,
+            }},
+            "citations": citations,
+            "final": True,
+        }
+
     def _compute_crime_trends(self, district: str, crime_group: str, months: int) -> Dict[str, Any]:
         """
         Real month-by-month incident counts via ZCQL COUNT() aggregation --
@@ -3964,6 +4453,71 @@ class VajraAgentLoop:
                 "details": f"Real COUNT aggregation over {months} months, full table scan (not a 300-row sample)"
             }
         }
+
+    def _rank_districts_by_crime(self, top_n: int = 10) -> Dict[str, Any]:
+        """
+        Rank districts by real total incident volume ("worst crime" = highest
+        count). Grounded: ONE GROUP BY over the full CaseMaster by PoliceStationID
+        (aggregates are not 300-capped), mapped station->district via the Unit
+        table and summed per district -- CaseMaster has no direct DistrictID, so
+        this is the honest way to a district ranking without a JOIN. Cached 15 min
+        since it is a heavy full-table aggregate that changes slowly.
+        """
+        _ck = "rank_districts"
+        _cached = _agg_cache_get(_ck)
+        if _cached is not None:
+            return _cached
+        empty = {"text_result": "District ranking is unavailable right now.",
+                 "response_type": "text", "data": {}, "citations": []}
+        if not catalyst_app:
+            return empty
+        unit_to_district: Dict[Any, Any] = {}
+        district_name: Dict[Any, str] = {}
+        try:
+            for u in catalyst_app.zql().execute_query("SELECT UnitID, DistrictID FROM Unit"):
+                ud = u.get("Unit", {})
+                if ud.get("UnitID") is not None:
+                    unit_to_district[ud.get("UnitID")] = ud.get("DistrictID")
+            for d in catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District"):
+                dd = d.get("District", {})
+                district_name[dd.get("DistrictID")] = dd.get("DistrictName")
+        except Exception as e:
+            logger.warning(f"rank_districts: unit/district maps failed: {e}")
+            return empty
+        counts: Dict[Any, int] = {}
+        try:
+            for r in catalyst_app.zql().execute_query(
+                    "SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster GROUP BY PoliceStationID"):
+                cm = r.get("CaseMaster", {})
+                sid = cm.get("PoliceStationID")
+                c = int(cm.get("COUNT(CaseMasterID)") or 0)
+                did = unit_to_district.get(sid)
+                if did is not None and c:
+                    counts[did] = counts.get(did, 0) + c
+        except Exception as e:
+            logger.warning(f"rank_districts: per-station count failed: {e}")
+            return empty
+        ranked = sorted(
+            [{"district": district_name.get(did) or f"District {did}", "count": c} for did, c in counts.items()],
+            key=lambda x: x["count"], reverse=True)
+        if not ranked:
+            return {"text_result": "No district-level incident data is available to rank.",
+                    "response_type": "text", "data": {}, "citations": []}
+        top = ranked[:top_n]
+        lines = ["Districts ranked by total recorded incidents (highest crime load first):"]
+        for i, d in enumerate(top, 1):
+            lines.append(f"{i}. {d['district']}: {d['count']:,} incidents")
+        result = {
+            "text_result": "\n".join(lines),
+            "response_type": "case_distribution",
+            "data": {"series": [{"name": d["district"], "value": d["count"]} for d in top],
+                     "total": sum(d["count"] for d in ranked), "district": ""},
+            "citations": [{"type": "District Crime Ranking", "id": "All Districts",
+                           "details": "Real per-station CaseMaster COUNT aggregation summed to district level."}],
+            "final": True,
+        }
+        _agg_cache_put(_ck, result)
+        return result
 
     def _compute_case_types_distribution(self, district: str) -> Dict[str, Any]:
         _ck = f"casedist:{district or 'all'}"
