@@ -4082,6 +4082,66 @@ async def seed_accused_links(request: Request, start: int = 0, count: int = 100,
     }
 
 
+# AI EXPORT PRE-SCREEN: before a report leaves the system, scan its content for
+# categories that legally/ethically demand a human sign-off. Deterministic keyword
+# + PII-density heuristics (auditable, no LLM guess) across EN + Kannada. A clean
+# report auto-approves and exports instantly; a flagged one is held for a
+# supervisor. This replaces blanket two-person approval with risk-proportionate
+# control -- most exports are frictionless, only the sensitive few need a human.
+_EXPORT_SENSITIVE_RULES = [
+    ("sexual offence / POCSO", ["rape", "pocso", "sexual assault", "sexual offence", "sexual offense",
+                                "molest", "outrage of modesty", "ಅತ್ಯಾಚಾರ", "ಲೈಂಗಿಕ", "ಅಶ್ಲೀಲ"]),
+    ("minor / juvenile", ["minor victim", "juvenile", "child victim", "underage", "child abuse",
+                          "ಅಪ್ರಾಪ್ತ", "ಬಾಲಾಪರಾಧಿ", "ಮಕ್ಕಳ ಮೇಲಿನ"]),
+    ("communal / caste-sensitive", ["communal", "caste atrocity", "religious tension", "hate crime",
+                                    "ಜಾತಿ ದೌರ್ಜನ್ಯ", "ಕೋಮು ಗಲಭೆ"]),
+    ("informant / protected-witness identity", ["informant", "protected witness", "witness identity",
+                                                "source identity", "ಮಾಹಿತಿದಾರ", "ರಹಸ್ಯ ಸಾಕ್ಷಿ"]),
+    ("national security / terror", ["terror", "uapa", "sedition", "explosive device", "anti-national",
+                                    "ಭಯೋತ್ಪಾದನೆ", "ದೇಶದ್ರೋಹ"]),
+    ("ongoing covert operation", ["undercover", "sting operation", "raid planned", "surveillance target",
+                                  "decoy", "ಗುಪ್ತ ಕಾರ್ಯಾಚರಣೆ"]),
+]
+
+
+def _screen_export_sensitivity(transcript: List[Dict[str, Any]]) -> Tuple[bool, List[str]]:
+    """Return (needs_review, reasons). Deterministic + auditable, never fabricated."""
+    blob = " ".join(
+        str(m.get("content") or m.get("text") or "") for m in (transcript or [])
+    ).lower()
+    reasons: List[str] = []
+    if not blob.strip():
+        return False, []
+    for label, kws in _EXPORT_SENSITIVE_RULES:
+        if any(k in blob for k in kws):
+            reasons.append(label)
+    # Bulk-PII heuristic: many distinct phone numbers = a personal-data export.
+    phones = set(re.findall(r"\b[6-9]\d{9}\b", blob))
+    if len(phones) >= 5:
+        reasons.append(f"bulk personal data ({len(phones)} phone numbers)")
+    return (len(reasons) > 0), reasons
+
+
+def _verify_supervisor_approver(badge: str, password: str) -> bool:
+    """A held export is released only by a SUPERVISOR-tier badge with the correct
+    password (verified against the real bcrypt hash in OfficerCredentials)."""
+    import bcrypt
+    from vajra_core import SUPERVISOR_KGIDS
+    badge = (badge or "").strip()
+    if not badge or badge not in SUPERVISOR_KGIDS or not catalyst_app:
+        return False
+    try:
+        cred = catalyst_app.zql().execute_query(
+            f"SELECT PasswordHash FROM OfficerCredentials WHERE KGID = '{badge}'")
+        if not cred:
+            return False
+        stored = cred[0].get("OfficerCredentials", {}).get("PasswordHash")
+        return bool(stored and bcrypt.checkpw(password.encode("utf-8"), stored.encode("utf-8")))
+    except Exception as e:
+        logger.warning(f"supervisor approver verify error: {e}")
+        return False
+
+
 class PDFExportRequest(BaseModel):
     transcript: List[Dict[str, Any]]
     badge_id: str = "KSP-2026"
@@ -4111,6 +4171,27 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
     authenticated, attributed to the real logged-in badge, and audit-logged.
     """
     authed_badge = request.state.kgid or "UNKNOWN"
+    role_tier = getattr(request.state, "role_tier", "officer")
+
+    # AI EXPORT PRE-SCREEN (risk-proportionate approval). A supervisor may export
+    # anything. For an officer, a clean report exports instantly; a report the
+    # screen flags as sensitive is HELD for supervisor sign-off. An approved
+    # request carries approver_badge/approver_password (verified below) to release.
+    needs_review, review_reasons = _screen_export_sensitivity(payload.transcript)
+    if needs_review and role_tier != "supervisor":
+        approved = False
+        if payload.approver_badge and payload.approver_password:
+            try:
+                approved = _verify_supervisor_approver(payload.approver_badge, payload.approver_password)
+            except Exception as e:
+                logger.warning(f"export approver verify failed: {e}")
+        if not approved:
+            raise HTTPException(
+                status_code=403,
+                detail=("AI pre-screen held this report for supervisor approval before export — detected: "
+                        + "; ".join(review_reasons) + ". A supervisor must review and approve it. "
+                        "(Reports with no sensitive content export instantly.)"),
+            )
 
     try:
         from fpdf import FPDF

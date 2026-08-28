@@ -125,32 +125,50 @@ def _scrape_duckduckgo(query: str, limit: int) -> List[Dict[str, str]]:
     lane), never an error. Results are open-source LEADS, never official record.
     """
     out: List[Dict[str, str]] = []
-    try:
-        r = requests.post("https://html.duckduckgo.com/html/",
-                          data={"q": query}, headers={"User-Agent": _UA},
-                          timeout=_HTTP_TIMEOUT)
-        if r.status_code != 200:
-            logger.warning(f"DDG scrape {r.status_code}")
-            return out
-        html = r.text
-        # each result: <a ... class="result__a" href="URL">TITLE</a>
-        blocks = re.findall(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html, re.DOTALL)
-        snippets = re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
-        for i, (href, title) in enumerate(blocks[:limit]):
-            # DDG wraps links as //duckduckgo.com/l/?uddg=<url-encoded target>
-            m = re.search(r"uddg=([^&]+)", href)
-            url = urllib.parse.unquote(m.group(1)) if m else href
-            if url.startswith("//"):
-                url = "https:" + url
-            snip = _strip_html(snippets[i]) if i < len(snippets) else ""
-            src = ""
-            try:
-                src = urllib.parse.urlparse(url).netloc
-            except Exception:
-                src = "web"
-            out.append(_signal(_strip_html(title), src or "web", "", url, snip))
-    except Exception as e:
-        logger.warning(f"DDG scrape error for {query!r}: {e}")
+    seen: set = set()
+    # DEPTH: DDG HTML paginates by a 's' offset (~30/page). Walk pages until we
+    # have `limit` distinct results, the page yields nothing new, or a safety cap.
+    for page in range(6):  # up to ~180 candidate results
+        if len(out) >= limit:
+            break
+        try:
+            data = {"q": query}
+            if page:
+                data["s"] = str(page * 30)
+                data["dc"] = str(page * 30 + 1)
+            r = requests.post("https://html.duckduckgo.com/html/",
+                              data=data, headers={"User-Agent": _UA}, timeout=_HTTP_TIMEOUT)
+            if r.status_code != 200:
+                logger.warning(f"DDG scrape p{page} {r.status_code}")
+                break
+            html = r.text
+            blocks = re.findall(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html, re.DOTALL)
+            snippets = re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
+            if not blocks:
+                break
+            added = 0
+            for i, (href, title) in enumerate(blocks):
+                m = re.search(r"uddg=([^&]+)", href)
+                url = urllib.parse.unquote(m.group(1)) if m else href
+                if url.startswith("//"):
+                    url = "https:" + url
+                if not url or url in seen:
+                    continue
+                seen.add(url)
+                snip = _strip_html(snippets[i]) if i < len(snippets) else ""
+                try:
+                    src = urllib.parse.urlparse(url).netloc or "web"
+                except Exception:
+                    src = "web"
+                out.append(_signal(_strip_html(title), src, "", url, snip))
+                added += 1
+                if len(out) >= limit:
+                    break
+            if added == 0:
+                break
+        except Exception as e:
+            logger.warning(f"DDG scrape error p{page} for {query!r}: {e}")
+            break
     return out
 
 
@@ -245,7 +263,7 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
     query = (query or "").strip()
     if not query:
         return {"configured": True, "items": [], "note": "Empty query."}
-    limit = max(1, min(int(limit or 24), 40))  # hard ceiling to stay within request budget
+    limit = max(1, min(int(limit or 24), 60))  # deep sweep ceiling (request-budget bounded)
     ck = f"search::{query.lower()}::{limit}"
     cached = _cache_get(ck)
     if cached is not None:

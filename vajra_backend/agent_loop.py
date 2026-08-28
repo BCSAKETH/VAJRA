@@ -3662,7 +3662,7 @@ class VajraAgentLoop:
                 try:
                     # Deep sweep: pull as many distinct results as the scrapers can
                     # surface (both Google News RSS + DuckDuckGo, merged/de-duped).
-                    items = (internet_signals.web_search(q, 30) or {}).get("items") or []
+                    items = (internet_signals.web_search(q, 60) or {}).get("items") or []
                 except Exception as e:
                     logger.warning(f"web_search failed for {q!r}: {e}")
             if items:
