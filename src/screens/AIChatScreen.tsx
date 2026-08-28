@@ -749,53 +749,96 @@ export const AIChatScreen: React.FC = () => {
     }
   };
 
-  // Export Transcript to PDF
+  // Export Transcript to PDF -- with the AI pre-screen + live supervisor-approval
+  // flow. A clean report downloads immediately. A report the AI flags as sensitive
+  // comes back 202 "pending"; we then poll for the supervisor's decision and, once
+  // approved, re-request with the approval id and download.
+  const buildTranscript = () => chatMessages.map((m) => ({
+    role: m.sender,
+    content: m.sender === "assistant"
+      ? (lang === "kn" ? (m.textKn || m.text) : (m.textEn || m.text))
+      : m.text,
+    timestamp: m.timestamp || "",
+  }));
+
+  const requestExport = async (approvalId?: string): Promise<Response> =>
+    fetch(`${API_BASE}/api/chat/export-pdf`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      body: JSON.stringify({
+        transcript: buildTranscript(),
+        badge_id: badgeNumber || "KSP-4003385",
+        session_id: activeSessionId || undefined,
+        approval_id: approvalId,
+      }),
+    });
+
+  const downloadPdfResponse = async (response: Response) => {
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `VAJRA_Report_${badgeNumber || "4003385"}.pdf`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+  };
+
   const handleExportPDF = async () => {
     if (isExportingPdf) return;
     setIsExportingPdf(true);
     try {
-      const transcript = chatMessages.map((m) => ({
-        role: m.sender,
-        // Respect the officer's CURRENTLY selected language, not whichever one
-        // was active when each message first came in.
-        content: m.sender === "assistant"
-          ? (lang === "kn" ? (m.textKn || m.text) : (m.textEn || m.text))
-          : m.text,
-        timestamp: m.timestamp || "",
-      }));
-      // Export is available to any authenticated officer -- no supervisor
-      // co-sign. The document is still authenticated and attributed to the
-      // real logged-in badge server-side.
-      const response = await fetch(`${API_BASE}/api/chat/export-pdf`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-        body: JSON.stringify({
-          transcript,
-          badge_id: badgeNumber || "KSP-4003385",
-        }),
-      });
-
+      const response = await requestExport();
+      if (response.status === 202) {
+        // AI held it for supervisor approval -- start the live wait.
+        const d = await response.json().catch(() => ({}));
+        const reqId: string = d.request_id;
+        addToast(
+          lang === "en" ? "Awaiting supervisor approval" : "ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗಾಗಿ ಕಾಯಲಾಗುತ್ತಿದೆ",
+          lang === "en"
+            ? `AI pre-screen flagged sensitive content (${(d.reasons || []).join(", ")}). A supervisor has been notified.`
+            : `AI ಪೂರ್ವ-ಪರಿಶೀಲನೆಯು ಸೂಕ್ಷ್ಮ ವಿಷಯವನ್ನು ಗುರುತಿಸಿದೆ. ಮೇಲ್ವಿಚಾರಕರಿಗೆ ಸೂಚಿಸಲಾಗಿದೆ.`,
+          "Warning"
+        );
+        // Poll the decision (reliable on multi-worker); WebSocket also pushes it.
+        const started = Date.now();
+        const poll = async () => {
+          if (Date.now() - started > 5 * 60 * 1000) { setIsExportingPdf(false); return; }
+          try {
+            const s = await fetch(`${API_BASE}/api/exports/${reqId}/status`, {
+              headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+            }).then((r) => r.json());
+            if (s.status === "approved") {
+              const rr = await requestExport(reqId);
+              if (rr.ok) {
+                await downloadPdfResponse(rr);
+                addToast(lang === "en" ? "Approved — exported" : "ಅನುಮೋದಿಸಲಾಗಿದೆ — ರಫ್ತು ಮಾಡಲಾಗಿದೆ",
+                  lang === "en" ? "A supervisor approved this export." : "ಮೇಲ್ವಿಚಾರಕರು ಈ ರಫ್ತನ್ನು ಅನುಮೋದಿಸಿದ್ದಾರೆ.", "Info");
+              }
+              setIsExportingPdf(false); return;
+            }
+            if (s.status === "rejected") {
+              addToast(lang === "en" ? "Export rejected" : "ರಫ್ತು ತಿರಸ್ಕರಿಸಲಾಗಿದೆ",
+                lang === "en" ? "A supervisor declined this export." : "ಮೇಲ್ವಿಚಾರಕರು ಈ ರಫ್ತನ್ನು ನಿರಾಕರಿಸಿದ್ದಾರೆ.", "Critical");
+              setIsExportingPdf(false); return;
+            }
+          } catch { /* keep polling */ }
+          setTimeout(poll, 4000);
+        };
+        setTimeout(poll, 4000);
+        return; // keep isExportingPdf true while pending
+      }
       if (!response.ok) {
         const d = await response.json().catch(() => ({}));
         throw new Error(d.detail || "Failed to compile PDF.");
       }
-
-      const blob = await response.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `VAJRA_Transcript_${badgeNumber || "4003385"}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
+      await downloadPdfResponse(response);
     } catch (err) {
       console.error(err);
       addToast(
         lang === "en" ? "Export Failed" : "ರಫ್ತು ವಿಫಲವಾಗಿದೆ",
-        lang === "en" ? "Could not generate PDF conversation transcript." : "PDF ಸಂಭಾಷಣೆ ಪ್ರತಿಲಿಪಿಯನ್ನು ರಚಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+        (err as Error)?.message || (lang === "en" ? "Could not generate PDF." : "PDF ರಚಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ."),
         "Critical"
       );
-    } finally {
       setIsExportingPdf(false);
     }
   };

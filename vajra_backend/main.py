@@ -20,12 +20,13 @@ import asyncio
 import hashlib
 import logging
 import random
+import uuid
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 import pandas as pd
 import joblib
-from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, status, Request, WebSocket, WebSocketDisconnect, Query
+from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, status, Request, WebSocket, WebSocketDisconnect, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
@@ -44,7 +45,7 @@ from vajra_core import (
 from agent_loop import VajraAgentLoop
 from catalyst_llm import CatalystLLM
 from catalyst_qwen import CatalystQwen
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -4142,13 +4143,71 @@ def _verify_supervisor_approver(badge: str, password: str) -> bool:
         return False
 
 
+# ---- Live export-approval workflow (persisted in ProactiveAlerts) ----
+# A held export becomes a ProactiveAlerts row (AlertType='EXPORT_APPROVAL') whose
+# AlertMessage carries the JSON request. Supervisors see pending requests live
+# (the Supervisor screen polls /api/exports/pending); on a decision the requester
+# is notified over their WebSocket and can download instantly. This reuses an
+# existing table because the datastore admin scope to create a new one isn't
+# available to this deployment's credentials.
+def _find_export_row(request_id: str):
+    """Locate a held-export row by EITHER its uuid request_id (matched inside the
+    JSON AlertMessage) or its numeric datastore ROWID -- callers use whichever
+    they hold (the officer polls by request_id, the supervisor UI has the ROWID)."""
+    if not catalyst_app or not request_id:
+        return None
+    rid = str(request_id).replace("'", "''")
+    try:
+        if rid.isdigit():
+            res = catalyst_app.zql().execute_query(
+                "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+                f"WHERE AlertType = 'EXPORT_APPROVAL' AND ROWID = {rid} LIMIT 1")
+        else:
+            # ZCQL LIKE uses '*' as the wildcard, not SQL '%'.
+            res = catalyst_app.zql().execute_query(
+                "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+                f"WHERE AlertType = 'EXPORT_APPROVAL' AND AlertMessage LIKE '*{rid}*' ORDER BY ROWID DESC LIMIT 1")
+    except Exception as e:
+        logger.warning(f"_find_export_row: {e}")
+        return None
+    if not res:
+        return None
+    a = res[0].get("ProactiveAlerts", {})
+    try:
+        meta = json.loads(a.get("AlertMessage") or "{}")
+    except Exception:
+        meta = {}
+    return {"rowid": a.get("ROWID"), "meta": meta}
+
+
+def _create_export_request(requester_badge, requester_name, session_id, reasons, summary):
+    request_id = uuid.uuid4().hex[:16]
+    meta = {
+        "request_id": request_id, "requester_badge": str(requester_badge or ""),
+        "requester_name": requester_name or "Officer", "session_id": session_id or "",
+        "reasons": reasons, "summary": (summary or "")[:180], "status": "pending",
+        "approver_badge": None, "decided_at": None,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    try:
+        zcql_insert_row("ProactiveAlerts", {
+            "AlertType": "EXPORT_APPROVAL", "Severity": "Critical",
+            "TriggerTime": datetime.utcnow().isoformat(), "IsRead": False,
+            "DistrictID": "0", "AlertMessage": json.dumps(meta),
+        })
+    except Exception as e:
+        logger.warning(f"_create_export_request insert failed: {e}")
+    return request_id, meta
+
+
 class PDFExportRequest(BaseModel):
     transcript: List[Dict[str, Any]]
     badge_id: str = "KSP-2026"
-    # Two-person approval co-signer (a supervisor). Required server-side when the
-    # requester is not themselves a supervisor.
+    # Inline supervisor co-sign (badge+password) OR a previously-approved request id.
     approver_badge: Optional[str] = None
     approver_password: Optional[str] = None
+    approval_id: Optional[str] = None
+    session_id: Optional[str] = None
 
 
 @app.post("/api/chat/export-pdf")
@@ -4180,18 +4239,33 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
     needs_review, review_reasons = _screen_export_sensitivity(payload.transcript)
     if needs_review and role_tier != "supervisor":
         approved = False
+        # (1) inline supervisor co-sign
         if payload.approver_badge and payload.approver_password:
             try:
                 approved = _verify_supervisor_approver(payload.approver_badge, payload.approver_password)
             except Exception as e:
                 logger.warning(f"export approver verify failed: {e}")
+        # (2) a request a supervisor already approved in the live queue
+        if not approved and payload.approval_id:
+            row = _find_export_row(payload.approval_id)
+            if (row and row["meta"].get("status") == "approved"
+                    and str(row["meta"].get("requester_badge")) == str(authed_badge)):
+                approved = True
         if not approved:
-            raise HTTPException(
-                status_code=403,
-                detail=("AI pre-screen held this report for supervisor approval before export — detected: "
-                        + "; ".join(review_reasons) + ". A supervisor must review and approve it. "
-                        "(Reports with no sensitive content export instantly.)"),
-            )
+            # Create (or reuse) a pending request and return it -- the officer's
+            # client shows "awaiting approval" and polls, supervisors see it live.
+            req_id = payload.approval_id
+            existing = _find_export_row(req_id) if req_id else None
+            if not existing or existing["meta"].get("status") == "rejected":
+                _first = next((str(m.get("content") or m.get("text") or "")
+                               for m in (payload.transcript or []) if (m.get("content") or m.get("text"))), "")
+                req_id, _ = _create_export_request(
+                    authed_badge, getattr(request.state, "user_profile", {}).get("FirstName"),
+                    payload.session_id, review_reasons, _first)
+            return JSONResponse(status_code=202, content={
+                "status": "pending_approval", "request_id": req_id, "reasons": review_reasons,
+                "message": "AI pre-screen flagged sensitive content — awaiting supervisor approval.",
+            })
 
     try:
         from fpdf import FPDF
@@ -4388,6 +4462,76 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
     except Exception as e:
         logger.error(f"Failed to generate PDF: {e}")
         raise HTTPException(status_code=500, detail=f"PDF generation error: {e}")
+
+
+@app.get("/api/exports/pending")
+async def list_pending_exports(request: Request, location_context: str = Depends(security_firewall)):
+    """Supervisor-only: pending export-approval requests (the Supervisor screen
+    polls this for a live count + queue). Officers never see it."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    out = []
+    if catalyst_app:
+        try:
+            res = catalyst_app.zql().execute_query(
+                "SELECT ROWID, AlertMessage, TriggerTime FROM ProactiveAlerts "
+                "WHERE AlertType = 'EXPORT_APPROVAL' ORDER BY ROWID DESC LIMIT 60")
+            for r in res:
+                a = r.get("ProactiveAlerts", {})
+                try:
+                    m = json.loads(a.get("AlertMessage") or "{}")
+                except Exception:
+                    continue
+                if m.get("status") == "pending":
+                    m["rowid"] = a.get("ROWID")
+                    out.append(m)
+        except Exception as e:
+            logger.warning(f"list_pending_exports: {e}")
+    return {"pending": out, "count": len(out)}
+
+
+@app.post("/api/exports/{request_id}/decision")
+async def decide_export(request_id: str, payload: Dict[str, Any] = Body(default={}),
+                        request: Request = None, location_context: str = Depends(security_firewall)):
+    """Supervisor-only: approve or reject a held export. Notifies the requester
+    live over their WebSocket so they can download instantly."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    row = _find_export_row(request_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Export request not found.")
+    decision = "approved" if payload.get("approve", True) else "rejected"
+    meta = row["meta"]
+    meta["status"] = decision
+    meta["approver_badge"] = request.state.kgid
+    meta["decided_at"] = datetime.utcnow().isoformat()
+    try:
+        zcql_update_row("ProactiveAlerts", {
+            "ROWID": row["rowid"], "AlertMessage": json.dumps(meta), "IsRead": True})
+    except Exception as e:
+        logger.warning(f"decide_export update: {e}")
+    if meta.get("session_id"):
+        try:
+            await connection_manager.broadcast(meta["session_id"], {
+                "type": "export_decision", "request_id": meta.get("request_id"),
+                "status": decision, "approver": request.state.kgid,
+                "timestamp": datetime.utcnow().isoformat()})
+        except Exception as e:
+            logger.warning(f"decide_export broadcast: {e}")
+    return {"status": decision, "request_id": meta.get("request_id")}
+
+
+@app.get("/api/exports/{request_id}/status")
+async def export_request_status(request_id: str, request: Request = None,
+                                location_context: str = Depends(security_firewall)):
+    """Requester polls this until the supervisor decides; then it re-calls
+    export-pdf with approval_id to download."""
+    row = _find_export_row(request_id)
+    if not row:
+        return {"status": "unknown"}
+    m = row["meta"]
+    return {"status": m.get("status", "pending"), "reasons": m.get("reasons", []),
+            "approver": m.get("approver_badge")}
 
 
 if __name__ == "__main__":

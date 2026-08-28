@@ -64,6 +64,42 @@ export const SupervisorDashboardScreen: React.FC = () => {
   const [officers, setOfficers] = useState<AccessOversightOfficer[]>([]);
   const [isLoadingOfficers, setIsLoadingOfficers] = useState(true);
 
+  // Live export-approval queue (AI pre-screen holds sensitive reports here).
+  const [pendingExports, setPendingExports] = useState<any[]>([]);
+  const [decidingExportId, setDecidingExportId] = useState<string | null>(null);
+
+  const fetchPendingExports = async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/exports/pending`, {
+        headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      });
+      if (!r.ok) return;
+      const d = await r.json();
+      setPendingExports(d.pending || []);
+    } catch { /* transient -- next poll retries */ }
+  };
+
+  const decideExport = async (rowid: string, approve: boolean) => {
+    setDecidingExportId(rowid);
+    try {
+      const r = await fetch(`${API_BASE}/api/exports/${rowid}/decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({ approve }),
+      });
+      if (r.ok) {
+        setPendingExports((prev) => prev.filter((p) => String(p.rowid) !== String(rowid)));
+        addToast(
+          approve ? (lang === "en" ? "Export approved" : "ರಫ್ತು ಅನುಮೋದಿಸಲಾಗಿದೆ") : (lang === "en" ? "Export rejected" : "ರಫ್ತು ತಿರಸ್ಕರಿಸಲಾಗಿದೆ"),
+          lang === "en" ? "The requesting officer has been notified." : "ವಿನಂತಿಸಿದ ಅಧಿಕಾರಿಗೆ ಸೂಚಿಸಲಾಗಿದೆ.",
+          approve ? "Info" : "Warning"
+        );
+      }
+    } catch { /* ignore */ } finally {
+      setDecidingExportId(null);
+    }
+  };
+
   // Fetch flags
   const fetchFlags = async () => {
     try {
@@ -189,6 +225,10 @@ export const SupervisorDashboardScreen: React.FC = () => {
     fetchAuditLogs();
     fetchFeedback();
     fetchOfficers();
+    fetchPendingExports();
+    // Live poll for held exports so the queue + count update with no manual refresh.
+    const iv = setInterval(fetchPendingExports, 5000);
+    return () => clearInterval(iv);
   }, []);
 
   // Run ledger cryptographic hash-chain validation — asks the backend to actually
@@ -301,6 +341,51 @@ export const SupervisorDashboardScreen: React.FC = () => {
           <span>{isVerifyingLedger ? t.supervisorVerifyingHashes : t.supervisorVerifyLedger}</span>
         </button>
       </div>
+
+      {/* Live export-approval queue -- the AI pre-screen holds sensitive reports
+          here; this polls every 5s so the count + list update with no refresh. */}
+      {pendingExports.length > 0 && (
+        <div className="shrink-0 rounded-xl border border-[#C79A4E]/40 bg-[#C79A4E]/[0.06] p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-[#C79A4E]" />
+            <span className="text-xs font-black uppercase tracking-wider text-[#C79A4E] font-mono">
+              {lang === "en" ? "Export approvals" : "ರಫ್ತು ಅನುಮೋದನೆಗಳು"}
+            </span>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#C79A4E] text-stone-950 font-bold">
+              {pendingExports.length}
+            </span>
+            <span className="text-[10px] text-stone-500 font-mono">
+              {lang === "en" ? "AI flagged — needs your sign-off" : "AI ಗುರುತಿಸಿದೆ — ನಿಮ್ಮ ಅನುಮೋದನೆ ಬೇಕು"}
+            </span>
+          </div>
+          <div className="space-y-2">
+            {pendingExports.map((p) => (
+              <div key={p.rowid} className="flex items-center gap-3 rounded-lg bg-stone-950/40 border border-stone-800 px-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12px] text-stone-200 font-mono truncate">
+                    {lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ"} {p.requester_badge} · {(p.reasons || []).join(", ")}
+                  </div>
+                  <div className="text-[10px] text-stone-500 truncate">{p.summary || ""}</div>
+                </div>
+                <button
+                  onClick={() => decideExport(String(p.rowid), true)}
+                  disabled={decidingExportId === String(p.rowid)}
+                  className="px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold uppercase tracking-wide text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 cursor-pointer"
+                >
+                  {lang === "en" ? "Approve" : "ಅನುಮೋದಿಸಿ"}
+                </button>
+                <button
+                  onClick={() => decideExport(String(p.rowid), false)}
+                  disabled={decidingExportId === String(p.rowid)}
+                  className="px-3 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/40 text-[11px] font-bold uppercase tracking-wide text-rose-300 hover:bg-rose-500/20 disabled:opacity-50 cursor-pointer"
+                >
+                  {lang === "en" ? "Reject" : "ತಿರಸ್ಕರಿಸಿ"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Quick-read telemetry strip -- derived from the same flags/auditLogs
           already fetched for the two panels below, no extra round-trip. */}
