@@ -1873,6 +1873,20 @@ def _fit_json(obj: Any, cap: int) -> str:
                 return s
         return "[]"
     d = dict(obj)
+    # News/search results: trim the LIST to fit (keep the top items) rather than
+    # dropping it wholesale -- a deep 60-result sweep exceeds the column, and an
+    # untrimmed payload got hard-truncated by the datastore into invalid JSON, so
+    # json.loads failed and the whole widget rendered empty (confirmed live).
+    news = d.get("news")
+    if isinstance(news, list) and len(news) > 1:
+        arr = list(news)
+        while arr:
+            d["news"] = arr
+            s = json.dumps(d, ensure_ascii=False)
+            if len(s) <= cap:
+                return s
+            arr = arr[: max(1, len(arr) - 3)]
+        d["news"] = arr
     panels = d.get("panels")
     if isinstance(panels, list):
         d["panels"] = [dict(p) if isinstance(p, dict) else p for p in panels]
@@ -1923,8 +1937,12 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
     # still over cap it STRUCTURALLY drops the most-dispensable fields first
     # (per-panel text_kn -> full-narrative _text_kn -> raw widget data) so what
     # persists is always VALID JSON, never a corrupted slice.
-    _DATA_JSON_CAP = 95000
-    _CITATIONS_CAP = 9000
+    # The ChatMessage.data_json column truncates at ~10,000 chars (a large news
+    # payload was stored at exactly 10000, mid-string -> invalid JSON -> empty
+    # widget). Cap safely under that; _fit_json trims news lists / panel data to
+    # keep the JSON valid rather than letting the datastore hard-slice it.
+    _DATA_JSON_CAP = 9200
+    _CITATIONS_CAP = 8000
     # 1. Full attempt with all fields
     try:
         row = {

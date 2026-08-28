@@ -465,6 +465,20 @@ class VajraAgentLoop:
     # get_crime_trends) -- a fixed list here rather than a live query since
     # this is a last-resort, zero-dependency fallback: it needs to work even
     # if something else in the request pipeline is also struggling.
+    # Single words that look like a name (capitalized) but are command verbs,
+    # interrogatives, or domain nouns -- never a suspect. Guards entity extraction
+    # so "Give"/"Plot"/"Show" at the start of a query aren't looked up as accused.
+    _NAME_STOPWORDS = {
+        "give", "show", "plot", "find", "tell", "get", "list", "map", "search", "check",
+        "analyze", "analyse", "compare", "who", "what", "which", "where", "when", "why",
+        "how", "the", "a", "an", "is", "are", "was", "were", "of", "for", "on", "in",
+        "about", "me", "my", "please", "display", "fetch", "pull", "run", "open", "view",
+        "see", "look", "identify", "trace", "track", "investigate", "report", "profile",
+        "details", "detail", "information", "info", "crime", "network", "hotspot", "hotspots",
+        "case", "cases", "suspect", "accused", "risk", "dossier", "record", "records",
+        "generate", "create", "build", "make", "give me", "tell me",
+    }
+
     _KNOWN_CRIME_GROUPS = [
         "MURDER", "SEXUAL OFFENCES", "ASSAULT", "ATTEMPT TO MURDER", "MOTOR VEHICLE THEFT",
         "CHEATING", "DOWRY DEATH", "THEFT", "KIDNAPPING", "MOLESTATION", "CYBERCRIME",
@@ -1231,9 +1245,18 @@ class VajraAgentLoop:
             excluded_names.update(w.lower() for w in exclude_name.split())
         suspect_candidates = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', query)
         for cand in suspect_candidates:
-            if cand.lower() not in excluded_names:
-                suspect_match = cand
-                break
+            cl = cand.lower()
+            # A sentence-initial COMMAND VERB or common word is not a suspect name.
+            # Without this, "Give me the network of X" / "Plot hotspots in Y" made
+            # the router look up an accused literally named "Give"/"Plot" and answer
+            # "not found" (confirmed live). Only single-word candidates are gated --
+            # a real multi-word name ("Sanaya Patla") is never a stopword.
+            if cl in excluded_names:
+                continue
+            if " " not in cand and cl in self._NAME_STOPWORDS:
+                continue
+            suspect_match = cand
+            break
 
         # Check for districts (real KSP district list, not a hardcoded guess)
         resolved_district = None
@@ -2973,10 +2996,13 @@ class VajraAgentLoop:
             if self.shap_explainer:
                 try:
                     shap_vals = self.shap_explainer(X)
+                    # Officer-friendly labels (same column ORDER as the trained model)
+                    # -- the raw feature names ("Day Cyclic Cos", "Precinct Unit") read
+                    # as engineering jargon on a police screen.
                     base_features = [
-                        "District Location", "Precinct Unit", "Crime Class Group", "FIR Category",
-                        "Year Temporal", "Month Cyclic Sin", "Month Cyclic Cos", "Day Cyclic Sin", "Day Cyclic Cos",
-                        "Victim Count", "Accused Count", "Victim/Accused Ratio"
+                        "District", "Police station", "Crime category", "Case type",
+                        "Year of offence", "Season of year", "Month pattern", "Day of week", "Weekday pattern",
+                        "Number of victims", "Number of co-accused", "Victim-to-accused ratio"
                     ]
                     shap_factors = []
                     for idx, feat_name in enumerate(base_features):
