@@ -727,6 +727,10 @@ class VajraAgentLoop:
             (["shares a phone", "shares a vehicle", "shared phone", "shared vehicle", "same phone", "same vehicle",
               "syndicate link", "hidden link", "linked by phone", "linked by vehicle", "shared contact",
               "common phone", "common vehicle", "who else uses"], "shared_attribute_links", {"suspect_name": name}, name),
+            (["community detection", "criminal communities", "syndicate clusters", "detect syndicates",
+              "find syndicates", "hidden syndicates", "clusters of accused", "group detection"], "community_detection", {}, "yes"),
+            (["most connected", "kingpin", "central figure", "most central", "network hub", "who is the kingpin",
+              "most influential accused", "centrality", "ringleader"], "centrality_ranking", {}, "yes"),
             (["network", "syndicate", "co-accused", "connections for", "connections of", "connected to", "crimes is", "crimes does"], "query_graph_network", {"suspect_name": name}, name),
             (["money laundering", "hawala", "mule account", "financial ring", "money network", "laundering ring", "money ring"], "detect_financial_ring", {"entity_id": name}, name),
             (["financial", "money trail", "transaction", "bank account"], "query_financial_links", {"entity_id": name}, name),
@@ -3343,6 +3347,67 @@ class VajraAgentLoop:
             final_answer = True
             self._write_audit_log(employee_id, "Web Search", q, f"Web search: {q}", text_result, session_id)
 
+        elif tool_name == "community_detection":
+            by_phone, by_veh = self._build_shared_attr_maps()
+            parent: Dict[str, str] = {}
+            def _find(x):
+                parent.setdefault(x, x)
+                root = x
+                while parent[root] != root:
+                    root = parent[root]
+                while parent[x] != root:
+                    parent[x], x = root, parent[x]
+                return root
+            for grp in list(by_phone.values()) + list(by_veh.values()):
+                if len(grp) > 1:
+                    for n in grp[1:]:
+                        ra, rb = _find(grp[0]), _find(n)
+                        if ra != rb:
+                            parent[ra] = rb
+            clusters: Dict[str, List[str]] = {}
+            for n in list(parent.keys()):
+                clusters.setdefault(_find(n), []).append(n)
+            big = sorted([c for c in clusters.values() if len(c) > 1], key=len, reverse=True)
+            response_type = "text"
+            if big:
+                lines = [f"Detected {len(big)} syndicate cluster(s) of accused bound by a shared phone/vehicle "
+                         f"(synthetic contact data; investigative leads to verify, not proof):"]
+                for i, c in enumerate(big[:8], 1):
+                    lines.append(f"{i}. {len(c)} members -- {', '.join(sorted(c)[:6])}{' ...' if len(c) > 6 else ''}")
+                text_result = "\n".join(lines)
+                data = {"clusters": [{"members": sorted(c), "size": len(c)} for c in big[:8]]}
+            else:
+                text_result = "No shared-attribute clusters detected in the current contact data."
+            citations.append({"type": "Community Detection", "id": "All",
+                              "details": "Connected-components over shared phone/vehicle (AccusedContact) -- grounded graph analysis, no external graph DB."})
+            final_answer = True
+            self._write_audit_log(employee_id, "Community Detection", "All", "Syndicate community detection", text_result, session_id)
+
+        elif tool_name == "centrality_ranking":
+            by_phone, by_veh = self._build_shared_attr_maps()
+            links: Dict[str, set] = {}
+            for grp in list(by_phone.values()) + list(by_veh.values()):
+                if len(grp) > 1:
+                    for a in grp:
+                        for b in grp:
+                            if a != b:
+                                links.setdefault(a, set()).add(b)
+            ranked = sorted(((n, len(s)) for n, s in links.items()), key=lambda x: x[1], reverse=True)
+            response_type = "text"
+            if ranked:
+                lines = ["Most-connected accused by shared-attribute degree (higher = more central, a likely hub -- "
+                         "leads to verify, not proof):"]
+                for i, (n, deg) in enumerate(ranked[:10], 1):
+                    lines.append(f"{i}. {n} -- linked to {deg} other accused")
+                text_result = "\n".join(lines)
+                data = {"ranking": [{"name": n, "degree": deg} for n, deg in ranked[:10]]}
+            else:
+                text_result = "No shared-attribute links exist to rank centrality in the current contact data."
+            citations.append({"type": "Centrality Ranking", "id": "All",
+                              "details": "Degree centrality over the shared phone/vehicle graph (AccusedContact) -- grounded."})
+            final_answer = True
+            self._write_audit_log(employee_id, "Centrality Ranking", "All", "Shared-attribute centrality", text_result, session_id)
+
         elif tool_name == "anomaly_detection":
             district = self.sanitize_sql_input(params.get("district", "") or "")
             anomalies = []
@@ -4277,6 +4342,8 @@ class VajraAgentLoop:
         {"name": "get_live_news", "does": "live open-source news headlines for a district/topic (unverified public leads, not official records)", "params": {"district": "district or topic, optional", "query": "the raw request, optional"}},
         {"name": "web_search", "does": "live open-source web search for any external topic (unverified public results, not official records)", "params": {"query": "what to search for"}},
         {"name": "shared_attribute_links", "does": "find OTHER accused who share a named suspect's phone or vehicle (hidden syndicate links)", "params": {"suspect_name": "required"}},
+        {"name": "community_detection", "does": "detect syndicate clusters of accused bound by a shared phone/vehicle", "params": {}},
+        {"name": "centrality_ranking", "does": "rank accused by how connected they are over the shared-attribute graph (likely hubs/kingpins)", "params": {}},
         {"name": "anomaly_detection", "does": "statistical anomaly call-outs (monthly z-score spike + category-momentum break) for a district", "params": {"district": "optional"}},
         {"name": "summarize_url", "does": "read and summarize any public web page/article by URL (unverified external content)", "params": {"url": "the URL", "query": "the raw request, optional"}},
     ]
@@ -4294,6 +4361,30 @@ class VajraAgentLoop:
         "distribution", "concern", "victim", "conviction", "clearance", "community",
         "cluster", "associate", "syndicate", "ranking",
     )
+
+    def _build_shared_attr_maps(self):
+        """phone -> [names] and vehicle -> [names] from AccusedContact (capped at
+        300 rows by ZCQL). Shared by community_detection and centrality_ranking --
+        pure grounded graph inputs, no external graph DB."""
+        by_phone: Dict[str, List[str]] = {}
+        by_veh: Dict[str, List[str]] = {}
+        if not catalyst_app:
+            return by_phone, by_veh
+        try:
+            rows = catalyst_app.zql().execute_query(
+                "SELECT AccusedName, PhoneNumber, VehicleNumber FROM AccusedContact LIMIT 300")
+            for r in rows:
+                c = r.get("AccusedContact", {}) or {}
+                nm = c.get("AccusedName")
+                if not nm:
+                    continue
+                if c.get("PhoneNumber"):
+                    by_phone.setdefault(c["PhoneNumber"], []).append(nm)
+                if c.get("VehicleNumber"):
+                    by_veh.setdefault(c["VehicleNumber"], []).append(nm)
+        except Exception as e:
+            logger.warning(f"_build_shared_attr_maps failed: {e}")
+        return by_phone, by_veh
 
     def _is_complex_query(self, query: str) -> bool:
         """Auto-router heuristic: a Standard query is 'complex' (route to the AI
