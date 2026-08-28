@@ -868,7 +868,10 @@ class VajraAgentLoop:
               "find syndicates", "hidden syndicates", "clusters of accused", "group detection"], "community_detection", {}, "yes"),
             (["most connected", "kingpin", "central figure", "most central", "network hub", "who is the kingpin",
               "most influential accused", "centrality", "ringleader"], "centrality_ranking", {}, "yes"),
-            (["network", "syndicate", "co-accused", "connections for", "connections of", "connected to", "crimes is", "crimes does"], "query_graph_network", {"suspect_name": name}, name),
+            (["network", "syndicate", "co-accused", "connections for", "connections of", "connected to",
+              "connected with", "associated with", "crimes associated", "crimes connected", "crimes linked",
+              "main crimes", "crimes involving", "involved in", "linked to", "crimes is", "crimes does",
+              "crimes of", "cases associated", "cases connected"], "query_graph_network", {"suspect_name": name}, name),
             (["money laundering", "hawala", "mule account", "financial ring", "money network", "laundering ring", "money ring"], "detect_financial_ring", {"entity_id": name}, name),
             (["financial", "money trail", "transaction", "bank account"], "query_financial_links", {"entity_id": name}, name),
             (["mo profile", "modus operandi", "behavioral profile", "behaviour profile"], "get_mo_profile", {"suspect_name": name}, name),
@@ -3131,12 +3134,20 @@ class VajraAgentLoop:
             raw_query = params.get("query", "")
             matches = self.resolve_vague_query(raw_query, user_unit_id)
             data = {"matches": matches}
-            text_result = f"Found similar cases: {', '.join([m['fir_id'] for m in matches]) if matches else 'None found'}"
-            # Confirmed live: this used to show the officer's own search text
-            # truncated to 20 chars as the citation "id" -- not a real result
-            # identifier, just an echo of the query, which read as confusing/
-            # inconsistent labels across different searches. Show the actual
-            # outcome (how many real cases matched) instead.
+            if not matches:
+                # No GENUINE record matched -- say so plainly instead of naming
+                # random 0.0-confidence cases. Likely an external/real-world event
+                # not in CCTNS; point the officer to the web-search capability.
+                _subj = (raw_query or "").strip()[:80]
+                text_result = (
+                    f"No matching records were found in the CCTNS data for \"{_subj}\". "
+                    "This looks like it may be an external or real-world matter that isn't in the "
+                    "police database. To look for open-source context, ask me to \"search the web for "
+                    f"{_subj}\"."
+                )
+                final_answer = True
+            else:
+                text_result = f"Found similar cases: {', '.join([m['fir_id'] for m in matches])}"
             citations.append({
                 "type": "Semantic Search Index",
                 "id": f"{len(matches)} match{'es' if len(matches) != 1 else ''}",
@@ -5793,7 +5804,12 @@ class VajraAgentLoop:
         except Exception as e:
             logger.warning(f"Semantic recall failed: {e}")
 
-        # Sort matches by confidence score descending
+        # Drop near-zero-confidence "matches" -- a 0.0 score means the recall found
+        # nothing genuinely similar (e.g. an external real-world event not in CCTNS
+        # like "Valmiki scam"). Listing them as possible dossiers reads as wrong,
+        # even with a disclaimer. Below the floor we return nothing so the caller
+        # says "no genuine record" instead of naming random cases.
+        matches = [m for m in matches if float(m.get("confidence_score", 0) or 0) >= 0.15]
         matches = sorted(matches, key=lambda x: x.get("confidence_score", 0), reverse=True)
         return matches[:3]
 
