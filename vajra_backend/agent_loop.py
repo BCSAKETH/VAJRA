@@ -758,6 +758,11 @@ class VajraAgentLoop:
              {"district": district}, "yes"),
             (["demographic", "socio-economic", "socio economic", "correlation"], "get_demographic_correlation", {"district": district}, district),
             (["repeat offender", "habitual"], "get_repeat_offenders", {"district": district}, "yes"),
+            (["live news", "latest news", "recent news", "news from", "news in", "news about", "news on",
+              "current events", "what's happening", "whats happening", "what is happening", "in the news",
+              "media reports", "any news"], "get_live_news", {"district": district, "query": query}, "yes"),
+            (["search the web", "web search", "search online", "look it up", "look up online", "google it",
+              "google ", "find online", "on the internet", "search for"], "web_search", {"query": query}, "yes"),
             (["worst crime district", "worst districts", "worst district for crime", "worst affected district",
               "which districts have the worst", "which district has the worst", "most dangerous district",
               "most dangerous districts", "highest crime district", "highest crime districts", "top crime district",
@@ -1495,7 +1500,7 @@ class VajraAgentLoop:
         # COMPILE the query into a JSON execution plan and run it deterministically
         # over the grounded tools (the LLM never touches execution). Falls back to
         # the standard path below when planning fails, so this can never dead-end.
-        if answer_mode == "compiler":
+        if answer_mode == "compiler" or (answer_mode == "standard" and self._is_complex_query(officer_query)):
             compiled = self._run_semantic_compiler(officer_query, employee_id, session_id, user_unit_id)
             if compiled is not None:
                 history.append({"role": "assistant", "content": compiled["text"]})
@@ -3212,6 +3217,67 @@ class VajraAgentLoop:
             self._write_audit_log(employee_id, "District Crime Ranking", "All Districts",
                                   "Rank districts by crime volume", text_result, session_id)
 
+        elif tool_name == "get_live_news":
+            import internet_signals
+            q = (params.get("district") or "").strip()
+            if not q:
+                raw = (params.get("query") or "").strip()
+                raw = re.sub(r"\b(live|latest|recent|current|breaking)\b", " ", raw, flags=re.IGNORECASE)
+                raw = re.sub(r"\bnews\b|\b(from|in|about|for|of|on|the)\b", " ", raw, flags=re.IGNORECASE)
+                q = re.sub(r"\s+", " ", raw).strip()
+            scope = q or "Karnataka"
+            items = []
+            try:
+                res = internet_signals.get_district_news(scope, 6)
+                items = res.get("items") or []
+            except Exception as e:
+                logger.warning(f"get_live_news failed for {scope!r}: {e}")
+            response_type = "text"
+            if items:
+                lines = [f"Live open-source news for {scope} — UNVERIFIED public leads, NOT official CCTNS records:"]
+                for it in items[:6]:
+                    src = it.get("source") or "source"
+                    pub = (it.get("published") or "").split("T")[0]
+                    lines.append(f"- {(it.get('title') or '').strip()} ({src}{', ' + pub if pub else ''})")
+                lines.append("\nThese are open-source leads to verify independently, not confirmed facts.")
+                text_result = "\n".join(lines)
+                data = {"news": items, "scope": scope}
+            else:
+                text_result = (f"No recent open-source news found for {scope} right now. "
+                               f"(Live news is scraped from public sources; nothing matched just now.)")
+            citations.append({"type": "Open-Source News (Google News)", "id": scope,
+                              "details": "Live public-news scrape -- unverified open-source leads, not official record."})
+            final_answer = True
+            self._write_audit_log(employee_id, "Live News", scope, f"Live news request: {scope}", text_result, session_id)
+
+        elif tool_name == "web_search":
+            import internet_signals
+            q = (params.get("query") or "").strip()
+            q = re.sub(r"\b(search|look up|google|find online|on the web|online|for)\b", " ", q, flags=re.IGNORECASE)
+            q = re.sub(r"\s+", " ", q).strip()
+            items = []
+            if q:
+                try:
+                    items = (internet_signals.web_search(q, 6) or {}).get("items") or []
+                except Exception as e:
+                    logger.warning(f"web_search failed for {q!r}: {e}")
+            response_type = "text"
+            if items:
+                lines = [f"Web search results for '{q}' — UNVERIFIED open-source, NOT official records:"]
+                for it in items[:6]:
+                    src = it.get("source") or "web"
+                    lines.append(f"- {(it.get('title') or '').strip()} ({src})")
+                    if it.get("url"):
+                        lines.append(f"  {it.get('url')}")
+                text_result = "\n".join(lines)
+                data = {"results": items, "query": q}
+            else:
+                text_result = f"No web results found for '{q}'." if q else "Please say what to search the web for."
+            citations.append({"type": "Open-Source Web Search", "id": q or "search",
+                              "details": "Live public web search -- unverified leads, not official record."})
+            final_answer = True
+            self._write_audit_log(employee_id, "Web Search", q, f"Web search: {q}", text_result, session_id)
+
         elif tool_name == "analyze_online_abuse":
             ab = self._analyze_online_abuse(params.get("content", "") or "")
             self._write_audit_log(employee_id, "Online-Abuse Triage", "",
@@ -4079,7 +4145,55 @@ class VajraAgentLoop:
         {"name": "get_case_sections", "does": "legal sections applied to ONE case", "params": {"case_no": "required"}},
         {"name": "find_similar_cases", "does": "semantic search for cases matching a description", "params": {"query": "the search text"}},
         {"name": "analyze_online_abuse", "does": "triage an online-abuse/cybercrime complaint into offences + evidence steps", "params": {"content": "the complaint text"}},
+        {"name": "get_live_news", "does": "live open-source news headlines for a district/topic (unverified public leads, not official records)", "params": {"district": "district or topic, optional", "query": "the raw request, optional"}},
+        {"name": "web_search", "does": "live open-source web search for any external topic (unverified public results, not official records)", "params": {"query": "what to search for"}},
     ]
+
+    # Multi-step cues + analytical keywords used by the AUTO-ROUTER to decide when
+    # a Standard query is complex enough to deserve the AI Reasoning compiler.
+    _COMPLEX_STRONG_CUES = (
+        "network of the", "risk of the", "compare", "difference between", "differences between",
+        "for each", " then ", "along with", "combined with", "as well as", "relationship between",
+        "connected to the", "who else", "and also", "and their", "and show", "and give",
+    )
+    _CAP_KEYWORDS = (
+        "hotspot", "trend", "network", "risk", "modus", "financial", "money", "offender",
+        "forecast", "predict", "demographic", "socio", "case", "section", "timeline",
+        "distribution", "concern", "victim", "conviction", "clearance", "community",
+        "cluster", "associate", "syndicate", "ranking",
+    )
+
+    def _is_complex_query(self, query: str) -> bool:
+        """Auto-router heuristic: a Standard query is 'complex' (route to the AI
+        Reasoning compiler) when it has an explicit multi-step cue, OR touches 2+
+        analytical facets joined by 'and'/','. Kept conservative so simple lookups
+        stay on the fast ~3s path and don't pay the planning-LLM tax."""
+        q = (query or "").lower()
+        if any(c in q for c in self._COMPLEX_STRONG_CUES):
+            return True
+        hits = sum(1 for k in self._CAP_KEYWORDS if k in q)
+        return hits >= 2 and (" and " in q or ", " in q)
+
+    @staticmethod
+    def _resolve_plan_ref(ref: str, results: Dict[str, Any]) -> Any:
+        """Resolve a DAG dependency like "$s1.data.offenders.0.suspect" against the
+        stored outputs of earlier steps. Returns None if the path can't be walked
+        (the step then simply runs without that param)."""
+        parts = ref[1:].split(".")
+        cur: Any = results.get(parts[0])
+        for p in parts[1:]:
+            if cur is None:
+                return None
+            if isinstance(cur, dict):
+                cur = cur.get(p)
+            elif isinstance(cur, list):
+                try:
+                    cur = cur[int(p)]
+                except (ValueError, IndexError):
+                    return None
+            else:
+                return None
+        return cur
 
     def _run_semantic_compiler(self, query: str, employee_id: int, session_id: str,
                                user_unit_id: Optional[int]) -> Optional[Dict[str, Any]]:
@@ -4097,9 +4211,18 @@ class VajraAgentLoop:
             "officer. You COMPILE their request into a JSON execution plan that a deterministic engine runs.\n\n"
             "CAPABILITIES (use ONLY these names):\n" + registry + "\n\n"
             "Output ONLY one JSON object, no prose, no markdown. Schema:\n"
-            '{"intent": "<one short sentence>", "steps": [{"capability": "<name>", "params": {..}}], '
+            '{"intent": "<one short sentence>", "steps": [{"id": "s1", "capability": "<name>", "params": {..}}], '
             '"present_as": "auto|pie|bar|line|map|network|timeline|table|text"}\n\n'
             "RULES:\n"
+            "- Give each step a short id (s1, s2, ...). Steps run in order.\n"
+            "- DEPENDENCIES: a later step may USE an earlier step's output as a param value with the syntax "
+            '"$<id>.<path>". Chainable outputs: get_repeat_offenders -> "$s1.data.offenders.0.suspect" is the top '
+            'offender name; rank_districts -> "$s1.data.series.0.name" is the worst district.\n'
+            '  Example -- "network of the most active offender": '
+            '{"intent":"Network of the top repeat offender","steps":['
+            '{"id":"s1","capability":"get_repeat_offenders","params":{}},'
+            '{"id":"s2","capability":"query_graph_network","params":{"suspect_name":"$s1.data.offenders.0.suspect"}}],'
+            '"present_as":"network"}\n'
             "- Extract quantifiers, district names, suspect names, and case numbers into params.\n"
             "- Use MULTIPLE steps for compound asks. To compare two districts, add get_crime_trends once PER district.\n"
             "- Choose present_as to fit the answer (a distribution -> pie/bar, a network -> network, a route over time -> line).\n"
@@ -4132,15 +4255,25 @@ class VajraAgentLoop:
                         "is_simulated": False, "simulated_reason": ""}
             return None
         # DETERMINISTIC EXECUTION -- run each planned step over the grounded tools.
+        # Steps can DEPEND on earlier ones: a "$s1.data.offenders.0.suspect" param
+        # is resolved from the stored output of step s1 before this step runs.
         panels, combined, citations, last = [], [], [], None
-        for st in steps[:6]:
+        results: Dict[str, Any] = {}
+        for idx, st in enumerate(steps[:6]):
+            sid = st.get("id") or f"s{idx + 1}"
             cap = st["capability"]
-            params = {k: v for k, v in (st.get("params") or {}).items() if v not in (None, "")}
+            params = {}
+            for k, v in (st.get("params") or {}).items():
+                rv = self._resolve_plan_ref(v, results) if isinstance(v, str) and v.startswith("$") else v
+                if rv not in (None, ""):
+                    params[k] = rv
             try:
                 out = self._execute_tool(cap, params, employee_id, session_id, user_unit_id)
             except Exception as e:
                 logger.warning(f"compiler: step '{cap}' failed: {e}")
+                results[sid] = {}
                 continue
+            results[sid] = out
             if out.get("citations"):
                 citations.extend(out["citations"])
             rt = out.get("response_type") or "text"
