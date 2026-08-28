@@ -723,6 +723,9 @@ class VajraAgentLoop:
             return ""
 
         name, case_no, district, crime_group = guess_name(), guess_case_no(), guess_district(), guess_crime_group()
+        # Time window: "last/past 6 months" -> honour it instead of the 12-month default.
+        _mo = re.search(r"(?:last|past|previous|recent)\s+(\d{1,2})\s+month", q)
+        months_g = int(_mo.group(1)) if _mo else 0
 
         # (keywords, tool_name, params, required_guess) -- required_guess is
         # checked truthy before this pattern is allowed to match at all.
@@ -768,8 +771,10 @@ class VajraAgentLoop:
               "what to watch", "watch out", "priorit", "getting worse", "what's worsening", "biggest threat",
               "patterns should i", "what should i focus", "top risks", "alarming"], "get_priority_concerns",
              {"district": district}, "yes"),
+            (["how many", "number of", "count of", "total number of", "how many cases"], "count_cases",
+             {"district": district, "crime_group": crime_group}, crime_group or district),
             (["trend", "over time", "increasing", "decreasing", "seasonal pattern"], "get_crime_trends",
-             {"district": district, "crime_group": crime_group}, "yes"),
+             {"district": district, "crime_group": crime_group, "months": months_g}, "yes"),
             (["pie chart", "case types", "types of cases", "distribution of cases", "cases by type", "crime categories"], "get_case_types_distribution",
              {"district": district}, "yes"),
             (["demographic", "socio-economic", "socio economic", "correlation"], "get_demographic_correlation", {"district": district}, district),
@@ -3266,6 +3271,53 @@ class VajraAgentLoop:
             final_answer = True
             self._write_audit_log(employee_id, "Live News", scope, f"Live news request: {scope}", text_result, session_id)
 
+        elif tool_name == "count_cases":
+            district = self.sanitize_sql_input(params.get("district", "") or "")
+            cg = (params.get("crime_group") or "").strip()
+            unit_ids, head_id, cg_name = [], None, cg
+            if catalyst_app:
+                try:
+                    if district:
+                        d_res = catalyst_app.zql().execute_query(
+                            f"SELECT DistrictID FROM District WHERE DistrictName LIKE '*{district}*' LIMIT 1")
+                        if d_res:
+                            did = d_res[0].get("District", {}).get("DistrictID")
+                            u_res = catalyst_app.zql().execute_query(f"SELECT UnitID FROM Unit WHERE DistrictID = {did}")
+                            unit_ids = [u.get("Unit", {}).get("UnitID") for u in u_res if u.get("Unit", {}).get("UnitID")]
+                    if cg:
+                        for h in catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead"):
+                            gn = (h.get("CrimeHead", {}) or {}).get("CrimeGroupName") or ""
+                            if gn and (cg.lower() in gn.lower() or gn.lower() in cg.lower()):
+                                head_id = h.get("CrimeHead", {}).get("CrimeHeadID"); cg_name = gn; break
+                except Exception as e:
+                    logger.warning(f"count_cases resolve failed: {e}")
+            where = []
+            if head_id is not None:
+                where.append(f"CrimeMajorHeadID = {head_id}")
+            if unit_ids:
+                where.append(f"PoliceStationID IN ({','.join(map(str, unit_ids))})")
+            wc = (" WHERE " + " AND ".join(where)) if where else ""
+            n = 0
+            try:
+                r = catalyst_app.zql().execute_query(f"SELECT COUNT(CaseMasterID) FROM CaseMaster{wc}")
+                n = int((r[0].get("CaseMaster", {}) or {}).get("COUNT(CaseMasterID)") or 0) if r else 0
+            except Exception as e:
+                logger.warning(f"count_cases COUNT failed: {e}")
+            response_type = "text"
+            if cg and head_id is None:
+                text_result = (f"No crime category matching '{cg}' was found, so an exact count can't be given. "
+                               f"Try a category like Theft, Murder, Assault, or Cybercrime.")
+            else:
+                label = (f"{cg_name} cases" if cg_name else "cases")
+                scope = f" in {district}" if district else " across all districts"
+                text_result = f"There are {n:,} {label}{scope} on record."
+            data = {"count": n, "crime_group": cg_name, "district": district}
+            citations.append({"type": "Case Count", "id": f"{cg_name or 'all'}/{district or 'all'}",
+                              "details": "Exact COUNT over CaseMaster -- grounded aggregate."})
+            final_answer = True
+            self._write_audit_log(employee_id, "Case Count", f"{cg_name}/{district}",
+                                  f"Count {cg_name or 'all'} in {district or 'all'}", text_result, session_id)
+
         elif tool_name == "shared_attribute_links":
             # SYNDICATE RADAR: other accused who SHARE a named suspect's phone or
             # vehicle (from the synthetic AccusedContact overlaps) -- the hidden
@@ -4334,6 +4386,7 @@ class VajraAgentLoop:
         {"name": "get_demographic_correlation", "does": "socio-economic correlation with crime for a district", "params": {"district": "required"}},
         {"name": "rank_districts", "does": "rank ALL districts by crime volume, worst first", "params": {}},
         {"name": "get_database_overview", "does": "total FIRs + crime-type overview for the whole database", "params": {}},
+        {"name": "count_cases", "does": "exact COUNT of cases, optionally filtered by crime type and/or district (answers 'how many X in Y')", "params": {"district": "optional", "crime_group": "optional crime type"}},
         {"name": "query_case", "does": "details of ONE case by its case number", "params": {"case_no": "required"}},
         {"name": "get_case_timeline", "does": "chronological timeline of ONE case", "params": {"case_no": "required"}},
         {"name": "get_case_sections", "does": "legal sections applied to ONE case", "params": {"case_no": "required"}},
