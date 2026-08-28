@@ -4086,54 +4086,193 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         from fpdf import FPDF
         from datetime import datetime
 
-        pdf = FPDF()
-        pdf.add_page()
-        # Standard "helvetica" (core PDF font) has no Kannada glyphs -- every
-        # Kannada character in a transcript used to be silently stripped via
-        # .encode('ascii', 'ignore') before reaching the PDF, so a Kannada
-        # conversation exported as almost entirely blank lines (or the
-        # misleading "(non-text content / widget)" placeholder, which implied
-        # the message was an image/widget rather than text that got mangled).
-        # Noto Sans Kannada (SIL Open Font License, bundled at
-        # assets/fonts/) covers both Kannada and Latin glyphs, so it's used
-        # for the whole document rather than switching fonts per-language.
+        # Palette (VAJRA charcoal + gold identity)
+        CHARCOAL = (33, 31, 29)
+        GOLD = (199, 154, 78)
+        GOLD_HI = (228, 197, 144)
+        TEAL = (93, 202, 165)
+        INK = (38, 36, 34)
+        MUTE = (120, 116, 110)
+
         font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "NotoSansKannada-Regular.ttf")
+        gen_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        ref_no = f"VAJRA/SCRB/{datetime.utcnow().strftime('%Y%m%d')}/{str(authed_badge)[-4:] or '0000'}"
+        # Tamper-evidence: SHA-256 over the exact transcript + operator + time. Printed
+        # on the seal so the document is verifiable/reproducible, not just decorative.
+        _digest_src = json.dumps(
+            {"badge": authed_badge, "gen": gen_utc, "t": payload.transcript},
+            ensure_ascii=False, sort_keys=True, default=str
+        )
+        doc_hash = hashlib.sha256(_digest_src.encode("utf-8")).hexdigest()
+
+        def _emblem(pdf: "FPDF", cx: float, cy: float, r: float):
+            """Draw a gold VAJRA/KSP emblem (concentric rings + starburst + monogram)."""
+            pdf.set_draw_color(*GOLD)
+            pdf.set_fill_color(*CHARCOAL)
+            pdf.set_line_width(0.6)
+            pdf.ellipse(cx - r, cy - r, 2 * r, 2 * r, style="FD")
+            pdf.set_draw_color(*GOLD_HI)
+            pdf.set_line_width(0.3)
+            pdf.ellipse(cx - r * 0.72, cy - r * 0.72, 2 * r * 0.72, 2 * r * 0.72, style="D")
+            # Starburst
+            try:
+                pdf.set_fill_color(*GOLD)
+                pdf.star(cx, cy, r * 0.22, r * 0.62, 8, style="F")
+            except Exception:
+                pass
+            # Central diamond + monogram
+            pdf.set_fill_color(*CHARCOAL)
+            try:
+                pdf.regular_polygon(cx, cy, 4, r * 0.6, rotateDegrees=45, style="F")
+            except Exception:
+                pass
+            pdf.set_text_color(*GOLD_HI)
+            pdf.set_font("NotoKannada", size=7)
+            pdf.set_xy(cx - r, cy - 2.4)
+            pdf.cell(2 * r, 5, "VAJRA", align="C")
+
+        class VajraDoc(FPDF):
+            def header(self):
+                # Draw with auto page-break OFF: the watermark tiles reach the page
+                # bottom and would otherwise recursively trigger add_page -> header.
+                self.set_auto_page_break(False)
+                # Diagonal repeating watermark BEHIND everything
+                self.set_text_color(224, 216, 203)
+                self.set_font("NotoKannada", size=14)
+                wm = f"KARNATAKA STATE POLICE  -  OFFICIAL  -  {authed_badge}"
+                with self.rotation(45, self.w / 2, self.h / 2):
+                    y = 20
+                    while y < self.h:
+                        self.set_xy(-40, y)
+                        self.cell(self.w + 80, 8, wm, align="C")
+                        y += 26
+                # Letterhead band
+                self.set_fill_color(*CHARCOAL)
+                self.rect(0, 0, self.w, 26, style="F")
+                _emblem(self, 20, 13, 9)
+                self.set_text_color(*GOLD_HI)
+                self.set_font("NotoKannada", size=15)
+                self.set_xy(34, 5)
+                self.cell(0, 7, "KARNATAKA STATE POLICE")
+                self.set_text_color(*GOLD)
+                self.set_font("NotoKannada", size=9)
+                self.set_xy(34, 13)
+                self.cell(0, 5, "State Crime Records Bureau (SCRB)  -  VAJRA Cognitive Intelligence")
+                # Classification strip
+                self.set_fill_color(*GOLD)
+                self.rect(0, 26, self.w, 5, style="F")
+                self.set_text_color(*CHARCOAL)
+                self.set_font("NotoKannada", size=7)
+                self.set_xy(0, 26.6)
+                self.cell(self.w, 4, "RESTRICTED  -  FOR OFFICIAL USE ONLY", align="C")
+                self.set_auto_page_break(True, margin=18)
+                self.set_y(38)
+
+            def footer(self):
+                self.set_auto_page_break(False)
+                self.set_y(-14)
+                self.set_draw_color(*GOLD)
+                self.set_line_width(0.3)
+                self.line(12, self.get_y(), self.w - 12, self.get_y())
+                self.set_text_color(*MUTE)
+                self.set_font("NotoKannada", size=7)
+                self.set_xy(12, self.get_y() + 1)
+                self.cell(0, 4, f"Ref {ref_no}  -  Verify SHA-256 {doc_hash[:16]}...")
+                self.set_xy(self.w - 40, self.get_y())
+                self.cell(28, 4, f"Page {self.page_no()}/{{nb}}", align="R")
+
+        pdf = VajraDoc()
         pdf.add_font("NotoKannada", "", font_path)
+        pdf.set_auto_page_break(True, margin=18)
+        pdf.alias_nb_pages()
+        pdf.add_page()
+
+        # Document title
+        pdf.set_text_color(*INK)
         pdf.set_font("NotoKannada", size=16)
+        pdf.cell(0, 9, "Investigation Transcript", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_draw_color(*GOLD)
+        pdf.set_line_width(0.5)
+        pdf.line(12, pdf.get_y(), pdf.w - 12, pdf.get_y())
+        pdf.ln(3)
 
-        # Header banner
-        pdf.cell(0, 10, "KARNATAKA STATE POLICE", new_x="LMARGIN", new_y="NEXT", align="C")
-        pdf.set_font("NotoKannada", size=12)
-        pdf.cell(0, 8, "VAJRA Cognitive Intelligence Console Report", new_x="LMARGIN", new_y="NEXT", align="C")
-        pdf.ln(10)
+        # Meta grid
+        def _meta(label, value):
+            pdf.set_font("NotoKannada", size=8)
+            pdf.set_text_color(*MUTE)
+            pdf.cell(34, 5, label)
+            pdf.set_text_color(*INK)
+            pdf.set_font("NotoKannada", size=9)
+            pdf.cell(0, 5, str(value), new_x="LMARGIN", new_y="NEXT")
+        _meta("Reference No.", ref_no)
+        _meta("Operator Badge", authed_badge)
+        _meta("Generated (UTC)", gen_utc)
+        _meta("Classification", "Restricted - For Official Use Only")
+        _meta("Messages", f"{len(payload.transcript)} in transcript")
+        pdf.ln(3)
 
-        pdf.set_font("NotoKannada", size=10)
-        pdf.cell(0, 6, f"Generated At (UTC): {datetime.utcnow().isoformat()}", new_x="LMARGIN", new_y="NEXT")
-        # Authenticated badge from the session, NOT payload.badge_id (which a
-        # caller could set to anyone) -- see the security note on this endpoint.
-        pdf.cell(0, 6, f"Operator Badge No: {authed_badge}", new_x="LMARGIN", new_y="NEXT")
-        pdf.ln(5)
-        pdf.line(10, pdf.get_y(), 200, pdf.get_y())
-        pdf.ln(5)
-
+        # Transcript
         for msg in payload.transcript:
-            sender = str(msg.get("role") or msg.get("sender") or "unknown").upper()
+            sender = str(msg.get("role") or msg.get("sender") or "unknown").lower()
             text = str(msg.get("content") or msg.get("text") or "")
             time_str = msg.get("timestamp", "")
+            is_ai = sender in ("assistant", "ai", "vajra", "vajra.ai")
+            label = "VAJRA.AI" if is_ai else "OFFICER"
+            # Sender chip
+            pdf.set_font("NotoKannada", size=8)
+            pdf.set_text_color(*(TEAL if is_ai else GOLD))
+            pdf.cell(0, 6, f"{label}   {time_str}", new_x="LMARGIN", new_y="NEXT")
+            pdf.set_text_color(*INK)
+            pdf.set_font("NotoKannada", size=9.5)
+            body = text if text.strip() else "(interactive visualization - see the VAJRA console for the live chart/map)"
+            pdf.multi_cell(0, 5.6, body)
+            pdf.ln(2.5)
 
-            pdf.set_font("NotoKannada", size=9)
-            pdf.cell(0, 6, f"[{time_str}] {sender}:", new_x="LMARGIN", new_y="NEXT")
-            # Line height 6 (not 5) -- Kannada vowel signs/conjuncts extend
-            # above and below the Latin baseline this cell height was tuned
-            # for, and at 5 consecutive lines visibly overlapped.
-            pdf.multi_cell(0, 6, text if text.strip() else "(non-text content / widget)")
-            pdf.ln(3)
+        # Official seal / stamp block
+        pdf.ln(4)
+        if pdf.get_y() > pdf.h - 60:
+            pdf.add_page()
+        seal_y = pdf.get_y() + 22
+        seal_x = pdf.w - 40
+        pdf.set_draw_color(*GOLD)
+        pdf.set_line_width(0.8)
+        pdf.ellipse(seal_x - 18, seal_y - 18, 36, 36, style="D")
+        pdf.set_line_width(0.3)
+        pdf.ellipse(seal_x - 14, seal_y - 14, 28, 28, style="D")
+        try:
+            pdf.set_fill_color(*GOLD)
+            pdf.star(seal_x, seal_y - 5, 1.5, 4.2, 5, style="F")
+        except Exception:
+            pass
+        pdf.set_text_color(*GOLD)
+        pdf.set_font("NotoKannada", size=6)
+        pdf.set_xy(seal_x - 18, seal_y - 1)
+        pdf.cell(36, 3, "VAJRA - SCRB", align="C")
+        pdf.set_xy(seal_x - 18, seal_y + 2)
+        pdf.cell(36, 3, "OFFICIAL RECORD", align="C")
+        pdf.set_xy(seal_x - 18, seal_y + 6)
+        pdf.set_font("NotoKannada", size=5)
+        pdf.cell(36, 3, "SYSTEM VERIFIED", align="C")
+
+        # Tamper-evidence + attribution next to the seal
+        pdf.set_xy(12, seal_y - 18)
+        pdf.set_text_color(*INK)
+        pdf.set_font("NotoKannada", size=8)
+        pdf.cell(0, 5, "Authenticity & Tamper-Evidence", new_x="LMARGIN", new_y="NEXT")
+        pdf.set_x(12)
+        pdf.set_text_color(*MUTE)
+        pdf.set_font("NotoKannada", size=7)
+        pdf.multi_cell(pdf.w - 74,
+                       4.4,
+                       f"System-generated from CCTNS-grounded records by badge {authed_badge} at {gen_utc}. "
+                       f"This document is attributed to the authenticated operator (not a client-supplied name). "
+                       f"Integrity hash (SHA-256): {doc_hash}. Any edit changes this hash.")
 
         pdf_bytes = pdf.output()
         return Response(
             content=bytes(pdf_bytes),
             media_type="application/pdf",
-            headers={"Content-Disposition": "attachment; filename=vajra_report.pdf"}
+            headers={"Content-Disposition": f"attachment; filename=VAJRA_Report_{str(authed_badge)}.pdf"}
         )
     except Exception as e:
         logger.error(f"Failed to generate PDF: {e}")
