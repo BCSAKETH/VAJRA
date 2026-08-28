@@ -1490,6 +1490,19 @@ class VajraAgentLoop:
                     "data": comparison["data"], "citations": comparison["citations"],
                     "is_simulated": False, "simulated_reason": ""}
 
+        # SEMANTIC COMPILER (opt-in beta, answer_mode=="compiler"): for anything
+        # the fast thinking-lane handlers above didn't already answer, let the LLM
+        # COMPILE the query into a JSON execution plan and run it deterministically
+        # over the grounded tools (the LLM never touches execution). Falls back to
+        # the standard path below when planning fails, so this can never dead-end.
+        if answer_mode == "compiler":
+            compiled = self._run_semantic_compiler(officer_query, employee_id, session_id, user_unit_id)
+            if compiled is not None:
+                history.append({"role": "assistant", "content": compiled["text"]})
+                context["messages"] = history
+                session_memory.update_session_context(session_id, context)
+                return compiled
+
         # A2 FAST-ROUTE: when the officer's command clearly maps to exactly one
         # tool ("network of X", "risk for X", "hotspots", "which sections for
         # case Y"), pick it deterministically and SKIP the slow GLM tool-
@@ -4039,6 +4052,129 @@ class VajraAgentLoop:
             if d not in ordered:
                 ordered.append(d)
         return ordered
+
+    # ================= SEMANTIC COMPILER (Plan-then-Execute, opt-in beta) ======
+    # The LLM is used ONLY as a compiler: it reads the officer's query and emits a
+    # JSON execution plan referencing these capabilities by name. A deterministic
+    # engine then runs the plan over VAJRA's grounded tools -- the LLM is
+    # quarantined from execution, so it cannot leak reasoning, hallucinate a
+    # number, or run an unapproved operation. Gated behind answer_mode=="compiler"
+    # so it never touches the stable Standard/Dossier paths.
+    _COMPILER_CAPABILITIES = [
+        {"name": "query_hotspots", "does": "crime hotspot clusters on a map, per district or statewide", "params": {"district": "district name, optional"}},
+        {"name": "get_crime_trends", "does": "monthly crime counts/trend over time for a district", "params": {"district": "optional", "crime_group": "crime type, optional"}},
+        {"name": "get_repeat_offenders", "does": "ranked list of repeat/habitual offenders", "params": {"district": "optional"}},
+        {"name": "get_offender_risk", "does": "conviction-risk score for ONE named suspect", "params": {"suspect_name": "required"}},
+        {"name": "query_graph_network", "does": "criminal network/associates of ONE named suspect", "params": {"suspect_name": "required"}},
+        {"name": "get_mo_profile", "does": "modus-operandi profile for ONE named suspect", "params": {"suspect_name": "required"}},
+        {"name": "query_financial_links", "does": "financial transaction links for a named entity", "params": {"entity_id": "required name"}},
+        {"name": "get_case_types_distribution", "does": "breakdown of cases by crime type (pie/bar)", "params": {"district": "optional"}},
+        {"name": "get_priority_concerns", "does": "top emerging crime concerns ranked by momentum", "params": {"district": "optional"}},
+        {"name": "get_forecast", "does": "next-period crime forecast for a district", "params": {"district": "optional", "crime_type": "optional"}},
+        {"name": "get_demographic_correlation", "does": "socio-economic correlation with crime for a district", "params": {"district": "required"}},
+        {"name": "rank_districts", "does": "rank ALL districts by crime volume, worst first", "params": {}},
+        {"name": "get_database_overview", "does": "total FIRs + crime-type overview for the whole database", "params": {}},
+        {"name": "query_case", "does": "details of ONE case by its case number", "params": {"case_no": "required"}},
+        {"name": "get_case_timeline", "does": "chronological timeline of ONE case", "params": {"case_no": "required"}},
+        {"name": "get_case_sections", "does": "legal sections applied to ONE case", "params": {"case_no": "required"}},
+        {"name": "find_similar_cases", "does": "semantic search for cases matching a description", "params": {"query": "the search text"}},
+        {"name": "analyze_online_abuse", "does": "triage an online-abuse/cybercrime complaint into offences + evidence steps", "params": {"content": "the complaint text"}},
+    ]
+
+    def _run_semantic_compiler(self, query: str, employee_id: int, session_id: str,
+                               user_unit_id: Optional[int]) -> Optional[Dict[str, Any]]:
+        """
+        Compile the officer's natural-language query into a JSON execution plan
+        via the LLM, then execute it DETERMINISTICALLY over the grounded tools.
+        Returns a run_agent_loop-style dict, or None to fall back to the standard
+        path (graceful degradation) when planning fails.
+        """
+        names = {c["name"] for c in self._COMPILER_CAPABILITIES}
+        registry = "\n".join(f"- {c['name']}: {c['does']} | params: {json.dumps(c['params'])}"
+                             for c in self._COMPILER_CAPABILITIES)
+        planner_sys = (
+            "You are the PLANNER for VAJRA, a Karnataka State Police intelligence system. You do NOT answer the "
+            "officer. You COMPILE their request into a JSON execution plan that a deterministic engine runs.\n\n"
+            "CAPABILITIES (use ONLY these names):\n" + registry + "\n\n"
+            "Output ONLY one JSON object, no prose, no markdown. Schema:\n"
+            '{"intent": "<one short sentence>", "steps": [{"capability": "<name>", "params": {..}}], '
+            '"present_as": "auto|pie|bar|line|map|network|timeline|table|text"}\n\n'
+            "RULES:\n"
+            "- Extract quantifiers, district names, suspect names, and case numbers into params.\n"
+            "- Use MULTIPLE steps for compound asks. To compare two districts, add get_crime_trends once PER district.\n"
+            "- Choose present_as to fit the answer (a distribution -> pie/bar, a network -> network, a route over time -> line).\n"
+            "- If the request is a greeting or needs no data, return steps: [] and put a short reply in intent.\n"
+            "- NEVER invent capability names or data. Plan only; the engine executes."
+        )
+        try:
+            res = self.llm.chat([{"role": "system", "content": planner_sys},
+                                 {"role": "user", "content": query}], None, max_tokens=800)
+            if res.get("error"):
+                logger.warning("compiler: planner LLM unavailable; falling back.")
+                return None
+            raw = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+            plan = json.loads(self._extract_json(raw))
+        except Exception as e:
+            logger.warning(f"compiler: plan parse failed ({e}); falling back to standard path.")
+            return None
+        if not isinstance(plan, dict):
+            return None
+        intent = (plan.get("intent") or "").strip()
+        present_as = str(plan.get("present_as") or "auto").lower()
+        steps = [s for s in (plan.get("steps") or [])
+                 if isinstance(s, dict) and s.get("capability") in names]
+        # No-data intent (greeting / direct reply the planner already wrote).
+        if not steps:
+            if intent:
+                return {"text": intent, "response_type": "text", "data": {},
+                        "citations": [{"type": "AI Execution Plan", "id": "direct",
+                                       "details": "Answered directly; the plan required no data lookup."}],
+                        "is_simulated": False, "simulated_reason": ""}
+            return None
+        # DETERMINISTIC EXECUTION -- run each planned step over the grounded tools.
+        panels, combined, citations, last = [], [], [], None
+        for st in steps[:6]:
+            cap = st["capability"]
+            params = {k: v for k, v in (st.get("params") or {}).items() if v not in (None, "")}
+            try:
+                out = self._execute_tool(cap, params, employee_id, session_id, user_unit_id)
+            except Exception as e:
+                logger.warning(f"compiler: step '{cap}' failed: {e}")
+                continue
+            if out.get("citations"):
+                citations.extend(out["citations"])
+            rt = out.get("response_type") or "text"
+            rtext = (out.get("text_result") or "").strip()
+            last = out
+            panels.append({"type": rt if rt != "text" else "text", "panel_key": cap,
+                           "title_en": cap.replace("_", " ").title(), "title_kn": cap.replace("_", " ").title(),
+                           "data": out.get("data"), "text": rtext})
+            if rtext:
+                combined.append(rtext)
+        if not panels or last is None:
+            return None
+        if len(panels) == 1:
+            resp_type = last.get("response_type") or "text"
+            data_payload = last.get("data") or {}
+            text_out = (last.get("text_result") or intent or "Done.").strip()
+            # honour a chart present_as on chartable data (e.g. "... as a pie chart")
+            if present_as in ("pie", "bar") and (data_payload.get("series") or data_payload.get("offenders")):
+                series = self._extract_chartable_series(resp_type, data_payload)
+                if series:
+                    data_payload = {"series": series, "total": sum(s["value"] for s in series),
+                                    "district": "", "chart_hint": present_as}
+                    resp_type = "case_distribution"
+        else:
+            resp_type = "dossier"
+            data_payload = {"panels": panels}
+            text_out = intent or "\n\n".join(combined[:4])
+        citations.append({"type": "AI Execution Plan", "id": (intent[:60] or "plan"),
+                          "details": (f"Compiled to {len(panels)} grounded step(s): "
+                                      f"{', '.join(p['panel_key'] for p in panels)}. "
+                                      "The AI planned; a deterministic engine executed each step.")})
+        self._write_audit_log(employee_id, "Semantic Compiler", intent[:80], query, text_out, session_id)
+        return {"text": text_out, "response_type": resp_type, "data": data_payload,
+                "citations": citations, "is_simulated": False, "simulated_reason": ""}
 
     @staticmethod
     def _extract_chartable_series(response_type: str, d: Dict[str, Any]) -> List[Dict[str, Any]]:

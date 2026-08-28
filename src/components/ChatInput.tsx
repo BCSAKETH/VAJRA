@@ -13,8 +13,8 @@ interface ChatInputProps {
   isUploading: boolean;
   lang: "en" | "kn";
   addToast: (title: string, message: string, severity: "Critical" | "Warning" | "Info" | "Success") => void;
-  answerMode: "standard" | "dossier";
-  onAnswerModeChange: (m: "standard" | "dossier") => void;
+  answerMode: "standard" | "dossier" | "compiler";
+  onAnswerModeChange: (m: "standard" | "dossier" | "compiler") => void;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = React.memo(({
@@ -470,8 +470,12 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
             className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold border border-stone-800 bg-stone-900/60 hover:bg-stone-800 transition-colors cursor-pointer disabled:opacity-50"
             title={lang === "en" ? "Choose answer depth" : "ಉತ್ತರದ ಆಳ ಆಯ್ಕೆಮಾಡಿ"}
           >
-            <span className={answerMode === "dossier" ? "text-[#C79A4E]" : "text-stone-300"}>
-              ◈ {answerMode === "dossier" ? (lang === "en" ? "Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್") : (lang === "en" ? "Standard" : "ಸಾಮಾನ್ಯ")}
+            <span className={answerMode !== "standard" ? "text-[#C79A4E]" : "text-stone-300"}>
+              ◈ {answerMode === "dossier"
+                    ? (lang === "en" ? "Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್")
+                    : answerMode === "compiler"
+                    ? (lang === "en" ? "AI Reasoning β" : "AI ತಾರ್ಕಿಕ β")
+                    : (lang === "en" ? "Standard" : "ಸಾಮಾನ್ಯ")}
             </span>
             <ChevronDown className="w-3 h-3 text-stone-500" />
           </button>
@@ -482,6 +486,7 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
                 {([
                   ["standard", lang === "en" ? "Standard" : "ಸಾಮಾನ್ಯ", lang === "en" ? "Fast, focused answer with one key view." : "ವೇಗದ, ಕೇಂದ್ರೀಕೃತ ಉತ್ತರ."],
                   ["dossier", lang === "en" ? "Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್", lang === "en" ? "Deep: risk, network, timeline, sections, map & similar cases in one." : "ಆಳವಾದ: ಅಪಾಯ, ಜಾಲ, ಕಾಲಾನುಕ್ರಮ, ಸೆಕ್ಷನ್‌ಗಳು ಒಟ್ಟಿಗೆ."],
+                  ["compiler", lang === "en" ? "AI Reasoning β" : "AI ತಾರ್ಕಿಕ β", lang === "en" ? "The AI plans a multi-step execution over the data, then runs it deterministically. Smarter on novel/compound questions; a bit slower." : "AI ದತ್ತಾಂಶದ ಮೇಲೆ ಬಹು-ಹಂತದ ಯೋಜನೆ ರೂಪಿಸಿ ನಿರ್ಣಾಯಕವಾಗಿ ಚಲಾಯಿಸುತ್ತದೆ. ಸ್ವಲ್ಪ ನಿಧಾನ."],
                 ] as const).map(([val, title, desc]) => (
                   <button
                     key={val}
@@ -491,7 +496,7 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
                   >
                     <span className={`mt-0.5 text-[11px] ${answerMode === val ? "text-[#C79A4E]" : "text-transparent"}`}>✓</span>
                     <span className="flex flex-col">
-                      <span className={`text-[12px] font-bold ${val === "dossier" ? "text-[#C79A4E]" : "text-stone-200"}`}>◈ {title}</span>
+                      <span className={`text-[12px] font-bold ${val !== "standard" ? "text-[#C79A4E]" : "text-stone-200"}`}>◈ {title}</span>
                       <span className="text-[10px] text-stone-500 leading-snug">{desc}</span>
                     </span>
                   </button>

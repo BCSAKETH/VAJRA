@@ -136,8 +136,8 @@ export const AIChatScreen: React.FC = () => {
   // Full Dossier -- forces the multi-panel composite for the query's case/
   // suspect). Chosen via the composer selector; persisted so the officer's
   // preference sticks across sessions.
-  const [answerMode, setAnswerMode] = useState<"standard" | "dossier">(
-    () => (localStorage.getItem("vajra_answer_mode") as "standard" | "dossier") || "standard"
+  const [answerMode, setAnswerMode] = useState<"standard" | "dossier" | "compiler">(
+    () => (localStorage.getItem("vajra_answer_mode") as "standard" | "dossier" | "compiler") || "standard"
   );
   useEffect(() => { localStorage.setItem("vajra_answer_mode", answerMode); }, [answerMode]);
   const [showInvitePanel, setShowInvitePanel] = useState(false);
