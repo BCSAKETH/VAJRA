@@ -724,6 +724,9 @@ class VajraAgentLoop:
             (["full dossier", "case dossier", "full report on case", "complete report on case", "deep dive", "full investigation", "everything about case", "complete case file", "full case file"], "generate_case_dossier", {"case_no": case_no, "user_query": query}, case_no),
             (["beat plan", "patrol deployment", "deploy patrol", "where should i send", "where to send patrol", "where to deploy", "where to focus", "proactive deployment", "patrol plan"], "plan_patrol_deployment", {"district": district}, "yes"),
             (["risk score", "conviction risk", "recidivism", "re-offend", "risk for", "risk of"], "get_offender_risk", {"suspect_name": name}, name),
+            (["shares a phone", "shares a vehicle", "shared phone", "shared vehicle", "same phone", "same vehicle",
+              "syndicate link", "hidden link", "linked by phone", "linked by vehicle", "shared contact",
+              "common phone", "common vehicle", "who else uses"], "shared_attribute_links", {"suspect_name": name}, name),
             (["network", "syndicate", "co-accused", "connections for", "connections of", "connected to", "crimes is", "crimes does"], "query_graph_network", {"suspect_name": name}, name),
             (["money laundering", "hawala", "mule account", "financial ring", "money network", "laundering ring", "money ring"], "detect_financial_ring", {"entity_id": name}, name),
             (["financial", "money trail", "transaction", "bank account"], "query_financial_links", {"entity_id": name}, name),
@@ -763,6 +766,10 @@ class VajraAgentLoop:
               "media reports", "any news"], "get_live_news", {"district": district, "query": query}, "yes"),
             (["search the web", "web search", "search online", "look it up", "look up online", "google it",
               "google ", "find online", "on the internet", "search for"], "web_search", {"query": query}, "yes"),
+            (["summarize this url", "read this url", "summarize this page", "read this link", "open this link",
+              "summarize this article", "read this article", "http://", "https://"], "summarize_url", {"query": query}, "yes"),
+            (["anomaly", "anomalies", "unusual pattern", "statistical outlier", "abnormal", "out of the ordinary",
+              "unusual activity", "deviation from", "spike detection", "unusual spike"], "anomaly_detection", {"district": district}, "yes"),
             (["worst crime district", "worst districts", "worst district for crime", "worst affected district",
               "which districts have the worst", "which district has the worst", "most dangerous district",
               "most dangerous districts", "highest crime district", "highest crime districts", "top crime district",
@@ -3250,6 +3257,64 @@ class VajraAgentLoop:
             final_answer = True
             self._write_audit_log(employee_id, "Live News", scope, f"Live news request: {scope}", text_result, session_id)
 
+        elif tool_name == "shared_attribute_links":
+            # SYNDICATE RADAR: other accused who SHARE a named suspect's phone or
+            # vehicle (from the synthetic AccusedContact overlaps) -- the hidden
+            # links the base co-accused data misses. Grounded in real rows; the
+            # data is clearly labelled synthetic demo enrichment.
+            raw = params.get("suspect_name", "") or ""
+            name = self._fuzzy_accused_match(raw) or raw
+            response_type = "network"
+            _e = lambda s: str(s).replace("'", "''")
+            if not (catalyst_app and name):
+                text_result = f"\"{raw}\" was not found in the database, so no shared-attribute links can be traced."
+                data = {}
+            else:
+                me = []
+                try:
+                    me = catalyst_app.zql().execute_query(
+                        f"SELECT PhoneNumber, VehicleNumber FROM AccusedContact WHERE AccusedName = '{_e(name)}' LIMIT 1")
+                except Exception as ex:
+                    logger.warning(f"shared_attribute_links lookup failed: {ex}")
+                if not me:
+                    text_result = f"No contact attributes are on record for {name}, so no shared phone/vehicle links can be traced."
+                    data = {"nodes": [{"id": name, "label": name, "sublabel": "subject", "type": "suspect"}], "edges": []}
+                else:
+                    phone = (me[0].get("AccusedContact", {}) or {}).get("PhoneNumber")
+                    veh = (me[0].get("AccusedContact", {}) or {}).get("VehicleNumber")
+                    nodes = {name: {"id": name, "label": name, "sublabel": "subject", "type": "suspect"}}
+                    edges, shares = [], []
+                    for attr_val, attr_col, attr_label in ((phone, "PhoneNumber", "phone"), (veh, "VehicleNumber", "vehicle")):
+                        if not attr_val:
+                            continue
+                        try:
+                            others = catalyst_app.zql().execute_query(
+                                f"SELECT AccusedName FROM AccusedContact WHERE {attr_col} = '{_e(attr_val)}'")
+                        except Exception as ex:
+                            logger.warning(f"shared_attribute_links {attr_col} query failed: {ex}")
+                            others = []
+                        for o in others:
+                            on = (o.get("AccusedContact", {}) or {}).get("AccusedName")
+                            if on and on != name:
+                                if on not in nodes:
+                                    nodes[on] = {"id": on, "label": on, "sublabel": f"shares {attr_label}", "type": "person"}
+                                edges.append({"source": name, "target": on, "label": f"shared {attr_label}"})
+                                shares.append((on, attr_label, attr_val))
+                    data = {"nodes": list(nodes.values()), "edges": edges, "seed": name}
+                    if shares:
+                        lines = [f"Shared-attribute links for {name} — {len(shares)} other accused share a phone or vehicle "
+                                 f"(synthetic contact data; investigative leads to verify, not proof):"]
+                        for on, kind, val in shares[:10]:
+                            lines.append(f"- {on} — shares {kind} {val}")
+                        lines.append("Common burner-phone / getaway-vehicle overlaps like these are a classic syndicate signal.")
+                        text_result = "\n".join(lines)
+                    else:
+                        text_result = f"{name} does not share a phone or vehicle with any other accused on record."
+            citations.append({"type": "Shared-Attribute Link Analysis", "id": name,
+                              "details": "Synthetic phone/vehicle overlaps (AccusedContact) -- investigative leads, verify independently."})
+            final_answer = True
+            self._write_audit_log(employee_id, "Shared-Attribute Links", name, f"Shared attribute links for {name}", text_result, session_id)
+
         elif tool_name == "web_search":
             import internet_signals
             q = (params.get("query") or "").strip()
@@ -3277,6 +3342,70 @@ class VajraAgentLoop:
                               "details": "Live public web search -- unverified leads, not official record."})
             final_answer = True
             self._write_audit_log(employee_id, "Web Search", q, f"Web search: {q}", text_result, session_id)
+
+        elif tool_name == "anomaly_detection":
+            district = self.sanitize_sql_input(params.get("district", "") or "")
+            anomalies = []
+            try:
+                tr = self._compute_crime_trends(district, "", 12)
+                series = (tr.get("data") or {}).get("series") or []
+                counts = [int(s.get("count") or 0) for s in series]
+                if len(counts) >= 4:
+                    base = counts[:-1]
+                    mu = float(np.mean(base)); sd = float(np.std(base)) or 1.0
+                    last = counts[-1]; z = (last - mu) / sd
+                    if abs(z) >= 2:
+                        direction = "spike" if z > 0 else "drop"
+                        anomalies.append(f"Unusual monthly {direction}: the latest month had {last} incidents vs a "
+                                         f"{round(mu)} average (±{round(sd)}) over the prior months (z={round(z, 1)}).")
+            except Exception as e:
+                logger.warning(f"anomaly_detection trend leg failed: {e}")
+            try:
+                pc = self._compute_priority_concerns(district)
+                for c in ((pc.get("data") or {}).get("concerns") or []):
+                    g = c.get("growth_pct", 0); recent = c.get("recent", 0); prior = c.get("prior", 0)
+                    if g >= 100 and recent >= 5:
+                        anomalies.append(f"Sharp rise in {c.get('type')}: {recent} incidents in the last 90 days "
+                                         f"vs {prior} in the prior 90 (+{g}%).")
+            except Exception as e:
+                logger.warning(f"anomaly_detection momentum leg failed: {e}")
+            scope = district or "all districts"
+            response_type = "text"
+            if anomalies:
+                text_result = (f"Statistical anomaly call-outs for {scope} (each states its baseline so it is auditable):\n"
+                               + "\n".join(f"- {a}" for a in anomalies[:8]))
+            else:
+                text_result = f"No statistical anomalies detected for {scope} right now -- recent activity is within the normal statistical range."
+            data = {"anomalies": anomalies, "scope": scope}
+            citations.append({"type": "Statistical Anomaly Detection", "id": scope,
+                              "details": "Z-score on monthly volume + category-momentum break, over real COUNT aggregates."})
+            final_answer = True
+            self._write_audit_log(employee_id, "Anomaly Detection", scope, f"Anomaly scan: {scope}", text_result, session_id)
+
+        elif tool_name == "summarize_url":
+            import internet_signals
+            url = (params.get("url") or params.get("query") or "").strip()
+            mm = re.search(r"https?://\S+", url)
+            url = mm.group(0) if mm else url
+            response_type = "text"
+            if not url.startswith("http"):
+                text_result = "Please provide a full URL to read (e.g. https://...)."
+            else:
+                try:
+                    page = internet_signals.fetch_page(url, 4000) or {}
+                    content = page.get("text") or page.get("content") or ""
+                    title = page.get("title") or url
+                    if content:
+                        text_result = f"Open-source page: {title}\n(Unverified external content, not an official record)\n\n{content[:1800]}"
+                    else:
+                        text_result = f"Could not read readable content from {url} (it may block scraping or be empty)."
+                except Exception as e:
+                    logger.warning(f"summarize_url failed for {url!r}: {e}")
+                    text_result = f"Could not fetch {url} right now."
+            citations.append({"type": "External Page Read", "id": url,
+                              "details": "Open-source page content -- unverified, not official record."})
+            final_answer = True
+            self._write_audit_log(employee_id, "Read URL", url, f"Read page: {url}", text_result, session_id)
 
         elif tool_name == "analyze_online_abuse":
             ab = self._analyze_online_abuse(params.get("content", "") or "")
@@ -4147,6 +4276,9 @@ class VajraAgentLoop:
         {"name": "analyze_online_abuse", "does": "triage an online-abuse/cybercrime complaint into offences + evidence steps", "params": {"content": "the complaint text"}},
         {"name": "get_live_news", "does": "live open-source news headlines for a district/topic (unverified public leads, not official records)", "params": {"district": "district or topic, optional", "query": "the raw request, optional"}},
         {"name": "web_search", "does": "live open-source web search for any external topic (unverified public results, not official records)", "params": {"query": "what to search for"}},
+        {"name": "shared_attribute_links", "does": "find OTHER accused who share a named suspect's phone or vehicle (hidden syndicate links)", "params": {"suspect_name": "required"}},
+        {"name": "anomaly_detection", "does": "statistical anomaly call-outs (monthly z-score spike + category-momentum break) for a district", "params": {"district": "optional"}},
+        {"name": "summarize_url", "does": "read and summarize any public web page/article by URL (unverified external content)", "params": {"url": "the URL", "query": "the raw request, optional"}},
     ]
 
     # Multi-step cues + analytical keywords used by the AUTO-ROUTER to decide when

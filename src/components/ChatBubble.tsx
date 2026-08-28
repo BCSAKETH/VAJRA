@@ -94,6 +94,13 @@ const renderRich = (text: string): React.ReactNode => {
 // server-synthesis wait, and the flaky-Zia retry happens off the click path).
 // Keyed by message id + lang, bounded so blob URLs don't accumulate.
 const _ttsCache = new Map<string, string>();
+// In-flight pre-generation promises, keyed the same as _ttsCache. When the
+// officer taps speak while the background pre-gen is still synthesising (the
+// ~5-7s Zia round-trip, unavoidable for Kannada since there's no on-device
+// voice), the click AWAITS this promise instead of firing a SECOND synthesis --
+// so the perceived lag is only "time since the answer appeared", not a fresh
+// 7-10s wait, and Zia is never called twice for the same clip.
+const _ttsPending = new Map<string, Promise<string | null>>();
 const _ttsOrder: string[] = [];
 const _ttsPut = (key: string, url: string) => {
   if (_ttsCache.has(key)) { try { URL.revokeObjectURL(url); } catch { /* noop */ } return; }
@@ -315,21 +322,30 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
     // wrong language (the reported "Kannada speaking not working").
     const vlang = effectiveLang;
     const key = `${message.id}:${vlang}`;
-    if (_ttsCache.has(key)) return;
+    if (_ttsCache.has(key) || _ttsPending.has(key)) return;
     const toSpeak = getSpeakText();
     if (!toSpeak) return;
-    const ctrl = new AbortController();
-    const to = setTimeout(() => ctrl.abort(), vlang === "kn" ? 26000 : 12000);
-    let cancelled = false;
-    fetch(`${API_BASE}/api/voice/tts`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-      body: JSON.stringify({ text: toSpeak, lang: vlang }),
-      signal: ctrl.signal,
-    }).then((r) => (r.ok ? r.blob() : null)).then((blob) => {
-      if (!cancelled && blob) _ttsPut(key, URL.createObjectURL(blob));
-    }).catch(() => { /* best-effort */ }).finally(() => clearTimeout(to));
-    return () => { cancelled = true; ctrl.abort(); clearTimeout(to); };
+    // Start the synthesis and REGISTER the in-flight promise, so a click during
+    // synthesis awaits this same request instead of firing a second one.
+    const p: Promise<string | null> = (async () => {
+      const ctrl = new AbortController();
+      const to = setTimeout(() => ctrl.abort(), vlang === "kn" ? 26000 : 12000);
+      try {
+        const r = await fetch(`${API_BASE}/api/voice/tts`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+          body: JSON.stringify({ text: toSpeak, lang: vlang }),
+          signal: ctrl.signal,
+        });
+        if (!r.ok) return null;
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
+        _ttsPut(key, url);
+        return url;
+      } catch { return null; }
+      finally { clearTimeout(to); _ttsPending.delete(key); }
+    })();
+    _ttsPending.set(key, p);
   }, [isLast, isAI, message.id, message.isSimulated, effectiveLang, getSpeakText]);
 
   const handleToggleSpeak = async () => {
@@ -341,8 +357,14 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
     if (!toSpeak) return;
     setIsSpeaking(true);
     const vlang = effectiveLang;  // voice must match the DISPLAYED language, not the app toggle
+    const key = `${message.id}:${vlang}`;
     // INSTANT path: pre-generated audio already cached -> play immediately.
-    const cachedUrl = _ttsCache.get(`${message.id}:${vlang}`);
+    let cachedUrl = _ttsCache.get(key);
+    // If the background pre-gen is still synthesising, AWAIT it rather than
+    // starting a second Zia request -- this is what removes the double-wait.
+    if (!cachedUrl && _ttsPending.has(key)) {
+      cachedUrl = (await _ttsPending.get(key)!) || undefined;
+    }
     if (cachedUrl && (await playUrl(cachedUrl, false))) return;
     try {
       // Abort the server attempt and fall through to the browser voice if it
