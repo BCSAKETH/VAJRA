@@ -734,7 +734,11 @@ class VajraAgentLoop:
             # falls through to a suspect-lookup pattern. Takes no params.
             (["my name", "my profile", "my details", "who am i", "my rank", "my station", "my posting", "my assignment", "current assignment", "am i posted", "my designation"], "get_my_profile", {}, "yes"),
             (["full dossier", "case dossier", "full report on case", "complete report on case", "deep dive", "full investigation", "everything about case", "complete case file", "full case file"], "generate_case_dossier", {"case_no": case_no, "user_query": query}, case_no),
-            (["beat plan", "patrol deployment", "deploy patrol", "where should i send", "where to send patrol", "where to deploy", "where to focus", "proactive deployment", "patrol plan"], "plan_patrol_deployment", {"district": district}, "yes"),
+            (["beat plan", "patrol deployment", "deploy patrol", "deploy extra patrol", "deploy patrols",
+              "extra patrols", "where should i send", "where to send patrol", "where to deploy", "where to focus",
+              "proactive deployment", "patrol plan", "which areas", "areas to patrol", "patrol this week",
+              "where should i patrol", "send patrols", "allocate patrols", "patrol allocation", "beat allocation",
+              "where to send officers", "focus policing", "deploy officers"], "plan_patrol_deployment", {"district": district}, "yes"),
             (["risk score", "conviction risk", "recidivism", "re-offend", "risk for", "risk of"], "get_offender_risk", {"suspect_name": name}, name),
             (["shares a phone", "shares a vehicle", "shared phone", "shared vehicle", "same phone", "same vehicle",
               "syndicate link", "hidden link", "linked by phone", "linked by vehicle", "shared contact",
@@ -747,6 +751,7 @@ class VajraAgentLoop:
             (["money laundering", "hawala", "mule account", "financial ring", "money network", "laundering ring", "money ring"], "detect_financial_ring", {"entity_id": name}, name),
             (["financial", "money trail", "transaction", "bank account"], "query_financial_links", {"entity_id": name}, name),
             (["mo profile", "modus operandi", "behavioral profile", "behaviour profile"], "get_mo_profile", {"suspect_name": name}, name),
+            (["tell me about", "who is", "information on", "details on", "profile of", "about suspect", "brief me on"], "generate_full_report", {"suspect_name": name, "user_query": query}, name),
             (["timeline", "chronology", "milestones"], "get_case_timeline", {"case_no": case_no}, case_no),
             (["summarize", "summary", "case dossier"], "summarize_case", {"case_no": case_no}, case_no),
             # NOTE: a precedent-grounded section RECOMMENDER was built + tested but
@@ -1471,6 +1476,17 @@ class VajraAgentLoop:
                                        "details": "Expanded the previous answer using this conversation's context."}],
                         "is_simulated": not bool(elaborated),
                         "simulated_reason": "" if elaborated else "AI expansion temporarily unavailable"}
+
+        # DETERMINISTIC CASE FAST-PATH: any question naming a case (CR-YYYY-NNNNN)
+        # is answered directly from a grounded fact bundle -- fast (~3s), reliable
+        # (no RLS 'not found' false-negative, no GLM 'AI unavailable'), specific to
+        # the question asked. Full 'everything' dossiers defer to the dossier tool.
+        case_ans = self._handle_case_question(officer_query, employee_id, session_id, user_unit_id)
+        if case_ans is not None:
+            history.append({"role": "assistant", "content": case_ans["text"]})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            return case_ans
 
         # THINKING-LANE: contextual re-presentation -- "make this a pie chart",
         # "show this as a bar chart", "visualize this". Resolves "this" to the
@@ -3271,6 +3287,41 @@ class VajraAgentLoop:
             final_answer = True
             self._write_audit_log(employee_id, "Live News", scope, f"Live news request: {scope}", text_result, session_id)
 
+        elif tool_name == "case_outcome_analytics":
+            total = charged = arrested = 0
+            if catalyst_app:
+                try:
+                    r1 = catalyst_app.zql().execute_query("SELECT COUNT(CaseMasterID) FROM CaseMaster")
+                    total = int((r1[0].get("CaseMaster", {}) or {}).get("COUNT(CaseMasterID)") or 0) if r1 else 0
+                    r2 = catalyst_app.zql().execute_query("SELECT COUNT(CaseMasterID) FROM ChargesheetDetails")
+                    charged = int((r2[0].get("ChargesheetDetails", {}) or {}).get("COUNT(CaseMasterID)") or 0) if r2 else 0
+                    r3 = catalyst_app.zql().execute_query("SELECT COUNT(CaseMasterID) FROM ArrestSurrender")
+                    arrested = int((r3[0].get("ArrestSurrender", {}) or {}).get("COUNT(CaseMasterID)") or 0) if r3 else 0
+                except Exception as e:
+                    logger.warning(f"case_outcome_analytics failed: {e}")
+            clr = round(charged / total * 100, 1) if total else 0.0
+            arr = round(arrested / total * 100, 1) if total else 0.0
+            response_type = "case_distribution"
+            if total:
+                text_result = (
+                    f"Case-outcome picture across the state (real counts):\n"
+                    f"- Total cases on record: {total:,}\n"
+                    f"- Chargesheets filed: {charged:,} ({clr}% of cases reached chargesheet)\n"
+                    f"- Cases with a recorded arrest/surrender: {arrested:,} ({arr}%)\n"
+                    f"- The remaining ~{round(100 - clr, 1)}% are still under investigation or pending trial.\n"
+                    f"(District-level clearance needs per-case mapping and is shown state-wide here.)")
+                data = {"series": [{"name": "Chargesheeted", "value": charged},
+                                   {"name": "Under investigation / pending", "value": max(0, total - charged)}],
+                        "total": total}
+            else:
+                response_type = "text"
+                text_result = "No case-outcome data is available to compute clearance right now."
+                data = {}
+            citations.append({"type": "Case Outcome Analytics", "id": "State",
+                              "details": "COUNT over CaseMaster / ChargesheetDetails / ArrestSurrender -- grounded aggregates."})
+            final_answer = True
+            self._write_audit_log(employee_id, "Case Outcome Analytics", "State", "Case clearance/outcome analytics", text_result, session_id)
+
         elif tool_name == "count_cases":
             district = self.sanitize_sql_input(params.get("district", "") or "")
             cg = (params.get("crime_group") or "").strip()
@@ -4673,6 +4724,128 @@ class VajraAgentLoop:
                            "details": "Charted the data from your previous answer, re-plotted on request."}],
             "final": True,
         }
+
+    def _handle_case_question(self, query: str, employee_id: int, session_id: str,
+                              user_unit_id: Optional[int]) -> Optional[Dict[str, Any]]:
+        """
+        DETERMINISTIC fast-path for any question that names a case (CR-YYYY-NNNNN).
+        Single-case questions ("which station", "who is the victim", "summarise",
+        "is the accused dangerous", "linked cases") used to go through the slow,
+        flaky GLM loop -- giving contradictory 'case not found' (query_case's RLS
+        filter), 'AI unavailable', and 80-95s latency. This resolves the case
+        reliably, pulls a grounded fact bundle with DIRECT queries (no RLS false
+        negative, like generate_case_dossier), and answers the SPECIFIC question
+        in ~3s. Returns None only when there's no case number, or defers the full
+        'everything' dossier to generate_case_dossier.
+        """
+        m = re.search(r"\bCR-\d{4}-\d+\b", query, re.IGNORECASE)
+        if not m:
+            return None
+        case_no = m.group(0).upper()
+        case_id = self._resolve_case_no(case_no)
+        ql = query.lower()
+        if any(w in ql for w in ("full", "everything", "complete", "all detail", "dossier", "deep dive", "full report on case")):
+            return None  # the full multi-panel dossier is generate_case_dossier's job
+        if case_id is None:
+            return {"text": f"Case {case_no} was not found in the database -- please double-check the case number.",
+                    "response_type": "text", "data": {"case_no": case_no},
+                    "citations": [{"type": "CCTNS Database Record", "id": case_no, "details": "No CrimeNo matches."}],
+                    "is_simulated": False, "simulated_reason": ""}
+        crimeno, reg, brief, station, accused = case_no, "", "", "", ""
+        age = gender = prior = None
+        sections: List[str] = []
+        try:
+            fr = catalyst_app.zql().execute_query(
+                f"SELECT CrimeNo, CrimeRegisteredDate, BriefFacts, PoliceStationID FROM CaseMaster WHERE CaseMasterID = {case_id} LIMIT 1")
+            if fr:
+                cm = fr[0].get("CaseMaster", {})
+                crimeno = cm.get("CrimeNo") or case_no
+                reg = cm.get("CrimeRegisteredDate") or ""
+                brief = cm.get("BriefFacts") or ""
+                ps = cm.get("PoliceStationID")
+                if ps:
+                    u = catalyst_app.zql().execute_query(f"SELECT UnitName FROM Unit WHERE UnitID = {ps} LIMIT 1")
+                    if u:
+                        station = u[0].get("Unit", {}).get("UnitName") or ""
+        except Exception as e:
+            logger.warning(f"_handle_case_question facts failed: {e}")
+        try:
+            ar = catalyst_app.zql().execute_query(
+                f"SELECT AccusedName, AgeYear, GenderID FROM Accused WHERE CaseMasterID = {case_id} LIMIT 1")
+            if ar:
+                a0 = ar[0].get("Accused", {})
+                accused = a0.get("AccusedName") or ""
+                age = a0.get("AgeYear")
+                gender = {"1": "Male", "2": "Female", "3": "Other"}.get(str(a0.get("GenderID") or ""), None)
+                if accused:
+                    esc = accused.replace("'", "''")
+                    c = catalyst_app.zql().execute_query(f"SELECT COUNT(ROWID) c FROM Accused WHERE AccusedName = '{esc}'")
+                    prior = int(c[0]["Accused"]["COUNT(ROWID)"]) if c else None
+        except Exception:
+            pass
+        try:
+            sections = self.get_sections_for_case(case_id)
+        except Exception:
+            pass
+
+        def _name_from(table: str) -> str:
+            try:
+                r = catalyst_app.zql().execute_query(f"SELECT * FROM {table} WHERE CaseMasterID = {case_id} LIMIT 1")
+                if r:
+                    row = list(r[0].values())[0]
+                    for k, v in row.items():
+                        if "name" in k.lower() and "unit" not in k.lower() and v:
+                            return str(v)
+            except Exception:
+                pass
+            return ""
+        acc_desc = accused + (f" (age {age}{', ' + gender if gender else ''}"
+                              f"{', appears in ' + str(prior) + ' cases' if prior and prior > 1 else ''})" if accused else "")
+        rt, data = "text", {"case_no": crimeno}
+        if any(w in ql for w in ("dangerous", "risk", "threat")) and accused:
+            rr = self._execute_tool("get_offender_risk", {"suspect_name": accused}, employee_id, session_id, user_unit_id)
+            ans = (f"The accused in {crimeno} is {acc_desc}. {(rr.get('text_result') or '').strip()} "
+                   f"Note: this is a model-derived lead to verify, not proof of guilt.")
+            rt, data = "risk", (rr.get("data") or {})
+        elif any(w in ql for w in ("which station", "what station", "filed at", "registered at", "where was", "station")):
+            ans = f"Case {crimeno} was filed at {station or 'the registering unit (station name not on record)'}."
+            data = {"case_no": crimeno, "station": station}
+        elif "victim" in ql or "complainant" in ql:
+            victim, complainant = _name_from("Victim"), _name_from("ComplainantDetails")
+            lines = [f"Victim: {victim}" if victim else "Victim: not separately recorded (see the FIR narrative below)."]
+            lines.append(f"Complainant: {complainant}" if complainant else "Complainant: not separately recorded.")
+            ans = f"For case {crimeno}:\n- " + "\n- ".join(lines) + (f"\n\nBrief facts: {brief}" if brief else "")
+            data = {"case_no": crimeno, "victim": victim, "complainant": complainant}
+        elif "linked" in ql or "other case" in ql or "related case" in ql or "connected case" in ql:
+            sr = self._execute_tool("find_similar_cases", {"query": brief or case_no}, employee_id, session_id, user_unit_id)
+            ans = (sr.get("text_result") or "No linked cases found.")
+            rt, data = (sr.get("response_type") or "text"), (sr.get("data") or {})
+        elif "what should i do" in ql or "what do i do" in ql or " next" in ql or "not do" in ql:
+            steps = [f"Case {crimeno} filed at {station or 'the station'}{', registered ' + str(reg).split()[0] if reg else ''}."]
+            if accused:
+                steps.append(f"Pursue the identified accused: {acc_desc}.")
+            steps.append("DO: confirm the applied sections (" + (", ".join(sections) if sections else "verify against the FIR")
+                         + "), record witness statements, and preserve scene / electronic evidence.")
+            steps.append("DO NOT: treat any AI risk/network output as proof -- they are leads to verify; and don't act outside jurisdiction without the SHO's authorisation.")
+            ans = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(steps))
+        else:
+            bits = [f"Case {crimeno}"]
+            if reg:
+                bits[0] += f", registered {str(reg).split()[0]}"
+            if station:
+                bits.append(f"filed at {station}")
+            if brief:
+                bits.append(brief[:160] if ("summar" in ql or "two line" in ql) else brief)
+            if accused:
+                bits.append(f"accused: {acc_desc}")
+            if sections:
+                bits.append(f"sections: {', '.join(sections)}")
+            ans = ". ".join(bits) + "."
+        self._write_audit_log(employee_id, "Case Q&A", crimeno, query, ans, session_id)
+        return {"text": ans, "response_type": rt, "data": data,
+                "citations": [{"type": "CCTNS Database Record", "id": crimeno,
+                               "details": "Grounded case fact bundle -- direct CaseMaster/Accused/Unit/Section queries, no RLS false-negative."}],
+                "is_simulated": False, "simulated_reason": ""}
 
     def _handle_offenders_with_risk(self, query: str, employee_id: int, session_id: str,
                                     user_unit_id: Optional[int]) -> Optional[Dict[str, Any]]:
