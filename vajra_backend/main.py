@@ -3213,6 +3213,33 @@ def _rasterize_pdf(pdf_bytes: bytes, max_pages: int = 3) -> List[bytes]:
     return page_images
 
 
+def _stitch_vertical(image_bytes_list: List[bytes], gap: int = 10) -> bytes:
+    """Stack multiple page images into ONE tall JPEG so the single-image viewer
+    shows EVERY page of a multi-page PDF, not just the last one. Pages are scaled
+    to a common width; a thin separator sits between them."""
+    from PIL import Image
+    import io
+    if len(image_bytes_list) == 1:
+        return image_bytes_list[0]
+    imgs = [Image.open(io.BytesIO(b)).convert("RGB") for b in image_bytes_list]
+    width = min(img.width for img in imgs)
+    scaled = []
+    for img in imgs:
+        if img.width != width:
+            h = int(img.height * (width / img.width))
+            img = img.resize((width, h), Image.LANCZOS)
+        scaled.append(img)
+    total_h = sum(img.height for img in scaled) + gap * (len(scaled) - 1)
+    canvas = Image.new("RGB", (width, total_h), (240, 238, 233))
+    y = 0
+    for img in scaled:
+        canvas.paste(img, (0, y))
+        y += img.height + gap
+    buf = io.BytesIO()
+    canvas.save(buf, format="JPEG", quality=85)
+    return buf.getvalue()
+
+
 @app.post("/api/chat/attachments")
 async def upload_chat_attachments(
     request: Request,
@@ -3267,10 +3294,13 @@ async def upload_chat_attachments(
                 raise HTTPException(status_code=400, detail=f"Could not process PDF '{f.filename}': {e}")
             page_count = len(page_bytes_list)
             downscaled_pages = [_downscale_image(p) for p in page_bytes_list]
-            processed_images.extend(downscaled_pages)
-            stratus_key = None
-            for idx, page_img in enumerate(downscaled_pages):
-                stratus_key = store_attachment(page_img, "jpg", "image/jpeg") or stratus_key
+            processed_images.extend(downscaled_pages)   # per-page, for Qwen analysis
+            # Preview: stitch ALL pages into one tall image and store THAT, so the
+            # viewer shows every page. Previously the loop overwrote stratus_key each
+            # iteration, leaving only the LAST page viewable (confirmed live on a
+            # 2-page PDF).
+            preview_img = _stitch_vertical(downscaled_pages)
+            stratus_key = store_attachment(preview_img, "jpg", "image/jpeg")
         else:
             downscaled = _downscale_image(content)
             processed_images.append(downscaled)
