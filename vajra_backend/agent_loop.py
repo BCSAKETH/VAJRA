@@ -646,6 +646,85 @@ class VajraAgentLoop:
             logger.warning(f"Case Q&A synthesis failed, falling back to deterministic briefing: {ex}")
         return ""
 
+    # Kannada script -> DB district name. Kannada analytical queries can't hit the
+    # Latin-only keyword router, and the Zia translator garbles domain queries
+    # (verified live: "which districts have the most crime" -> "types of vehicles"),
+    # so the queries fell through to GLM which -- seeing the injected identity
+    # header -- answered with the officer's OWN profile. This maps the common
+    # spoken/typed Kannada district forms straight to the real DistrictName.
+    _KN_DISTRICTS = {
+        "ಬೆಂಗಳೂರು": "Bengaluru Urban", "ಬೆಂಗಳೂರ": "Bengaluru Urban", "ಮೈಸೂರು": "Mysuru",
+        "ಮೈಸೂರ": "Mysuru", "ಮಂಗಳೂರು": "Dakshina Kannada", "ಬಳ್ಳಾರಿ": "Ballari",
+        "ಬೆಳಗಾವಿ": "Belagavi", "ಕಲಬುರಗಿ": "Kalaburagi", "ಗುಲ್ಬರ್ಗ": "Kalaburagi",
+        "ದಾವಣಗೆರೆ": "Davanagere", "ತುಮಕೂರು": "Tumakuru", "ಕೋಲಾರ": "Kolar",
+        "ಶಿವಮೊಗ್ಗ": "Shivamogga", "ಹಾಸನ": "Hassan", "ಮಂಡ್ಯ": "Mandya",
+        "ವಿಜಯಪುರ": "Vijayapura", "ರಾಮನಗರ": "Ramanagara", "ಚಿಕ್ಕಮಗಳೂರು": "Chikkamagaluru",
+        "ಉಡುಪಿ": "Udupi", "ಧಾರವಾಡ": "Dharwad", "ರಾಯಚೂರು": "Raichur",
+        "ಬೀದರ್": "Bidar", "ಹಾವೇರಿ": "Haveri", "ಗದಗ": "Gadag", "ಕೊಪ್ಪಳ": "Koppal",
+        "ಚಿತ್ರದುರ್ಗ": "Chitradurga", "ಬಾಗಲಕೋಟೆ": "Bagalkote", "ಕೊಡಗು": "Kodagu",
+        "ಚಾಮರಾಜನಗರ": "Chamarajanagara", "ಯಾದಗಿರಿ": "Yadgir", "ಉತ್ತರ ಕನ್ನಡ": "Uttara Kannada",
+    }
+    # Kannada crime word -> DB CrimeGroupName.
+    _KN_CRIMES = {
+        "ಕಳ್ಳತನ": "THEFT", "ಕೊಲೆ": "MURDER", "ದರೋಡೆ": "ROBBERY", "ವಂಚನೆ": "CHEATING",
+        "ಸೈಬರ್": "CYBERCRIME", "ಅಪಹರಣ": "KIDNAPPING", "ಮಾದಕ": "NARCOTICS",
+        "ಸರಗಳ್ಳತನ": "CHAIN SNATCHING", "ಕನ್ನ": "BURGLARY", "ಗೃಹ ಹಿಂಸೆ": "DOMESTIC VIOLENCE",
+    }
+
+    def _route_kannada(self, query: str) -> Optional[Dict[str, Any]]:
+        """
+        Direct Kannada-keyword tool router. Runs ONLY when the officer typed/spoke
+        Kannada, BEFORE the English keyword router and GLM. It matches the common
+        analytical intents on Kannada script itself (no translation -- the Zia
+        translator mangles these domain queries), resolving district/crime/year
+        from Kannada tokens. Returns a {"tool","parameters"} decision or None to
+        fall through. Keeps the bilingual USP honest: the same fast, grounded
+        answers in Kannada that English already gets.
+        """
+        q = query
+        if not any('ಀ' <= ch <= '೿' for ch in q):
+            return None
+        district = ""
+        for kn, en in self._KN_DISTRICTS.items():
+            if kn in q:
+                district = en; break
+        crime = ""
+        for kn, en in self._KN_CRIMES.items():
+            if kn in q:
+                crime = en; break
+        _yr = re.search(r"\b(20\d{2})\b", q)
+        if _yr:
+            year = _yr.group(1)
+        elif "ಈ ವರ್ಷ" in q or "ಈವರ್ಷ" in q or "ಪ್ರಸಕ್ತ ವರ್ಷ" in q:
+            year = str(datetime.now().year)
+        elif "ಕಳೆದ ವರ್ಷ" in q or "ಹಿಂದಿನ ವರ್ಷ" in q:
+            year = str(datetime.now().year - 1)
+        else:
+            year = ""
+        has_crime_word = ("ಅಪರಾಧ" in q or "ಪ್ರಕರಣ" in q or crime)
+        # District ranking: "which districts have the most crime"
+        if ("ಜಿಲ್ಲೆ" in q) and (("ಹೆಚ್ಚು" in q) or ("ಅತಿ" in q) or ("ಹೆಚ್ಚಿನ" in q)) and ("ಅಪರಾಧ" in q):
+            return {"tool": "rank_districts", "parameters": {}}
+        # Count: "how many <crime> cases (this year)"
+        if ("ಎಷ್ಟು" in q) and has_crime_word:
+            return {"tool": "count_cases", "parameters": {"district": district, "crime_group": crime, "year": year}}
+        # Live news: "crime news"
+        if "ಸುದ್ದಿ" in q:
+            return {"tool": "get_live_news", "parameters": {"district": district, "query": query}}
+        # Forecast: "predict / forecast / future"
+        if ("ಮುನ್ಸೂಚನೆ" in q) or ("ಭವಿಷ್ಯ" in q) or ("ನಿರೀಕ್ಷೆ" in q) or ("ಮುನ್ಸೂಚಿಸು" in q):
+            return {"tool": "get_forecast", "parameters": {"district": district, "crime_type": crime}}
+        # Trend: "trend / over time"
+        if ("ಪ್ರವೃತ್ತಿ" in q) or ("ಟ್ರೆಂಡ್" in q) or ("ಕಾಲಾನುಕ್ರಮ" in q):
+            return {"tool": "get_crime_trends", "parameters": {"district": district, "crime_group": crime, "months": 0}}
+        # Hotspots: "hotspot / crime location clusters"
+        if ("ಹಾಟ್" in q) or ("ಹಾಟ್‌ಸ್ಪಾಟ್" in q) or ("ಅಪರಾಧ ಸ್ಥಳ" in q) or ("ಸಾಂದ್ರತೆ" in q):
+            return {"tool": "query_hotspots", "parameters": {"district": district or "Bengaluru Urban"}}
+        # Repeat offenders / risk
+        if ("ಪುನರಾವರ್ತಿತ" in q) or ("ಅಪರಾಧಿ" in q and "ಅಪಾಯ" in q):
+            return {"tool": "get_repeat_offenders", "parameters": {"district": district}}
+        return None
+
     def _keyword_route_tool(self, query: str) -> Optional[Dict[str, Any]]:
         """
         Deterministic, model-free last-resort tool picker for when BOTH GLM
@@ -717,9 +796,23 @@ class VajraAgentLoop:
             return ""
 
         def guess_crime_group() -> str:
+            # Space-insensitive so "cyber crime" (two words) matches the
+            # "CYBERCRIME" head, plus common colloquial aliases -- otherwise
+            # "cyber crime pie chart" resolved to NO crime type and fell back to
+            # the whole-database distribution (confirmed live).
+            qc = q.replace(" ", "")
             for g in self._KNOWN_CRIME_GROUPS:
-                if g.lower() in q:
+                gl = g.lower()
+                if gl in q or gl.replace(" ", "") in qc:
                     return g
+            for alias, canon in (("cyber", "CYBERCRIME"), ("hacking", "CYBERCRIME"),
+                                 ("phishing", "CYBERCRIME"), ("online fraud", "CYBERCRIME"),
+                                 ("chain snatch", "CHAIN SNATCHING"), ("drug", "NARCOTICS"),
+                                 ("narcotic", "NARCOTICS"), ("rape", "SEXUAL OFFENCES"),
+                                 ("molest", "MOLESTATION"), ("kidnap", "KIDNAPPING"),
+                                 ("dowry", "DOWRY DEATH"), ("vehicle theft", "MOTOR VEHICLE THEFT")):
+                if alias in q:
+                    return canon
             return ""
 
         name, case_no, district, crime_group = guess_name(), guess_case_no(), guess_district(), guess_crime_group()
@@ -737,6 +830,9 @@ class VajraAgentLoop:
             year_g = str(datetime.now().year - 1)
         else:
             year_g = ""
+        # Multi-year window: "over the last 5 years" -> a start-year cutoff.
+        _yb = re.search(r"(?:last|past|previous)\s+(\d{1,2})\s+year", q)
+        years_back_g = int(_yb.group(1)) if _yb else 0
 
         # (keywords, tool_name, params, required_guess) -- required_guess is
         # checked truthy before this pattern is allowed to match at all.
@@ -791,15 +887,17 @@ class VajraAgentLoop:
              {"district": district, "crime_group": crime_group, "year": year_g}, crime_group or district or year_g),
             (["trend", "over time", "increasing", "decreasing", "seasonal pattern"], "get_crime_trends",
              {"district": district, "crime_group": crime_group, "months": months_g}, "yes"),
-            (["pie chart", "case types", "types of cases", "distribution of cases", "cases by type", "crime categories"], "get_case_types_distribution",
-             {"district": district}, "yes"),
+            (["pie chart", "case types", "types of cases", "distribution of cases", "cases by type", "crime categories",
+              "breakdown", "distribution"], "get_case_types_distribution",
+             {"district": district, "crime_group": crime_group, "years_back": years_back_g}, "yes"),
             (["demographic", "socio-economic", "socio economic", "correlation"], "get_demographic_correlation", {"district": district}, district),
             (["repeat offender", "habitual"], "get_repeat_offenders", {"district": district}, "yes"),
             (["live news", "latest news", "recent news", "news from", "news in", "news about", "news on",
               "current events", "what's happening", "whats happening", "what is happening", "in the news",
               "media reports", "any news"], "get_live_news", {"district": district, "query": query}, "yes"),
             (["search the web", "web search", "search online", "look it up", "look up online", "google it",
-              "google ", "find online", "on the internet", "search for"], "web_search", {"query": query}, "yes"),
+              "google ", "find online", "on the internet", "the internet", "whole internet", "across the internet",
+              "analyse the internet", "analyze the internet", "search for"], "web_search", {"query": query}, "yes"),
             (["summarize this url", "read this url", "summarize this page", "read this link", "open this link",
               "summarize this article", "read this article", "http://", "https://"], "summarize_url", {"query": query}, "yes"),
             (["anomaly", "anomalies", "unusual pattern", "statistical outlier", "abnormal", "out of the ordinary",
@@ -881,6 +979,31 @@ class VajraAgentLoop:
                 facets.append(("get_case_sections", {"case_no": case_no}))
             if has("timeline", "chronology", "milestone", "sequence"):
                 facets.append(("get_case_timeline", {"case_no": case_no}))
+
+        # TOPIC COMPOUND: "analyse the internet about <crime> AND make a pie chart"
+        # -> pull live open-web signals AND the grounded CCTNS distribution, shown
+        # side by side. Answers the real two-part ask (officer wanted the internet
+        # scan AND a chart) instead of silently doing only one. Honest boundary:
+        # web results are unverified leads, the pie is grounded records.
+        if not facets:
+            _cg = ""
+            _qc = q.replace(" ", "")
+            for g in self._KNOWN_CRIME_GROUPS:
+                if g.lower() in q or g.lower().replace(" ", "") in _qc:
+                    _cg = g; break
+            if not _cg:
+                for alias, canon in (("cyber", "CYBERCRIME"), ("hacking", "CYBERCRIME"),
+                                     ("phishing", "CYBERCRIME"), ("drug", "NARCOTICS"),
+                                     ("narcotic", "NARCOTICS")):
+                    if alias in q:
+                        _cg = canon; break
+            wants_web = has("internet", "web", "online", "google", "news", "latest")
+            wants_chart = has("pie chart", "bar chart", "chart", "distribution", "breakdown", "graph", "visuali")
+            if _cg and wants_web and wants_chart:
+                _yb2 = re.search(r"(?:last|past|previous)\s+(\d{1,2})\s+year", q)
+                facets.append(("web_search", {"query": query}))
+                facets.append(("get_case_types_distribution",
+                               {"crime_group": _cg, "years_back": int(_yb2.group(1)) if _yb2 else 0}))
 
         seen, out = set(), []
         for tool, params in facets:
@@ -1301,8 +1424,22 @@ class VajraAgentLoop:
         # `query` (with headers) still goes to the LLM history unchanged.
         officer_query = re.sub(r'^\s*(?:\[Context:[^\]]*\]\s*)+', '', query, flags=re.DOTALL)
 
+        # Kannada (non-Latin) queries never match the English keyword router or the
+        # Latin-only entity/district/crime parsers, so they fell through to GLM --
+        # which, seeing the injected identity header, often misfired to
+        # get_my_profile (verified live: KN "which districts have the most crime"
+        # returned the officer's OWN profile in ~70-110s). Machine-translating the
+        # query to English first does NOT help -- the Zia translator mangles these
+        # domain queries ("which districts have the most crime" -> "types of
+        # vehicles"). Instead a dedicated Kannada keyword router (_route_kannada,
+        # wired in below just before the English router) matches the common
+        # analytical intents on Kannada script directly. routing_query stays the
+        # officer's original text so every existing parser is byte-for-byte
+        # unchanged for English.
+        routing_query = officer_query
+
         # 1. Resolve Entities & Context
-        entities = self._resolve_entities(officer_query, session_id, exclude_name=officer_name)
+        entities = self._resolve_entities(routing_query, session_id, exclude_name=officer_name)
 
         # Load conversation history from session memory
         context = session_memory.get_session_context(session_id)
@@ -1345,7 +1482,7 @@ class VajraAgentLoop:
         # and fail with "AI reasoning temporarily unavailable" (confirmed live).
         # Answer them DETERMINISTICALLY from this session's history so they
         # always work instantly, with no model call.
-        _meta = officer_query.lower().strip()
+        _meta = routing_query.lower().strip()
         _prev_q_pat = ("what did i ask", "what i asked", "previous query", "previous question",
                        "my last question", "my last query", "what was my question", "last query",
                        "last question", "earlier query", "earlier question", "what was my last")
@@ -1438,7 +1575,7 @@ class VajraAgentLoop:
         # conversation + a nudge to elaborate the prior answer using ONLY facts
         # already established; no tool selection. If GLM is down, fall back to
         # re-showing the previous answer rather than a hard failure.
-        _elab = officer_query.lower().strip()
+        _elab = routing_query.lower().strip()
         if forced_decision is None and answer_mode != "dossier" and len(_elab) < 45 and any(
             p in _elab for p in ("in detail", "more detail", "tell me more", "elaborate", "expand",
                                  "explain more", "explain further", "explain that", "go deeper",
@@ -1494,7 +1631,7 @@ class VajraAgentLoop:
         # is answered directly from a grounded fact bundle -- fast (~3s), reliable
         # (no RLS 'not found' false-negative, no GLM 'AI unavailable'), specific to
         # the question asked. Full 'everything' dossiers defer to the dossier tool.
-        case_ans = self._handle_case_question(officer_query, employee_id, session_id, user_unit_id)
+        case_ans = self._handle_case_question(routing_query, employee_id, session_id, user_unit_id)
         if case_ans is not None:
             history.append({"role": "assistant", "content": case_ans["text"]})
             context["messages"] = history
@@ -1506,7 +1643,7 @@ class VajraAgentLoop:
         # PREVIOUS answer's real data and re-charts THAT, instead of the router
         # keyword-matching "pie chart" to an unrelated tool. Runs first so it
         # wins over the fast-route.
-        represent = self._handle_represent_previous(officer_query, session_id)
+        represent = self._handle_represent_previous(routing_query, session_id)
         if represent is not None:
             response_text = represent["text_result"]
             history.append({"role": "assistant", "content": response_text})
@@ -1520,7 +1657,7 @@ class VajraAgentLoop:
         # offenders" -- honour BOTH the "top N" quantifier and the risk intent by
         # ranking the grounded repeat offenders and scoring each with the real
         # risk model, instead of the router's keyword-matched plain roster.
-        offenders_risk = self._handle_offenders_with_risk(officer_query, employee_id, session_id, user_unit_id)
+        offenders_risk = self._handle_offenders_with_risk(routing_query, employee_id, session_id, user_unit_id)
         if offenders_risk is not None:
             response_text = offenders_risk["text_result"]
             history.append({"role": "assistant", "content": response_text})
@@ -1539,7 +1676,7 @@ class VajraAgentLoop:
         # them into one side-by-side dossier. Returns None (fall through) unless
         # a comparison cue AND two distinct real districts are present, so every
         # existing single-district query is untouched.
-        comparison = self._handle_district_comparison(officer_query, employee_id, session_id, user_unit_id)
+        comparison = self._handle_district_comparison(routing_query, employee_id, session_id, user_unit_id)
         if comparison is not None:
             response_text = comparison["text_result"]
             history.append({"role": "assistant", "content": response_text})
@@ -1554,8 +1691,8 @@ class VajraAgentLoop:
         # COMPILE the query into a JSON execution plan and run it deterministically
         # over the grounded tools (the LLM never touches execution). Falls back to
         # the standard path below when planning fails, so this can never dead-end.
-        if answer_mode == "compiler" or (answer_mode == "standard" and self._is_complex_query(officer_query)):
-            compiled = self._run_semantic_compiler(officer_query, employee_id, session_id, user_unit_id)
+        if answer_mode == "compiler" or (answer_mode == "standard" and self._is_complex_query(routing_query)):
+            compiled = self._run_semantic_compiler(routing_query, employee_id, session_id, user_unit_id)
             if compiled is not None:
                 history.append({"role": "assistant", "content": compiled["text"]})
                 context["messages"] = history
@@ -1575,14 +1712,22 @@ class VajraAgentLoop:
         # actually need the model to reason.
         multi_decisions = None
         if forced_decision is None and answer_mode != "dossier":
-            multi_decisions = self._keyword_route_multi(officer_query)
-            if multi_decisions:
-                logger.info(f"Multi-tool route: {[d['tool'] for d in multi_decisions]}")
+            # Kannada intent router first (Kannada never matches the English router
+            # and the translator garbles it) -- gives KN the same fast grounded
+            # answers as English instead of a GLM misfire to the officer's profile.
+            kn_dec = self._route_kannada(officer_query)
+            if kn_dec:
+                forced_decision = kn_dec
+                logger.info(f"Kannada-route: '{kn_dec['tool']}' chosen deterministically, skipping GLM")
             else:
-                fast = self._keyword_route_tool(officer_query)
-                if fast:
-                    forced_decision = fast
-                    logger.info(f"Fast-route: '{fast['tool']}' chosen deterministically, skipping GLM tool-selection")
+                multi_decisions = self._keyword_route_multi(routing_query)
+                if multi_decisions:
+                    logger.info(f"Multi-tool route: {[d['tool'] for d in multi_decisions]}")
+                else:
+                    fast = self._keyword_route_tool(routing_query)
+                    if fast:
+                        forced_decision = fast
+                        logger.info(f"Fast-route: '{fast['tool']}' chosen deterministically, skipping GLM tool-selection")
 
         # MULTI-TOOL execution: run every requested facet and stack the results
         # as panels (reusing the dossier's panel rendering), with the grounded
@@ -1597,6 +1742,8 @@ class VajraAgentLoop:
                 "query_financial_links": ("Financial Links", "ಆರ್ಥಿಕ ಸಂಪರ್ಕಗಳು"),
                 "get_case_sections": ("Applied Sections", "ಅನ್ವಯಿತ ವಿಭಾಗಗಳು"),
                 "get_case_timeline": ("Case Timeline", "ಪ್ರಕರಣ ಕಾಲಾನುಕ್ರಮ"),
+                "web_search": ("Open-Web Signals (unverified)", "ಅಂತರ್ಜಾಲ ಸೂಚನೆಗಳು (ಪರಿಶೀಲಿಸದ)"),
+                "get_case_types_distribution": ("CCTNS Records Distribution", "ದಾಖಲೆಗಳ ವಿತರಣೆ"),
             }
             panels, combined = [], []
             for dec in multi_decisions:
@@ -1674,7 +1821,7 @@ class VajraAgentLoop:
                 # this query could plausibly need (~6) instead of all 25 --
                 # cuts the prompt from ~3,240 to ~800 tokens so the model
                 # answers in seconds instead of dropping the connection.
-                tools_for_call = self._relevant_tools(officer_query) if allow_tools else None
+                tools_for_call = self._relevant_tools(routing_query) if allow_tools else None
                 llm_res = self.llm.chat(
                     history,
                     tools_for_call,
@@ -1698,10 +1845,10 @@ class VajraAgentLoop:
                     # officer_query (headers stripped) -- not the raw `query` --
                     # so the injected context header can't hijack tool selection
                     # (see the officer_query strip at the top of this method).
-                    fallback_decision = self.qwen.decide_tool(officer_query, self.TOOLS, entity_context=entities)
+                    fallback_decision = self.qwen.decide_tool(routing_query, self.TOOLS, entity_context=entities)
                     fallback_label = "Qwen"
                     if fallback_decision is None:
-                        fallback_decision = self._keyword_route_tool(officer_query)
+                        fallback_decision = self._keyword_route_tool(routing_query)
                         fallback_label = "Keyword Match"
                 if fallback_decision is not None:
                     logger.warning(f"Tool-selection fallback used ({fallback_label}, iteration {current_iteration}): {fallback_decision}")
@@ -1746,7 +1893,7 @@ class VajraAgentLoop:
                     # the resolver returns None immediately (no DB work), so normal
                     # named lookups are unchanged.
                     if tool_name in ("get_mo_profile", "get_offender_risk", "query_graph_network", "generate_full_report"):
-                        _resolved_subject = self._resolve_descriptive_subject(officer_query, employee_id, session_id, user_unit_id)
+                        _resolved_subject = self._resolve_descriptive_subject(routing_query, employee_id, session_id, user_unit_id)
                         if _resolved_subject:
                             _given_name = (params.get("suspect_name") or "").strip()
                             if not _given_name or not self._fuzzy_accused_match(_given_name):
@@ -3237,14 +3384,26 @@ class VajraAgentLoop:
         # 19. get_case_types_distribution
         elif tool_name == "get_case_types_distribution":
             district = self.sanitize_sql_input(params.get("district", ""))
+            cg = (params.get("crime_group") or "").strip()
+            years_back = int(params.get("years_back") or 0)
             response_type = "case_distribution"
-            dist_res = self._compute_case_types_distribution(district)
+            if cg:
+                # A SPECIFIC crime type was named ("cyber crime pie chart"): a
+                # single type isn't a category distribution, so show WHERE that
+                # crime concentrates -- that type broken down BY DISTRICT (a real,
+                # grounded pie), optionally within a last-N-years window. Fixes the
+                # long-standing "every pie chart returns the same whole-database
+                # breakdown regardless of what I asked" complaint.
+                dist_res = self._compute_crime_type_by_district(cg, years_back)
+            else:
+                dist_res = self._compute_case_types_distribution(district)
             data = dist_res["data"]
             text_result = dist_res["text_result"]
             citations.append(dist_res["citation"])
+            final_answer = bool(dist_res.get("final"))
             self._write_audit_log(
-                employee_id, "Case Types Distribution", district or "All Districts",
-                f"Case distribution: district={district or 'all'}",
+                employee_id, "Case Types Distribution", district or cg or "All Districts",
+                f"Case distribution: crime={cg or 'all'}, district={district or 'all'}, years_back={years_back}",
                 text_result, session_id
             )
 
@@ -5347,19 +5506,17 @@ class VajraAgentLoop:
                     except Exception as ex:
                         logger.warning(f"Fallback count failed for head {head_id}: {ex}")
 
-        # If database query returned nothing or database offline, simulate some distribution from known crime groups
+        # If the datastore returned nothing, say so honestly -- NEVER fabricate a
+        # distribution. (This path used to invent random per-category counts, which
+        # would surface as real figures on an official police report.)
         if not distribution:
-            import random
-            total_fake = 150 if district else 7109
-            groups_to_use = ["THEFT", "CYBERCRIME", "MURDER", "ASSAULT", "BURGLARY"]
-            remaining = total_fake
-            for idx, g in enumerate(groups_to_use):
-                if idx == len(groups_to_use) - 1:
-                    distribution[g] = remaining
-                else:
-                    share = int(remaining * random.uniform(0.1, 0.4))
-                    distribution[g] = share
-                    remaining -= share
+            return {
+                "data": {"series": [], "total": 0, "district": district or ""},
+                "text_result": (f"No case-type distribution could be computed for {district or 'the state'} right now "
+                                f"(the records query returned nothing). No figures are shown rather than estimated ones."),
+                "citation": {"type": "Crime Category Distribution", "id": district or "All Districts",
+                             "details": "Grounded aggregate returned no rows -- honest empty state, not fabricated."},
+            }
 
         # Format into a sorted list of dicts for the chart
         data_list = [{"name": name, "value": val} for name, val in distribution.items()]
@@ -5390,6 +5547,94 @@ class VajraAgentLoop:
         if data_list:  # only cache a real result, never an empty/failed one
             _agg_cache_put(_ck, result)
         return result
+
+    def _compute_crime_type_by_district(self, crime_group: str, years_back: int = 0) -> Dict[str, Any]:
+        """
+        Distribution of ONE crime type across districts -- the grounded pie for
+        "cyber crime in Karnataka (over last N years)". Resolves the CrimeHead
+        (exact name preferred), GROUPs BY PoliceStationID filtered to that head
+        (and an optional last-N-years CrimeRegisteredDate cutoff), and sums to
+        district. Never fabricates: an empty result is stated honestly, not
+        back-filled with random numbers.
+        """
+        cg = crime_group.strip()
+        _yr_note = ""
+        head_id, cg_name = None, cg
+        if not catalyst_app:
+            return {"data": {}, "text_result": "The records datastore is unavailable, so this distribution can't be computed right now.",
+                    "citation": {"type": "Crime Distribution", "id": cg, "details": "datastore offline"}, "final": True}
+        try:
+            exact = None; loose = None
+            for h in catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead"):
+                gn = (h.get("CrimeHead", {}) or {}).get("CrimeGroupName") or ""
+                hid = h.get("CrimeHead", {}).get("CrimeHeadID")
+                if not gn:
+                    continue
+                if gn.lower() == cg.lower():
+                    exact = (hid, gn); break
+                if loose is None and (cg.lower() in gn.lower() or gn.lower() in cg.lower()):
+                    loose = (hid, gn)
+            pick = exact or loose
+            if pick:
+                head_id, cg_name = pick[0], pick[1]
+        except Exception as e:
+            logger.warning(f"crime_type_by_district head resolve failed: {e}")
+        if head_id is None:
+            return {"data": {}, "text_result": f"No crime category matching '{cg}' is on record, so its district distribution can't be shown.",
+                    "citation": {"type": "Crime Distribution", "id": cg, "details": "unmatched crime category"}, "final": True}
+        # unit -> district maps
+        unit_to_district, district_name = {}, {}
+        try:
+            for u in catalyst_app.zql().execute_query("SELECT UnitID, DistrictID FROM Unit"):
+                ud = u.get("Unit", {})
+                if ud.get("UnitID") is not None:
+                    unit_to_district[ud.get("UnitID")] = ud.get("DistrictID")
+            for d in catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District"):
+                dd = d.get("District", {})
+                district_name[dd.get("DistrictID")] = dd.get("DistrictName")
+        except Exception as e:
+            logger.warning(f"crime_type_by_district unit/district maps failed: {e}")
+        date_filter = ""
+        if years_back and years_back > 0:
+            start_year = datetime.now().year - years_back + 1
+            date_filter = f" AND CrimeRegisteredDate >= '{start_year}-01-01'"
+            _yr_note = f" over the last {years_back} years (since {start_year})"
+        counts = {}
+        try:
+            q = (f"SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster "
+                 f"WHERE CrimeMajorHeadID = {head_id}{date_filter} GROUP BY PoliceStationID")
+            for r in catalyst_app.zql().execute_query(q):
+                cm = r.get("CaseMaster", {})
+                did = unit_to_district.get(cm.get("PoliceStationID"))
+                c = int(cm.get("COUNT(CaseMasterID)") or 0)
+                if did is not None and c:
+                    counts[did] = counts.get(did, 0) + c
+        except Exception as e:
+            logger.warning(f"crime_type_by_district count failed: {e}")
+        ranked = sorted(
+            [{"name": district_name.get(did) or f"District {did}", "value": c} for did, c in counts.items()],
+            key=lambda x: x["value"], reverse=True)
+        total = sum(d["value"] for d in ranked)
+        if not ranked or total == 0:
+            return {"data": {"series": [], "total": 0, "district": ""},
+                    "text_result": f"No {cg_name} cases are recorded{_yr_note} in the CCTNS data, so there's nothing to chart.",
+                    "citation": {"type": "Crime Distribution", "id": cg_name, "details": "grounded COUNT -- zero matching records"},
+                    "final": True}
+        top = ranked[:12]
+        lines = [f"{cg_name} across Karnataka{_yr_note} -- {total:,} recorded cases, by district (CCTNS records, not open-internet data):"]
+        for i, d in enumerate(top[:6], 1):
+            pct = d["value"] / total * 100
+            lines.append(f"{i}. {d['name']}: {d['value']:,} ({pct:.1f}%)")
+        if len(ranked) > 6:
+            lines.append(f"…and {len(ranked) - 6} more districts.")
+        return {
+            "data": {"series": top, "total": total, "district": "", "subject": cg_name},
+            "text_result": "\n".join(lines),
+            "citation": {"type": f"{cg_name} Distribution by District",
+                         "id": f"{cg_name}{_yr_note}",
+                         "details": "Real per-station CaseMaster COUNT filtered to this crime head, summed to district."},
+            "final": True,
+        }
 
     def resolve_vague_query(self, text: str, user_unit_id: Optional[int] = None) -> List[Dict[str, Any]]:
         """

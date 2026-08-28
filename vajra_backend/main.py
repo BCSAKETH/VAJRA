@@ -2516,14 +2516,28 @@ async def _run_ai_turn_and_persist(
     _query_has_kannada = bool(re.search(r"[ಀ-೿]", query_for_agent))
     processed_query = query_for_agent
     if lang == "kn" and _query_has_kannada:
-        # Bound it (same GLM-hang hazard as the answer translation below): on
-        # timeout, fall through to the raw query rather than stalling the turn.
+        # FIRST see whether the deterministic Kannada intent router will handle
+        # this (rank/count/hotspots/trend/forecast/news/...). If so, keep the
+        # ORIGINAL Kannada so run_agent_loop routes it directly -- machine
+        # translation must NOT run, because the Zia translator garbles these
+        # domain queries ("which districts have the most crime" -> "types of
+        # vehicles"), which then dead-ended in GLM as the officer's own profile.
+        _kn_routable = False
         try:
-            processed_query = await asyncio.wait_for(
-                run_in_threadpool(translator.translate, query_for_agent, "kn", "en"), timeout=18
-            )
+            _kn_routable = agent_loop._route_kannada(query_for_agent) is not None
         except Exception:
+            _kn_routable = False
+        if _kn_routable:
             processed_query = query_for_agent
+        else:
+            # Bound it (same GLM-hang hazard as the answer translation below): on
+            # timeout, fall through to the raw query rather than stalling the turn.
+            try:
+                processed_query = await asyncio.wait_for(
+                    run_in_threadpool(translator.translate, query_for_agent, "kn", "en"), timeout=18
+                )
+            except Exception:
+                processed_query = query_for_agent
 
     # translator.translate()'s own honest-failure fallback (all three
     # translation backends -- Zia fast-translate, GLM, Qwen -- unavailable)
