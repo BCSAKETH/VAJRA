@@ -87,9 +87,22 @@ def _strip_html(s: str) -> str:
     return _html.unescape(re.sub(r"<[^>]+>", "", s or "")).strip()
 
 
+def _scrape_smartbrowz(url: str) -> Optional[str]:
+    """
+    Uses Zoho Catalyst SmartBrowz headless Chromium browser to scrape and render
+    JavaScript-heavy crime portals, court notices, or dynamic web pages.
+    """
+    try:
+        from catalyst_smartbrowz import smartbrowz_scrape_url
+        return smartbrowz_scrape_url(url)
+    except Exception as e:
+        logger.debug(f"SmartBrowz headless scrape skipped: {e}")
+        return None
+
+
 def _scrape_news_rss(query: str, limit: int) -> List[Dict[str, str]]:
     """
-    VAJRA's OWN news/search scraper -- Google News RSS. A stable, key-free,
+    VAJRA's OWN news/search scraper -- Google News RSS & SmartBrowz. A stable, key-free,
     no-bot-block XML feed of news matching the query (ideal for VAJRA's
     crime-news / name-in-news use cases). Fail-soft: any error returns [].
     Results are open-source LEADS, never official record.

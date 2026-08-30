@@ -5,7 +5,7 @@ import { ChatBubble } from "../components/ChatBubble";
 import { ChatHistoryPanel } from "../components/ChatHistoryPanel";
 import { ChatInput } from "../components/ChatInput";
 import { WatermarkOverlay } from "../components/WatermarkOverlay";
-import { Download, Sparkles, X, Users } from "lucide-react";
+import { Download, Sparkles, X, Users, FileText, Globe, Check } from "lucide-react";
 
 // ExpandedOverlay pulls in Leaflet + Recharts directly (~250KB+ of the main
 // bundle) but only ever renders when a widget is actually expanded -- most
@@ -749,45 +749,57 @@ export const AIChatScreen: React.FC = () => {
     }
   };
 
+  // Language Selection Modal state for PDF Export
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportTargetLang, setExportTargetLang] = useState<"en" | "kn">("en");
+
   // Export Transcript to PDF -- with the AI pre-screen + live supervisor-approval
-  // flow. A clean report downloads immediately. A report the AI flags as sensitive
-  // comes back 202 "pending"; we then poll for the supervisor's decision and, once
-  // approved, re-request with the approval id and download.
-  const buildTranscript = () => chatMessages.map((m) => ({
+  // flow. Supports explicit language selection (English / Kannada) and embeds
+  // visual diagrams (mule rings, hotspot coordinates, risk meters).
+  const buildTranscript = (targetLang: "en" | "kn") => chatMessages.map((m) => ({
     role: m.sender,
     content: m.sender === "assistant"
-      ? (lang === "kn" ? (m.textKn || m.text) : (m.textEn || m.text))
+      ? (targetLang === "kn" ? (m.textKn || m.text) : (m.textEn || m.text))
       : m.text,
     timestamp: m.timestamp || "",
+    data: m.data || {},
+    citations: m.citations || [],
   }));
 
-  const requestExport = async (approvalId?: string): Promise<Response> =>
+  const requestExport = async (targetLang: "en" | "kn", approvalId?: string): Promise<Response> =>
     fetch(`${API_BASE}/api/chat/export-pdf`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
       body: JSON.stringify({
-        transcript: buildTranscript(),
+        transcript: buildTranscript(targetLang),
         badge_id: badgeNumber || "KSP-4003385",
+        lang: targetLang,
         session_id: activeSessionId || undefined,
         approval_id: approvalId,
       }),
     });
 
-  const downloadPdfResponse = async (response: Response) => {
+  const downloadPdfResponse = async (response: Response, targetLang: "en" | "kn") => {
     const blob = await response.blob();
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `VAJRA_Report_${badgeNumber || "4003385"}.pdf`;
+    a.download = `VAJRA_Dossier_${badgeNumber || "4003385"}_${targetLang.toUpperCase()}.pdf`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     window.URL.revokeObjectURL(url);
   };
 
-  const handleExportPDF = async () => {
+  const handleExportPDF = () => {
+    setExportTargetLang(lang === "kn" ? "kn" : "en");
+    setShowExportModal(true);
+  };
+
+  const executeExport = async (targetLang: "en" | "kn") => {
     if (isExportingPdf) return;
     setIsExportingPdf(true);
+    setShowExportModal(false);
     try {
-      const response = await requestExport();
+      const response = await requestExport(targetLang);
       if (response.status === 202) {
         // AI held it for supervisor approval -- start the live wait.
         const d = await response.json().catch(() => ({}));
@@ -808,9 +820,9 @@ export const AIChatScreen: React.FC = () => {
               headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
             }).then((r) => r.json());
             if (s.status === "approved") {
-              const rr = await requestExport(reqId);
+              const rr = await requestExport(targetLang, reqId);
               if (rr.ok) {
-                await downloadPdfResponse(rr);
+                await downloadPdfResponse(rr, targetLang);
                 addToast(lang === "en" ? "Approved — exported" : "ಅನುಮೋದಿಸಲಾಗಿದೆ — ರಫ್ತು ಮಾಡಲಾಗಿದೆ",
                   lang === "en" ? "A supervisor approved this export." : "ಮೇಲ್ವಿಚಾರಕರು ಈ ರಫ್ತನ್ನು ಅನುಮೋದಿಸಿದ್ದಾರೆ.", "Info");
               }
@@ -828,17 +840,21 @@ export const AIChatScreen: React.FC = () => {
         return; // keep isExportingPdf true while pending
       }
       if (!response.ok) {
-        const d = await response.json().catch(() => ({}));
-        throw new Error(d.detail || "Failed to compile PDF.");
+        throw new Error(await response.text());
       }
-      await downloadPdfResponse(response);
-    } catch (err) {
-      console.error(err);
+      await downloadPdfResponse(response, targetLang);
+      addToast(
+        lang === "en" ? "Dossier Exported" : "ದೋಶಿಯರ್ ರಫ್ತು ಮಾಡಲಾಗಿದೆ",
+        lang === "en" ? `Official ${targetLang.toUpperCase()} PDF report downloaded successfully.` : `ಅಧಿಕೃತ PDF ವರದಿ ಯಶಸ್ವಿಯಾಗಿ ಡೌನ್‌ಲೋಡ್ ಆಗಿದೆ.`,
+        "Success"
+      );
+    } catch (err: any) {
       addToast(
         lang === "en" ? "Export Failed" : "ರಫ್ತು ವಿಫಲವಾಗಿದೆ",
-        (err as Error)?.message || (lang === "en" ? "Could not generate PDF." : "PDF ರಚಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ."),
+        err.message || (lang === "en" ? "Failed to generate report" : "ವರದಿ ರಚಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ"),
         "Critical"
       );
+    } finally {
       setIsExportingPdf(false);
     }
   };
@@ -1109,6 +1125,129 @@ export const AIChatScreen: React.FC = () => {
             >
               {isInviting ? t.sendingInvitation : t.sendInvitation}
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Language Selection Modal for Official PDF Dossier Export */}
+      {showExportModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-fade-in">
+          <div className="bg-stone-900 border border-stone-800 rounded-2xl max-w-md w-full p-5 space-y-4 shadow-2xl relative">
+            <div className="flex items-center justify-between border-b border-stone-800 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-[#C79A4E]/15 border border-[#C79A4E]/30 text-[#C79A4E] flex items-center justify-center">
+                  <FileText className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-stone-100 flex items-center gap-1.5">
+                    <span>{lang === "en" ? "Export Official Case Dossier" : "ಅಧಿಕೃತ ಪ್ರಕರಣ ದೋಶಿಯರ್ ರಫ್ತು"}</span>
+                  </h3>
+                  <p className="text-[10px] text-stone-400 font-mono">
+                    {lang === "en" ? "Powered by Zoho Catalyst SmartBrowz" : "Zoho Catalyst SmartBrowz ಬೆಂಬಲಿತ"}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowExportModal(false)}
+                className="text-stone-400 hover:text-stone-100 p-1 rounded-lg hover:bg-stone-800 transition-colors cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <label className="block text-[11px] font-bold text-stone-300 uppercase tracking-wider">
+                {lang === "en" ? "Select Report Language" : "ವರದಿಯ ಭಾಷೆಯನ್ನು ಆಯ್ಕೆಮಾಡಿ"}
+              </label>
+              <p className="text-xs text-stone-400">
+                {lang === "en"
+                  ? "Choose the primary language for the certified investigation transcript, cards, and diagrams."
+                  : "ಪ್ರಮಾಣೀಕೃತ ತನಿಖಾ ಪ್ರತಿ ಮತ್ತು ವಿಶ್ಲೇಷಣೆಗಾಗಿ ಪ್ರಾಥಮಿಕ ಭಾಷೆಯನ್ನು ಆಯ್ಕೆಮಾಡಿ."}
+              </p>
+
+              {/* Language Radio Cards */}
+              <div className="grid grid-cols-1 gap-2.5 pt-2">
+                {/* English Option */}
+                <button
+                  type="button"
+                  onClick={() => setExportTargetLang("en")}
+                  className={`flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+                    exportTargetLang === "en"
+                      ? "bg-[#C79A4E]/10 border-[#C79A4E] shadow-[0_0_15px_rgba(199,154,78,0.15)]"
+                      : "bg-stone-950/60 border-stone-800 hover:border-stone-700 text-stone-400"
+                  }`}
+                >
+                  <div className={`mt-0.5 w-4 h-4 rounded-full border flex items-center justify-center ${
+                    exportTargetLang === "en" ? "border-[#C79A4E] bg-[#C79A4E]" : "border-stone-600"
+                  }`}>
+                    {exportTargetLang === "en" && <Check className="w-2.5 h-2.5 text-stone-950 stroke-[3]" />}
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <span className={`text-xs font-bold ${exportTargetLang === "en" ? "text-[#E4C590]" : "text-stone-200"}`}>
+                        English (Official SCRB Dossier)
+                      </span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-stone-800 text-stone-300">EN</span>
+                    </div>
+                    <p className="text-[11px] text-stone-400 mt-1 leading-relaxed">
+                      Official State Crime Records Bureau format with English transcript, structured intelligence cards, and evidence trail.
+                    </p>
+                  </div>
+                </button>
+
+                {/* Kannada Option */}
+                <button
+                  type="button"
+                  onClick={() => setExportTargetLang("kn")}
+                  className={`flex items-start gap-3 p-3.5 rounded-xl border text-left transition-all cursor-pointer ${
+                    exportTargetLang === "kn"
+                      ? "bg-[#C79A4E]/10 border-[#C79A4E] shadow-[0_0_15px_rgba(199,154,78,0.15)]"
+                      : "bg-stone-950/60 border-stone-800 hover:border-stone-700 text-stone-400"
+                  }`}
+                >
+                  <div className={`mt-0.5 w-4 h-4 rounded-full border flex items-center justify-center ${
+                    exportTargetLang === "kn" ? "border-[#C79A4E] bg-[#C79A4E]" : "border-stone-600"
+                  }`}>
+                    {exportTargetLang === "kn" && <Check className="w-2.5 h-2.5 text-stone-950 stroke-[3]" />}
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <span className={`text-xs font-bold ${exportTargetLang === "kn" ? "text-[#E4C590]" : "text-stone-200"}`}>
+                        ಕನ್ನಡ (ಅಧಿಕೃತ ಕೆಎಸ್‌ಪಿ ವರದಿ)
+                      </span>
+                      <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-stone-800 text-stone-300">KN</span>
+                    </div>
+                    <p className="text-[11px] text-stone-400 mt-1 leading-relaxed">
+                      ಸಂಪೂರ್ಣ ಕನ್ನಡ ಭಾಷೆಯ ಅಧಿಕೃತ ವರದಿ, ಕನ್ನಡ ಯುನಿಕೋಡ್ ಫಾಂಟ್‌ಗಳು, ವಿಶ್ಲೇಷಣಾ ವಿಭಾಗ ಕಾರ್ಡ್‌ಗಳು ಮತ್ತು ಆಡಿಟ್ ಲೆಡ್ಜರ್.
+                    </p>
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-stone-800">
+              <button
+                type="button"
+                onClick={() => setShowExportModal(false)}
+                className="px-3.5 py-2 rounded-xl text-xs font-semibold text-stone-400 hover:text-stone-200 hover:bg-stone-800 transition-all cursor-pointer"
+              >
+                {lang === "en" ? "Cancel" : "ರದ್ದುಮಾಡಿ"}
+              </button>
+              <button
+                type="button"
+                onClick={() => executeExport(exportTargetLang)}
+                disabled={isExportingPdf}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#C79A4E] hover:bg-[#b0853e] text-stone-950 text-xs font-bold shadow-lg transition-all cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+              >
+                <Download className="w-3.5 h-3.5 stroke-[2.5]" />
+                <span>
+                  {isExportingPdf
+                    ? (lang === "en" ? "Generating PDF…" : "ರಚಿಸಲಾಗುತ್ತಿದೆ…")
+                    : (lang === "en" ? `Generate ${exportTargetLang.toUpperCase()} PDF` : `${exportTargetLang === "kn" ? "ಕನ್ನಡ" : "ಇಂಗ್ಲಿಷ್"} PDF ರಫ್ತು`)}
+                </span>
+              </button>
+            </div>
           </div>
         </div>
       )}

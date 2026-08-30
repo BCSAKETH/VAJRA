@@ -4239,35 +4239,10 @@ def _find_export_row(request_id: str):
         return None
     a = res[0].get("ProactiveAlerts", {})
     try:
-        meta = json.loads(a.get("AlertMessage") or "{}")
-    except Exception:
-        meta = {}
-    return {"rowid": a.get("ROWID"), "meta": meta}
-
-
-def _create_export_request(requester_badge, requester_name, session_id, reasons, summary):
-    request_id = uuid.uuid4().hex[:16]
-    meta = {
-        "request_id": request_id, "requester_badge": str(requester_badge or ""),
-        "requester_name": requester_name or "Officer", "session_id": session_id or "",
-        "reasons": reasons, "summary": (summary or "")[:180], "status": "pending",
-        "approver_badge": None, "decided_at": None,
-        "created_at": datetime.utcnow().isoformat(),
-    }
-    try:
-        zcql_insert_row("ProactiveAlerts", {
-            "AlertType": "EXPORT_APPROVAL", "Severity": "Critical",
-            "TriggerTime": datetime.utcnow().isoformat(), "IsRead": False,
-            "DistrictID": "0", "AlertMessage": json.dumps(meta),
-        })
-    except Exception as e:
-        logger.warning(f"_create_export_request insert failed: {e}")
-    return request_id, meta
-
-
 class PDFExportRequest(BaseModel):
     transcript: List[Dict[str, Any]]
     badge_id: str = "KSP-2026"
+    lang: str = "en"
     # Inline supervisor co-sign (badge+password) OR a previously-approved request id.
     approver_badge: Optional[str] = None
     approver_password: Optional[str] = None
@@ -4296,6 +4271,7 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
     """
     authed_badge = request.state.kgid or "UNKNOWN"
     role_tier = getattr(request.state, "role_tier", "officer")
+    report_lang = payload.lang if payload.lang in ("en", "kn") else "en"
 
     # AI EXPORT PRE-SCREEN (risk-proportionate approval). A supervisor may export
     # anything. For an officer, a clean report exports instantly; a report the
@@ -4323,7 +4299,7 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
             existing = _find_export_row(req_id) if req_id else None
             if not existing or existing["meta"].get("status") == "rejected":
                 _first = next((str(m.get("content") or m.get("text") or "")
-                               for m in (payload.transcript or []) if (m.get("content") or m.get("text"))), "")
+                                for m in (payload.transcript or []) if (m.get("content") or m.get("text"))), "")
                 req_id, _ = _create_export_request(
                     authed_badge, getattr(request.state, "user_profile", {}).get("FirstName"),
                     payload.session_id, review_reasons, _first)
@@ -4344,7 +4320,7 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         case_no = None
         for msg in (payload.transcript or []):
             m_text = msg.get("content") or msg.get("text") or ""
-            if msg.get("sender") == "assistant":
+            if msg.get("sender") in ("assistant", "ai", "vajra", "vajra.ai"):
                 narrative += f"\n{m_text}" if narrative else m_text
                 if msg.get("data") and isinstance(msg["data"], dict):
                     if msg["data"].get("panels"):
@@ -4362,16 +4338,16 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
             panels=panels,
             citations=citations,
             narrative=narrative[:1200] if narrative else "Official automated intelligence report.",
-            lang="en"
+            lang=report_lang
         )
         sb_pdf_bytes = convert_html_to_pdf_smartbrowz(html_doc)
         if sb_pdf_bytes and len(sb_pdf_bytes) > 500:
-            logger.info(f"PDF exported successfully via Catalyst SmartBrowz ({len(sb_pdf_bytes)} bytes)")
+            logger.info(f"PDF exported successfully via Catalyst SmartBrowz ({len(sb_pdf_bytes)} bytes, lang={report_lang})")
             return Response(
                 content=sb_pdf_bytes,
                 media_type="application/pdf",
                 headers={
-                    "Content-Disposition": f"attachment; filename=VAJRA_Report_{str(authed_badge)}.pdf",
+                    "Content-Disposition": f"attachment; filename=VAJRA_Report_{str(authed_badge)}_{report_lang}.pdf",
                     "X-Engine": "Catalyst-SmartBrowz"
                 }
             )
@@ -4397,7 +4373,7 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         # Tamper-evidence: SHA-256 over the exact transcript + operator + time. Printed
         # on the seal so the document is verifiable/reproducible, not just decorative.
         _digest_src = json.dumps(
-            {"badge": authed_badge, "gen": gen_utc, "t": payload.transcript},
+            {"badge": authed_badge, "gen": gen_utc, "t": payload.transcript, "lang": report_lang},
             ensure_ascii=False, sort_keys=True, default=str
         )
         doc_hash = hashlib.sha256(_digest_src.encode("utf-8")).hexdigest()
@@ -4450,7 +4426,7 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
                 self.set_text_color(*GOLD_HI)
                 self.set_font("NotoKannada", size=15)
                 self.set_xy(34, 5)
-                self.cell(0, 7, "KARNATAKA STATE POLICE")
+                self.cell(0, 7, "KARNATAKA STATE POLICE" if report_lang == "en" else "ಕರ್ನಾಟಕ ರಾಜ್ಯ ಪೊಲೀಸ್")
                 self.set_text_color(*GOLD)
                 self.set_font("NotoKannada", size=9)
                 self.set_xy(34, 13)
@@ -4487,7 +4463,7 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         # Document title
         pdf.set_text_color(*INK)
         pdf.set_font("NotoKannada", size=16)
-        pdf.cell(0, 9, "Investigation Transcript", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 9, "Investigation Transcript" if report_lang == "en" else "ತನಿಖಾ ಪ್ರತಿ ಮತ್ತು ವರದಿ", new_x="LMARGIN", new_y="NEXT")
         pdf.set_draw_color(*GOLD)
         pdf.set_line_width(0.5)
         pdf.line(12, pdf.get_y(), pdf.w - 12, pdf.get_y())
@@ -4508,20 +4484,25 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         _meta("Messages", f"{len(payload.transcript)} in transcript")
         pdf.ln(3)
 
-        # Transcript
+        # Transcript with cleaned linebreaks
         for msg in payload.transcript:
             sender = str(msg.get("role") or msg.get("sender") or "unknown").lower()
             text = str(msg.get("content") or msg.get("text") or "")
             time_str = msg.get("timestamp", "")
             is_ai = sender in ("assistant", "ai", "vajra", "vajra.ai")
             label = "VAJRA.AI" if is_ai else "OFFICER"
+            
+            # Clean up escaped newlines and markdown
+            clean_text = text.replace(r"\r\n", "\n").replace(r"\n", "\n").replace(r"\r", "\n")
+            clean_text = re.sub(r"\*\*([^*]+)\*\*", r"\1", clean_text)
+            
             # Sender chip
             pdf.set_font("NotoKannada", size=8)
             pdf.set_text_color(*(TEAL if is_ai else GOLD))
             pdf.cell(0, 6, f"{label}   {time_str}", new_x="LMARGIN", new_y="NEXT")
             pdf.set_text_color(*INK)
             pdf.set_font("NotoKannada", size=9.5)
-            body = text if text.strip() else "(interactive visualization - see the VAJRA console for the live chart/map)"
+            body = clean_text if clean_text.strip() else "(interactive visualization - see the VAJRA console for the live chart/map)"
             pdf.multi_cell(0, 5.6, body)
             pdf.ln(2.5)
 
