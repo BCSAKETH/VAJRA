@@ -3644,13 +3644,13 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
                     "checked": checked
                 }
 
-            employee_id = log.get("employee_id")
-            action_type = log.get("action_type")
+            employee_id = log.get("employee_id") or ""
+            action_type = log.get("action_type") or ""
             target = log.get("target_entity") or ""
             query_text = log.get("query_text") or ""
             response_summary = log.get("response_summary") or ""
-            session_id = log.get("session_id")
-            logged_at = log.get("logged_at")
+            session_id = log.get("session_id") or ""
+            logged_at = log.get("logged_at") or ""
 
             serialized_content = f"{employee_id}|{action_type}|{target}|{query_text[:100]}|{response_summary[:100]}|{session_id}|{logged_at}"
             computed_hash = hashlib.sha256((stored_prev_hash + serialized_content).encode("utf-8")).hexdigest()
