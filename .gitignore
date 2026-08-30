@@ -37,6 +37,7 @@ accounts.txt
 scratch/
 **/scratch/
 scratch_*.py
+*audit_ledger*.py
 
 # Exclude temporary media recordings
 video_full.mp4
