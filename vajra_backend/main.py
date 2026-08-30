@@ -3633,9 +3633,9 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
         checked = 0
 
         for r in res:
-            log = r.get("AuditLog", {})
-            stored_prev_hash = log.get("prev_hash")
-            stored_row_hash = log.get("row_hash")
+            log = r.get("AuditLog") or r.get("auditlog") or r
+            stored_prev_hash = str(log.get("prev_hash") or "").strip()
+            stored_row_hash = str(log.get("row_hash") or "").strip()
 
             if stored_prev_hash != expected_prev_hash:
                 return {
