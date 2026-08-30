@@ -758,9 +758,12 @@ export const AIChatScreen: React.FC = () => {
   // visual diagrams (mule rings, hotspot coordinates, risk meters).
   const buildTranscript = (targetLang: "en" | "kn") => chatMessages.map((m) => ({
     role: m.sender,
+    sender: m.sender,
     content: m.sender === "assistant"
       ? (targetLang === "kn" ? (m.textKn || m.text) : (m.textEn || m.text))
       : m.text,
+    text_en: m.textEn || m.text,
+    text_kn: m.textKn || (targetLang === "kn" ? m.text : ""),
     timestamp: m.timestamp || "",
     data: m.data || {},
     citations: m.citations || [],

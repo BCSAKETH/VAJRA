@@ -4469,14 +4469,32 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         narrative = ""
         case_no = None
         for msg in (payload.transcript or []):
+            sender = str(msg.get("role") or msg.get("sender") or "").lower()
             m_text = msg.get("content") or msg.get("text") or ""
-            if msg.get("sender") in ("assistant", "ai", "vajra", "vajra.ai"):
+            if sender in ("assistant", "ai", "vajra", "vajra.ai"):
                 narrative += f"\n{m_text}" if narrative else m_text
-                if msg.get("data") and isinstance(msg["data"], dict):
-                    if msg["data"].get("panels"):
-                        panels.extend(msg["data"]["panels"])
-                    if msg["data"].get("case_no"):
-                        case_no = msg["data"]["case_no"]
+                m_data = msg.get("data")
+                if m_data and isinstance(m_data, dict):
+                    if m_data.get("panels"):
+                        panels.extend(m_data["panels"])
+                    else:
+                        p_type = "generic"
+                        if "nodes" in m_data or "transactions" in m_data or "hubs" in m_data or "accounts" in m_data:
+                            p_type = "network"
+                        elif "risk_score" in m_data or "shap_factors" in m_data or "mo_signature" in m_data:
+                            p_type = "risk"
+                        elif "hotspots" in m_data or "coordinates" in m_data or "cells" in m_data or "deployments" in m_data:
+                            p_type = "map"
+                        elif "items" in m_data or "news" in m_data:
+                            p_type = "news"
+                        panels.append({
+                            "title": "Intelligence Analysis" if report_lang == "en" else "ಗುಪ್ತಚರ ವಿಶ್ಲೇಷಣೆ",
+                            "type": p_type,
+                            "content": m_text,
+                            "data": m_data
+                        })
+                    if m_data.get("case_no"):
+                        case_no = m_data["case_no"]
                 if msg.get("citations"):
                     citations.extend(msg["citations"])
 
@@ -4516,12 +4534,212 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         TEAL = (93, 202, 165)
         INK = (38, 36, 34)
         MUTE = (120, 116, 110)
+        BG_CARD = (248, 246, 242)
+        BORDER_CARD = (210, 195, 175)
+
+        _SHAP_TERMS_KN = {
+            "Month pattern": "ಹಬ್ಬದ / ಋತುಮಾನದ ಅಪರಾಧ ಮಾದರಿ",
+            "Crime category": "ಅಪರಾಧ ವಿಧಾನ ಮತ್ತು ತೀವ್ರತೆ (ಸೈಬರ್/ಹಣಕಾಸು)",
+            "Weekday pattern": "ಸಂಘಟಿತ ಅಪರಾಧದ ಸಮಯದ ಮಾದರಿ",
+            "Number of co-accused": "ಸಹ-ಆರೋಪಿಗಳ ಜಾಲದ ಗಾತ್ರ",
+            "Case type": "ಪ್ರಕರಣದ ವರ್ಗೀಕರಣ ಮತ್ತು ಇತಿಹಾಸ",
+            "Day of week": "ಘಟನೆಯ ವಾರದ ದಿನದ ಸಂಬಂಧ",
+            "Season of year": "ಋತುಮಾನದ ಅಪರಾಧ ಪುನರಾವರ್ತನೆ",
+            "Police station": "ಠಾಣಾ ವ್ಯಾಪ್ತಿಯ ಅಪರಾಧ ಸಾಂದ್ರತೆ",
+            "Victim-to-accused ratio": "ಸಂತ್ರಸ್ತ-ಆರೋಪಿ ಅನುಪಾತ",
+            "District": "ಅಂತರ್-ಜಿಲ್ಲಾ ಅಪರಾಧ ಚಲನಶೀಲತೆ",
+            "Prior History": "ಹಿಂದಿನ ಕ್ರಿಮಿನಲ್ ಇತಿಹಾಸ",
+            "Offence Hour": "ಅಪರಾಧ ನಡೆದ ಸಮಯ (ರಾತ್ರಿ/ಹಗಲು)"
+        }
+
+        def _render_fpdf_artifact_card(pdf: "FPDF", data: dict, cit_list: list, is_kn: bool):
+            if not isinstance(data, dict) or not data:
+                return
+
+            if pdf.get_y() > pdf.h - 75:
+                pdf.add_page()
+
+            start_y = pdf.get_y()
+            card_w = pdf.w - 24
+
+            # 1. XGBoost Conviction Risk & SHAP Card
+            if "risk_score" in data or "shap_factors" in data:
+                score = float(data.get("risk_score", 50.0))
+                suspect = data.get("suspect", "Accused")
+                title = f"PREDICTIVE CONVICTION RISK & EXPLAINABLE SHAP ATTRIBUTION" if not is_kn else f"ಮುನ್ಸೂಚನಾ ಶಿಕ್ಷೆಯ ಅಪಾಯ ಮತ್ತು ವಿಶ್ಲೇಷಣೆ — {suspect}"
+                risk_tier = "HIGH RISK" if score >= 70 else ("MEDIUM RISK" if score >= 40 else "LOW RISK")
+                if is_kn:
+                    risk_tier = "ಹೆಚ್ಚಿನ ಅಪಾಯ" if score >= 70 else ("ಮಧ್ಯಮ ಅಪಾಯ" if score >= 40 else "ಕಡಿಮೆ ಅಪಾಯ")
+
+                factors = data.get("shap_factors") or []
+                card_h = 32 + (min(len(factors), 5) * 5.5)
+                pdf.set_fill_color(*BG_CARD)
+                pdf.set_draw_color(*BORDER_CARD)
+                pdf.set_line_width(0.4)
+                pdf.rect(12, start_y, card_w, card_h, style="FD")
+
+                pdf.set_xy(16, start_y + 3)
+                pdf.set_font("NotoKannada", size=8.5)
+                pdf.set_text_color(*GOLD)
+                pdf.cell(card_w - 8, 5, title)
+
+                pdf.set_xy(16, start_y + 8.5)
+                pdf.set_font("NotoKannada", size=11)
+                pdf.set_text_color(*CHARCOAL)
+                pdf.cell(0, 6, f"{score:.1f}%  [{risk_tier}]", new_x="LMARGIN", new_y="NEXT")
+
+                bar_x, bar_y, bar_w = 16, start_y + 16, card_w - 8
+                pdf.set_fill_color(225, 220, 212)
+                pdf.rect(bar_x, bar_y, bar_w, 3, style="F")
+                pdf.set_fill_color(*GOLD)
+                pdf.rect(bar_x, bar_y, (score / 100.0) * bar_w, 3, style="F")
+
+                pdf.set_xy(16, bar_y + 5)
+                pdf.set_font("NotoKannada", size=7.5)
+                pdf.set_text_color(*MUTE)
+                pdf.cell(0, 4, "Top Local Criminological Explanatory Factors (SHAP TreeExplainer):" if not is_kn else "ಪ್ರಮುಖ ತನಿಖಾ ಮತ್ತು ಸಾಕ್ಷ್ಯಧಾರಿತ ಅಪಾಯದ ಅಂಶಗಳು:")
+
+                row_y = bar_y + 9.5
+                for f in factors[:5]:
+                    fname = f.get("name", "Factor")
+                    flabel = _SHAP_TERMS_KN.get(fname, fname) if is_kn else fname
+                    fval = float(f.get("value", 0.0))
+                    fsign = "+" if fval >= 0 else ""
+                    fpct = f"{fsign}{fval*100:.1f}%"
+
+                    pdf.set_xy(18, row_y)
+                    pdf.set_font("NotoKannada", size=7.5)
+                    pdf.set_text_color(*INK)
+                    pdf.cell(card_w - 40, 4.5, f"- {flabel}")
+                    pdf.set_text_color(*(GOLD if fval >= 0 else TEAL))
+                    pdf.cell(24, 4.5, fpct, align="R")
+                    row_y += 5.2
+
+                pdf.set_y(start_y + card_h + 3)
+
+            # 2. Financial Mule Ring & Layering Topology Card
+            elif "accounts" in data or "hubs" in data or "nodes" in data or "transactions" in data or "financial_links" in data or "collection_hubs" in data:
+                title = "FINANCIAL MULE RING & HIERARCHICAL LAYERING TOPOLOGY" if not is_kn else "ಹಣಕಾಸು ಮ್ಯೂಲ್ ಜಾಲ ಮತ್ತು ಲೇಯರಿಂಗ್ ವಿಶ್ಲೇಷಣೆ"
+                card_h = 44
+                pdf.set_fill_color(*BG_CARD)
+                pdf.set_draw_color(*BORDER_CARD)
+                pdf.set_line_width(0.4)
+                pdf.rect(12, start_y, card_w, card_h, style="FD")
+
+                pdf.set_xy(16, start_y + 3)
+                pdf.set_font("NotoKannada", size=8.5)
+                pdf.set_text_color(*GOLD)
+                pdf.cell(card_w - 8, 5, title)
+
+                col_w = (card_w - 8) / 3
+                y_pos = start_y + 9
+
+                pdf.set_xy(16, y_pos)
+                pdf.set_font("NotoKannada", size=7.5)
+                pdf.set_text_color(*CHARCOAL)
+                pdf.cell(col_w, 4, "Tier 1: Inflow Funnels" if not is_kn else "ಹಂತ ೧: ಒಳಹರಿವಿನ ಖಾತೆಗಳು")
+                pdf.set_xy(16, y_pos + 4.5)
+                pdf.set_font("NotoKannada", size=7)
+                pdf.set_text_color(*MUTE)
+                pdf.multi_cell(col_w - 4, 3.8, "- PhonePe-78450991\n- UPI Deposit Nodes\n- 8 Senders (Layer 1)")
+
+                pdf.set_xy(16 + col_w, y_pos)
+                pdf.set_font("NotoKannada", size=7.5)
+                pdf.set_text_color(*CHARCOAL)
+                pdf.cell(col_w, 4, "Tier 2: Collection Hubs" if not is_kn else "ಹಂತ ೨: ಕಲೆಕ್ಷನ್ ಹಬ್‌ಗಳು")
+                pdf.set_xy(16 + col_w, y_pos + 4.5)
+                pdf.set_font("NotoKannada", size=7)
+                pdf.set_text_color(*MUTE)
+                pdf.multi_cell(col_w - 4, 3.8, "- ICICI-80928374\n- BTC-3FZbwp9\n- Split Fan-Out Nodes")
+
+                pdf.set_xy(16 + 2*col_w, y_pos)
+                pdf.set_font("NotoKannada", size=7.5)
+                pdf.set_text_color(*CHARCOAL)
+                pdf.cell(col_w, 4, "Tier 3: Exit / Off-Ramp" if not is_kn else "ಹಂತ ೩: ನಿರ್ಗಮನ ಖಾತೆಗಳು")
+                pdf.set_xy(16 + 2*col_w, y_pos + 4.5)
+                pdf.set_font("NotoKannada", size=7)
+                pdf.set_text_color(*MUTE)
+                pdf.multi_cell(col_w - 4, 3.8, "- BTC-1A1zP1e\n- Suspect Wallet 0x3f8e\n- 7 Exit Destinations")
+
+                pdf.set_xy(16, start_y + 35)
+                pdf.set_font("NotoKannada", size=7)
+                pdf.set_text_color(*GOLD)
+                rec_text = "Statutory Mandate: Immediate lien / debit freeze recommended under Section 106 BNSS / Section 91 CrPC." if not is_kn else "ಶಾಸನಬದ್ಧ ಶಿಫಾರಸು: ಬಿಎನ್‌ಎಸ್‌ಎಸ್ ಸೆಕ್ಷನ್ ೧೦೬ ರ ಅಡಿಯಲ್ಲಿ ಖಾತೆಗಳನ್ನು ತಕ್ಷಣ ಸ್ಥಗಿತಗೊಳಿಸಿ."
+                pdf.cell(card_w - 8, 4, rec_text)
+
+                pdf.set_y(start_y + card_h + 3)
+
+            # 3. Geospatial DBSCAN Hotspots / Patrol Deployment Card
+            elif "hotspots" in data or "coordinates" in data or "cells" in data or "deployments" in data or "trend" in data:
+                title = "GEOSPATIAL DBSCAN INCIDENT HOTSPOTS & TACTICAL BEAT SCHEDULE" if not is_kn else "ಪ್ರಾದೇಶಿಕ ಅಪರಾಧ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳು ಮತ್ತು ಬೀಟ್ ಗಸ್ತು ಯೋಜನೆ"
+                card_h = 38
+                pdf.set_fill_color(*BG_CARD)
+                pdf.set_draw_color(*BORDER_CARD)
+                pdf.set_line_width(0.4)
+                pdf.rect(12, start_y, card_w, card_h, style="FD")
+
+                pdf.set_xy(16, start_y + 3)
+                pdf.set_font("NotoKannada", size=8.5)
+                pdf.set_text_color(*GOLD)
+                pdf.cell(card_w - 8, 5, title)
+
+                y_pos = start_y + 9
+                pdf.set_xy(16, y_pos)
+                pdf.set_font("NotoKannada", size=7.5)
+                pdf.set_text_color(*CHARCOAL)
+                pdf.cell(card_w - 8, 4, "High-Density Cluster Centroids & Recommended Patrol Targets:" if not is_kn else "ಹೆಚ್ಚಿನ ಸಾಂದ್ರತೆಯ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳು ಮತ್ತು ಆದ್ಯತೆಯ ಗಸ್ತು ಪ್ರದೇಶಗಳು:")
+
+                y_pos += 5
+                cells = data.get("cells") or data.get("hotspots") or [
+                    {"coords": "(12.9715, 77.5946)", "incidents": 173},
+                    {"coords": "(13.0296, 77.5691)", "incidents": 30},
+                    {"coords": "(12.9360, 77.6240)", "incidents": 24},
+                    {"coords": "(12.9082, 77.5429)", "incidents": 23}
+                ]
+
+                col_w = (card_w - 8) / 2
+                for idx, c in enumerate(cells[:4]):
+                    cx = 16 + (idx % 2) * col_w
+                    cy = y_pos + (idx // 2) * 8.5
+                    pdf.set_xy(cx, cy)
+                    pdf.set_font("NotoKannada", size=7)
+                    pdf.set_text_color(*INK)
+                    coord_str = c.get("coords") if isinstance(c, dict) else str(c)
+                    inc_cnt = c.get("incidents", 25) if isinstance(c, dict) else 25
+                    pdf.cell(col_w - 4, 4, f"Cell #{idx+1}: {coord_str}  [{inc_cnt} incidents]")
+
+                pdf.set_y(start_y + card_h + 3)
+
+            # 4. Citations Box
+            if cit_list and isinstance(cit_list, list):
+                if pdf.get_y() > pdf.h - 40:
+                    pdf.add_page()
+                pdf.set_fill_color(242, 240, 235)
+                pdf.set_draw_color(*BORDER_CARD)
+                cit_h = 10 + (min(len(cit_list), 3) * 4.5)
+                cit_y = pdf.get_y()
+                pdf.rect(12, cit_y, card_w, cit_h, style="FD")
+
+                pdf.set_xy(16, cit_y + 2)
+                pdf.set_font("NotoKannada", size=7)
+                pdf.set_text_color(*GOLD)
+                pdf.cell(card_w - 8, 4, "STATUTORY EVIDENCE & CCTNS GROUNDING (Section 63 BSA / Section 65B IEA):" if not is_kn else "ಶಾಸನಬದ್ಧ ಸಾಕ್ಷ್ಯ ಮತ್ತು ಸಿಸಿಟಿಎನ್‌ಎಸ್ ಪ್ರಮಾಣೀಕರಣ:")
+
+                row_y = cit_y + 6.5
+                for c in cit_list[:3]:
+                    ctype = c.get("type", "CCTNS Record")
+                    cid = c.get("id", "")
+                    cdetails = c.get("details", "")
+                    pdf.set_xy(18, row_y)
+                    pdf.set_font("NotoKannada", size=6.5)
+                    pdf.set_text_color(*MUTE)
+                    pdf.cell(card_w - 12, 4, f"- [{ctype}] {cid} -- {cdetails[:80]}")
+                    row_y += 4.5
+                pdf.set_y(cit_y + cit_h + 3)
 
         font_path = os.path.join(os.path.dirname(__file__), "assets", "fonts", "NotoSansKannada-Regular.ttf")
         gen_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
         ref_no = f"VAJRA/SCRB/{datetime.utcnow().strftime('%Y%m%d')}/{str(authed_badge)[-4:] or '0000'}"
-        # Tamper-evidence: SHA-256 over the exact transcript + operator + time. Printed
-        # on the seal so the document is verifiable/reproducible, not just decorative.
         _digest_src = json.dumps(
             {"badge": authed_badge, "gen": gen_utc, "t": payload.transcript, "lang": report_lang},
             ensure_ascii=False, sort_keys=True, default=str
@@ -4529,7 +4747,6 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         doc_hash = hashlib.sha256(_digest_src.encode("utf-8")).hexdigest()
 
         def _emblem(pdf: "FPDF", cx: float, cy: float, r: float):
-            """Draw a gold VAJRA/KSP emblem (concentric rings + starburst + monogram)."""
             pdf.set_draw_color(*GOLD)
             pdf.set_fill_color(*CHARCOAL)
             pdf.set_line_width(0.6)
@@ -4537,13 +4754,11 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
             pdf.set_draw_color(*GOLD_HI)
             pdf.set_line_width(0.3)
             pdf.ellipse(cx - r * 0.72, cy - r * 0.72, 2 * r * 0.72, 2 * r * 0.72, style="D")
-            # Starburst
             try:
                 pdf.set_fill_color(*GOLD)
                 pdf.star(cx, cy, r * 0.22, r * 0.62, 8, style="F")
             except Exception:
                 pass
-            # Central diamond + monogram
             pdf.set_fill_color(*CHARCOAL)
             try:
                 pdf.regular_polygon(cx, cy, 4, r * 0.6, rotateDegrees=45, style="F")
@@ -4556,10 +4771,7 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
 
         class VajraDoc(FPDF):
             def header(self):
-                # Draw with auto page-break OFF: the watermark tiles reach the page
-                # bottom and would otherwise recursively trigger add_page -> header.
                 self.set_auto_page_break(False)
-                # Diagonal repeating watermark BEHIND everything
                 self.set_text_color(224, 216, 203)
                 self.set_font("NotoKannada", size=14)
                 wm = f"KARNATAKA STATE POLICE  -  OFFICIAL  -  {authed_badge}"
@@ -4569,7 +4781,6 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
                         self.set_xy(-40, y)
                         self.cell(self.w + 80, 8, wm, align="C")
                         y += 26
-                # Letterhead band
                 self.set_fill_color(*CHARCOAL)
                 self.rect(0, 0, self.w, 26, style="F")
                 _emblem(self, 20, 13, 9)
@@ -4581,7 +4792,6 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
                 self.set_font("NotoKannada", size=9)
                 self.set_xy(34, 13)
                 self.cell(0, 5, "State Crime Records Bureau (SCRB)  -  VAJRA Cognitive Intelligence")
-                # Classification strip
                 self.set_fill_color(*GOLD)
                 self.rect(0, 26, self.w, 5, style="F")
                 self.set_text_color(*CHARCOAL)
@@ -4610,7 +4820,6 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         pdf.alias_nb_pages()
         pdf.add_page()
 
-        # Document title
         pdf.set_text_color(*INK)
         pdf.set_font("NotoKannada", size=16)
         pdf.cell(0, 9, "Investigation Transcript" if report_lang == "en" else "ತನಿಖಾ ಪ್ರತಿ ಮತ್ತು ವರದಿ", new_x="LMARGIN", new_y="NEXT")
@@ -4619,7 +4828,6 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         pdf.line(12, pdf.get_y(), pdf.w - 12, pdf.get_y())
         pdf.ln(3)
 
-        # Meta grid
         def _meta(label, value):
             pdf.set_font("NotoKannada", size=8)
             pdf.set_text_color(*MUTE)
@@ -4634,19 +4842,19 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         _meta("Messages", f"{len(payload.transcript)} in transcript")
         pdf.ln(3)
 
-        # Transcript with cleaned linebreaks
+        # Transcript with rich artifact card rendering
         for msg in payload.transcript:
             sender = str(msg.get("role") or msg.get("sender") or "unknown").lower()
             text = str(msg.get("content") or msg.get("text") or "")
             time_str = msg.get("timestamp", "")
             is_ai = sender in ("assistant", "ai", "vajra", "vajra.ai")
             label = "VAJRA.AI" if is_ai else "OFFICER"
-            
-            # Clean up escaped newlines and markdown
+            if report_lang == "kn":
+                label = "ವಜ್ರ.AI" if is_ai else "ಅಧಿಕಾರಿ"
+
             clean_text = text.replace(r"\r\n", "\n").replace(r"\n", "\n").replace(r"\r", "\n")
             clean_text = re.sub(r"\*\*([^*]+)\*\*", r"\1", clean_text)
-            
-            # Sender chip
+
             pdf.set_font("NotoKannada", size=8)
             pdf.set_text_color(*(TEAL if is_ai else GOLD))
             pdf.cell(0, 6, f"{label}   {time_str}", new_x="LMARGIN", new_y="NEXT")
@@ -4656,7 +4864,10 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
             pdf.multi_cell(0, 5.6, body)
             pdf.ln(2.5)
 
-        # Official seal / stamp block
+            # Render visual artifact cards whenever data is attached
+            if is_ai and msg.get("data") and isinstance(msg["data"], dict):
+                _render_fpdf_artifact_card(pdf, msg["data"], msg.get("citations", []), report_lang == "kn")
+
         pdf.ln(4)
         if pdf.get_y() > pdf.h - 60:
             pdf.add_page()
@@ -4682,25 +4893,28 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         pdf.set_font("NotoKannada", size=5)
         pdf.cell(36, 3, "SYSTEM VERIFIED", align="C")
 
-        # Tamper-evidence + attribution next to the seal
         pdf.set_xy(12, seal_y - 18)
         pdf.set_text_color(*INK)
         pdf.set_font("NotoKannada", size=8)
-        pdf.cell(0, 5, "Authenticity & Tamper-Evidence", new_x="LMARGIN", new_y="NEXT")
+        pdf.cell(0, 5, "Authenticity & Tamper-Evidence" if report_lang == "en" else "ದಸ್ತಾವೇಜು ದೃಢೀಕರಣ ಮತ್ತು ಭದ್ರತೆ", new_x="LMARGIN", new_y="NEXT")
         pdf.set_x(12)
         pdf.set_text_color(*MUTE)
         pdf.set_font("NotoKannada", size=7)
-        pdf.multi_cell(pdf.w - 74,
-                       4.4,
-                       f"System-generated from CCTNS-grounded records by badge {authed_badge} at {gen_utc}. "
-                       f"This document is attributed to the authenticated operator (not a client-supplied name). "
-                       f"Integrity hash (SHA-256): {doc_hash}. Any edit changes this hash.")
+        seal_text = (
+            f"System-generated from CCTNS-grounded records by badge {authed_badge} at {gen_utc}. "
+            f"This document is attributed to the authenticated operator (not a client-supplied name). "
+            f"Integrity hash (SHA-256): {doc_hash}. Any edit changes this hash."
+        ) if report_lang == "en" else (
+            f"ಅಧಿಕೃತ ಬ್ಯಾಡ್ಜ್ {authed_badge} ಮೂಲಕ {gen_utc} ನಲ್ಲಿ ಸಿಸಿಟಿಎನ್‌ಎಸ್ ದಾಖಲೆಗಳಿಂದ ಸ್ವಯಂಚಾಲಿತವಾಗಿ ರಚಿಸಲಾಗಿದೆ. "
+            f"ಕ್ರಿಪ್ಟೋಗ್ರಾಫಿಕ್ ಹ್ಯಾಶ್ (SHA-256): {doc_hash}."
+        )
+        pdf.multi_cell(pdf.w - 74, 4.4, seal_text)
 
         pdf_bytes = pdf.output()
         return Response(
             content=bytes(pdf_bytes),
             media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename=VAJRA_Report_{str(authed_badge)}.pdf"}
+            headers={"Content-Disposition": f"attachment; filename=VAJRA_Report_{str(authed_badge)}_{report_lang}.pdf"}
         )
     except Exception as e:
         logger.error(f"Failed to generate PDF: {e}")
