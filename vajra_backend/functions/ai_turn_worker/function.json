@@ -1,0 +1,7 @@
+{
+  "name": "ai_turn_worker",
+  "stack": "python3.12",
+  "entrypoint": "index.py",
+  "memory": 512,
+  "timeout": 900
+}

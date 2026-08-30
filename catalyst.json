@@ -16,7 +16,8 @@
   ],
   "functions": {
     "targets": [
-      "proactive_alerts"
+      "proactive_alerts",
+      "ai_turn_worker"
     ],
     "source": "vajra_backend/functions"
   }

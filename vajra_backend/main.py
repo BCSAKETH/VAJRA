@@ -2831,20 +2831,97 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
             "ai_invoked": False
         }
 
-    # The rest of this turn (case-context injection, translation, the agent
-    # loop's GLM calls, translation back, persist, broadcast) runs as a
-    # detached background task instead of inline here -- see
-    # _run_ai_turn_and_persist's docstring for why: AppSail kills this HTTP
-    # request at ~30-36s regardless of in-app timeouts, well short of this
-    # model's real response times, so returning fast and finishing the work
-    # after the response is sent is the only way a turn can ever complete.
-    _ai_task = asyncio.create_task(_run_ai_turn_and_persist(
-        session_id, message, lang, employee_id, unit_id, payload.client_msg_id,
-        officer_name=first_name, officer_badge=request.state.kgid,
-        answer_mode=(payload.answer_mode or "standard")
-    ))
-    _BACKGROUND_AI_TASKS.add(_ai_task)  # strong ref so it isn't GC'd mid-run
-    _ai_task.add_done_callback(lambda t: _ai_turn_done(t, session_id))
+    # 1. KEYWORD FAST-PATH ROUTER: Deterministic Queries (< 300ms instant resolution)
+    # If the user is asking for a direct FIR lookup (e.g. "Details of CR-2026-31313" or "Status of CR-2025-76203")
+    fir_match = re.search(r"\b(CR-\d{4}-\d+)\b", message, re.IGNORECASE)
+    is_direct_fir_lookup = fir_match and any(k in message.lower() for k in ["lookup", "details", "status", "info", "what is", "show"])
+    if is_direct_fir_lookup and not any(k in message.lower() for k in ["trace", "mule", "ring", "syndicate", "dossier", "predict", "risk"]) and not is_cowork:
+        fir_no = fir_match.group(1).upper()
+        try:
+            fir_rows = catalyst_app.zql().execute_query(f"SELECT * FROM CaseMaster WHERE FIRNo = '{fir_no}' LIMIT 1")
+            if fir_rows:
+                cm = fir_rows[0].get("CaseMaster", {})
+                fast_text_en = (
+                    f"**Case Intelligence for {fir_no}**\n\n"
+                    f"* **Incident Type:** {cm.get('IncidentType', 'N/A')}\n"
+                    f"* **Case Status:** {cm.get('CaseStatus', 'Under Investigation')}\n"
+                    f"* **Police Station ID:** {cm.get('PoliceStationID', 'N/A')}\n"
+                    f"* **Registration Date:** {cm.get('RegistrationDate', 'N/A')}\n\n"
+                    f"**Incident Summary:** {cm.get('IncidentDetails', 'No additional details recorded in CCTNS.')}"
+                )
+                fast_text_kn = (
+                    f"**{fir_no} ಪ್ರಕರಣದ ವಿವರಗಳು**\n\n"
+                    f"* **ಘಟನೆಯ ಪ್ರಕಾರ:** {cm.get('IncidentType', 'N/A')}\n"
+                    f"* **ಪ್ರಕರಣದ ಸ್ಥಿತಿ:** {cm.get('CaseStatus', 'Under Investigation')}\n"
+                    f"* **ದಾಖಲಾದ ದಿನಾಂಕ:** {cm.get('RegistrationDate', 'N/A')}\n\n"
+                    f"**ಸಾರಾಂಶ:** {cm.get('IncidentDetails', 'ಯಾವುದೇ ವಿವರ ದಾಖಲಾಗಿಲ್ಲ.')}"
+                )
+                fast_text = fast_text_kn if lang == "kn" else fast_text_en
+                fast_citations = [{"type": "CCTNS Case Master", "id": fir_no, "status": "verified"}]
+                fast_data = {"fir_no": fir_no, "case_details": cm, "fast_path": True}
+                
+                _persist_chat_message(
+                    session_id, "assistant", fast_text, "standard",
+                    fast_data, citations=fast_citations
+                )
+                await connection_manager.broadcast(session_id, {
+                    "type": "message", "sender": "assistant",
+                    "sender_name": "VAJRA Intelligence", "text": fast_text,
+                    "response_type": "standard", "data": fast_data,
+                    "citations": fast_citations, "timestamp": datetime.utcnow().isoformat(),
+                    "client_msg_id": payload.client_msg_id
+                })
+                
+                return {
+                    "text": fast_text,
+                    "text_en": fast_text_en,
+                    "text_kn": fast_text_kn,
+                    "session_id": session_id,
+                    "response_type": "standard",
+                    "data": fast_data,
+                    "citations": fast_citations,
+                    "is_simulated": False,
+                    "simulated_reason": "",
+                    "ai_invoked": True,
+                    "pending": False
+                }
+        except Exception as ex:
+            logger.warning(f"Fast-path lookup failed, falling back to standard AI turn: {ex}")
+
+    # 2. DUAL-TIER DISPATCH: Attempt Job Scheduling Instant Job -> Fallback to In-Process Async Worker
+    dispatched_via_job = False
+    try:
+        if hasattr(catalyst_app, "job_scheduling"):
+            job_service = catalyst_app.job_scheduling()
+            job = job_service.submit_job(
+                job_name=f"ai_turn_{session_id[:12]}_{int(time.time())}",
+                target_type="FUNCTION",
+                target_name="ai_turn_worker",
+                job_params={
+                    "session_id": session_id,
+                    "message": message,
+                    "employee_id": employee_id,
+                    "answer_mode": (payload.answer_mode or "standard"),
+                    "lang": lang
+                },
+                job_config={
+                    "number_of_retries": 1,
+                    "retry_interval": 5
+                }
+            )
+            logger.info(f"Dispatched AI turn to Catalyst Job Scheduling: {job.job_id}")
+            dispatched_via_job = True
+    except Exception as job_err:
+        logger.debug(f"Job scheduling unprovisioned or unavailable, using in-process async worker: {job_err}")
+
+    if not dispatched_via_job:
+        _ai_task = asyncio.create_task(_run_ai_turn_and_persist(
+            session_id, message, lang, employee_id, unit_id, payload.client_msg_id,
+            officer_name=first_name, officer_badge=request.state.kgid,
+            answer_mode=(payload.answer_mode or "standard")
+        ))
+        _BACKGROUND_AI_TASKS.add(_ai_task)  # strong ref so it isn't GC'd mid-run
+        _ai_task.add_done_callback(lambda t: _ai_turn_done(t, session_id))
 
     return {
         "text": "",

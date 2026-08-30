@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "name": "ai_turn_worker",
+    "type": "event",
+    "stack": "python3.12"
+  }
+}
