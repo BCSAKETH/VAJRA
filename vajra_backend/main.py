@@ -3636,14 +3636,7 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
             log = r.get("AuditLog") or r.get("auditlog") or r
             stored_prev_hash = str(log.get("prev_hash") or "").strip()
             stored_row_hash = str(log.get("row_hash") or "").strip()
-
-            if stored_prev_hash != expected_prev_hash:
-                return {
-                    "valid": False,
-                    "reason": f"Chain broken at entry {checked + 1} (ROWID {log.get('ROWID')}): stored prev_hash '{stored_prev_hash}' != expected '{expected_prev_hash}'",
-                    "checked": checked
-                }
-
+            rowid = log.get("ROWID")
             employee_id = log.get("employee_id") or ""
             action_type = log.get("action_type") or ""
             target = log.get("target_entity") or ""
@@ -3652,13 +3645,51 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
             session_id = log.get("session_id") or ""
             logged_at = log.get("logged_at") or ""
 
+            if stored_prev_hash != expected_prev_hash:
+                return {
+                    "valid": False,
+                    "reason": f"Cryptographic chain severed at Block #{checked + 1} (ROWID {rowid})",
+                    "tamper_type": "chain_severed",
+                    "block_number": checked + 1,
+                    "rowid": rowid,
+                    "officer_kgid": employee_id,
+                    "action_type": action_type,
+                    "logged_at": logged_at,
+                    "stored_prev_hash": stored_prev_hash,
+                    "expected_prev_hash": expected_prev_hash,
+                    "stored_row_hash": stored_row_hash,
+                    "explanation": (
+                        f"The previous block hash stored in Block #{checked + 1} ('{stored_prev_hash[:16]}...') does not match "
+                        f"the actual digital signature of Block #{checked} ('{expected_prev_hash[:16]}...'). "
+                        "This indicates that an audit record was directly deleted, inserted out-of-band, "
+                        "or modified directly via database console without re-signing the cryptographic chain."
+                    ),
+                    "remediation": "Audit ledger requires re-sealing. Preserve forensic dump for judicial review under Section 63 BSA / Sec 65B IEA.",
+                    "checked": checked
+                }
+
             serialized_content = f"{employee_id}|{action_type}|{target}|{query_text[:100]}|{response_summary[:100]}|{session_id}|{logged_at}"
             computed_hash = hashlib.sha256((stored_prev_hash + serialized_content).encode("utf-8")).hexdigest()
 
             if computed_hash != stored_row_hash:
                 return {
                     "valid": False,
-                    "reason": f"Hash mismatch at entry {checked + 1} (ROWID {log.get('ROWID')}): computed '{computed_hash}' != stored '{stored_row_hash}'",
+                    "reason": f"Content tampering detected at Block #{checked + 1} (ROWID {rowid})",
+                    "tamper_type": "hash_mismatch",
+                    "block_number": checked + 1,
+                    "rowid": rowid,
+                    "officer_kgid": employee_id,
+                    "action_type": action_type,
+                    "logged_at": logged_at,
+                    "query_text": query_text,
+                    "computed_hash": computed_hash,
+                    "stored_row_hash": stored_row_hash,
+                    "explanation": (
+                        f"The SHA-256 digital signature recomputed from this block's parameters ('{computed_hash[:16]}...') does not match "
+                        f"the signature originally stamped in the database ('{stored_row_hash[:16]}...'). "
+                        f"The record payload (Action: '{action_type}', Target: '{target}', Query: '{query_text[:40]}...') was altered after block creation."
+                    ),
+                    "remediation": "Flagged for supervisory review. Evidence admissibility compromised until verified against off-chain secondary replication.",
                     "checked": checked
                 }
 
@@ -3667,8 +3698,11 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
 
         return {
             "valid": True,
-            "reason": f"All {checked} entries verified — recomputed hash chain matches stored values, no tampering detected.",
-            "checked": checked
+            "reason": f"All {checked} audit blocks cryptographically verified — unbroken SHA-256 chain from genesis block.",
+            "checked": checked,
+            "total_blocks": checked,
+            "integrity_score": "100%",
+            "status": "SECURE_AND_VERIFIED"
         }
     except Exception as e:
         logger.error(f"Error verifying audit ledger: {e}")

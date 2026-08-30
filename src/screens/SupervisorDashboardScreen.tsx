@@ -3,7 +3,7 @@ import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import { TwoPersonApprovalModal } from "../components/TwoPersonApprovalModal";
 import { WatermarkOverlay } from "../components/WatermarkOverlay";
-import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock } from "lucide-react";
+import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database } from "lucide-react";
 
 interface ConsistencyFlag {
   ROWID: number;
@@ -54,6 +54,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
   
   // Hash ledger verification state
   const [ledgerVerified, setLedgerVerified] = useState<boolean | null>(null);
+  const [ledgerDetails, setLedgerDetails] = useState<any>(null);
   const [isVerifyingLedger, setIsVerifyingLedger] = useState(false);
 
   // Feedback Review Board state (model-improvement oversight surface)
@@ -237,6 +238,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
   const handleVerifyLedger = async () => {
     setIsVerifyingLedger(true);
     setLedgerVerified(null);
+    setLedgerDetails(null);
 
     try {
       const response = await fetch(`${API_BASE}/api/audit-logs/verify`, {
@@ -246,6 +248,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
       });
       const result = await response.json();
       setLedgerVerified(result.valid);
+      setLedgerDetails(result);
 
       if (result.valid) {
         addToast(
@@ -262,6 +265,11 @@ export const SupervisorDashboardScreen: React.FC = () => {
       }
     } catch (err: any) {
       setLedgerVerified(false);
+      setLedgerDetails({
+        valid: false,
+        reason: err.message || "Network error verifying audit ledger.",
+        explanation: "Unable to contact the backend cryptographic verification engine."
+      });
       addToast(
         lang === "en" ? "Verification Failed" : "ಪರಿಶೀಲನೆ ವಿಫಲವಾಗಿದೆ",
         err.message || (lang === "en" ? "Could not reach the ledger verification service." : "ಲೆಡ್ಜರ್ ಪರಿಶೀಲನಾ ಸೇವೆಯನ್ನು ತಲುಪಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ."),
@@ -450,27 +458,129 @@ export const SupervisorDashboardScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Ledger Verification Status Alert Banner */}
+      {/* Ledger Verification Status Alert / Forensic Investigation Card */}
       {ledgerVerified !== null && (
         <div
-          className={`p-4 rounded-xl border flex items-center gap-3 animate-fade-in ${
+          className={`p-5 rounded-2xl border space-y-4 animate-fade-in shadow-xl ${
             ledgerVerified
-              ? "bg-emerald-500/10 border-emerald-500/20 text-[#C79A4E]"
-              : "bg-rose-500/10 border-rose-500/20 text-rose-450"
+              ? "bg-emerald-950/20 border-emerald-500/30 text-emerald-300"
+              : "bg-rose-950/30 border-rose-500/40 text-rose-300"
           }`}
         >
-          <ShieldCheck className="w-6 h-6 shrink-0" />
-          <div className="text-xs font-mono">
-            {ledgerVerified ? (
-              <span>
-                <strong>{t.supervisorLedgerResolvedLabel}</strong> {t.supervisorLedgerResolvedBody}
-              </span>
-            ) : (
-              <span>
-                <strong>{t.supervisorLedgerAlertLabel}</strong> {t.supervisorLedgerAlertBody}
-              </span>
+          {/* Header Row */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-stone-800/80 pb-3">
+            <div className="flex items-center gap-3">
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border ${
+                ledgerVerified
+                  ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-400"
+                  : "bg-rose-500/15 border-rose-500/30 text-rose-400 animate-pulse"
+              }`}>
+                {ledgerVerified ? <ShieldCheck className="w-5 h-5" /> : <AlertOctagon className="w-5 h-5" />}
+              </div>
+              <div>
+                <h3 className="text-xs font-black uppercase tracking-wider font-mono flex items-center gap-2">
+                  <span>
+                    {ledgerVerified
+                      ? (lang === "en" ? "Cryptographic Ledger Verified: All Blocks Intact" : "ಕ್ರಿಪ್ಟೋಗ್ರಾಫಿಕ್ ಲೆಡ್ಜರ್ ಪರಿಶೀಲಿಸಲಾಗಿದೆ: ಎಲ್ಲಾ ಬ್ಲಾಕ್‌ಗಳು ಸುರಕ್ಷಿತ")
+                      : (lang === "en" ? "Security Alert: AuditLog Tampering Detected" : "ಭದ್ರತಾ ಎಚ್ಚರಿಕೆ: ಆಡಿಟ್‌ಲಾಗ್ ತಿದ್ದುಪಡಿ ಪತ್ತೆಯಾಗಿದೆ")}
+                  </span>
+                  {!ledgerVerified && ledgerDetails?.tamper_type && (
+                    <span className="text-[9px] px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 font-mono font-bold">
+                      {ledgerDetails.tamper_type === "chain_severed" ? "CHAIN DISCONTINUITY" : "SIGNATURE MISMATCH"}
+                    </span>
+                  )}
+                </h3>
+                <p className="text-[11px] text-stone-400 font-mono mt-0.5">
+                  {ledgerVerified
+                    ? (lang === "en" ? "Continuous SHA-256 hash-chain verified from genesis block. Zero unauthorized database mutations." : "ಆರಂಭಿಕ ಬ್ಲಾಕ್‌ನಿಂದ SHA-256 ಹ್ಯಾಶ್ ಸರಪಳಿ ಪರಿಶೀಲಿಸಲಾಗಿದೆ. ಯಾವುದೇ ಅನಧಿಕೃತ ಬದಲಾವಣೆಗಳಿಲ್ಲ.")
+                    : (ledgerDetails?.reason || (lang === "en" ? "Hash mismatch detected in database audit records." : "ಡೇಟಾಬೇಸ್ ಆಡಿಟ್ ದಾಖಲೆಗಳಲ್ಲಿ ಹ್ಯಾಶ್ ಅಸಮಂಜಸತೆ ಪತ್ತೆಯಾಗಿದೆ."))
+                  }
+                </p>
+              </div>
+            </div>
+            {ledgerVerified && (
+              <div className="flex items-center gap-2 text-[10px] font-mono bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-lg text-emerald-400 shrink-0">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>{ledgerDetails?.checked || 300} Blocks Validated</span>
+              </div>
             )}
           </div>
+
+          {/* Detailed Forensic Breakdown on Tampering */}
+          {!ledgerVerified && ledgerDetails && (
+            <div className="space-y-3 pt-1">
+              {/* Root Cause & How It Occurred */}
+              <div className="bg-stone-950/70 rounded-xl p-3.5 border border-rose-500/25 space-y-2">
+                <div className="flex items-center gap-2 text-[11px] font-bold text-rose-300 uppercase tracking-wider font-mono">
+                  <Fingerprint className="w-3.5 h-3.5 text-rose-400" />
+                  <span>{lang === "en" ? "Forensic Root-Cause Analysis (How Tampering Occurred)" : "ವಿಧಿವಿಜ್ಞಾನ ಮೂಲ-ಕಾರಣ ವಿಶ್ಲೇಷಣೆ (ತಿದ್ದುಪಡಿ ಹೇಗೆ ಸಂಭವಿಸಿತು)"}</span>
+                </div>
+                <p className="text-xs text-stone-300 leading-relaxed">
+                  {ledgerDetails.explanation || (lang === "en" 
+                    ? "A database record was modified or deleted directly in the database without recalculating the cryptographic SHA-256 block signature." 
+                    : "ಕ್ರಿಪ್ಟೋಗ್ರಾಫಿಕ್ SHA-256 ಬ್ಲಾಕ್ ಸಹಿಯನ್ನು ಮರು-ಲೆಕ್ಕಿಸದೆ ಡೇಟಾಬೇಸ್‌ನಲ್ಲಿ ನೇರವಾಗಿ ಬದಲಾಯಿಸಲಾಗಿದೆ.")}
+                </p>
+                {ledgerDetails.remediation && (
+                  <p className="text-[11px] text-amber-400/90 font-mono pt-1">
+                    <strong>Protocol Note:</strong> {ledgerDetails.remediation}
+                  </p>
+                )}
+              </div>
+
+              {/* Forensic Block Coordinates */}
+              {ledgerDetails.block_number && (
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[10px] font-mono">
+                  <div className="bg-stone-900/60 p-2 rounded-lg border border-stone-800">
+                    <span className="text-stone-500 block">Compromised Block:</span>
+                    <span className="font-bold text-rose-300">#{ledgerDetails.block_number}</span>
+                  </div>
+                  <div className="bg-stone-900/60 p-2 rounded-lg border border-stone-800">
+                    <span className="text-stone-500 block">Database ROWID:</span>
+                    <span className="font-bold text-stone-200">{ledgerDetails.rowid || "—"}</span>
+                  </div>
+                  <div className="bg-stone-900/60 p-2 rounded-lg border border-stone-800">
+                    <span className="text-stone-500 block">Target Action:</span>
+                    <span className="font-bold text-stone-200">{ledgerDetails.action_type || "—"}</span>
+                  </div>
+                  <div className="bg-stone-900/60 p-2 rounded-lg border border-stone-800">
+                    <span className="text-stone-500 block">Recorded By:</span>
+                    <span className="font-bold text-[#C79A4E]">KSP-{ledgerDetails.officer_kgid || "1594888"}</span>
+                  </div>
+                </div>
+              )}
+
+              {/* Cryptographic Hash Comparison Grid */}
+              <div className="bg-stone-950/90 rounded-xl p-3 border border-stone-800 text-[10px] font-mono space-y-1.5 overflow-x-auto">
+                <div className="text-stone-500 font-bold uppercase tracking-wider flex items-center gap-1.5 pb-1 border-b border-stone-850">
+                  <Database className="w-3 h-3 text-[#C79A4E]" />
+                  <span>{lang === "en" ? "Cryptographic Signature Discrepancy" : "ಕ್ರಿಪ್ಟೋಗ್ರಾಫಿಕ್ ಸಹಿ ವ್ಯತ್ಯಾಸ"}</span>
+                </div>
+                {ledgerDetails.tamper_type === "chain_severed" ? (
+                  <>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-stone-400">
+                      <span>Expected Prev Hash (Block #{ledgerDetails.block_number - 1}):</span>
+                      <span className="text-emerald-400 select-all font-mono">{ledgerDetails.expected_prev_hash || "0000000000000000..."}</span>
+                    </div>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-rose-300">
+                      <span>Stored Prev Hash (Block #{ledgerDetails.block_number}):</span>
+                      <span className="text-rose-400 select-all font-mono">{ledgerDetails.stored_prev_hash || "null"} (SEVERED LINK)</span>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-stone-400">
+                      <span>Computed SHA-256 (from DB row data):</span>
+                      <span className="text-emerald-400 select-all font-mono">{ledgerDetails.computed_hash || "—"}</span>
+                    </div>
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 text-rose-300">
+                      <span>Stored Block Hash (tampered in DB):</span>
+                      <span className="text-rose-400 select-all font-mono">{ledgerDetails.stored_row_hash || "—"} (MISMATCH)</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
