@@ -3612,8 +3612,8 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
         # needs), this query fails cleanly and reports that plainly instead
         # of a raw 500.
         query = (
-            "SELECT employee_id, action_type, target_entity, query_text, response_summary, "
-            "session_id, logged_at, prev_hash, row_hash FROM AuditLog ORDER BY logged_at ASC"
+            "SELECT ROWID, employee_id, action_type, target_entity, query_text, response_summary, "
+            "session_id, logged_at, prev_hash, row_hash FROM AuditLog ORDER BY ROWID ASC"
         )
         try:
             res = catalyst_app.zql().execute_query(query)
