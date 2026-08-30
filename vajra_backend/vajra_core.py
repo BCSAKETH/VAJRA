@@ -133,7 +133,7 @@ try:
         catalyst_app = zcatalyst_sdk.initialize_app(
             credential=cred,
             options={
-                'project_id': os.getenv("CATALYST_PROJECT_ID", "50212000000008001"),
+                'project_id': os.getenv("CATALYST_PROJECT_ID", "50212000000025002"),
                 'project_key': os.getenv("CATALYST_PROJECT_KEY", "60074806366"),
                 'project_domain': "zoho.in" if os.getenv("CATALYST_REGION", "IN") == "IN" else "zoho.com"
             }
@@ -157,7 +157,7 @@ try:
             except Exception:
                 pass
                 
-        project_id = os.getenv("CATALYST_PROJECT_ID", "50212000000008001")
+        project_id = os.getenv("CATALYST_PROJECT_ID", "50212000000025002")
         url = f"https://api.catalyst.zoho.in/baas/v1/project/{project_id}/query"
         headers = {
             "Authorization": f"Zoho-oauthtoken {token}",
