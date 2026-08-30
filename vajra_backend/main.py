@@ -2163,6 +2163,30 @@ def _get_cowork_role(session_id: str, employee_id: int) -> Optional[str]:
     return "owner"
 
 
+def _safe_json_loads(raw: Optional[str], default_val: Any = None) -> Any:
+    if default_val is None:
+        default_val = {}
+    if not raw or not str(raw).strip():
+        return default_val
+    s = str(raw).strip()
+    try:
+        return json.loads(s)
+    except Exception:
+        pass
+    try:
+        # Fix double-escaped quotes in JSON strings (e.g. \\" -> \")
+        fixed = s.replace('\\\\"', '\\"')
+        return json.loads(fixed)
+    except Exception:
+        pass
+    try:
+        # Strip extraneous trailing escapes
+        fixed = re.sub(r'\\\\(?=["/\\])', r'\\', s)
+        return json.loads(fixed)
+    except Exception:
+        return default_val
+
+
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str, request: Request, location_context: str = Depends(security_firewall)):
     """
@@ -2192,22 +2216,8 @@ async def get_session_messages(session_id: str, request: Request, location_conte
         messages = []
         for r in res:
             m = r.get("ChatMessage", {})
-            # Confirmed live: data_json/citations_json get hard-truncated at
-            # 3800/1800 chars in _persist_chat_message's fallback tiers -- a
-            # truncation that lands mid-string produces invalid JSON. Before
-            # this fix, one such row's json.loads() exception blew up the
-            # WHOLE request (caught by the outer except below), silently
-            # wiping the entire session's visible history, not just that one
-            # row. Isolate each row so a single bad one degrades to an empty
-            # data/citations for itself instead of hiding every other message.
-            try:
-                data = json.loads(m.get("data_json") or "{}")
-            except Exception:
-                data = {}
-            try:
-                citations = json.loads(m.get("citations_json") or "[]")
-            except Exception:
-                citations = []
+            data = _safe_json_loads(m.get("data_json"), {})
+            citations = _safe_json_loads(m.get("citations_json"), [])
             stored_text = m.get("text")
             # _text_en/_text_kn were packed into data_json (see chat_endpoint)
             # since Catalyst Datastore rejects INSERTs referencing any column

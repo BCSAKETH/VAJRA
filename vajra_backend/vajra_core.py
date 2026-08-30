@@ -198,7 +198,7 @@ def _zcql_escape_value(v) -> str:
         return "true" if v else "false"
     if isinstance(v, (int, float)):
         return str(v)
-    s = str(v).replace("\\", "\\\\").replace("'", "''").replace("\n", "\\n").replace("\r", "\\r")
+    s = str(v).replace("'", "''").replace("\r", "")
     return f"'{s}'"
 
 
