@@ -4239,6 +4239,32 @@ def _find_export_row(request_id: str):
         return None
     a = res[0].get("ProactiveAlerts", {})
     try:
+        meta = json.loads(a.get("AlertMessage") or "{}")
+    except Exception:
+        meta = {}
+    return {"rowid": a.get("ROWID"), "meta": meta}
+
+
+def _create_export_request(requester_badge, requester_name, session_id, reasons, summary):
+    request_id = uuid.uuid4().hex[:16]
+    meta = {
+        "request_id": request_id, "requester_badge": str(requester_badge or ""),
+        "requester_name": requester_name or "Officer", "session_id": session_id or "",
+        "reasons": reasons, "summary": (summary or "")[:180], "status": "pending",
+        "approver_badge": None, "decided_at": None,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    try:
+        zcql_insert_row("ProactiveAlerts", {
+            "AlertType": "EXPORT_APPROVAL", "Severity": "Critical",
+            "TriggerTime": datetime.utcnow().isoformat(), "IsRead": False,
+            "DistrictID": "0", "AlertMessage": json.dumps(meta),
+        })
+    except Exception as e:
+        logger.warning(f"_create_export_request insert failed: {e}")
+    return request_id, meta
+
+
 class PDFExportRequest(BaseModel):
     transcript: List[Dict[str, Any]]
     badge_id: str = "KSP-2026"
