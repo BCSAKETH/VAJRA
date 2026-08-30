@@ -1,6 +1,23 @@
 import os as _os
+import json as _json
 from dotenv import load_dotenv
-load_dotenv(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".env"))
+
+# 1. Load from .env if present (Local environment)
+_env_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), ".env")
+if _os.path.exists(_env_path):
+    load_dotenv(_env_path)
+
+# 2. Load from bundled runtime configuration (AppSail production)
+_cfg_path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "catalyst_runtime_config.json")
+if _os.path.exists(_cfg_path):
+    try:
+        with open(_cfg_path, "r", encoding="utf-8") as _f:
+            _cfg = _json.load(_f)
+            for _k, _v in _cfg.items():
+                if _k not in _os.environ or not _os.environ[_k]:
+                    _os.environ[_k] = str(_v)
+    except Exception:
+        pass
 
 import os
 import json

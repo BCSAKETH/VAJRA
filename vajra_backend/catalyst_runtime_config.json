@@ -1,0 +1,17 @@
+{
+  "GEMINI_API_KEY": "",
+  "APP_URL": "http://localhost:3000",
+  "SUPABASE_URL": "https://jmrywealyyzxmeujnstn.supabase.co",
+  "SUPABASE_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imptcnl3ZWFseXl6eG1ldWpuc3RuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQxOTYxMjgsImV4cCI6MjA4OTc3MjEyOH0.FHqBadoFIrOT3eVZMmxDDfhSb4kJW_h0a07NfVwIjXs",
+  "CATALYST_PROJECT_ID": "50212000000025002",
+  "CATALYST_PROJECT_KEY": "60074806366",
+  "CATALYST_REGION": "IN",
+  "CATALYST_CLIENT_ID": "1000.C7P6NV7VABS62L20K4PU2FPKHR4XXC",
+  "CATALYST_CLIENT_SECRET": "0578e8267e011fafc60ef0d93bd769d283b7c5b803",
+  "CATALYST_REFRESH_TOKEN": "1000.9e78850ec0e125a9822664a0de2472fa.072a393efae4ff953cd72be4c89e6f7c",
+  "X_ZOHO_CATALYST_ACCOUNTS_URL": "https://accounts.zoho.in",
+  "X_ZOHO_CATALYST_CONSOLE_URL": "https://console.catalyst.zoho.in",
+  "CATALYST_LLM_ENDPOINT": "https://api.catalyst.zoho.in/quickml/v1/project/50212000000025002/glm/chat",
+  "CATALYST_QWEN_ENDPOINT": "https://api.catalyst.zoho.in/quickml/v1/project/50212000000025002/vlm/chat",
+  "SESSION_SECRET": "249495680a7f1c3be1d00944170923aac7869bd5a4a61860001ab0cbd97a752b"
+}
