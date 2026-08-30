@@ -3640,7 +3640,7 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
             if stored_prev_hash != expected_prev_hash:
                 return {
                     "valid": False,
-                    "reason": f"Chain broken at entry {checked + 1}: stored prev_hash does not match the previous entry's actual hash.",
+                    "reason": f"Chain broken at entry {checked + 1} (ROWID {log.get('ROWID')}): stored prev_hash '{stored_prev_hash}' != expected '{expected_prev_hash}'",
                     "checked": checked
                 }
 
@@ -3658,7 +3658,7 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
             if computed_hash != stored_row_hash:
                 return {
                     "valid": False,
-                    "reason": f"Hash mismatch at entry {checked + 1} — this row's content does not match its stored hash. Either tampered, or a field exceeded its stored length at write time (see endpoint note).",
+                    "reason": f"Hash mismatch at entry {checked + 1} (ROWID {log.get('ROWID')}): computed '{computed_hash}' != stored '{stored_row_hash}'",
                     "checked": checked
                 }
 
