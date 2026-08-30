@@ -2619,7 +2619,8 @@ async def _run_ai_turn_and_persist(
         employee_id=employee_id,
         user_unit_id=unit_id,
         officer_name=officer_name,
-        answer_mode=answer_mode
+        answer_mode=answer_mode,
+        officer_badge=officer_badge
     )
 
     # Generate BOTH language versions of the answer, always -- not just the

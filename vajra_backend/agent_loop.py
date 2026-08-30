@@ -795,6 +795,23 @@ class VajraAgentLoop:
             return m.group(0).upper() if m else ""
 
         def guess_district() -> str:
+            _KN_DISTRICT_MAP = {
+                "ರಾಯಚೂರು": "Raichur", "ಬಳ್ಳಾರಿ": "Ballari", "ಬೆಳಗಾವಿ": "Belagavi", "ಕೋಲಾರ": "Kolar",
+                "ಮೈಸೂರು": "Mysuru", "ಬೆಂಗಳೂರು": "Bengaluru Urban", "ತುಮಕೂರು": "Tumakuru",
+                "ಕಲಬುರಗಿ": "Kalaburagi", "ಗುಲ್ಬರ್ಗ": "Kalaburagi", "ಉಡುಪಿ": "Udupi",
+                "ದಕ್ಷಿಣ ಕನ್ನಡ": "Dakshina Kannada", "ಉತ್ತರ ಕನ್ನಡ": "Uttara Kannada",
+                "ಶಿವಮೊಗ್ಗ": "Shivamogga", "ದಾವಣಗೆರೆ": "Davanagere", "ಹಾಸನ": "Hassan",
+                "ಮಂಡ್ಯ": "Mandya", "ಚಿಕ್ಕಮಗಳೂರು": "Chikkamagaluru", "ಧಾರವಾಡ": "Dharwad",
+                "ಗದಗ": "Gadag", "ಹಾವೇರಿ": "Haveri", "ವಿಜಯಪುರ": "Vijayapura",
+                "ಬಾಗಲಕೋಟೆ": "Bagalkote", "ಕೊಪ್ಪಳ": "Koppal", "ಯಾದಗಿರಿ": "Yadgir",
+                "ಬೀದರ್": "Bidar", "ಚಾಮರಾಜನಗರ": "Chamarajanagar", "ಚಿಕ್ಕಬಳ್ಳಾಪುರ": "Chikkaballapura",
+                "ಚಿತ್ರದುರ್ಗ": "Chitradurga", "ಕೊಡಗು": "Kodagu", "ರಾಮನಗರ": "Ramanagara",
+                "ವಿಜಯನಗರ": "Vijayanagara"
+            }
+            for kn_name, en_name in _KN_DISTRICT_MAP.items():
+                if kn_name in query:
+                    return en_name
+
             real = get_real_districts()
             for d in sorted(real, key=len, reverse=True):
                 if d and d.lower() in q:
@@ -859,8 +876,8 @@ class VajraAgentLoop:
               "extra patrols", "where should i send", "where to send patrol", "where to deploy", "where to focus",
               "proactive deployment", "patrol plan", "which areas", "areas to patrol", "patrol this week",
               "where should i patrol", "send patrols", "allocate patrols", "patrol allocation", "beat allocation",
-              "where to send officers", "focus policing", "deploy officers"], "plan_patrol_deployment", {"district": district}, "yes"),
-            (["risk score", "conviction risk", "recidivism", "re-offend", "risk for", "risk of"], "get_offender_risk", {"suspect_name": name}, name),
+              "where to send officers", "focus policing", "deploy officers", "ಗಸ್ತು", "ಬೀಟ್", "ಗಸ್ತು ತಿರುಗುವಿಕೆ", "ಬೀಟ್ ಯೋಜನೆ"], "plan_patrol_deployment", {"district": district}, "yes"),
+            (["risk score", "conviction risk", "recidivism", "re-offend", "risk for", "risk of", "ಅಪಾಯ", "ರಿಸ್ಕ್"], "get_offender_risk", {"suspect_name": name}, name),
             (["shares a phone", "shares a vehicle", "shared phone", "shared vehicle", "same phone", "same vehicle",
               "syndicate link", "hidden link", "linked by phone", "linked by vehicle", "shared contact",
               "common phone", "common vehicle", "who else uses"], "shared_attribute_links", {"suspect_name": name}, name),
@@ -871,21 +888,15 @@ class VajraAgentLoop:
             (["network", "syndicate", "co-accused", "connections for", "connections of", "connected to",
               "connected with", "associated with", "crimes associated", "crimes connected", "crimes linked",
               "main crimes", "crimes involving", "involved in", "linked to", "crimes is", "crimes does",
-              "crimes of", "cases associated", "cases connected"], "query_graph_network", {"suspect_name": name}, name),
-            (["money laundering", "hawala", "mule account", "financial ring", "money network", "laundering ring", "money ring"], "detect_financial_ring", {"entity_id": name}, name),
-            (["financial", "money trail", "transaction", "bank account"], "query_financial_links", {"entity_id": name}, name),
+              "crimes of", "cases associated", "cases connected", "ಸಂಪರ್ಕ", "ಜಾಲ", "ಸಂಘಟಿತ"], "query_graph_network", {"suspect_name": name}, name),
+            (["money laundering", "hawala", "mule account", "financial ring", "money network", "laundering ring", "money ring", "ಮನಿ ಲಾಂಡರಿಂಗ್", "ಖಾತೆ"], "detect_financial_ring", {"entity_id": name}, name),
+            (["financial", "money trail", "transaction", "bank account", "ಹಣಕಾಸು"], "query_financial_links", {"entity_id": name}, name),
             (["mo profile", "modus operandi", "behavioral profile", "behaviour profile"], "get_mo_profile", {"suspect_name": name}, name),
             (["tell me about", "who is", "information on", "details on", "profile of", "about suspect", "brief me on"], "generate_full_report", {"suspect_name": name, "user_query": query}, name),
             (["timeline", "chronology", "milestones"], "get_case_timeline", {"case_no": case_no}, case_no),
             (["summarize", "summary", "case dossier"], "summarize_case", {"case_no": case_no}, case_no),
-            # NOTE: a precedent-grounded section RECOMMENDER was built + tested but
-            # NOT wired -- the dataset's non-unique CaseMasterID conflates ~5
-            # different crimes per case-id and they share one section-set, so
-            # recommendations by crime type came out wrong (theft -> NDPS/Rape).
-            # Shipping wrong legal-section advice on a police tool is unsafe, so it
-            # stays disabled until the data has a reliable per-crime section link.
             (["section", "ipc", "bns ", "legal provision"], "get_case_sections", {"case_no": case_no}, case_no),
-            (["hotspot", "cluster map", "crime map", "dbscan"], "query_hotspots", {"district": district}, "yes"),
+            (["hotspot", "cluster map", "crime map", "dbscan", "ಹಾಟ್‌ಸ್ಪಾಟ್‌", "ಹಾಟ್ಸ್ಪಾಟ್", "ನಕ್ಷೆ"], "query_hotspots", {"district": district}, "yes"),
             (["organized crime", "crime group", "gang", "criminal syndicate detect"], "detect_crime_groups", {}, "yes"),
             (["online abuse", "online harassment", "cyber abuse", "cyberbully", "cyber bully", "harassing me online",
               "threatening me online", "obscene message", "morphed", "fake profile", "blackmail", "sextort",
@@ -1432,10 +1443,11 @@ class VajraAgentLoop:
             logger.warning(f"durable history load failed for {session_id}: {e}")
         return out
 
-    def run_agent_loop(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None, answer_mode: str = "standard") -> Dict[str, Any]:
+    def run_agent_loop(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None, answer_mode: str = "standard", officer_badge: Optional[str] = None) -> Dict[str, Any]:
         """
         Primary execution entry point. Decides what tools to run in sequence using LLM function calling.
         """
+        self.officer_badge = officer_badge
         # main.py prepends officer-identity and case-context headers to
         # `query` -- e.g. "[Context: you are speaking with Officer X ... or
         # current assignment, call the get_my_profile tool ...]". Those are
@@ -2366,9 +2378,14 @@ class VajraAgentLoop:
                 text_result = "I could not resolve your officer profile from this session."
             else:
                 try:
-                    emp_res = catalyst_app.zql().execute_query(
-                        f"SELECT EmployeeID, KGID, FirstName, UnitID, RankID, DesignationID FROM Employee WHERE EmployeeID = {employee_id} LIMIT 1"
-                    )
+                    if getattr(self, "officer_badge", None):
+                        emp_res = catalyst_app.zql().execute_query(
+                            f"SELECT EmployeeID, KGID, FirstName, UnitID, RankID, DesignationID FROM Employee WHERE KGID = '{self.officer_badge}' LIMIT 1"
+                        )
+                    else:
+                        emp_res = catalyst_app.zql().execute_query(
+                            f"SELECT EmployeeID, KGID, FirstName, UnitID, RankID, DesignationID FROM Employee WHERE EmployeeID = {employee_id} LIMIT 1"
+                        )
                     if not emp_res:
                         text_result = "I could not find your officer profile in the database."
                     else:
