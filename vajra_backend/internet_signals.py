@@ -263,6 +263,27 @@ def get_district_news(district: str, limit: int = 5) -> Dict[str, Any]:
     return result
 
 
+def clean_search_query(q: str) -> str:
+    """Strips conversational instructions, filler words, and punctuation to extract core search keywords."""
+    if not q:
+        return ""
+    s = q.strip()
+    stopwords = [
+        r"\b(perform|execute|conduct|do|gather|collect|find|fetch|search|scrape|look\s+up|give\s+me|show\s+me|tell\s+me)\b",
+        r"\b(an?\s+|the\s+)?(osint|web|internet|google)\s*(search|sweep|inquest|scraping)?\b",
+        r"\b(recent\s+|latest\s+)?(intelligence|news|articles|advisories|signals|reports|data|info|information|updates)\b",
+        r"\b(and|on|for|about|regarding|in|of|from|with|to)\b",
+        r"\b(the\s+web\s+for|on\s+the\s+web|online|can\s+you|please)\b",
+    ]
+    for pat in stopwords:
+        s = re.sub(pat, " ", s, flags=re.IGNORECASE)
+    s = re.sub(r"[^\w\s\-\.]", " ", s)
+    tokens = [w for w in s.split() if len(w) > 1 and w.lower() not in {"and", "or", "the", "for", "about", "with", "from", "in", "on", "to", "at", "an", "is"}]
+    if len(tokens) >= 2:
+        return " ".join(tokens[:8])
+    return q.strip()
+
+
 def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
     """
     Generic public web search for OSINT / spike-explainer. Same dormant-without-
@@ -273,11 +294,15 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
     scrapers (Google News RSS + DuckDuckGo HTML), merges and de-duplicates them
     by URL/title, and returns as many distinct results as it can up to `limit`.
     """
-    query = (query or "").strip()
-    if not query:
+    raw_query = (query or "").strip()
+    if not raw_query:
         return {"configured": True, "items": [], "note": "Empty query."}
+    
+    clean_q = clean_search_query(raw_query)
+    effective_query = clean_q if clean_q else raw_query
+    
     limit = max(1, min(int(limit or 24), 60))  # deep sweep ceiling (request-budget bounded)
-    ck = f"search::{query.lower()}::{limit}"
+    ck = f"search::{effective_query.lower()}::{limit}"
     cached = _cache_get(ck)
     if cached is not None:
         return cached
@@ -287,7 +312,7 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
         if _SEARCH_KEY and _SEARCH_ENGINE == "serpapi":
             r = requests.get(
                 "https://serpapi.com/search.json",
-                params={"q": query, "num": limit, "hl": "en", "gl": "in", "api_key": _SEARCH_KEY},
+                params={"q": effective_query, "num": limit, "hl": "en", "gl": "in", "api_key": _SEARCH_KEY},
                 timeout=_HTTP_TIMEOUT,
             )
             if r.status_code == 200:
@@ -304,7 +329,7 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
             seen = {(_norm(i.get("url")) or _norm(i.get("title"))) for i in merged}
             for scraper in (_scrape_news_rss, _scrape_duckduckgo):
                 try:
-                    for it in scraper(query, limit):
+                    for it in scraper(effective_query, limit):
                         key = _norm(it.get("url")) or _norm(it.get("title"))
                         if key and key not in seen:
                             seen.add(key); merged.append(it)
@@ -315,8 +340,19 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
                 if len(merged) >= limit:
                     break
             items = merged
+            
+        # If effective_query returned nothing and differed from raw_query, try raw query as fallback
+        if not items and clean_q and clean_q != raw_query:
+            for scraper in (_scrape_news_rss, _scrape_duckduckgo):
+                try:
+                    for it in scraper(raw_query, limit):
+                        items.append(it)
+                        if len(items) >= limit:
+                            break
+                except Exception as ie:
+                    pass
     except Exception as e:
-        logger.warning(f"Web search error for {query!r}: {e}")
+        logger.warning(f"Web search error for {effective_query!r}: {e}")
 
     result = {"configured": True, "items": items[:limit],
               "note": "" if items else "No public results found."}

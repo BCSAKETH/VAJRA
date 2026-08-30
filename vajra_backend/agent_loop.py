@@ -3691,9 +3691,8 @@ class VajraAgentLoop:
 
         elif tool_name == "web_search":
             import internet_signals
-            q = (params.get("query") or "").strip()
-            q = re.sub(r"\b(search|look up|google|find online|on the web|online|for)\b", " ", q, flags=re.IGNORECASE)
-            q = re.sub(r"\s+", " ", q).strip()
+            raw_q = (params.get("query") or "").strip()
+            q = internet_signals.clean_search_query(raw_q) or raw_q
             items = []
             if q:
                 try:
