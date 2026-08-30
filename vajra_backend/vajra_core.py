@@ -29,11 +29,11 @@ try:
     from zcatalyst_sdk.zcql import Zcql
     import time
     
-    # Robust cached token retrieval to avoid Zoho rate limiting on restarts/hot-reloads
-    def get_cached_access_token():
+    # Robust cached token retrieval with self-healing auto-refresh on 401
+    def get_cached_access_token(force_refresh: bool = False):
         token_file = os.path.join(os.path.dirname(__file__), ".token_cache")
-        # Reuse cached token if it's less than 50 minutes (3000 seconds) old
-        if os.path.exists(token_file):
+        # Reuse cached token if it's less than 50 minutes (3000 seconds) old and not forced
+        if not force_refresh and os.path.exists(token_file):
             mtime = os.path.getmtime(token_file)
             if time.time() - mtime < 3000:
                 try:
@@ -44,11 +44,15 @@ try:
                 except Exception:
                     pass
                     
-        # Token is either missing, empty, or expired -> Fetch a new one
-        client_id = os.getenv("CATALYST_CLIENT_ID")
-        client_secret = os.getenv("CATALYST_CLIENT_SECRET")
-        refresh_token = os.getenv("CATALYST_REFRESH_TOKEN")
+        # Token is missing, expired, or forced -> Fetch a new one from Zoho OAuth
+        client_id = os.getenv("CATALYST_CLIENT_ID") or os.getenv("ZOHO_CLIENT_ID")
+        client_secret = os.getenv("CATALYST_CLIENT_SECRET") or os.getenv("ZOHO_CLIENT_SECRET")
+        refresh_token = os.getenv("CATALYST_REFRESH_TOKEN") or os.getenv("ZOHO_REFRESH_TOKEN")
         
+        if not (client_id and client_secret and refresh_token):
+            logger.warning("Zoho OAuth credentials not fully set in environment.")
+            return None
+
         payload = {
             "client_id": client_id,
             "client_secret": client_secret,
@@ -64,8 +68,11 @@ try:
                 if "access_token" in data:
                     t = data["access_token"]
                     # Write to cache file
-                    with open(token_file, 'w') as f:
-                        f.write(t)
+                    try:
+                        with open(token_file, 'w') as f:
+                            f.write(t)
+                    except Exception:
+                        pass
                     logger.info("New Zoho OAuth access token generated and cached.")
                     return t
                 else:
@@ -74,17 +81,19 @@ try:
                 logger.warning(f"Error fetching access token (retrying): {ex}")
             time.sleep(delay)
             
-        # Last resort fallback: read the expired/last cached token to avoid crashing
+        # Fallback to existing cache if refresh failed
         if os.path.exists(token_file):
-            with open(token_file, 'r') as f:
-                return f.read().strip()
+            try:
+                with open(token_file, 'r') as f:
+                    return f.read().strip()
+            except Exception:
+                pass
         return None
 
     # Patch RefreshTokenCredential.token to use our cached token
     def patched_token(self) -> str:
         t = get_cached_access_token()
         if t:
-            # Update SDK's internal caching structure to satisfy it
             self._cached_token = {
                 'access_token': t,
                 'expires_in': int(round(time.time())) + 3600 * 1000
@@ -94,36 +103,44 @@ try:
         
     RefreshTokenCredential.token = patched_token
 
-    client_id = os.getenv("CATALYST_CLIENT_ID")
-    if os.getenv("PORT") and not os.getenv("X_ZOHO_CATALYST_IS_LOCAL") == "true":
-        logger.info("Initializing Zoho Catalyst SDK with container credentials (AppSail environment).")
-        catalyst_app = zcatalyst_sdk.initialize_app()
-    elif client_id:
-        logger.info("Initializing Zoho Catalyst SDK with OAuth refresh token (Local environment).")
+    client_id = os.getenv("CATALYST_CLIENT_ID") or os.getenv("ZOHO_CLIENT_ID")
+    refresh_token = os.getenv("CATALYST_REFRESH_TOKEN") or os.getenv("ZOHO_REFRESH_TOKEN")
+    
+    if client_id and refresh_token:
+        logger.info("Initializing Zoho Catalyst SDK with OAuth refresh token (Unified environment).")
         cred = RefreshTokenCredential({
             'client_id': client_id,
-            'client_secret': os.getenv("CATALYST_CLIENT_SECRET"),
-            'refresh_token': os.getenv("CATALYST_REFRESH_TOKEN")
+            'client_secret': os.getenv("CATALYST_CLIENT_SECRET") or os.getenv("ZOHO_CLIENT_SECRET"),
+            'refresh_token': refresh_token
         })
         catalyst_app = zcatalyst_sdk.initialize_app(
             credential=cred,
             options={
-                'project_id': os.getenv("CATALYST_PROJECT_ID"),
-                'project_key': os.getenv("CATALYST_PROJECT_KEY"),
-                'project_domain': "zoho.in" if os.getenv("CATALYST_REGION") == "IN" else "zoho.com"
+                'project_id': os.getenv("CATALYST_PROJECT_ID", "50212000000008001"),
+                'project_key': os.getenv("CATALYST_PROJECT_KEY", "60074806366"),
+                'project_domain': "zoho.in" if os.getenv("CATALYST_REGION", "IN") == "IN" else "zoho.com"
             }
         )
+    elif os.getenv("PORT") and not os.getenv("X_ZOHO_CATALYST_IS_LOCAL") == "true":
+        logger.info("Initializing Zoho Catalyst SDK with container credentials (AppSail environment).")
+        catalyst_app = zcatalyst_sdk.initialize_app()
     else:
         logger.info("Initializing Zoho Catalyst SDK with no arguments (Fallback).")
         catalyst_app = zcatalyst_sdk.initialize_app()
     
-    # Monkeypatch execute_query to bypass SDK Accept header bug in India region
+    # Monkeypatch execute_query with self-healing token refresh & retry on 401
     def patched_execute_query(self, query: str):
         logger.info(f"Patched ZCQL query: {query}")
-        credential = self._app.credential
-        credential._switch_user("user")
-        token = credential.token()
-        project_id = self._app.config.get("project_id")
+        token = get_cached_access_token()
+        if not token:
+            try:
+                credential = self._app.credential
+                credential._switch_user("user")
+                token = credential.token()
+            except Exception:
+                pass
+                
+        project_id = os.getenv("CATALYST_PROJECT_ID", "50212000000008001")
         url = f"https://api.catalyst.zoho.in/baas/v1/project/{project_id}/query"
         headers = {
             "Authorization": f"Zoho-oauthtoken {token}",
@@ -132,6 +149,15 @@ try:
             "environment": "Development"
         }
         res = requests.post(url, headers=headers, json={"query": query})
+        
+        # Self-healing: if token expired or invalid, force refresh once and retry
+        if res.status_code == 401:
+            logger.warning("ZCQL received 401 INVALID_TOKEN. Forcing OAuth token refresh and retrying...")
+            fresh_token = get_cached_access_token(force_refresh=True)
+            if fresh_token:
+                headers["Authorization"] = f"Zoho-oauthtoken {fresh_token}"
+                res = requests.post(url, headers=headers, json={"query": query})
+                
         logger.info(f"Patched ZCQL response status: {res.status_code}")
         if res.status_code != 200:
             raise Exception(f"ZCQL query failed: {res.status_code} - {res.text}")
