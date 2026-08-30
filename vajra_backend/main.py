@@ -1939,9 +1939,9 @@ def _fit_json(obj: Any, cap: int) -> str:
         s = json.dumps(d, ensure_ascii=False)
         if len(s) <= cap:
             return s
-    # Last resort: keep identity + English narrative so the message is never
-    # blank/corrupt (English only, since _text_kn was already dropped above).
-    minimal = {k: d.get(k) for k in ("case_no", "primary_accused", "_text_en") if d.get(k)}
+    # Last resort: keep identity + English narrative + news signals so the message is never
+    # blank/corrupt.
+    minimal = {k: d.get(k) for k in ("case_no", "primary_accused", "_text_en", "news", "scope") if d.get(k)}
     s = json.dumps(minimal, ensure_ascii=False)
     return s if len(s) <= cap else "{}"
 
@@ -1957,22 +1957,7 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
 
     _SESSION_MESSAGES_CACHE.pop(session_id, None)
 
-    # data_json/citations caps: the ChatMessage.data_json column was probed
-    # live and accepts at least 100,000 chars. Cap set to 95,000 (safely under
-    # the column limit). Kannada dossiers with per-panel text_kn blew past the
-    # old 60,000 cap; the old code then HARD-SLICED json.dumps(...)[:cap], which
-    # cut mid-string -> invalid JSON -> json.loads on read failed -> data={} ->
-    # panels silently vanished. _fit_json below never slices: it serializes with
-    # ensure_ascii=False (real UTF-8 Kannada is ~6x smaller than \uXXXX escapes,
-    # and this also removes the \u double-encode gibberish at the source), and if
-    # still over cap it STRUCTURALLY drops the most-dispensable fields first
-    # (per-panel text_kn -> full-narrative _text_kn -> raw widget data) so what
-    # persists is always VALID JSON, never a corrupted slice.
-    # The ChatMessage.data_json column truncates at ~10,000 chars (a large news
-    # payload was stored at exactly 10000, mid-string -> invalid JSON -> empty
-    # widget). Cap safely under that; _fit_json trims news lists / panel data to
-    # keep the JSON valid rather than letting the datastore hard-slice it.
-    _DATA_JSON_CAP = 9200
+    _DATA_JSON_CAP = 28000
     _CITATIONS_CAP = 8000
     # 1. Full attempt with all fields
     try:

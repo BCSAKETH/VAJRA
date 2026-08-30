@@ -3696,14 +3696,20 @@ class VajraAgentLoop:
             items = []
             if q:
                 try:
-                    # Deep sweep: pull as many distinct results as the scrapers can
-                    # surface (both Google News RSS + DuckDuckGo, merged/de-duped).
-                    items = (internet_signals.web_search(q, 60) or {}).get("items") or []
+                    raw_items = (internet_signals.web_search(q, 12) or {}).get("items") or []
+                    for it in raw_items[:10]:
+                        items.append({
+                            "title": str(it.get("title") or "")[:180],
+                            "source": str(it.get("source") or "News")[:60],
+                            "url": str(it.get("url") or "")[:350],
+                            "snippet": str(it.get("snippet") or it.get("description") or "")[:220],
+                            "published_at": str(it.get("published_at") or it.get("date") or "")[:40]
+                        })
                 except Exception as e:
                     logger.warning(f"web_search failed for {q!r}: {e}")
             if items:
                 response_type = "news"
-                text_result = f"{len(items)} open-source web results swept for '{q}' -- unverified, not official records. See below."
+                text_result = f"Found {len(items)} open-source web signals for '{q}'. Live unverified intelligence leads displayed below."
                 data = {"news": items, "scope": q}
             else:
                 response_type = "text"
