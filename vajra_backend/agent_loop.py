@@ -476,7 +476,9 @@ class VajraAgentLoop:
         "see", "look", "identify", "trace", "track", "investigate", "report", "profile",
         "details", "detail", "information", "info", "crime", "network", "hotspot", "hotspots",
         "case", "cases", "suspect", "accused", "risk", "dossier", "record", "records",
-        "generate", "create", "build", "make", "give me", "tell me",
+        "generate", "create", "build", "make", "give me", "tell me", "assess", "evaluate",
+        "evaluation", "calculate", "predict", "forecast", "review", "determine", "breakdown",
+        "conviction", "behavioral", "behavioural", "behavior", "behaviour", "score", "scores",
     }
 
     _KNOWN_CRIME_GROUPS = [
@@ -716,9 +718,15 @@ class VajraAgentLoop:
         else:
             year = ""
         has_crime_word = ("ಅಪರಾಧ" in q or "ಪ್ರಕರಣ" in q or crime)
-        # District ranking: "which districts have the most crime"
-        if ("ಜಿಲ್ಲೆ" in q) and (("ಹೆಚ್ಚು" in q) or ("ಅತಿ" in q) or ("ಹೆಚ್ಚಿನ" in q)) and ("ಅಪರಾಧ" in q):
-            return {"tool": "rank_districts", "parameters": {}}
+        # Patrol beat deployment: "patrol / beat plan"
+        if ("ಗಸ್ತು" in q) or ("ಬೀಟ್" in q):
+            return {"tool": "plan_patrol_deployment", "parameters": {"district": district or "Bengaluru Urban"}}
+        # Hotspots / Map: "hotspot / crime location clusters / map"
+        if ("ಹಾಟ್" in q) or ("ಹಾಟ್‌ಸ್ಪಾಟ್" in q) or ("ನಕ್ಷೆ" in q) or ("ಸಾಂದ್ರತೆ" in q) or ("ಸ್ಥಳ" in q and "ತೋರಿಸಿ" in q):
+            return {"tool": "query_hotspots", "parameters": {"district": district or "Bengaluru Urban"}}
+        # Repeat offenders / habitual criminals
+        if ("ಪುನರಾವರ್ತಿತ" in q) or ("ಹ್ಯಾಬಿಚುಯಲ್" in q) or ("ಅಪರಾಧಿ" in q and "ಅಪಾಯ" in q) or ("ಅಪರಾಧಿಗಳ ಪಟ್ಟಿ" in q):
+            return {"tool": "get_repeat_offenders", "parameters": {"district": district}}
         # Count: "how many <crime> cases (this year)"
         if ("ಎಷ್ಟು" in q) and has_crime_word:
             return {"tool": "count_cases", "parameters": {"district": district, "crime_group": crime, "year": year}}
@@ -731,12 +739,9 @@ class VajraAgentLoop:
         # Trend: "trend / over time"
         if ("ಪ್ರವೃತ್ತಿ" in q) or ("ಟ್ರೆಂಡ್" in q) or ("ಕಾಲಾನುಕ್ರಮ" in q):
             return {"tool": "get_crime_trends", "parameters": {"district": district, "crime_group": crime, "months": 0}}
-        # Hotspots: "hotspot / crime location clusters"
-        if ("ಹಾಟ್" in q) or ("ಹಾಟ್‌ಸ್ಪಾಟ್" in q) or ("ಅಪರಾಧ ಸ್ಥಳ" in q) or ("ಸಾಂದ್ರತೆ" in q):
-            return {"tool": "query_hotspots", "parameters": {"district": district or "Bengaluru Urban"}}
-        # Repeat offenders / risk
-        if ("ಪುನರಾವರ್ತಿತ" in q) or ("ಅಪರಾಧಿ" in q and "ಅಪಾಯ" in q):
-            return {"tool": "get_repeat_offenders", "parameters": {"district": district}}
+        # District ranking: "which districts have the most crime" (only if asking across districts, not inside a single district)
+        if ("ಜಿಲ್ಲೆಗಳು" in q or "ಯಾವ ಜಿಲ್ಲೆ" in q or not district) and (("ಹೆಚ್ಚು" in q) or ("ಅತಿ" in q) or ("ಹೆಚ್ಚಿನ" in q)) and ("ಅಪರಾಧ" in q):
+            return {"tool": "rank_districts", "parameters": {}}
         return None
 
     def _keyword_route_tool(self, query: str) -> Optional[Dict[str, Any]]:
@@ -766,27 +771,24 @@ class VajraAgentLoop:
         q = query.lower()
 
         def guess_name() -> str:
-            # Prefer a full "First Last" capitalized match; fall back to a
-            # single word directly after "suspect"/"for"/"connected to",
-            # case-insensitive -- confirmed live that real officer queries
-            # often don't capitalize names ("what crimes is ramesh connected
-            # to"), and this only runs after BOTH GLM and Qwen have already
-            # failed, so a slightly looser match here is worth it.
+            # If query is explicitly an open-source web search or URL summary, do not extract a suspect name
+            if any(ws in q for ws in ("search the web", "web search", "search online", "look it up", "look up online", "google", "find online", "on the internet", "the internet", "summarize this url", "read this url")):
+                return ""
+            # Prefer a full "First Last" capitalized match
             m = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", query)
             if m:
-                return m.group(1)
-            # "suspect X" checked before the more generic "for X"/"connected
-            # to X" -- otherwise "risk score for suspect Ramesh" matches on
-            # "for" first and captures "suspect" itself, never reaching the
-            # actual name after it.
-            for cue in (r"suspect", r"for", r"connected to"):
+                c = m.group(1)
+                if c.lower() not in self._NAME_STOPWORDS:
+                    return c
+            # "suspect X" checked before the more generic "for X"/"connected to X"
+            for cue in (r"suspect", r"for", r"connected to", r"of"):
                 m2 = re.search(rf"\b{cue}\s+([a-zA-Z]+)\b", query, re.IGNORECASE)
-                if m2 and m2.group(1).lower() not in ("suspect",):
+                if m2 and m2.group(1).lower() not in ("suspect",) and m2.group(1).lower() not in self._NAME_STOPWORDS:
                     return m2.group(1).title()
             # Reversed word order ("is ramesh connected to") -- a word
             # immediately BEFORE "connected"/"linked".
             m3 = re.search(r"\b([a-zA-Z]+)\s+(?:connected|linked)\b", query, re.IGNORECASE)
-            if m3 and m3.group(1).lower() not in ("is", "who", "what", "crimes"):
+            if m3 and m3.group(1).lower() not in ("is", "who", "what", "crimes") and m3.group(1).lower() not in self._NAME_STOPWORDS:
                 return m3.group(1).title()
             return ""
 
@@ -871,6 +873,11 @@ class VajraAgentLoop:
             # Self-identity -- must come first so "my details/profile" never
             # falls through to a suspect-lookup pattern. Takes no params.
             (["my name", "my profile", "my details", "who am i", "my rank", "my station", "my posting", "my assignment", "current assignment", "am i posted", "my designation"], "get_my_profile", {}, "yes"),
+            (["search the web", "web search", "search online", "look it up", "look up online", "google it",
+              "google ", "find online", "on the internet", "the internet", "whole internet", "across the internet",
+              "analyse the internet", "analyze the internet", "search for"], "web_search", {"query": query}, "yes"),
+            (["summarize this url", "read this url", "summarize this page", "read this link", "open this link",
+              "summarize this article", "read this article", "http://", "https://"], "summarize_url", {"query": query}, "yes"),
             (["full dossier", "case dossier", "full report on case", "complete report on case", "deep dive", "full investigation", "everything about case", "complete case file", "full case file"], "generate_case_dossier", {"case_no": case_no, "user_query": query}, case_no),
             (["beat plan", "patrol deployment", "deploy patrol", "deploy extra patrol", "deploy patrols",
               "extra patrols", "where should i send", "where to send patrol", "where to deploy", "where to focus",
@@ -1258,13 +1265,10 @@ class VajraAgentLoop:
             # win over a real full-name suspect mentioned later otherwise.
             excluded_names.update(w.lower() for w in exclude_name.split())
         suspect_candidates = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', query)
+        # Prioritize multi-word capitalized names ("Sanaya Patla") over single-word command verbs
+        suspect_candidates.sort(key=lambda c: (len(c.split()) > 1, len(c)), reverse=True)
         for cand in suspect_candidates:
             cl = cand.lower()
-            # A sentence-initial COMMAND VERB or common word is not a suspect name.
-            # Without this, "Give me the network of X" / "Plot hotspots in Y" made
-            # the router look up an accused literally named "Give"/"Plot" and answer
-            # "not found" (confirmed live). Only single-word candidates are gated --
-            # a real multi-word name ("Sanaya Patla") is never a stopword.
             if cl in excluded_names:
                 continue
             if " " not in cand and cl in self._NAME_STOPWORDS:
@@ -2700,15 +2704,21 @@ class VajraAgentLoop:
             # resolution pattern as _compute_case_types_distribution (ZCQL has
             # no JOINs, so this two-step lookup is how every other
             # district-scoped tool here does it).
-            district = self.sanitize_sql_input(params.get("district", ""))
+            raw_district = self.sanitize_sql_input(params.get("district", ""))
+            real_districts = get_real_districts()
+            district = self._resolve_district_token(raw_district, real_districts) or raw_district
             unit_ids: List[str] = []
             if district and catalyst_app:
                 try:
                     d_res = catalyst_app.zql().execute_query(
-                        f"SELECT DistrictID FROM District WHERE DistrictName LIKE '*{district}*' LIMIT 1"
+                        f"SELECT DistrictID, DistrictName FROM District WHERE DistrictName LIKE '*{district}*' LIMIT 1"
                     )
+                    if not d_res:
+                        all_d = catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")
+                        d_res = [r for r in all_d if district.lower() in r.get("District", {}).get("DistrictName", "").lower()]
                     if d_res:
                         dist_id = d_res[0].get("District", {}).get("DistrictID")
+                        district = d_res[0].get("District", {}).get("DistrictName") or district
                         u_res = catalyst_app.zql().execute_query(f"SELECT UnitID FROM Unit WHERE DistrictID = {dist_id}")
                         unit_ids = [u.get("Unit", {}).get("UnitID") for u in u_res if u.get("Unit", {}).get("UnitID")]
                 except Exception as ex:
