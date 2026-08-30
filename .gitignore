@@ -14,6 +14,9 @@ venv/
 __pycache__/
 *.pyc
 
+# TTS audio cache (generated at runtime)
+vajra_backend/cache/
+
 # Datasets & Large Files
 *.csv
 *.pdf

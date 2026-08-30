@@ -97,6 +97,20 @@ graph_rag = VajraGraphRAG()
 semantic_memory = VajraSemanticMemory()
 agent_loop = VajraAgentLoop(dbscan_model=dbscan_model, xgboost_model=xgboost_risk_model, shap_explainer=shap_explainer, label_encoders=label_encoders, risk_calibrator=risk_calibrator)
 
+# --- TTS Cache Pre-Warming ---
+# Pre-synthesize common Kannada/English police phrases in a non-blocking
+# background thread so the officer's first TTS click plays instantly from
+# cache. Daemon thread ensures it doesn't block FastAPI startup or delay
+# the first request.
+import threading as _threading
+def _startup_prewarm_tts():
+    try:
+        from catalyst_speech import prewarm_tts_cache
+        prewarm_tts_cache()
+    except Exception as e:
+        logger.warning(f"TTS prewarm startup failed (non-fatal): {e}")
+_threading.Thread(target=_startup_prewarm_tts, daemon=True, name="tts-prewarm").start()
+
 
 class ConnectionManager:
     """
@@ -2697,6 +2711,35 @@ async def _run_ai_turn_and_persist(
         "client_msg_id": f"{client_msg_id}-ai" if client_msg_id else None
     })
 
+    # --- Eager TTS Pre-Synthesis ---
+    # Fire-and-forget: pre-synthesize the first ~140 chars of the response in
+    # both languages and store in the TTS cache. By the time the officer reads
+    # the message (~3-5s) and reaches for the speaker button, the audio is
+    # already cached server-side. The frontend's pre-fetch request then hits a
+    # cache HIT and returns in ~50ms instead of waiting ~4-8s for synthesis.
+    if not result.get("is_simulated") and text_en and text_en.strip():
+        async def _eager_tts_pregen():
+            try:
+                from catalyst_speech import synthesize_speech
+                _MAX_PREGEN = 140
+                for _lang, _src in [("en", text_en), ("kn", text_kn)]:
+                    if not _src or not _src.strip() or _src == text_en and _lang == "kn":
+                        # Skip KN if it's just a copy of EN (no real translation)
+                        import re as _re
+                        if _lang == "kn" and not _re.search(r"[ಀ-೿]", _src or ""):
+                            continue
+                    snippet = _src.strip()[:_MAX_PREGEN]
+                    # Try to cut at a sentence boundary for natural speech
+                    for sep in [". ", "? ", "! ", "। ", "\n"]:
+                        pos = snippet.rfind(sep)
+                        if pos > 60:
+                            snippet = snippet[:pos + 1]
+                            break
+                    await run_in_threadpool(synthesize_speech, snippet.strip(), _lang)
+            except Exception as _e:
+                logger.debug(f"Eager TTS pre-gen failed (non-fatal): {_e}")
+        asyncio.create_task(_eager_tts_pregen())
+
 
 @app.post("/api/chat")
 async def chat_endpoint(payload: ChatRequest, request: Request, location_context: str = Depends(security_firewall)):
@@ -3659,13 +3702,17 @@ async def tts_endpoint(payload: TTSRequest, request: Request, location_context: 
     Kannada on any device without a Kannada voice installed. Auth-gated like
     every other endpoint. Returns 502 (not a hard error) if Zia is unavailable
     so the frontend can fall back to the browser voice.
+
+    Performance: checks in-memory LRU and disk cache before calling Zia. Returns
+    X-Cache: HIT on cache hits (0ms synthesis) or X-Cache: MISS on fresh synthesis.
     """
-    from catalyst_speech import synthesize_speech
+    from catalyst_speech import synthesize_speech, get_tts_cache_status
+    cache_status = get_tts_cache_status(payload.text, payload.lang)
     result = await run_in_threadpool(synthesize_speech, payload.text, payload.lang)
     if not result:
         raise HTTPException(status_code=502, detail="Speech synthesis is temporarily unavailable.")
     audio_bytes, media_type = result
-    return Response(content=audio_bytes, media_type=media_type)
+    return Response(content=audio_bytes, media_type=media_type, headers={"X-Cache": cache_status})
 
 
 class TranslateRequest(BaseModel):
@@ -4285,6 +4332,53 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
                 "message": "AI pre-screen flagged sensitive content — awaiting supervisor approval.",
             })
 
+    # --- Attempt 1: Catalyst SmartBrowz (Cloud HTML-to-PDF Engine) ---
+    try:
+        from catalyst_smartbrowz import render_dossier_html, convert_html_to_pdf_smartbrowz
+        officer_name = getattr(request.state, "user_profile", {}).get("FirstName") or "Officer"
+        
+        # Parse panels and citations from transcript if present
+        panels = []
+        citations = []
+        narrative = ""
+        case_no = None
+        for msg in (payload.transcript or []):
+            m_text = msg.get("content") or msg.get("text") or ""
+            if msg.get("sender") == "assistant":
+                narrative += f"\n{m_text}" if narrative else m_text
+                if msg.get("data") and isinstance(msg["data"], dict):
+                    if msg["data"].get("panels"):
+                        panels.extend(msg["data"]["panels"])
+                    if msg["data"].get("case_no"):
+                        case_no = msg["data"]["case_no"]
+                if msg.get("citations"):
+                    citations.extend(msg["citations"])
+
+        html_doc = render_dossier_html(
+            title="VAJRA Case Investigation Report",
+            case_no=case_no,
+            officer_name=officer_name,
+            officer_badge=str(authed_badge),
+            panels=panels,
+            citations=citations,
+            narrative=narrative[:1200] if narrative else "Official automated intelligence report.",
+            lang="en"
+        )
+        sb_pdf_bytes = convert_html_to_pdf_smartbrowz(html_doc)
+        if sb_pdf_bytes and len(sb_pdf_bytes) > 500:
+            logger.info(f"PDF exported successfully via Catalyst SmartBrowz ({len(sb_pdf_bytes)} bytes)")
+            return Response(
+                content=sb_pdf_bytes,
+                media_type="application/pdf",
+                headers={
+                    "Content-Disposition": f"attachment; filename=VAJRA_Report_{str(authed_badge)}.pdf",
+                    "X-Engine": "Catalyst-SmartBrowz"
+                }
+            )
+    except Exception as sb_err:
+        logger.warning(f"SmartBrowz PDF export failed, using resilient FPDF fallback: {sb_err}")
+
+    # --- Attempt 2: Resilient Local FPDF Engine Fallback ---
     try:
         from fpdf import FPDF
         from datetime import datetime

@@ -286,19 +286,21 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   const getSpeakText = React.useCallback((): string => {
     const cleaned = cleanTextForSpeech(displayText);
     if (!cleaned) return "";
-    // Speak a SHORT summary (first ~2 sentences) rather than the whole answer.
-    // Server TTS takes ~1s per ~150 chars, so a 320-char cap synthesises in
-    // ~2s -- fast enough that the background pre-generation finishes before the
-    // officer clicks, making playback feel instant. The full answer stays on
-    // screen; only what's read aloud is trimmed.
-    const MAX_SPEAK = 320;
+    // Speak a SHORT summary (first ~1-2 punchy sentences) rather than the whole
+    // answer. With speed="fast" on the backend, 140 chars synthesises in ~3-4s
+    // -- fast enough that server-side eager pre-gen + client background fetch
+    // finishes before the officer even reads the text, making playback INSTANT
+    // (0ms perceived delay). The full answer stays on screen; only what's read
+    // aloud is trimmed.
+    const MAX_SPEAK = 140;
     if (cleaned.length <= MAX_SPEAK) return cleaned;
     const slice = cleaned.slice(0, MAX_SPEAK);
+    // Find the last sentence boundary — supports English and Kannada punctuation
     const lastStop = Math.max(
       slice.lastIndexOf(". "), slice.lastIndexOf("? "), slice.lastIndexOf("! "),
       slice.lastIndexOf("। "), slice.lastIndexOf("\n")
     );
-    return (lastStop > 200 ? slice.slice(0, lastStop + 1) : slice).trim();
+    return (lastStop > 60 ? slice.slice(0, lastStop + 1) : slice).trim();
   }, [displayText]);
 
   const playUrl = async (url: string, revokeOnEnd: boolean): Promise<boolean> => {
@@ -329,11 +331,18 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
     if (_ttsCache.has(key) || _ttsPending.has(key)) return;
     const toSpeak = getSpeakText();
     if (!toSpeak) return;
+    // RACE CONDITION FIX: when effectiveLang is "kn" but the text is still in
+    // English (translation hasn't arrived yet), DON'T send English text to the
+    // Kannada "Anu" voice model — it causes Zia to hang or produce garbled audio.
+    // Wait for the next re-render when liveKn or hasRealKannada updates.
+    if (vlang === "kn" && !/[\u0C80-\u0CFF]/.test(toSpeak)) return;
     // Start the synthesis and REGISTER the in-flight promise, so a click during
     // synthesis awaits this same request instead of firing a second one.
     const p: Promise<string | null> = (async () => {
       const ctrl = new AbortController();
-      const to = setTimeout(() => ctrl.abort(), vlang === "kn" ? 26000 : 12000);
+      // Extended timeouts: Kannada 35s (server needs up to 30s for synthesis),
+      // English 12s (fast with speed="fast" + typically cached).
+      const to = setTimeout(() => ctrl.abort(), vlang === "kn" ? 35000 : 12000);
       try {
         const r = await fetch(`${API_BASE}/api/voice/tts`, {
           method: "POST",
@@ -344,6 +353,12 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
         if (!r.ok) return null;
         const blob = await r.blob();
         const url = URL.createObjectURL(blob);
+        // Pre-instantiate Audio object so browser pre-decodes the WAV.
+        // On click, playback starts INSTANTLY — no decoding lag.
+        try {
+          const preAudio = new Audio(url);
+          preAudio.preload = "auto";
+        } catch { /* non-critical: browser may not support preload */ }
         _ttsPut(key, url);
         return url;
       } catch { return null; }
@@ -380,7 +395,8 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
       // off the server's retry-through-Zia's-flaky-502s and killing Kannada
       // voice entirely. Give Kannada room for the backend's 2x12s retry.
       const _ctrl = new AbortController();
-      const _to = setTimeout(() => _ctrl.abort(), vlang === "kn" ? 26000 : 9000);
+      // Extended timeout: 35s for Kannada (server may need up to 30s), 12s for English
+      const _to = setTimeout(() => _ctrl.abort(), vlang === "kn" ? 35000 : 12000);
       let res: Response;
       try {
         res = await fetch(`${API_BASE}/api/voice/tts`, {

@@ -7,3 +7,4 @@ scratch/
 screenshots/
 docs/
 dist/
+vajra_backend/cache/
