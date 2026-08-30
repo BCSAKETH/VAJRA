@@ -65,9 +65,6 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
         if (response.ok) {
           const list = await response.json();
           setSessions(list);
-          if (list.length > 0 && !activeSessionId) {
-            onSelectSession(list[0].session_id);
-          }
         }
       } catch (err) {
         console.error("Failed to load chat sessions:", err);
