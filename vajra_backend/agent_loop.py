@@ -901,7 +901,27 @@ class VajraAgentLoop:
                     return canon
             return ""
 
+        def guess_financial_entity() -> str:
+            # guess_name() is a PERSON-name extractor (letters only, no digits
+            # or hyphens) -- confirmed live it mangles real financial entity
+            # IDs: "financial ring for SBI-10847293" -> guess_name() returns
+            # just "Sbi" (stops at the hyphen), "...Suspect Wallet 0x3f8e" ->
+            # returns "Suspect Wallet" (drops the hex suffix entirely), so
+            # detect_financial_ring/query_financial_links could never actually
+            # be invoked by name for a realistic account ID. Real seed formats
+            # in this dataset: "BANK-1234567" (bank ref), "0x..." (wallet),
+            # "UPI-1234567" style -- all alphanumeric with digits/hyphens,
+            # which this wider pattern captures instead.
+            for cue in ("for", "of", "linked to", "connected to", "entity", "account", "wallet"):
+                m = re.search(rf"\b{cue}\s+([A-Za-z0-9][A-Za-z0-9 \-]{{2,40}}?)(?:[.?!,]|$)", query, re.IGNORECASE)
+                if m:
+                    cand = m.group(1).strip()
+                    if any(ch.isdigit() for ch in cand) or cand.lower().startswith("0x"):
+                        return cand
+            return ""
+
         name, case_no, district, crime_group = guess_name(), guess_case_no(), guess_district(), guess_crime_group()
+        financial_entity = guess_financial_entity()
         # Time window: "last/past 6 months" -> honour it instead of the 12-month default.
         _mo = re.search(r"(?:last|past|previous|recent)\s+(\d{1,2})\s+month", q)
         months_g = int(_mo.group(1)) if _mo else 0
@@ -949,8 +969,8 @@ class VajraAgentLoop:
               "connected with", "associated with", "crimes associated", "crimes connected", "crimes linked",
               "main crimes", "crimes involving", "involved in", "linked to", "crimes is", "crimes does",
               "crimes of", "cases associated", "cases connected", "ಸಂಪರ್ಕ", "ಜಾಲ", "ಸಂಘಟಿತ"], "query_graph_network", {"suspect_name": name}, name),
-            (["money laundering", "hawala", "mule account", "financial ring", "money network", "laundering ring", "money ring", "ಮನಿ ಲಾಂಡರಿಂಗ್", "ಖಾತೆ"], "detect_financial_ring", {"entity_id": name}, name),
-            (["financial", "money trail", "transaction", "bank account", "ಹಣಕಾಸು"], "query_financial_links", {"entity_id": name}, name),
+            (["money laundering", "hawala", "mule account", "financial ring", "money network", "laundering ring", "money ring", "ಮನಿ ಲಾಂಡರಿಂಗ್", "ಖಾತೆ"], "detect_financial_ring", {"entity_id": financial_entity or name}, financial_entity or name),
+            (["financial", "money trail", "transaction", "bank account", "ಹಣಕಾಸು"], "query_financial_links", {"entity_id": financial_entity or name}, financial_entity or name),
             (["mo profile", "modus operandi", "behavioral profile", "behaviour profile"], "get_mo_profile", {"suspect_name": name}, name),
             (["tell me about", "who is", "information on", "details on", "profile of", "about suspect", "brief me on"], "generate_full_report", {"suspect_name": name, "user_query": query}, name),
             (["timeline", "chronology", "milestones"], "get_case_timeline", {"case_no": case_no}, case_no),
@@ -2670,34 +2690,51 @@ class VajraAgentLoop:
             citations.append({"type": "FinancialTransaction Datastore", "id": entity, "details": "Traced money laundering trails"})
             self._write_audit_log(employee_id, "Financial Link Analysis", entity, f"Money trail of {entity}", text_result, session_id)
 
-        # 6b. detect_financial_ring (USP-5) -- 2-hop money-flow graph +
-        # mule/layering/fan-out ring detection. query_financial_links only
-        # lists one entity's direct transactions; this walks the graph outward
-        # and computes per-account in/out degree to surface COLLECTION hubs
-        # (many distinct senders -> one account = mule/funnel) and
-        # DISTRIBUTION hubs (one account -> many distinct receivers = payout
-        # fan-out) that no single-entity lookup reveals. Pure-Python graph
-        # analysis (no networkx dependency, respecting the vendor disk cap);
-        # every node/edge traces to a real FinancialTransaction row.
+        # 6b. detect_financial_ring (USP-5) -- TRUE multi-hop (up to 6) money-
+        # flow graph + mule/layering/fan-out ring detection. query_financial_
+        # links only lists one entity's direct transactions; this walks the
+        # graph outward and computes per-account in/out degree to surface
+        # COLLECTION hubs (many distinct senders -> one account = mule/funnel)
+        # and DISTRIBUTION hubs (one account -> many distinct receivers =
+        # payout fan-out) that no single-entity lookup reveals. Pure-Python
+        # graph analysis (no networkx dependency, respecting the vendor disk
+        # cap); every node/edge traces to a real FinancialTransaction row.
+        #
+        # FIXED BUG (confirmed live, found while extending this to multi-hop):
+        # the previous "for hop in range(2)" loop only ever populated
+        # next_frontier when hop==0 -- so hop 1 fetched its own frontier's
+        # transactions (useful) but NEVER enqueued anything further, meaning
+        # the BFS always stopped dead after 2 hops NO MATTER how large that
+        # range() was set to. Simply raising "range(2)" to "range(6)" would
+        # have changed nothing. Removed that guard so every hop's newly-
+        # discovered accounts genuinely feed the next hop, and bounded the
+        # traversal by total node count (MAX_VISITED) rather than a small
+        # fixed hop count, so real layering chains up to 6 hops deep surface
+        # instead of being artificially cut off at 2.
         elif tool_name == "detect_financial_ring":
             seed = self.sanitize_sql_input(params.get("entity_id", ""))
             response_type = "network"
+            MAX_HOPS = 6
+            MAX_VISITED = 40
             edges_set = set()          # (sender, receiver) directed
             senders_of = {}            # account -> set of distinct senders into it
             receivers_of = {}          # account -> set of distinct receivers out of it
+            hop_of: Dict[str, int] = {seed: 0}  # account -> hop distance from seed
             total_txns = 0
+            deepest_hop_reached = 0
             if catalyst_app and seed:
                 try:
                     visited = set()
                     frontier = [seed]
-                    # 2 hops, bounded: cap nodes expanded so a hub doesn't blow
-                    # up into hundreds of ZCQL calls on one interactive turn.
-                    for hop in range(2):
+                    for hop in range(MAX_HOPS):
+                        if not frontier or len(visited) >= MAX_VISITED:
+                            break
                         next_frontier = []
                         for node in frontier:
-                            if node in visited or len(visited) > 25:
+                            if node in visited or len(visited) >= MAX_VISITED:
                                 continue
                             visited.add(node)
+                            deepest_hop_reached = max(deepest_hop_reached, hop_of.get(node, hop))
                             q = (f"SELECT sender_ref, receiver_ref, amount FROM FinancialTransaction "
                                  f"WHERE sender_ref = '{self.sanitize_sql_input(node)}' OR receiver_ref = '{self.sanitize_sql_input(node)}' LIMIT 40")
                             tx_res = catalyst_app.zql().execute_query(q)
@@ -2710,11 +2747,11 @@ class VajraAgentLoop:
                                 edges_set.add((s, rc))
                                 receivers_of.setdefault(s, set()).add(rc)
                                 senders_of.setdefault(rc, set()).add(s)
-                                if hop == 0:
-                                    if s not in visited:
-                                        next_frontier.append(s)
-                                    if rc not in visited:
-                                        next_frontier.append(rc)
+                                for other in (s, rc):
+                                    if other not in hop_of:
+                                        hop_of[other] = hop + 1
+                                    if other not in visited and other not in next_frontier:
+                                        next_frontier.append(other)
                         frontier = next_frontier
                 except Exception as ex:
                     logger.warning(f"Financial ring traversal error: {ex}")
@@ -2739,36 +2776,39 @@ class VajraAgentLoop:
                 nodes.append({
                     "id": n,
                     "label": n,
-                    "sublabel": f"in {indeg} / out {outdeg}",
+                    "sublabel": f"in {indeg} / out {outdeg} · hop {hop_of.get(n, '?')}",
                     "type": "suspect" if n == seed else ("case" if role in ("collection hub", "distribution hub") else "person"),
                 })
             edges = [{"source": s, "target": rc} for s, rc in edges_set]
-            data = {"nodes": nodes, "edges": edges, "seed": seed}
+            data = {"nodes": nodes, "edges": edges, "seed": seed, "max_hop_reached": deepest_hop_reached}
 
             if not all_nodes:
                 text_result = f"No financial transactions were found linked to '{seed}', so no ring could be traced."
             else:
                 lines = [f"FINANCIAL RING ANALYSIS -- traced from '{seed}'", ""]
-                lines.append(f"Mapped {len(all_nodes)} accounts and {len(edges_set)} transaction links across 2 hops ({total_txns} transactions scanned).")
+                lines.append(
+                    f"Mapped {len(all_nodes)} accounts and {len(edges_set)} transaction links across "
+                    f"{deepest_hop_reached} hop{'s' if deepest_hop_reached != 1 else ''} ({total_txns} transactions scanned)."
+                )
                 top_c = [h for h in collection_hubs if h[1] >= 3][:3]
                 top_d = [h for h in distribution_hubs if h[1] >= 3][:3]
                 if top_c:
                     lines.append("")
                     lines.append("Collection hubs (many senders funnel in -- classic mule/collection pattern):")
                     for acct, deg in top_c:
-                        lines.append(f"  - {acct}: receives from {deg} distinct sources")
+                        lines.append(f"  - {acct} (hop {hop_of.get(acct, '?')}): receives from {deg} distinct sources")
                 if top_d:
                     lines.append("")
                     lines.append("Distribution hubs (one account pays out to many -- fan-out/layering):")
                     for acct, deg in top_d:
-                        lines.append(f"  - {acct}: sends to {deg} distinct destinations")
+                        lines.append(f"  - {acct} (hop {hop_of.get(acct, '?')}): sends to {deg} distinct destinations")
                 if not top_c and not top_d:
                     lines.append("No strong collection/distribution hub pattern detected -- the flow looks like ordinary point-to-point transfers, not a structured ring.")
                 lines.append("")
                 lines.append("Every account and link above is a real FinancialTransaction record; hub roles are computed from actual in/out transfer counts, not inferred.")
                 text_result = "\n".join(lines)
 
-            citations.append({"type": "Financial Ring Detection", "id": seed, "details": f"2-hop money-flow graph over {total_txns} real FinancialTransaction records"})
+            citations.append({"type": "Financial Ring Detection", "id": seed, "details": f"Up to {MAX_HOPS}-hop money-flow graph (reached {deepest_hop_reached}) over {total_txns} real FinancialTransaction records"})
             self._write_audit_log(employee_id, "Financial Ring Detection", seed, f"Ring analysis from {seed}", text_result, session_id)
 
         # 7. query_hotspots
