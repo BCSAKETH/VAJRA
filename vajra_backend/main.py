@@ -225,7 +225,7 @@ async def health_check():
 
     return {
         "status": "online",
-        "_deploy_canary": "CANARY-20260902-0016",
+        "_deploy_canary": "CANARY-20260902-0017-txfix",
         "timestamp": pd.Timestamp.now().isoformat(),
         "database_connected": catalyst_app is not None,
         "graph_rag_mode": "Zoho Catalyst Relational Tracing",
@@ -2019,7 +2019,7 @@ def _fit_json(obj: Any, cap: int) -> str:
     """
     if not obj:
         return "{}" if isinstance(obj, dict) or obj is None else "[]"
-    s = json.dumps(obj, ensure_ascii=False)
+    s = json.dumps(obj, ensure_ascii=False, default=str)
     if len(s) <= cap:
         return s
     if not isinstance(obj, dict):
@@ -2027,7 +2027,7 @@ def _fit_json(obj: Any, cap: int) -> str:
         arr = list(obj)
         while arr:
             arr.pop()
-            s = json.dumps(arr, ensure_ascii=False)
+            s = json.dumps(arr, ensure_ascii=False, default=str)
             if len(s) <= cap:
                 return s
         return "[]"
@@ -2041,11 +2041,36 @@ def _fit_json(obj: Any, cap: int) -> str:
         arr = list(news)
         while arr:
             d["news"] = arr
-            s = json.dumps(d, ensure_ascii=False)
+            s = json.dumps(d, ensure_ascii=False, default=str)
             if len(s) <= cap:
                 return s
             arr = arr[: max(1, len(arr) - 3)]
         d["news"] = arr
+    s = json.dumps(d, ensure_ascii=False, default=str)
+    if len(s) <= cap:
+        return s
+    # Network-graph payloads (query_graph_network, detect_financial_ring):
+    # trim the "financial_transactions" ledger list first -- confirmed live
+    # this is exactly what tipped a 16-node/55-edge financial ring over the
+    # cap once real per-transaction records (sender/receiver/amount/date)
+    # were added, and with no handling here it fell straight through to the
+    # generic "minimal" fallback below, which doesn't even list "nodes"/
+    # "edges" as keys worth keeping -- wiping the ENTIRE graph (not just the
+    # ledger) to an empty {} every time. Same trim-list-not-truncate-string
+    # pattern as "news" above, falling back to trimming "edges" only if
+    # still over cap (never "nodes" -- losing edges degrades to a sparser
+    # graph, losing nodes could orphan edges into nonsense).
+    for _key in ("financial_transactions", "edges"):
+        _arr = d.get(_key)
+        if isinstance(_arr, list) and len(_arr) > 1:
+            _arr = list(_arr)
+            while _arr:
+                d[_key] = _arr
+                s = json.dumps(d, ensure_ascii=False, default=str)
+                if len(s) <= cap:
+                    return s
+                _arr = _arr[: max(1, len(_arr) - 5)]
+            d[_key] = _arr
     panels = d.get("panels")
     if isinstance(panels, list):
         d["panels"] = [dict(p) if isinstance(p, dict) else p for p in panels]
@@ -2053,24 +2078,29 @@ def _fit_json(obj: Any, cap: int) -> str:
         for p in panels:
             if isinstance(p, dict):
                 p.pop("text_kn", None)
-        s = json.dumps(d, ensure_ascii=False)
+        s = json.dumps(d, ensure_ascii=False, default=str)
         if len(s) <= cap:
             return s
     d.pop("_text_kn", None)
-    s = json.dumps(d, ensure_ascii=False)
+    s = json.dumps(d, ensure_ascii=False, default=str)
     if len(s) <= cap:
         return s
     if isinstance(panels, list):
         for p in panels:
             if isinstance(p, dict) and (p.get("text") or "").strip():
                 p.pop("data", None)  # keep the text panel; drop its heavy raw data
-        s = json.dumps(d, ensure_ascii=False)
+        s = json.dumps(d, ensure_ascii=False, default=str)
         if len(s) <= cap:
             return s
-    # Last resort: keep identity + English narrative + news signals so the message is never
-    # blank/corrupt.
-    minimal = {k: d.get(k) for k in ("case_no", "primary_accused", "_text_en", "news", "scope") if d.get(k)}
-    s = json.dumps(minimal, ensure_ascii=False)
+    # Last resort: keep identity + English narrative + news signals + the
+    # graph itself (nodes/edges already trimmed above, if present) so the
+    # message is never blank/corrupt -- a network-graph response with no
+    # "case_no"/"primary_accused"/"news" previously matched NONE of this
+    # whitelist and silently fell all the way to an empty {}.
+    minimal = {k: d.get(k) for k in
+               ("case_no", "primary_accused", "_text_en", "news", "scope",
+                "nodes", "edges", "seed", "max_hop_reached") if d.get(k)}
+    s = json.dumps(minimal, ensure_ascii=False, default=str)
     return s if len(s) <= cap else "{}"
 
 
@@ -2085,7 +2115,19 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
 
     _SESSION_MESSAGES_CACHE.pop(session_id, None)
 
-    _DATA_JSON_CAP = 28000
+    # CRITICAL FIX, confirmed live by reading the RAW stored column value: the
+    # real Catalyst Datastore ChatMessage.data_json column silently truncates
+    # mid-string at write time somewhere well under 10,000 chars -- NOT at
+    # this old 28000 cap. _fit_json's own trimming logic (financial_
+    # transactions/edges/news/panels shrinking) never got a chance to engage,
+    # because it saw its own output as "already small enough" at ~12-20k
+    # chars and returned it unmodified; the datastore then cut it off mid-
+    # object, producing invalid JSON that _safe_json_loads silently swallowed
+    # on every read, presenting as a completely empty {} (not just the new
+    # financial_transactions field -- the ENTIRE nodes/edges graph too).
+    # Lowered well under the real ~10,000-char cliff so _fit_json's trimming
+    # actually runs before the datastore ever gets a chance to truncate.
+    _DATA_JSON_CAP = 9000
     _CITATIONS_CAP = 8000
     # 1. Full attempt with all fields
     try:

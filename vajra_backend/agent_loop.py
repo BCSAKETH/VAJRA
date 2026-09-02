@@ -2752,7 +2752,20 @@ class VajraAgentLoop:
                                     continue
                                 total_txns += 1
                                 edges_set.add((s, rc))
-                                amt, tt = t.get("amount"), t.get("txn_time")
+                                # Cast to a native float: ZCQL can return a
+                                # numeric column as decimal.Decimal, which
+                                # json.dumps CANNOT serialize at all (a hard
+                                # TypeError, not a size issue) -- confirmed
+                                # live this silently wiped the ENTIRE data
+                                # payload (not just this field) to "{}" via
+                                # _persist_chat_message's exception-driven
+                                # 3-tier fallback, since every tier re-calls
+                                # the same json.dumps on the same bad value.
+                                raw_amt, tt = t.get("amount"), t.get("txn_time")
+                                try:
+                                    amt = float(raw_amt) if raw_amt is not None else None
+                                except (TypeError, ValueError):
+                                    amt = None
                                 tx_key = (s, rc, amt, tt)
                                 if tx_key not in tx_seen:
                                     tx_seen.add(tx_key)
