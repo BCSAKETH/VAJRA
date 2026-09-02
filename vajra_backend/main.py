@@ -38,7 +38,7 @@ import hashlib
 import logging
 import random
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 import pandas as pd
@@ -57,7 +57,9 @@ from vajra_core import (
     VajraSemanticMemory,
     catalyst_app,
     zcql_insert_row,
-    zcql_update_row
+    zcql_update_row,
+    find_pocso_row,
+    POCSO_GRANT_HOURS,
 )
 from agent_loop import VajraAgentLoop
 from catalyst_llm import CatalystLLM
@@ -2748,16 +2750,19 @@ async def _run_ai_turn_and_persist(
     })
 
     # --- Eager TTS Pre-Synthesis ---
-    # Fire-and-forget: pre-synthesize the first ~140 chars of the response in
-    # both languages and store in the TTS cache. By the time the officer reads
-    # the message (~3-5s) and reaches for the speaker button, the audio is
-    # already cached server-side. The frontend's pre-fetch request then hits a
-    # cache HIT and returns in ~50ms instead of waiting ~4-8s for synthesis.
+    # Fire-and-forget: pre-synthesize the FULL response (bounded only by Zia's
+    # own model cap) in both languages and store in the TTS cache. By the time
+    # the officer reads the message and reaches for the speaker button, the
+    # audio is already cached server-side -- a cache HIT returns in ~50ms
+    # instead of a fresh synthesis wait. MUST match the frontend's MAX_SPEAK
+    # (ChatBubble.tsx getSpeakText) exactly, or the click always misses this
+    # cache: officers reported playback stopping mid-message when this and the
+    # frontend disagreed on how much text to speak (was capped at 140 chars).
     if not result.get("is_simulated") and text_en and text_en.strip():
         async def _eager_tts_pregen():
             try:
                 from catalyst_speech import synthesize_speech
-                _MAX_PREGEN = 140
+                _MAX_PREGEN = 4500
                 for _lang, _src in [("en", text_en), ("kn", text_kn)]:
                     if not _src or not _src.strip() or _src == text_en and _lang == "kn":
                         # Skip KN if it's just a copy of EN (no real translation)
@@ -5012,6 +5017,70 @@ async def export_request_status(request_id: str, request: Request = None,
     m = row["meta"]
     return {"status": m.get("status", "pending"), "reasons": m.get("reasons", []),
             "approver": m.get("approver_badge")}
+
+
+@app.get("/api/pocso/pending")
+async def list_pending_pocso(request: Request, location_context: str = Depends(security_firewall)):
+    """Supervisor-only: pending POCSO access requests (live queue, same pattern
+    as /api/exports/pending). Officers never see this."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    out = []
+    if catalyst_app:
+        try:
+            res = catalyst_app.zql().execute_query(
+                "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+                "WHERE AlertType = 'POCSO_ACCESS' ORDER BY ROWID DESC LIMIT 60")
+            for r in res:
+                a = r.get("ProactiveAlerts", {})
+                try:
+                    m = json.loads(a.get("AlertMessage") or "{}")
+                except Exception:
+                    continue
+                if m.get("status") == "pending":
+                    m["rowid"] = a.get("ROWID")
+                    out.append(m)
+        except Exception as e:
+            logger.warning(f"list_pending_pocso: {e}")
+    return {"pending": out, "count": len(out)}
+
+
+@app.post("/api/pocso/{request_id}/decision")
+async def decide_pocso(request_id: str, payload: Dict[str, Any] = Body(default={}),
+                       request: Request = None, location_context: str = Depends(security_firewall)):
+    """Supervisor-only: approve or reject a POCSO access request. Approval
+    grants the requesting officer time-boxed (POCSO_GRANT_HOURS) access to that
+    one case's victim identity; the grant and its expiry are themselves
+    auditable via the ProactiveAlerts row."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    row = find_pocso_row(request_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Access request not found.")
+    decision = "approved" if payload.get("approve", True) else "rejected"
+    meta = row["meta"]
+    meta["status"] = decision
+    meta["approver_badge"] = request.state.kgid
+    meta["decided_at"] = datetime.utcnow().isoformat()
+    if decision == "approved":
+        meta["grant_expires_at"] = (datetime.utcnow() + timedelta(hours=POCSO_GRANT_HOURS)).isoformat()
+    try:
+        zcql_update_row("ProactiveAlerts", {
+            "ROWID": row["rowid"], "AlertMessage": json.dumps(meta), "IsRead": True})
+    except Exception as e:
+        logger.warning(f"decide_pocso update: {e}")
+    return {"status": decision, "request_id": meta.get("request_id"), "grant_expires_at": meta.get("grant_expires_at")}
+
+
+@app.get("/api/pocso/{request_id}/status")
+async def pocso_request_status(request_id: str, location_context: str = Depends(security_firewall)):
+    """Requester polls this to know when their access request is decided."""
+    row = find_pocso_row(request_id)
+    if not row:
+        return {"status": "unknown"}
+    m = row["meta"]
+    return {"status": m.get("status", "pending"), "case_no": m.get("case_no"),
+            "grant_expires_at": m.get("grant_expires_at")}
 
 
 if __name__ == "__main__":

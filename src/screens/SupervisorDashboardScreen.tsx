@@ -101,6 +101,43 @@ export const SupervisorDashboardScreen: React.FC = () => {
     }
   };
 
+  // Live POCSO access-request queue (officers request time-boxed access to a
+  // redacted victim identity; same live-queue pattern as export approvals).
+  const [pendingPocso, setPendingPocso] = useState<any[]>([]);
+  const [decidingPocsoId, setDecidingPocsoId] = useState<string | null>(null);
+
+  const fetchPendingPocso = async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/pocso/pending`, {
+        headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      });
+      if (!r.ok) return;
+      const d = await r.json();
+      setPendingPocso(d.pending || []);
+    } catch { /* transient -- next poll retries */ }
+  };
+
+  const decidePocso = async (rowid: string, approve: boolean) => {
+    setDecidingPocsoId(rowid);
+    try {
+      const r = await fetch(`${API_BASE}/api/pocso/${rowid}/decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({ approve }),
+      });
+      if (r.ok) {
+        setPendingPocso((prev) => prev.filter((p) => String(p.rowid) !== String(rowid)));
+        addToast(
+          approve ? (lang === "en" ? "Access granted" : "ಪ್ರವೇಶ ನೀಡಲಾಗಿದೆ") : (lang === "en" ? "Access denied" : "ಪ್ರವೇಶ ನಿರಾಕರಿಸಲಾಗಿದೆ"),
+          lang === "en" ? "The requesting officer has been notified." : "ವಿನಂತಿಸಿದ ಅಧಿಕಾರಿಗೆ ಸೂಚಿಸಲಾಗಿದೆ.",
+          approve ? "Info" : "Warning"
+        );
+      }
+    } catch { /* ignore */ } finally {
+      setDecidingPocsoId(null);
+    }
+  };
+
   // Fetch flags
   const fetchFlags = async () => {
     try {
@@ -227,8 +264,10 @@ export const SupervisorDashboardScreen: React.FC = () => {
     fetchFeedback();
     fetchOfficers();
     fetchPendingExports();
-    // Live poll for held exports so the queue + count update with no manual refresh.
-    const iv = setInterval(fetchPendingExports, 5000);
+    fetchPendingPocso();
+    // Live poll for held exports + POCSO access requests so both queues +
+    // counts update with no manual refresh.
+    const iv = setInterval(() => { fetchPendingExports(); fetchPendingPocso(); }, 5000);
     return () => clearInterval(iv);
   }, []);
 
@@ -388,6 +427,52 @@ export const SupervisorDashboardScreen: React.FC = () => {
                   className="px-3 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/40 text-[11px] font-bold uppercase tracking-wide text-rose-300 hover:bg-rose-500/20 disabled:opacity-50 cursor-pointer"
                 >
                   {lang === "en" ? "Reject" : "ತಿರಸ್ಕರಿಸಿ"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Live POCSO access-request queue -- an officer who genuinely needs a
+          redacted victim identity requests time-boxed access here; polls
+          every 5s like the export queue above. */}
+      {pendingPocso.length > 0 && (
+        <div className="shrink-0 rounded-xl border border-rose-500/40 bg-rose-500/[0.06] p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 text-rose-400" />
+            <span className="text-xs font-black uppercase tracking-wider text-rose-300 font-mono">
+              {lang === "en" ? "POCSO access requests" : "POCSO ಪ್ರವೇಶ ವಿನಂತಿಗಳು"}
+            </span>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-rose-400 text-stone-950 font-bold">
+              {pendingPocso.length}
+            </span>
+            <span className="text-[10px] text-stone-500 font-mono">
+              {lang === "en" ? "Section 74 JJA — victim identity is masked" : "ವಿಭಾಗ 74 JJA — ಬಲಿಪಶು ಗುರುತು ಮರೆಮಾಡಲಾಗಿದೆ"}
+            </span>
+          </div>
+          <div className="space-y-2">
+            {pendingPocso.map((p) => (
+              <div key={p.rowid} className="flex items-center gap-3 rounded-lg bg-stone-950/40 border border-stone-800 px-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12px] text-stone-200 font-mono truncate">
+                    {lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ"} {p.requester_badge} ({p.requester_name || ""}) · {lang === "en" ? "case" : "ಪ್ರಕರಣ"} {p.case_no}
+                  </div>
+                  <div className="text-[10px] text-stone-500 truncate">{p.reason || (lang === "en" ? "No reason given" : "ಕಾರಣ ನೀಡಿಲ್ಲ")}</div>
+                </div>
+                <button
+                  onClick={() => decidePocso(String(p.rowid), true)}
+                  disabled={decidingPocsoId === String(p.rowid)}
+                  className="px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold uppercase tracking-wide text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 cursor-pointer"
+                >
+                  {lang === "en" ? "Approve" : "ಅನುಮೋದಿಸಿ"}
+                </button>
+                <button
+                  onClick={() => decidePocso(String(p.rowid), false)}
+                  disabled={decidingPocsoId === String(p.rowid)}
+                  className="px-3 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/40 text-[11px] font-bold uppercase tracking-wide text-rose-300 hover:bg-rose-500/20 disabled:opacity-50 cursor-pointer"
+                >
+                  {lang === "en" ? "Deny" : "ನಿರಾಕರಿಸಿ"}
                 </button>
               </div>
             ))}

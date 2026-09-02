@@ -9,6 +9,18 @@ import React, {
 import { Language, Translations, translations } from "./i18n";
 import { API_BASE } from "./config";
 
+// The backend persists timestamps via Python's datetime.utcnow().isoformat(),
+// which has NO trailing "Z"/offset. A date-time string with no timezone
+// designator parses as LOCAL time in every browser, so `new Date(ts)` silently
+// mis-read every server timestamp as if already in the officer's timezone
+// (off by UTC+5:30 for IST) -- the same bug already fixed in AIChatScreen.tsx's
+// parseServerTimestamp, duplicated here since toasts/notifications are raised
+// from this context, not that screen.
+const parseServerTimestamp = (ts: string): Date => {
+  const hasTz = /Z$|[+-]\d{2}:?\d{2}$/.test(ts);
+  return new Date(hasTz ? ts : `${ts}Z`);
+};
+
 export type ScreenId =
   | "login"
   | "ai_chat"
@@ -250,7 +262,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
 
       const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
       const timestamp = realTimestamp
-        ? new Date(realTimestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+        ? parseServerTimestamp(realTimestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
         : new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
       const newToast: ToastMessage = { id, title, message, severity, timestamp, read: false };
@@ -280,7 +292,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
       if (isDuplicate) return prev;
       const id = `notif-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
       const timestamp = realTimestamp
-        ? new Date(realTimestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+        ? parseServerTimestamp(realTimestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
         : new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
       return [{ id, title, message, severity, timestamp, read: false }, ...prev];
     });

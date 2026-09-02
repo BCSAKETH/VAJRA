@@ -47,6 +47,13 @@ const cleanTextForSpeech = (rawText: string): string => {
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // strip links
     .replace(/[-*•]\s+/g, "") // strip bullet points
     .replace(/[\n\r]+/g, ". ") // replace newlines with sentence pauses
+    // Number normalization for TTS: Zia mispronounced numbers containing a
+    // thousands-separator comma (e.g. "7,099" read as "seven comma zero
+    // ninety-nine" instead of "seven thousand ninety-nine") and skipped/
+    // garbled the bare "%" sign. Only affects what's SPOKEN, never what's
+    // displayed on screen.
+    .replace(/(\d),(?=\d)/g, "$1")
+    .replace(/(\d+(?:\.\d+)?)\s*%/g, "$1 percent")
     .replace(/\s+/g, " ")
     .trim();
 };
@@ -286,16 +293,14 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   const getSpeakText = React.useCallback((): string => {
     const cleaned = cleanTextForSpeech(displayText);
     if (!cleaned) return "";
-    // Speak a SHORT summary (first ~1-2 punchy sentences) rather than the whole
-    // answer. With speed="fast" on the backend, 140 chars synthesises in ~3-4s
-    // -- fast enough that server-side eager pre-gen + client background fetch
-    // finishes before the officer even reads the text, making playback INSTANT
-    // (0ms perceived delay). The full answer stays on screen; only what's read
-    // aloud is trimmed.
-    const MAX_SPEAK = 140;
+    // Speak the FULL answer -- officers reported playback stopping mid-message
+    // when this trimmed to a ~140-char summary. Still bounded (not unlimited)
+    // so a single runaway answer can't exceed the backend Zia TTS model's own
+    // hard cap (_MAX_TTS_CHARS = 4800 in catalyst_speech.py); trimming to the
+    // last full sentence at that boundary avoids cutting a sentence in half.
+    const MAX_SPEAK = 4500;
     if (cleaned.length <= MAX_SPEAK) return cleaned;
     const slice = cleaned.slice(0, MAX_SPEAK);
-    // Find the last sentence boundary — supports English and Kannada punctuation
     const lastStop = Math.max(
       slice.lastIndexOf(". "), slice.lastIndexOf("? "), slice.lastIndexOf("! "),
       slice.lastIndexOf("। "), slice.lastIndexOf("\n")

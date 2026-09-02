@@ -22,8 +22,10 @@ if _os.path.exists(_cfg_path):
 import os
 import re
 import json
+import uuid
 import logging
 import time
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import numpy as np
 from fastapi import Request, HTTPException, status
@@ -406,6 +408,111 @@ def redact_phone_numbers(text: str) -> str:
 
 def is_supervisor_badge(badge: Optional[str]) -> bool:
     return bool(badge) and str(badge).strip() in SUPERVISOR_KGIDS
+
+
+# ---- POCSO access-request workflow (persisted in ProactiveAlerts, same shape
+# as main.py's export-approval queue: one existing table reused, since this
+# deployment's credentials can't create a new one). An officer who genuinely
+# needs a redacted victim identity can request time-boxed access; a supervisor
+# approves live from the Supervisor dashboard. Grant TTL keeps access bounded
+# rather than permanent. Lives here (not main.py) so agent_loop.py can create
+# a request straight from a chat turn without a circular import.
+POCSO_GRANT_HOURS = 8
+
+
+def find_pocso_row(request_id: str) -> Optional[Dict[str, Any]]:
+    """Locate a POCSO access-request row by its uuid request_id or numeric ROWID."""
+    if not catalyst_app or not request_id:
+        return None
+    rid = str(request_id).replace("'", "''")
+    try:
+        if rid.isdigit():
+            res = catalyst_app.zql().execute_query(
+                "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+                f"WHERE AlertType = 'POCSO_ACCESS' AND ROWID = {rid} LIMIT 1")
+        else:
+            res = catalyst_app.zql().execute_query(
+                "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+                f"WHERE AlertType = 'POCSO_ACCESS' AND AlertMessage LIKE '*{rid}*' ORDER BY ROWID DESC LIMIT 1")
+    except Exception as e:
+        logging.getLogger("vajra_core").warning(f"find_pocso_row: {e}")
+        return None
+    if not res:
+        return None
+    a = res[0].get("ProactiveAlerts", {})
+    try:
+        meta = json.loads(a.get("AlertMessage") or "{}")
+    except Exception:
+        meta = {}
+    return {"rowid": a.get("ROWID"), "meta": meta}
+
+
+def create_pocso_request(requester_badge: str, requester_name: str, case_no: str,
+                         reason: str = "") -> Dict[str, Any]:
+    """Create a pending POCSO access request. Returns the request metadata
+    (includes request_id). A duplicate pending request for the same
+    badge+case is reused instead of creating a new one."""
+    existing = find_active_pocso_request(requester_badge, case_no)
+    if existing:
+        return existing
+    request_id = uuid.uuid4().hex[:16]
+    meta = {
+        "request_id": request_id, "requester_badge": str(requester_badge or ""),
+        "requester_name": requester_name or "Officer", "case_no": case_no,
+        "reason": (reason or "").strip()[:200], "status": "pending",
+        "approver_badge": None, "decided_at": None, "grant_expires_at": None,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    try:
+        zcql_insert_row("ProactiveAlerts", {
+            "AlertType": "POCSO_ACCESS", "Severity": "Critical",
+            "TriggerTime": datetime.utcnow().isoformat(), "IsRead": False,
+            "DistrictID": "0", "AlertMessage": json.dumps(meta),
+        })
+    except Exception as e:
+        logging.getLogger("vajra_core").warning(f"create_pocso_request insert failed: {e}")
+    return meta
+
+
+def find_active_pocso_request(badge: str, case_no: str) -> Optional[Dict[str, Any]]:
+    """The most recent pending/approved-not-yet-expired POCSO request for this
+    officer+case, if any -- used to avoid duplicate requests and to grant
+    access once approved."""
+    if not catalyst_app or not badge or not case_no:
+        return None
+    try:
+        res = catalyst_app.zql().execute_query(
+            "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+            f"WHERE AlertType = 'POCSO_ACCESS' AND AlertMessage LIKE '*{case_no}*' "
+            "ORDER BY ROWID DESC LIMIT 30")
+    except Exception:
+        return None
+    for r in res or []:
+        a = r.get("ProactiveAlerts", {})
+        try:
+            m = json.loads(a.get("AlertMessage") or "{}")
+        except Exception:
+            continue
+        if str(m.get("requester_badge")) != str(badge) or m.get("case_no") != case_no:
+            continue
+        if m.get("status") == "pending":
+            return m
+        if m.get("status") == "approved" and m.get("grant_expires_at"):
+            try:
+                if datetime.fromisoformat(m["grant_expires_at"]) > datetime.utcnow():
+                    return m
+            except Exception:
+                pass
+    return None
+
+
+def has_active_pocso_grant(badge: Optional[str], case_no: Optional[str]) -> bool:
+    """True if this officer currently holds a non-expired, approved POCSO
+    access grant for this specific case."""
+    if not badge or not case_no:
+        return False
+    m = find_active_pocso_request(badge, case_no)
+    return bool(m and m.get("status") == "approved")
 
 
 def derive_role_tier(rank_id: Optional[int], kgid: Optional[str] = None) -> str:

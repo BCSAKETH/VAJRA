@@ -12,7 +12,8 @@ import numpy as np
 import pandas as pd
 
 from vajra_core import catalyst_app, VajraGraphRAG, VajraSemanticMemory, MOBehavioralProfiler, zcql_insert_row, \
-    is_pocso_sensitive, redact_pocso_name, redact_phone_numbers, is_supervisor_badge
+    is_pocso_sensitive, redact_pocso_name, redact_phone_numbers, is_supervisor_badge, \
+    has_active_pocso_grant, create_pocso_request, find_active_pocso_request
 from session_memory import VajraSessionMemory
 from catalyst_llm import CatalystLLM
 from catalyst_qwen import CatalystQwen
@@ -1453,6 +1454,7 @@ class VajraAgentLoop:
         Primary execution entry point. Decides what tools to run in sequence using LLM function calling.
         """
         self.officer_badge = officer_badge
+        self.officer_name = officer_name
         # main.py prepends officer-identity and case-context headers to
         # `query` -- e.g. "[Context: you are speaking with Officer X ... or
         # current assignment, call the get_my_profile tool ...]". Those are
@@ -5107,17 +5109,42 @@ class VajraAgentLoop:
         elif any(w in ql for w in ("which station", "what station", "filed at", "registered at", "where was", "station", "ಠಾಣೆ")):
             ans = f"Case {crimeno} was filed at {station or 'the registering unit (station name not on record)'}."
             data = {"case_no": crimeno, "station": station}
+        elif is_pocso_sensitive(brief, crimeno) and any(w in ql for w in
+                ("request access", "request pocso", "need access", "unlock", "request unmask", "grant access")):
+            # Officer-initiated access request for a redacted case -- a live,
+            # supervisor-approved, time-boxed alternative to permanent denial.
+            # Reuses the same ProactiveAlerts request/approve/notify pattern as
+            # the export-approval queue (see main.py /api/exports/*).
+            existing = find_active_pocso_request(getattr(self, "officer_badge", None) or "", crimeno)
+            if existing and existing.get("status") == "approved":
+                ans = f"You already have approved access to case {crimeno}'s victim identity. Ask again to view it."
+            elif existing:
+                ans = f"An access request for case {crimeno} is already pending supervisor approval."
+            else:
+                _reason_m = re.search(r"(?:because|for|reason:?)\s+(.+)$", query, re.IGNORECASE)
+                meta = create_pocso_request(
+                    getattr(self, "officer_badge", None) or "", getattr(self, "officer_name", None), crimeno,
+                    reason=(_reason_m.group(1).strip() if _reason_m else "")
+                )
+                ans = (f"Access request submitted for case {crimeno}'s victim identity "
+                       f"(request ID {meta.get('request_id')}). A supervisor will review it live; "
+                       f"you'll be able to view the record once approved.")
+            data = {"case_no": crimeno}
+            rt = "text"
         elif any(w in ql for w in ("victim", "complainant", "ಸಂತ್ರಸ್ತ", "ದೂರುದಾರ", "ಬಲಿಪಶು")):
             victim, complainant = _name_from("Victim"), _name_from("ComplainantDetails")
             # POCSO / juvenile-victim auto-redaction (Section 74 JJA): a sexual-
             # offence or minor-victim case masks the real name for everyone below
-            # supervisor tier, with the redaction itself stated plainly (not
-            # silently dropped) and unmasking by a supervisor logged to audit.
+            # supervisor tier (unless they hold a live, supervisor-approved access
+            # grant for this specific case), with the redaction stated plainly
+            # (not silently dropped) and unmasking always logged to audit.
             _sensitive = is_pocso_sensitive(brief, crimeno)
-            _is_super = is_supervisor_badge(getattr(self, "officer_badge", None))
+            _badge = getattr(self, "officer_badge", None)
+            _is_super = is_supervisor_badge(_badge)
+            _has_grant = (not _is_super) and has_active_pocso_grant(_badge, crimeno)
             _redacted_note = ""
             case_brief_for_answer = brief
-            if _sensitive and not _is_super:
+            if _sensitive and not (_is_super or _has_grant):
                 if victim:
                     victim = redact_pocso_name(victim)
                 if complainant:
@@ -5125,17 +5152,22 @@ class VajraAgentLoop:
                 case_brief_for_answer = redact_phone_numbers(brief)
                 _redacted_note = ("\n\n(Victim identity masked under Section 74, Juvenile Justice Act -- "
                                   "this case is flagged as a sensitive/POCSO matter. A supervisor can view "
-                                  "the unredacted record.)")
+                                  "it, or ask me to 'request access to this case' for supervisor approval.)")
             elif _sensitive and _is_super:
                 self._write_audit_log(employee_id, "POCSO Unmask", crimeno,
                                       f"Supervisor viewed unredacted victim identity for {crimeno}",
                                       "Unmasked -- supervisor tier", session_id)
+            elif _sensitive and _has_grant:
+                self._write_audit_log(employee_id, "POCSO Unmask", crimeno,
+                                      f"Officer {_badge} viewed unredacted victim identity for {crimeno} via approved grant",
+                                      "Unmasked -- approved access grant", session_id)
             lines = [f"Victim: {victim}" if victim else "Victim: not separately recorded (see the FIR narrative below)."]
             lines.append(f"Complainant: {complainant}" if complainant else "Complainant: not separately recorded.")
             ans = (f"For case {crimeno}:\n- " + "\n- ".join(lines)
                    + (f"\n\nBrief facts: {case_brief_for_answer}" if case_brief_for_answer else "")
                    + _redacted_note)
-            data = {"case_no": crimeno, "victim": victim, "complainant": complainant, "pocso_redacted": bool(_sensitive and not _is_super)}
+            data = {"case_no": crimeno, "victim": victim, "complainant": complainant,
+                    "pocso_redacted": bool(_sensitive and not (_is_super or _has_grant))}
         elif any(w in ql for w in ("linked", "other case", "related case", "connected case", "ಸಂಬಂಧಿತ", "ಇತರ ಪ್ರಕರಣ")):
             sr = self._execute_tool("find_similar_cases", {"query": brief or case_no}, employee_id, session_id, user_unit_id)
             matches = [(mm.get("fir_id") or "") for mm in ((sr.get("data") or {}).get("matches") or [])]

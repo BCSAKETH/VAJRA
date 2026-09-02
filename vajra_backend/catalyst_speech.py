@@ -163,6 +163,14 @@ def normalize_text_for_tts(text: str, lang: str = "en") -> str:
     s = re.sub(r"[-*•]\s+", "", s)               # bullet points
     # Strip citation markers like [1], [2,3]
     s = re.sub(r"\[\d+(?:,\s*\d+)*\]", "", s)
+    # Number normalization: Zia mispronounced numbers with a thousands-separator
+    # comma ("7,099" read digit-by-digit instead of "seven thousand ninety-nine")
+    # and skipped/garbled a bare "%" sign. Applies to EN and KN alike since the
+    # digits themselves are unaffected by language.
+    s = re.sub(r"(\d),(?=\d)", r"\1", s)
+    _pct_word = "ಶೇಕಡಾ " if lang == "kn" else ""
+    _pct_suffix = "" if lang == "kn" else " percent"
+    s = re.sub(r"(\d+(?:\.\d+)?)\s*%", rf"{_pct_word}\1{_pct_suffix}", s)
     # Expand abbreviations phonetically based on language
     abbrevs = _ABBREV_KN if lang == "kn" else _ABBREV_EN
     for pattern, replacement in abbrevs.items():
