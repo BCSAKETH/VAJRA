@@ -612,10 +612,33 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
                       </li>
                     ))}
                   </ul>
+                  {/* Court-admissible provenance (§65B IEA): verifiable hash + cited records */}
+                  {message.data?._provenance && (
+                    <div className="rounded-md border border-[#C79A4E]/20 bg-[#C79A4E]/[0.04] p-2.5 space-y-1.5">
+                      <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-wider text-[#C79A4E] font-mono">
+                        <ShieldCheck className="w-2.5 h-2.5 shrink-0" />
+                        {lang === "en" ? "Cryptographic provenance · §65B IEA" : "ಕ್ರಿಪ್ಟೊಗ್ರಾಫಿಕ್ ಆಧಾರ · §65B"}
+                      </div>
+                      {Array.isArray(message.data._provenance.records) && message.data._provenance.records.length > 0 && (
+                        <div className="text-[10px] text-stone-400">
+                          <span className="text-stone-500">{lang === "en" ? "Cited records: " : "ಉಲ್ಲೇಖಿತ ದಾಖಲೆಗಳು: "}</span>
+                          <span className="font-mono text-stone-300">{message.data._provenance.records.join(" · ")}</span>
+                        </div>
+                      )}
+                      <div className="text-[10px] text-stone-400" title={message.data._provenance.hash}>
+                        <span className="text-stone-500">{lang === "en" ? "Integrity (SHA-256): " : "ಸಮಗ್ರತೆ (SHA-256): "}</span>
+                        <span className="font-mono text-emerald-400 break-all">{String(message.data._provenance.hash || "").slice(0, 32)}…</span>
+                      </div>
+                      <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[9px] text-stone-500 font-mono">
+                        {message.data._provenance.operator_badge && <span>{lang === "en" ? "Operator" : "ಅಧಿಕಾರಿ"}: {message.data._provenance.operator_badge}</span>}
+                        {message.data._provenance.generated_utc && <span>{String(message.data._provenance.generated_utc).replace("T", " ").slice(0, 19)} UTC</span>}
+                      </div>
+                    </div>
+                  )}
                   <div className="text-[9px] text-stone-600 pt-1 border-t border-stone-850">
                     {lang === "en"
-                      ? "Every VAJRA answer is grounded in real records — no fabricated data. This trail is written to the tamper-evident audit ledger."
-                      : "ಪ್ರತಿ ವಜ್ರ ಉತ್ತರವೂ ನೈಜ ದಾಖಲೆಗಳ ಆಧಾರಿತ — ಯಾವುದೇ ಕಲ್ಪಿತ ಡೇಟಾ ಇಲ್ಲ. ಈ ಜಾಡು ಸುರಕ್ಷಿತ ಆಡಿಟ್ ಲೆಡ್ಜರ್‌ಗೆ ಬರೆಯಲಾಗಿದೆ."}
+                      ? "Every VAJRA answer is grounded in real records — no fabricated data. This trail is written to the tamper-evident audit ledger; any edit changes the integrity hash."
+                      : "ಪ್ರತಿ ವಜ್ರ ಉತ್ತರವೂ ನೈಜ ದಾಖಲೆಗಳ ಆಧಾರಿತ — ಯಾವುದೇ ಕಲ್ಪಿತ ಡೇಟಾ ಇಲ್ಲ. ಈ ಜಾಡು ಸುರಕ್ಷಿತ ಆಡಿಟ್ ಲೆಡ್ಜರ್‌ಗೆ ಬರೆಯಲಾಗಿದೆ; ಯಾವುದೇ ಬದಲಾವಣೆ ಹ್ಯಾಶ್ ಅನ್ನು ಬದಲಾಯಿಸುತ್ತದೆ."}
                   </div>
                 </div>
               )}

@@ -15,6 +15,19 @@ const ExpandedOverlay = lazy(() =>
   import("../components/ExpandedOverlay").then((m) => ({ default: m.ExpandedOverlay }))
 );
 
+// The backend persists timestamps via Python's datetime.utcnow().isoformat(),
+// which has NO trailing "Z"/offset -- a bare "2026-09-01T18:33:12" string. The
+// ISO-8601 spec (and every browser) treats a date-time string with no timezone
+// designator as LOCAL time, not UTC, so `new Date(m.timestamp)` silently
+// mis-parsed every server timestamp as if it were already in the officer's
+// timezone -- confirmed live: a message sent "just now" in IST displayed the
+// raw UTC clock time unconverted (off by UTC+5:30). Treat a marker-less
+// timestamp as UTC by appending "Z" before parsing.
+const parseServerTimestamp = (ts: string): Date => {
+  const hasTz = /Z$|[+-]\d{2}:?\d{2}$/.test(ts);
+  return new Date(hasTz ? ts : `${ts}Z`);
+};
+
 // Shared shape between the initial session-history fetch (handleSelectSession)
 // and the cowork polling fallback below -- factored out so both stay in sync
 // instead of drifting into two slightly different mappings over time.
@@ -26,7 +39,7 @@ const mapSessionMessages = (sessionId: string, messages: any[]): ChatMessage[] =
     textEn: m.text_en,
     textKn: m.text_kn,
     timestamp: m.timestamp
-      ? new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+      ? parseServerTimestamp(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
       : "",
     responseType: m.response_type,
     data: m.data,
@@ -262,7 +275,7 @@ export const AIChatScreen: React.FC = () => {
               text: payload.text,
               textEn: payload.text_en,
               textKn: payload.text_kn,
-              timestamp: new Date(payload.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+              timestamp: parseServerTimestamp(payload.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
               responseType: payload.response_type,
               data: payload.data,
               citations: payload.citations,

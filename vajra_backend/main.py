@@ -218,6 +218,7 @@ async def health_check():
 
     return {
         "status": "online",
+        "_deploy_canary": "CANARY-20260902-0016",
         "timestamp": pd.Timestamp.now().isoformat(),
         "database_connected": catalyst_app is not None,
         "graph_rag_mode": "Zoho Catalyst Relational Tracing",
@@ -2707,12 +2708,34 @@ async def _run_ai_turn_and_persist(
     # data fields already living in this same dict.
     persisted_data = {**(result["data"] or {}), "_text_en": text_en, "_text_kn": text_kn}
 
+    # Court-admissible provenance (§65B Indian Evidence Act): a verifiable SHA-256
+    # integrity hash over the grounded answer + its citations, plus the cited
+    # record IDs and the authenticated operator. Any edit to the answer or its
+    # evidence changes this hash. Rendered in the "Why this answer?" HUD.
+    try:
+        _prov_src = json.dumps(
+            {"t": text_en, "c": result.get("citations") or [], "s": session_id},
+            ensure_ascii=False, sort_keys=True, default=str)
+        _provenance = {
+            "hash": hashlib.sha256(_prov_src.encode("utf-8")).hexdigest(),
+            "response_type": result["response_type"],
+            "records": [str(c.get("id")) for c in (result.get("citations") or []) if c.get("id")][:12],
+            "generated_utc": datetime.utcnow().isoformat(),
+            "operator_badge": officer_badge,
+            "grounding": "Resolved from live CCTNS ZCQL records / calibrated ML — no fabricated data.",
+        }
+    except Exception as _pe:
+        logger.warning(f"provenance hash failed: {_pe}")
+        _provenance = None
+    if _provenance:
+        persisted_data["_provenance"] = _provenance
+
     _persist_chat_message(session_id, "assistant", text, result["response_type"], persisted_data, result["citations"])
     await connection_manager.broadcast(session_id, {
         "type": "message", "sender": "assistant", "sender_employee_id": None,
         "sender_name": "VAJRA.AI", "text": text, "text_en": text_en, "text_kn": text_kn,
         "response_type": result["response_type"],
-        "data": result["data"], "citations": result["citations"], "timestamp": datetime.utcnow().isoformat(),
+        "data": persisted_data, "citations": result["citations"], "timestamp": datetime.utcnow().isoformat(),
         # Without these, an "AI unavailable" turn delivered via WebSocket
         # (every message from the 2nd one onward in a session) rendered as an
         # ordinary-looking assistant answer instead of the distinct amber

@@ -60,3 +60,4 @@ Credentials.txt
 .token_cache
 vajra_backend/scratch/
 **/scratch/
+vajra_backend_manual_deploy.zip
