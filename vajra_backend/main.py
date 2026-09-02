@@ -60,6 +60,11 @@ from vajra_core import (
     zcql_update_row,
     find_pocso_row,
     POCSO_GRANT_HOURS,
+    find_district_access_row,
+    create_district_access_request,
+    has_active_district_access_grant,
+    DISTRICT_ACCESS_GRANT_HOURS,
+    is_supervisor_badge,
 )
 from agent_loop import VajraAgentLoop
 from catalyst_llm import CatalystLLM
@@ -1025,6 +1030,7 @@ async def get_district_dashboard_detail(district_id: int, request: Request, loca
     """
     if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
+    _require_district_access(request, district_id)
     try:
         d_res = catalyst_app.zql().execute_query(f"SELECT DistrictName FROM District WHERE DistrictID = {district_id} LIMIT 1")
         if not d_res:
@@ -1058,6 +1064,7 @@ async def list_district_stations(district_id: int, request: Request, location_co
     """
     if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
+    _require_district_access(request, district_id)
     d_res = catalyst_app.zql().execute_query(f"SELECT DistrictName FROM District WHERE DistrictID = {district_id} LIMIT 1")
     if not d_res:
         raise HTTPException(status_code=404, detail=f"District {district_id} not found.")
@@ -1106,6 +1113,7 @@ async def get_station_dashboard_detail(unit_id: int, request: Request, location_
     u = u_res[0].get("Unit", {})
     unit_name = u.get("UnitName")
     parent_district_id = u.get("DistrictID")
+    _require_district_access(request, parent_district_id)
     parent_district_name = None
     if parent_district_id:
         d_res = catalyst_app.zql().execute_query(f"SELECT DistrictName FROM District WHERE DistrictID = {parent_district_id} LIMIT 1")
@@ -3030,6 +3038,33 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
             logger.warning(f"Fast-path lookup failed, falling back to standard AI turn: {ex}")
 
     # 2. DUAL-TIER DISPATCH: Attempt Job Scheduling Instant Job -> Fallback to In-Process Async Worker
+    #
+    # HONEST STATUS (checked live via the Catalyst project API, Part C item
+    # #6): this submit_job call targets target_type="FUNCTION",
+    # target_name="ai_turn_worker" -- but NO SUCH FUNCTION HAS EVER BEEN
+    # DEPLOYED to this project (List_All_Functions returns exactly one
+    # function, "proactive_alerts", which is itself marked is_deployed=false).
+    # This was never a permissions/ADMIN-scope problem -- the target simply
+    # doesn't exist, so this call has failed and silently fallen through to
+    # the in-process async worker below for 100% of every single request
+    # this app has ever served. That fallback IS the real, reliable,
+    # currently-serving production path, not a second-tier degradation.
+    #
+    # A real fix exists but was deliberately NOT built today (explicit
+    # scope call): Catalyst's job_scheduling also supports target_type=
+    # "AppSail" (dispatching a job as an HTTP call back into THIS already-
+    # deployed AppSail app, e.g. a new internal /internal/ai-turn-worker
+    # route) -- unlike a Function, that needs no new serverless deployment
+    # (which isn't currently possible anyway: the Catalyst CLI has been
+    # broken all session, and this project's MCP tooling can create/update
+    # a Job Pool but has no function-create tool). That path was scoped as
+    # a real but nontrivial follow-up (new authenticated internal route +
+    # untested job-dispatch round-trip), not attempted under today's time
+    # pressure while a working fallback already serves every request.
+    #
+    # DONE today: created the missing Job Pool (id 50212000000456012, type
+    # AppSail, capacity 5) as harmless, real groundwork for that future work
+    # -- confirmed via List_All_Jobpools that none existed before.
     dispatched_via_job = False
     try:
         if hasattr(catalyst_app, "job_scheduling"):
@@ -3053,7 +3088,10 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
             logger.info(f"Dispatched AI turn to Catalyst Job Scheduling: {job.job_id}")
             dispatched_via_job = True
     except Exception as job_err:
-        logger.debug(f"Job scheduling unprovisioned or unavailable, using in-process async worker: {job_err}")
+        # Expected on every call today (see note above) -- the "ai_turn_worker"
+        # Function target doesn't exist. Logged at debug, not warning: this is
+        # the normal, anticipated path, not a transient error worth alarming on.
+        logger.debug(f"Job scheduling target unprovisioned, using in-process async worker (expected -- see comment above): {job_err}")
 
     if not dispatched_via_job:
         _ai_task = asyncio.create_task(_run_ai_turn_and_persist(
@@ -3665,7 +3703,7 @@ async def get_alerts_endpoint(request: Request, location_context: str = Depends(
         # Without this filter they leaked into every officer's "System Alerts"
         # list as a raw JSON blob mislabeled under whatever AlertType string
         # the frontend didn't recognize.
-        WORKFLOW_INTERNAL_ALERT_TYPES = {"EXPORT_APPROVAL", "POCSO_ACCESS"}
+        WORKFLOW_INTERNAL_ALERT_TYPES = {"EXPORT_APPROVAL", "POCSO_ACCESS", "DISTRICT_ACCESS"}
 
         alerts = []
         for row in res:
@@ -5325,6 +5363,118 @@ async def pocso_request_status(request_id: str, location_context: str = Depends(
             "grant_expires_at": m.get("grant_expires_at")}
 
 
+# ---- Inter-district access air-lock (Part C item #7) ----
+# Same live request/approve/time-boxed-grant pattern as POCSO/export above,
+# applied to cross-district access instead of a sensitive case. An officer
+# whose home district differs from a requested district gets a structured
+# "gated" response (see _require_district_access below) instead of data;
+# they call POST /api/district-access/request, a supervisor approves via the
+# pending queue, and the officer is unblocked for DISTRICT_ACCESS_GRANT_HOURS.
+
+def _require_district_access(request: Request, target_district_id: Any) -> None:
+    """Call at the top of any district/station-scoped endpoint. Raises 403
+    with a structured, frontend-actionable body when the officer's home
+    district differs from target_district_id and they hold no active grant.
+    Supervisors and same-district requests pass through silently (see
+    has_active_district_access_grant)."""
+    if target_district_id is None:
+        return
+    badge = getattr(request.state, "kgid", None)
+    home_district_id = getattr(request.state, "home_district_id", None)
+    if has_active_district_access_grant(badge, home_district_id, target_district_id):
+        return
+    raise HTTPException(status_code=403, detail={
+        "gated": True, "reason": "inter_district_access_required",
+        "home_district_id": home_district_id, "target_district_id": target_district_id,
+        "message": "This district is outside your home station's jurisdiction. Request supervisor approval to view it.",
+    })
+
+
+@app.post("/api/district-access/request")
+async def request_district_access(payload: Dict[str, Any] = Body(default={}),
+                                  request: Request = None, location_context: str = Depends(security_firewall)):
+    """Officer-initiated request for time-boxed access to a district outside
+    their own -- mirrors the POCSO access-request endpoint exactly."""
+    target_district_id = payload.get("district_id")
+    if target_district_id is None:
+        raise HTTPException(status_code=400, detail="district_id is required.")
+    target_district_name = ""
+    if catalyst_app:
+        try:
+            d_res = catalyst_app.zql().execute_query(f"SELECT DistrictName FROM District WHERE DistrictID = {int(target_district_id)} LIMIT 1")
+            if d_res:
+                target_district_name = d_res[0].get("District", {}).get("DistrictName") or ""
+        except Exception:
+            pass
+    officer_name = (getattr(request.state, "user_profile", {}) or {}).get("FirstName") or "Officer"
+    meta = create_district_access_request(
+        getattr(request.state, "kgid", None), officer_name,
+        getattr(request.state, "home_district_id", None), target_district_id, target_district_name,
+        reason=(payload.get("reason") or "")
+    )
+    return {"status": meta.get("status"), "request_id": meta.get("request_id"), "target_district": target_district_name}
+
+
+@app.get("/api/district-access/pending")
+async def list_pending_district_access(request: Request, location_context: str = Depends(security_firewall)):
+    """Supervisor-only: pending inter-district access requests."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    out = []
+    if catalyst_app:
+        try:
+            res = catalyst_app.zql().execute_query(
+                "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+                "WHERE AlertType = 'DISTRICT_ACCESS' ORDER BY ROWID DESC LIMIT 60")
+            for r in res:
+                a = r.get("ProactiveAlerts", {})
+                try:
+                    m = json.loads(a.get("AlertMessage") or "{}")
+                except Exception:
+                    continue
+                if m.get("status") == "pending":
+                    m["rowid"] = a.get("ROWID")
+                    out.append(m)
+        except Exception as e:
+            logger.warning(f"list_pending_district_access: {e}")
+    return {"pending": out, "count": len(out)}
+
+
+@app.post("/api/district-access/{request_id}/decision")
+async def decide_district_access(request_id: str, payload: Dict[str, Any] = Body(default={}),
+                                 request: Request = None, location_context: str = Depends(security_firewall)):
+    """Supervisor-only: approve or reject a cross-district access request."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    row = find_district_access_row(request_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Access request not found.")
+    decision = "approved" if payload.get("approve", True) else "rejected"
+    meta = row["meta"]
+    meta["status"] = decision
+    meta["approver_badge"] = request.state.kgid
+    meta["decided_at"] = datetime.utcnow().isoformat()
+    if decision == "approved":
+        meta["grant_expires_at"] = (datetime.utcnow() + timedelta(hours=DISTRICT_ACCESS_GRANT_HOURS)).isoformat()
+    try:
+        zcql_update_row("ProactiveAlerts", {
+            "ROWID": row["rowid"], "AlertMessage": json.dumps(meta), "IsRead": True})
+    except Exception as e:
+        logger.warning(f"decide_district_access update: {e}")
+    return {"status": decision, "request_id": meta.get("request_id"), "grant_expires_at": meta.get("grant_expires_at")}
+
+
+@app.get("/api/district-access/{request_id}/status")
+async def district_access_status(request_id: str, location_context: str = Depends(security_firewall)):
+    """Requester polls this to know when their access request is decided."""
+    row = find_district_access_row(request_id)
+    if not row:
+        return {"status": "unknown"}
+    m = row["meta"]
+    return {"status": m.get("status", "pending"), "target_district": m.get("target_district_name"),
+            "grant_expires_at": m.get("grant_expires_at")}
+
+
 @app.get("/api/approvals/history")
 async def approvals_history(request: Request, type: str = "all", status: str = "all",
                              location_context: str = Depends(security_firewall)):
@@ -5387,6 +5537,29 @@ async def approvals_history(request: Request, type: str = "all", status: str = "
                         })
             except Exception as e:
                 logger.warning(f"approvals_history pocso: {e}")
+        if type_f in ("all", "district"):
+            try:
+                res = catalyst_app.zql().execute_query(
+                    "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+                    "WHERE AlertType = 'DISTRICT_ACCESS' ORDER BY ROWID DESC LIMIT 200")
+                for r in res:
+                    a = r.get("ProactiveAlerts", {})
+                    try:
+                        m = json.loads(a.get("AlertMessage") or "{}")
+                    except Exception:
+                        continue
+                    if m.get("status") in ("approved", "rejected"):
+                        out.append({
+                            "kind": "district", "rowid": a.get("ROWID"),
+                            "requester_badge": m.get("requester_badge"),
+                            "requester_name": m.get("requester_name"),
+                            "subject": m.get("target_district_name"),
+                            "status": m.get("status"), "approver_badge": m.get("approver_badge"),
+                            "decided_at": m.get("decided_at"), "created_at": m.get("created_at"),
+                            "grant_expires_at": m.get("grant_expires_at"),
+                        })
+            except Exception as e:
+                logger.warning(f"approvals_history district: {e}")
     if status_f in ("approved", "rejected"):
         out = [o for o in out if o.get("status") == status_f]
     out.sort(key=lambda o: o.get("decided_at") or o.get("created_at") or "", reverse=True)

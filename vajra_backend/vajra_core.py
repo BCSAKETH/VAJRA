@@ -515,6 +515,121 @@ def has_active_pocso_grant(badge: Optional[str], case_no: Optional[str]) -> bool
     return bool(m and m.get("status") == "approved")
 
 
+# ---- Inter-district access air-lock (Part C item #7) ----
+# Reuses the EXACT same ProactiveAlerts request/approve/time-boxed-grant
+# pattern already proven twice this session (export approval, POCSO access)
+# rather than a separate Circuits-based flow -- same UX for supervisors, one
+# reviewed pattern, less risk. An officer's HOME district is resolved once at
+# login (VajraSecurityFirewall, Unit.DistrictID) and stored on request.state;
+# any request that resolves to a DIFFERENT district requires this grant.
+# Supervisors are exempt everywhere else in this app (SUPERVISOR_KGIDS) and
+# are exempt here too -- state-wide oversight is their whole role.
+DISTRICT_ACCESS_GRANT_HOURS = 8
+
+
+def find_district_access_row(request_id: str) -> Optional[Dict[str, Any]]:
+    """Locate a district-access request row by its uuid request_id or numeric ROWID."""
+    if not catalyst_app or not request_id:
+        return None
+    rid = str(request_id).replace("'", "''")
+    try:
+        if rid.isdigit():
+            res = catalyst_app.zql().execute_query(
+                "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+                f"WHERE AlertType = 'DISTRICT_ACCESS' AND ROWID = {rid} LIMIT 1")
+        else:
+            res = catalyst_app.zql().execute_query(
+                "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+                f"WHERE AlertType = 'DISTRICT_ACCESS' AND AlertMessage LIKE '*{rid}*' ORDER BY ROWID DESC LIMIT 1")
+    except Exception as e:
+        logging.getLogger("vajra_core").warning(f"find_district_access_row: {e}")
+        return None
+    if not res:
+        return None
+    a = res[0].get("ProactiveAlerts", {})
+    try:
+        meta = json.loads(a.get("AlertMessage") or "{}")
+    except Exception:
+        meta = {}
+    return {"rowid": a.get("ROWID"), "meta": meta}
+
+
+def create_district_access_request(requester_badge: str, requester_name: str,
+                                   home_district_id: Any, target_district_id: Any,
+                                   target_district_name: str, reason: str = "") -> Dict[str, Any]:
+    """Creates (or returns the existing) pending/approved request for this
+    officer + target district, mirroring create_pocso_request exactly."""
+    existing = find_active_district_access_request(requester_badge, target_district_id)
+    if existing:
+        return existing
+    request_id = uuid.uuid4().hex[:16]
+    meta = {
+        "request_id": request_id, "requester_badge": str(requester_badge or ""),
+        "requester_name": requester_name or "Officer",
+        "home_district_id": home_district_id, "target_district_id": target_district_id,
+        "target_district_name": target_district_name,
+        "reason": (reason or "").strip()[:200], "status": "pending",
+        "approver_badge": None, "decided_at": None, "grant_expires_at": None,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    try:
+        zcql_insert_row("ProactiveAlerts", {
+            "AlertType": "DISTRICT_ACCESS", "Severity": "Critical",
+            "TriggerTime": datetime.utcnow().isoformat(), "IsRead": False,
+            "DistrictID": str(target_district_id or "0"), "AlertMessage": json.dumps(meta),
+        })
+    except Exception as e:
+        logging.getLogger("vajra_core").warning(f"create_district_access_request insert failed: {e}")
+    return meta
+
+
+def find_active_district_access_request(badge: str, target_district_id: Any) -> Optional[Dict[str, Any]]:
+    """The most recent pending/approved-not-yet-expired request for this
+    officer + target district, mirroring find_active_pocso_request exactly."""
+    if not catalyst_app or not badge or target_district_id is None:
+        return None
+    try:
+        res = catalyst_app.zql().execute_query(
+            "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+            f"WHERE AlertType = 'DISTRICT_ACCESS' AND AlertMessage LIKE '*{target_district_id}*' "
+            "ORDER BY ROWID DESC LIMIT 30")
+    except Exception:
+        return None
+    for r in res or []:
+        a = r.get("ProactiveAlerts", {})
+        try:
+            m = json.loads(a.get("AlertMessage") or "{}")
+        except Exception:
+            continue
+        if str(m.get("requester_badge")) != str(badge) or str(m.get("target_district_id")) != str(target_district_id):
+            continue
+        if m.get("status") == "pending":
+            return m
+        if m.get("status") == "approved" and m.get("grant_expires_at"):
+            try:
+                if datetime.fromisoformat(m["grant_expires_at"]) > datetime.utcnow():
+                    return m
+            except Exception:
+                pass
+    return None
+
+
+def has_active_district_access_grant(badge: Optional[str], home_district_id: Any, target_district_id: Any) -> bool:
+    """True if the target district IS the officer's home district (no grant
+    ever needed for one's own district), the officer is a supervisor (exempt,
+    same as everywhere else in this app), or they hold a live approved grant."""
+    if target_district_id is None or home_district_id is None:
+        return True  # can't resolve either side -- fail OPEN here; callers
+        # gate on an explicit district_id parameter/resolved value, so this
+        # only triggers when there's genuinely nothing to compare.
+    if str(target_district_id) == str(home_district_id):
+        return True
+    if is_supervisor_badge(badge):
+        return True
+    m = find_active_district_access_request(badge, target_district_id)
+    return bool(m and m.get("status") == "approved")
+
+
 def derive_role_tier(rank_id: Optional[int], kgid: Optional[str] = None) -> str:
     """
     Resolve an officer's access tier.
@@ -605,6 +720,7 @@ class VajraSecurityFirewall:
                 rank_name = cached["rank_name"]
                 designation_name = cached["designation_name"]
                 role_tier = cached["role_tier"]
+                home_district_id = cached.get("home_district_id")
             else:
                 zql_query = f"""
                     SELECT EmployeeID, UnitID, KGID, FirstName, RankID, DesignationID
@@ -629,9 +745,12 @@ class VajraSecurityFirewall:
                 rank_id = profile.get("RankID")
                 designation_id = profile.get("DesignationID")
 
-                # Fetch Unit Name
-                unit_res = catalyst_app.zql().execute_query(f"SELECT UnitName FROM Unit WHERE UnitID = {unit_id}")
+                # Fetch Unit Name + the officer's HOME DISTRICT (for the
+                # inter-district access air-lock, Part C item #7) in the same
+                # query -- no extra round-trip.
+                unit_res = catalyst_app.zql().execute_query(f"SELECT UnitName, DistrictID FROM Unit WHERE UnitID = {unit_id}")
                 unit_name = unit_res[0].get("Unit", {}).get("UnitName") if unit_res else "Unknown Station"
+                home_district_id = unit_res[0].get("Unit", {}).get("DistrictID") if unit_res else None
 
                 # Fetch Rank and Designation names — data has existed since seeding but was
                 # never queried here or exposed to the frontend/session context until now.
@@ -652,6 +771,7 @@ class VajraSecurityFirewall:
                 _profile_cache[kgid] = {
                     "profile": profile, "unit_name": unit_name, "rank_name": rank_name,
                     "designation_name": designation_name, "role_tier": role_tier,
+                    "home_district_id": home_district_id,
                     "cached_at": time.time()
                 }
 
@@ -662,6 +782,7 @@ class VajraSecurityFirewall:
             request.state.rank_name = rank_name
             request.state.designation_name = designation_name
             request.state.role_tier = role_tier
+            request.state.home_district_id = home_district_id
 
             logger.info(f"Access granted. Officer {profile.get('FirstName')} (KGID: {profile.get('KGID')}, {designation_name}/{rank_name}) authenticated for station: '{unit_name}'")
             return unit_name

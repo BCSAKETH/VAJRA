@@ -166,6 +166,64 @@ export const DistrictDashboardScreen: React.FC = () => {
   const [isLoadingStationDetail, setIsLoadingStationDetail] = useState(false);
   const [districtDetailCache, setDistrictDetailCache] = useState<DistrictDetail | null>(null);
 
+  // Inter-district access air-lock (Part C item #7): a district/station
+  // outside the officer's home district returns 403 {gated:true,...} instead
+  // of data. gatedInfo holds that state; requestId/requestStatus track the
+  // officer's own access-request lifecycle (pending -> approved/rejected).
+  const [gatedInfo, setGatedInfo] = useState<{ districtId: number; message: string } | null>(null);
+  const [accessRequestId, setAccessRequestId] = useState<string | null>(null);
+  const [accessRequestStatus, setAccessRequestStatus] = useState<"idle" | "pending" | "approved" | "rejected">("idle");
+  const [isRequestingAccess, setIsRequestingAccess] = useState(false);
+  const accessPollRef = useRef<number | null>(null);
+
+  const stopAccessPoll = () => {
+    if (accessPollRef.current) { window.clearInterval(accessPollRef.current); accessPollRef.current = null; }
+  };
+
+  const requestDistrictAccess = async (retryFn: () => void) => {
+    if (!gatedInfo) return;
+    setIsRequestingAccess(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/district-access/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({ district_id: gatedInfo.districtId }),
+      });
+      if (!res.ok) throw new Error("request failed");
+      const d = await res.json();
+      setAccessRequestId(d.request_id);
+      setAccessRequestStatus("pending");
+      stopAccessPoll();
+      accessPollRef.current = window.setInterval(async () => {
+        try {
+          const sres = await fetch(`${API_BASE}/api/district-access/${d.request_id}/status`, {
+            headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+          });
+          const sd = await sres.json();
+          if (sd.status === "approved") {
+            stopAccessPoll();
+            setAccessRequestStatus("approved");
+            setGatedInfo(null);
+            retryFn();
+          } else if (sd.status === "rejected") {
+            stopAccessPoll();
+            setAccessRequestStatus("rejected");
+          }
+        } catch { /* transient -- next tick retries */ }
+      }, 5000);
+    } catch {
+      addToast(
+        lang === "en" ? "Request Failed" : "ವಿನಂತಿ ವಿಫಲವಾಗಿದೆ",
+        lang === "en" ? "Could not submit the access request." : "ಪ್ರವೇಶ ವಿನಂತಿ ಸಲ್ಲಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+        "Warning"
+      );
+    } finally {
+      setIsRequestingAccess(false);
+    }
+  };
+
+  useEffect(() => () => stopAccessPoll(), []);
+
   // Plain SVG <path> elements per district (not a Leaflet layer), so hover/
   // select highlighting is just normal React state + re-render -- cheap for
   // 30 paths, no imperative layer manipulation needed.
@@ -229,6 +287,10 @@ export const DistrictDashboardScreen: React.FC = () => {
     setDistrictDetailCache(null);
     setSelectedStationId(null);
     setStations([]);
+    setGatedInfo(null);
+    setAccessRequestId(null);
+    setAccessRequestStatus("idle");
+    stopAccessPoll();
     setIsLoadingStations(true);
     fetch(`${API_BASE}/api/dashboard/districts/${districtId}/stations`, {
       headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
@@ -281,6 +343,14 @@ export const DistrictDashboardScreen: React.FC = () => {
       const res = await fetch(`${API_BASE}/api/dashboard/districts/${districtId}/detail`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
       });
+      if (res.status === 403) {
+        const body = await res.json().catch(() => null);
+        const info = body?.detail;
+        if (info?.gated) {
+          setGatedInfo({ districtId: info.target_district_id ?? districtId, message: info.message || "" });
+          return;
+        }
+      }
       if (!res.ok) throw new Error("Failed to load district detail.");
       const d = await res.json();
       setDetail(d);
@@ -304,10 +374,22 @@ export const DistrictDashboardScreen: React.FC = () => {
   const handleSelectStation = async (unitId: number) => {
     setSelectedStationId(unitId);
     setIsLoadingStationDetail(true);
+    setGatedInfo(null);
+    setAccessRequestId(null);
+    setAccessRequestStatus("idle");
+    stopAccessPoll();
     try {
       const res = await fetch(`${API_BASE}/api/dashboard/stations/${unitId}/detail`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
       });
+      if (res.status === 403) {
+        const body = await res.json().catch(() => null);
+        const info = body?.detail;
+        if (info?.gated) {
+          setGatedInfo({ districtId: info.target_district_id, message: info.message || "" });
+          return;
+        }
+      }
       if (!res.ok) throw new Error("Failed to load station detail.");
       setDetail(await res.json());
     } catch (err: any) {
@@ -559,6 +641,40 @@ export const DistrictDashboardScreen: React.FC = () => {
                   {[1, 2, 3, 4, 5, 6].map((n) => (
                     <div key={n} className="h-64 rounded-2xl shimmer-bg border border-stone-900" />
                   ))}
+                </div>
+              ) : gatedInfo ? (
+                // Inter-district access air-lock (Part C item #7): this
+                // district/station is outside the officer's home
+                // jurisdiction. Same request -> supervisor-approve -> unlock
+                // UX as the POCSO/export workflows, not a dead end.
+                <div className="glass-card p-6 border border-rose-500/30 bg-rose-500/[0.04] flex flex-col items-center text-center gap-3 max-w-xl mx-auto">
+                  <ShieldAlert className="w-8 h-8 text-rose-400" />
+                  <h3 className="text-sm font-black text-stone-100 uppercase tracking-wide font-mono">
+                    {lang === "en" ? "Outside your jurisdiction" : "ನಿಮ್ಮ ವ್ಯಾಪ್ತಿಯ ಹೊರಗೆ"}
+                  </h3>
+                  <p className="text-xs text-stone-400 leading-relaxed">{gatedInfo.message}</p>
+                  {accessRequestStatus === "pending" ? (
+                    <div className="text-[11px] font-mono text-amber-400 flex items-center gap-2">
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      {lang === "en" ? "Waiting for supervisor approval..." : "ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗಾಗಿ ಕಾಯಲಾಗುತ್ತಿದೆ..."}
+                    </div>
+                  ) : accessRequestStatus === "rejected" ? (
+                    <div className="text-[11px] font-mono text-rose-400">
+                      {lang === "en" ? "Access request was denied." : "ಪ್ರವೇಶ ವಿನಂತಿ ನಿರಾಕರಿಸಲಾಗಿದೆ."}
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => requestDistrictAccess(() =>
+                        selectedStationId !== null ? handleSelectStation(selectedStationId) : handleSelectDistrict(selectedId!)
+                      )}
+                      disabled={isRequestingAccess}
+                      className="px-4 py-2 rounded-lg bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs font-bold uppercase tracking-wide hover:bg-rose-500/25 disabled:opacity-50 cursor-pointer"
+                    >
+                      {isRequestingAccess
+                        ? (lang === "en" ? "Submitting..." : "ಸಲ್ಲಿಸಲಾಗುತ್ತಿದೆ...")
+                        : (lang === "en" ? "Request Access" : "ಪ್ರವೇಶ ವಿನಂತಿಸಿ")}
+                    </button>
+                  )}
                 </div>
               ) : detail ? (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

@@ -138,6 +138,44 @@ export const SupervisorDashboardScreen: React.FC = () => {
     }
   };
 
+  // Live inter-district access queue (Part C item #7) -- officers requesting
+  // time-boxed access to a district outside their own, same live-queue
+  // pattern as export/POCSO approvals above.
+  const [pendingDistrict, setPendingDistrict] = useState<any[]>([]);
+  const [decidingDistrictId, setDecidingDistrictId] = useState<string | null>(null);
+
+  const fetchPendingDistrict = async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/district-access/pending`, {
+        headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      });
+      if (!r.ok) return;
+      const d = await r.json();
+      setPendingDistrict(d.pending || []);
+    } catch { /* transient -- next poll retries */ }
+  };
+
+  const decideDistrict = async (rowid: string, approve: boolean) => {
+    setDecidingDistrictId(rowid);
+    try {
+      const r = await fetch(`${API_BASE}/api/district-access/${rowid}/decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({ approve }),
+      });
+      if (r.ok) {
+        setPendingDistrict((prev) => prev.filter((p) => String(p.rowid) !== String(rowid)));
+        addToast(
+          approve ? (lang === "en" ? "Access granted" : "ಪ್ರವೇಶ ನೀಡಲಾಗಿದೆ") : (lang === "en" ? "Access denied" : "ಪ್ರವೇಶ ನಿರಾಕರಿಸಲಾಗಿದೆ"),
+          lang === "en" ? "The requesting officer has been notified." : "ವಿನಂತಿಸಿದ ಅಧಿಕಾರಿಗೆ ಸೂಚಿಸಲಾಗಿದೆ.",
+          approve ? "Info" : "Warning"
+        );
+      }
+    } catch { /* ignore */ } finally {
+      setDecidingDistrictId(null);
+    }
+  };
+
   // Approval history -- the decided (approved/rejected) paper trail for both
   // workflow lanes above (exports + POCSO access), filterable by lane and
   // outcome. Separate from the live queues: those only ever show items still
@@ -292,9 +330,10 @@ export const SupervisorDashboardScreen: React.FC = () => {
     fetchOfficers();
     fetchPendingExports();
     fetchPendingPocso();
-    // Live poll for held exports + POCSO access requests so both queues +
-    // counts update with no manual refresh.
-    const iv = setInterval(() => { fetchPendingExports(); fetchPendingPocso(); }, 5000);
+    fetchPendingDistrict();
+    // Live poll for held exports + POCSO + inter-district access requests so
+    // all three queues + counts update with no manual refresh.
+    const iv = setInterval(() => { fetchPendingExports(); fetchPendingPocso(); fetchPendingDistrict(); }, 5000);
     return () => clearInterval(iv);
   }, []);
 
@@ -507,6 +546,52 @@ export const SupervisorDashboardScreen: React.FC = () => {
         </div>
       )}
 
+      {/* Live inter-district access queue (Part C item #7) -- an officer
+          asking about a district outside their own jurisdiction requests
+          time-boxed access here; polls every 5s like the queues above. */}
+      {pendingDistrict.length > 0 && (
+        <div className="shrink-0 rounded-xl border border-sky-500/40 bg-sky-500/[0.06] p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <ShieldAlert className="w-4 h-4 text-sky-400" />
+            <span className="text-xs font-black uppercase tracking-wider text-sky-300 font-mono">
+              {lang === "en" ? "District access requests" : "ಜಿಲ್ಲಾ ಪ್ರವೇಶ ವಿನಂತಿಗಳು"}
+            </span>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-sky-400 text-stone-950 font-bold">
+              {pendingDistrict.length}
+            </span>
+            <span className="text-[10px] text-stone-500 font-mono">
+              {lang === "en" ? "Outside the officer's home jurisdiction" : "ಅಧಿಕಾರಿಯ ಸ್ವಂತ ವ್ಯಾಪ್ತಿಯ ಹೊರಗೆ"}
+            </span>
+          </div>
+          <div className="space-y-2">
+            {pendingDistrict.map((p) => (
+              <div key={p.rowid} className="flex items-center gap-3 rounded-lg bg-stone-950/40 border border-stone-800 px-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12px] text-stone-200 font-mono truncate">
+                    {lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ"} {p.requester_badge} ({p.requester_name || ""}) · {lang === "en" ? "district" : "ಜಿಲ್ಲೆ"} {p.target_district_name}
+                  </div>
+                  <div className="text-[10px] text-stone-500 truncate">{p.reason || (lang === "en" ? "No reason given" : "ಕಾರಣ ನೀಡಿಲ್ಲ")}</div>
+                </div>
+                <button
+                  onClick={() => decideDistrict(String(p.rowid), true)}
+                  disabled={decidingDistrictId === String(p.rowid)}
+                  className="px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold uppercase tracking-wide text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 cursor-pointer"
+                >
+                  {lang === "en" ? "Approve" : "ಅನುಮೋದಿಸಿ"}
+                </button>
+                <button
+                  onClick={() => decideDistrict(String(p.rowid), false)}
+                  disabled={decidingDistrictId === String(p.rowid)}
+                  className="px-3 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/40 text-[11px] font-bold uppercase tracking-wide text-rose-300 hover:bg-rose-500/20 disabled:opacity-50 cursor-pointer"
+                >
+                  {lang === "en" ? "Deny" : "ನಿರಾಕರಿಸಿ"}
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Approval history -- decided export + POCSO items, filterable by lane
           and outcome, rendered as a proper table (not another queue-card
           list) since this is a review/audit surface, not an action queue. */}
@@ -528,6 +613,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
               <option value="all">{lang === "en" ? "All types" : "ಎಲ್ಲಾ ಬಗೆ"}</option>
               <option value="export">{lang === "en" ? "Export" : "ರಫ್ತು"}</option>
               <option value="pocso">POCSO</option>
+              <option value="district">{lang === "en" ? "District access" : "ಜಿಲ್ಲಾ ಪ್ರವೇಶ"}</option>
             </select>
             <select
               value={historyStatusFilter}
@@ -571,8 +657,8 @@ export const SupervisorDashboardScreen: React.FC = () => {
                 {historyItems.map((h) => (
                   <tr key={`${h.kind}-${h.rowid}`} className="border-b border-stone-900/80 text-stone-300">
                     <td className="py-1.5 pr-3">
-                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${h.kind === "pocso" ? "bg-rose-500/15 text-rose-300" : "bg-[#C79A4E]/15 text-[#C79A4E]"}`}>
-                        {h.kind === "pocso" ? "POCSO" : (lang === "en" ? "Export" : "ರಫ್ತು")}
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${h.kind === "pocso" ? "bg-rose-500/15 text-rose-300" : h.kind === "district" ? "bg-sky-500/15 text-sky-300" : "bg-[#C79A4E]/15 text-[#C79A4E]"}`}>
+                        {h.kind === "pocso" ? "POCSO" : h.kind === "district" ? (lang === "en" ? "District" : "ಜಿಲ್ಲೆ") : (lang === "en" ? "Export" : "ರಫ್ತು")}
                       </span>
                     </td>
                     <td className="py-1.5 pr-3 truncate max-w-[160px]">{h.requester_badge} {h.requester_name ? `(${h.requester_name})` : ""}</td>

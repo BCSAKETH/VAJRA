@@ -337,7 +337,13 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                           </div>
                           <div className="text-right">
                             <span className="text-amber-500 font-extrabold">₹{tx.amount?.toLocaleString() || "0"}</span>
-                            <span className="block text-[9px] text-stone-500">{tx.txn_time || "N/A"}</span>
+                            <span className="block text-[9px] text-stone-500">
+                              {(() => {
+                                if (!tx.txn_time) return lang === "en" ? "Date not recorded" : "ದಿನಾಂಕ ದಾಖಲಾಗಿಲ್ಲ";
+                                const d = new Date(tx.txn_time);
+                                return isNaN(d.getTime()) ? tx.txn_time : d.toLocaleString(lang === "en" ? "en-IN" : "kn-IN", { dateStyle: "medium", timeStyle: "short" });
+                              })()}
+                            </span>
                           </div>
                         </div>
                       ))}

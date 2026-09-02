@@ -2716,7 +2716,14 @@ class VajraAgentLoop:
             response_type = "network"
             MAX_HOPS = 6
             MAX_VISITED = 40
-            edges_set = set()          # (sender, receiver) directed
+            edges_set = set()          # (sender, receiver) directed -- deduped, for the graph itself
+            tx_seen = set()            # (sender, receiver, amount, txn_time) -- dedupes the ledger list below
+            tx_records = []            # individual real transactions, WITH date, for the "Linked
+                                        # Financial Transaction Nodes" ledger panel (confirmed live bug:
+                                        # that panel reads data.financial_transactions and always showed
+                                        # "No transaction logs linked" for this tool, because this tool
+                                        # only ever tracked deduped (sender,receiver) edge pairs -- the
+                                        # individual transaction amount/date was discarded on collection)
             senders_of = {}            # account -> set of distinct senders into it
             receivers_of = {}          # account -> set of distinct receivers out of it
             hop_of: Dict[str, int] = {seed: 0}  # account -> hop distance from seed
@@ -2735,7 +2742,7 @@ class VajraAgentLoop:
                                 continue
                             visited.add(node)
                             deepest_hop_reached = max(deepest_hop_reached, hop_of.get(node, hop))
-                            q = (f"SELECT sender_ref, receiver_ref, amount FROM FinancialTransaction "
+                            q = (f"SELECT sender_ref, receiver_ref, amount, txn_time FROM FinancialTransaction "
                                  f"WHERE sender_ref = '{self.sanitize_sql_input(node)}' OR receiver_ref = '{self.sanitize_sql_input(node)}' LIMIT 40")
                             tx_res = catalyst_app.zql().execute_query(q)
                             for r in tx_res:
@@ -2745,6 +2752,11 @@ class VajraAgentLoop:
                                     continue
                                 total_txns += 1
                                 edges_set.add((s, rc))
+                                amt, tt = t.get("amount"), t.get("txn_time")
+                                tx_key = (s, rc, amt, tt)
+                                if tx_key not in tx_seen:
+                                    tx_seen.add(tx_key)
+                                    tx_records.append({"sender": s, "receiver": rc, "amount": amt, "txn_time": tt})
                                 receivers_of.setdefault(s, set()).add(rc)
                                 senders_of.setdefault(rc, set()).add(s)
                                 for other in (s, rc):
@@ -2780,7 +2792,12 @@ class VajraAgentLoop:
                     "type": "suspect" if n == seed else ("case" if role in ("collection hub", "distribution hub") else "person"),
                 })
             edges = [{"source": s, "target": rc} for s, rc in edges_set]
-            data = {"nodes": nodes, "edges": edges, "seed": seed, "max_hop_reached": deepest_hop_reached}
+            # Most-recent-first, capped -- the ledger panel is a review aid,
+            # not a full export; real transactions can run into the hundreds
+            # across a 6-hop traversal.
+            tx_records.sort(key=lambda t: t.get("txn_time") or "", reverse=True)
+            data = {"nodes": nodes, "edges": edges, "seed": seed, "max_hop_reached": deepest_hop_reached,
+                    "financial_transactions": tx_records[:60]}
 
             if not all_nodes:
                 text_result = f"No financial transactions were found linked to '{seed}', so no ring could be traced."
