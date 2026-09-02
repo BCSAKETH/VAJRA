@@ -33,6 +33,12 @@ interface DistrictSummaryRow {
 interface DistrictDetail {
   district_id: number;
   district: string;
+  // Present only when this detail is actually a STATION drill-down
+  // (/api/dashboard/stations/{unit_id}/detail) -- same panel shape as the
+  // district detail, one level down. `district` on a station detail is its
+  // PARENT district's name, not the station's own name.
+  unit_id?: number;
+  station?: string;
   monthly_trend?: { label: string; month: string; count: number }[];
   trend_pct?: number;
   socio_economic_chart: { data: { name: string; value: number | null }[]; disclaimer: string };
@@ -42,6 +48,14 @@ interface DistrictDetail {
   police_presence: { employee_headcount: number; station_count: number };
   most_wanted: { suspect: string; case_count: number } | null;
   recent_cases: { crime_no: string; registered_date: string; brief_facts: string }[];
+}
+
+// One row in the district's station picker (PS-1's "and specific police
+// stations" drill-down, one level below the district grid).
+interface StationRow {
+  unit_id: number;
+  unit_name: string;
+  case_count: number;
 }
 
 // Per-category momentum vs its own historical baseline — powers the "Emerging
@@ -129,6 +143,16 @@ export const DistrictDashboardScreen: React.FC = () => {
   const [anomalies, setAnomalies] = useState<AnomalyRow[] | null>(null);
   const drilldownRef = useRef<HTMLDivElement | null>(null);
 
+  // Station-level drill-down (one level below the district grid). `detail`
+  // above always holds whatever is CURRENTLY on screen (district OR station);
+  // `districtDetailCache` separately keeps the last-loaded district-level
+  // detail so "back to district" is instant, no refetch.
+  const [stations, setStations] = useState<StationRow[]>([]);
+  const [isLoadingStations, setIsLoadingStations] = useState(false);
+  const [selectedStationId, setSelectedStationId] = useState<number | null>(null);
+  const [isLoadingStationDetail, setIsLoadingStationDetail] = useState(false);
+  const [districtDetailCache, setDistrictDetailCache] = useState<DistrictDetail | null>(null);
+
   // Plain SVG <path> elements per district (not a Leaflet layer), so hover/
   // select highlighting is just normal React state + re-render -- cheap for
   // 30 paths, no imperative layer manipulation needed.
@@ -189,6 +213,17 @@ export const DistrictDashboardScreen: React.FC = () => {
     setSelectedId(districtId);
     setIsLoadingDetail(true);
     setDetail(null);
+    setDistrictDetailCache(null);
+    setSelectedStationId(null);
+    setStations([]);
+    setIsLoadingStations(true);
+    fetch(`${API_BASE}/api/dashboard/districts/${districtId}/stations`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setStations(Array.isArray(d?.stations) ? d.stations : []))
+      .catch(() => setStations([]))
+      .finally(() => setIsLoadingStations(false));
     // Scroll to the drill-down panel right away rather than waiting on the
     // fetch -- the loading shimmer is itself the feedback that a district
     // was selected, so there's no reason to make the officer wait for data
@@ -226,7 +261,9 @@ export const DistrictDashboardScreen: React.FC = () => {
         headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
       });
       if (!res.ok) throw new Error("Failed to load district detail.");
-      setDetail(await res.json());
+      const d = await res.json();
+      setDetail(d);
+      setDistrictDetailCache(d);
     } catch (err: any) {
       console.error(err);
       addToast(
@@ -237,6 +274,37 @@ export const DistrictDashboardScreen: React.FC = () => {
     } finally {
       setIsLoadingDetail(false);
     }
+  };
+
+  // Station drill-down: one level below the district grid (PS-1's "and
+  // specific police stations" ask). Reuses the exact same panel-rendering
+  // JSX as the district detail below -- the station detail endpoint returns
+  // the identical panel shape, just scoped to one station.
+  const handleSelectStation = async (unitId: number) => {
+    setSelectedStationId(unitId);
+    setIsLoadingStationDetail(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/dashboard/stations/${unitId}/detail`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      });
+      if (!res.ok) throw new Error("Failed to load station detail.");
+      setDetail(await res.json());
+    } catch (err: any) {
+      console.error(err);
+      addToast(
+        lang === "en" ? "Station Detail Failed" : "ಠಾಣಾ ವಿವರ ವಿಫಲವಾಗಿದೆ",
+        lang === "en" ? "Could not load this station's chart data." : "ಈ ಠಾಣೆಯ ಚಾರ್ಟ್ ಡೇಟಾವನ್ನು ಲೋಡ್ ಮಾಡಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+        "Critical"
+      );
+      setSelectedStationId(null);
+    } finally {
+      setIsLoadingStationDetail(false);
+    }
+  };
+
+  const handleBackToDistrict = () => {
+    setSelectedStationId(null);
+    setDetail(districtDetailCache);
   };
 
   const maxCases = Math.max(1, ...rows.map((r) => r.active_cases));
@@ -473,6 +541,60 @@ export const DistrictDashboardScreen: React.FC = () => {
                 </div>
               ) : detail ? (
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  {/* Station-scoped header, shown INSTEAD of the district Threat
+                      Index hero when drilled into one station -- the hero's
+                      "vs state" math is a district-level comparison and would
+                      misleadingly attribute a whole district's standing to one
+                      station's charts below it. */}
+                  {detail.unit_id ? (
+                    <div className="glass-card p-4 border border-[#C79A4E]/30 lg:col-span-2 flex items-center gap-3 flex-wrap">
+                      <Building2 className="w-5 h-5 text-[#C79A4E] shrink-0" />
+                      <div className="min-w-0">
+                        <div className="text-[9px] font-mono uppercase tracking-widest text-stone-500">
+                          {lang === "en" ? "Police Station" : "ಪೊಲೀಸ್ ಠಾಣೆ"} · {detail.district}
+                        </div>
+                        <div className="text-lg font-black text-stone-100 leading-tight truncate">{detail.station}</div>
+                      </div>
+                      <button
+                        onClick={handleBackToDistrict}
+                        className="ml-auto shrink-0 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-[11px] font-bold text-stone-300 hover:text-white transition-all cursor-pointer"
+                      >
+                        {lang === "en" ? `← Back to ${detail.district}` : `← ${detail.district} ಗೆ ಹಿಂತಿರುಗಿ`}
+                      </button>
+                    </div>
+                  ) : (
+                    <>
+                  {/* Police Stations picker — PS-1's "and specific police stations"
+                      drill-down, one level below the district grid. Real case
+                      counts (one GROUP BY), sorted busiest-first. */}
+                  <div className="glass-card p-4 border border-stone-850 space-y-2 lg:col-span-2">
+                    <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-2">
+                      <Building2 className="w-3.5 h-3.5 text-[#C79A4E]" />
+                      {detail.district} — {lang === "en" ? "Police Stations" : "ಪೊಲೀಸ್ ಠಾಣೆಗಳು"}
+                    </h3>
+                    {isLoadingStations ? (
+                      <div className="text-[11px] text-stone-500 font-mono py-2">{lang === "en" ? "Loading stations..." : "ಠಾಣೆಗಳು ಲೋಡ್ ಆಗುತ್ತಿವೆ..."}</div>
+                    ) : stations.length === 0 ? (
+                      <div className="text-[11px] text-stone-500 font-mono py-2">{lang === "en" ? "No stations on record for this district." : "ಈ ಜಿಲ್ಲೆಗೆ ಯಾವುದೇ ಠಾಣೆಗಳಿಲ್ಲ."}</div>
+                    ) : (
+                      <div className="overflow-x-auto -mx-1">
+                        <div className="flex flex-wrap gap-2 px-1">
+                          {stations.map((s) => (
+                            <button
+                              key={s.unit_id}
+                              onClick={() => handleSelectStation(s.unit_id)}
+                              disabled={isLoadingStationDetail}
+                              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-stone-800 bg-stone-900/50 hover:bg-stone-800 hover:border-[#C79A4E]/40 transition-all disabled:opacity-50 cursor-pointer"
+                            >
+                              <span className="text-[11px] font-semibold text-stone-200">{s.unit_name}</span>
+                              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-stone-800 text-[#E4C590]">{s.case_count}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
                   {/* Threat Index hero — a transparent composite (load vs state × recent momentum). */}
                   {(() => {
                     const stateAvg = rows.length ? Math.round(totalActiveCases / rows.length) : 0;
@@ -504,6 +626,8 @@ export const DistrictDashboardScreen: React.FC = () => {
                       </div>
                     );
                   })()}
+                    </>
+                  )}
 
                   {/* 12-month incident trend — the time dimension + benchmark vs state */}
                   {detail.monthly_trend && detail.monthly_trend.length > 0 && (

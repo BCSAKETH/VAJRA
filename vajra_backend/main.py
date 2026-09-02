@@ -827,6 +827,195 @@ async def get_district_dashboard_summary(request: Request, location_context: str
         raise HTTPException(status_code=500, detail=f"Failed to compute district summary: {str(e)}")
 
 
+def _compute_dashboard_panels(unit_ids: List[Any]) -> Dict[str, Any]:
+    """
+    The shared drill-down panel computation -- hotspots, crime-type mix,
+    case outcomes, police presence, most-wanted, recent activity, monthly
+    trend -- scoped to WHATEVER set of PoliceStationID values is passed in.
+
+    Factored out of get_district_dashboard_detail (which passes a whole
+    district's ~2-20 station IDs) so the new station-level drill-down (which
+    passes exactly ONE station ID) runs the identical, already-proven query
+    logic instead of a hand-copied second implementation. Confirmed this
+    session (the MO profiler's day-of-week fix) that two independently
+    maintained copies of the same computation WILL drift out of sync --
+    one shared function is the only version of this that can't recur here.
+    """
+    unit_filter = f" WHERE PoliceStationID IN ({','.join(str(u) for u in unit_ids)})" if unit_ids else " WHERE 1=0"
+
+    # 1. Hotspots -- reuses the SAME cluster_hotspots DBSCAN helper the chat
+    # agent's query_hotspots tool uses (see agent_loop.py). Never reimplemented.
+    coords = []
+    map_res = catalyst_app.zql().execute_query(
+        f"SELECT Latitude, Longitude, CrimeNo FROM CaseMaster{unit_filter} AND Latitude IS NOT NULL LIMIT 300"
+        if unit_ids else f"SELECT Latitude, Longitude, CrimeNo FROM CaseMaster{unit_filter}"
+    )
+    for r in map_res:
+        cm = r.get("CaseMaster", {})
+        lat, lng = cm.get("latitude"), cm.get("longitude")
+        if lat is not None and lng is not None:
+            coords.append({"lat": float(lat), "lng": float(lng), "label": cm.get("CrimeNo")})
+    hotspots = agent_loop.cluster_hotspots(coords) if coords else []
+
+    # 2. Crime-type pie -- direct GROUP BY + CrimeHead name lookup, scoped to
+    # these exact station IDs. (The existing get_case_types_distribution tool
+    # only accepts a district NAME, resolving its own unit list internally --
+    # it can't be handed an arbitrary unit_ids list, e.g. a single station, so
+    # this is computed directly here rather than bent to fit that tool.)
+    crime_types = []
+    try:
+        ch_res = catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead")
+        ch_map = {r.get("CrimeHead", {}).get("CrimeHeadID"): r.get("CrimeHead", {}).get("CrimeGroupName") for r in ch_res}
+        ct_res = catalyst_app.zql().execute_query(
+            f"SELECT CrimeMajorHeadID, COUNT(CaseMasterID) FROM CaseMaster{unit_filter} GROUP BY CrimeMajorHeadID"
+        )
+        for r in ct_res:
+            cm = r.get("CaseMaster", {})
+            head_id = cm.get("CrimeMajorHeadID")
+            count = int(cm.get("COUNT(CaseMasterID)") or 0)
+            if count > 0:
+                crime_types.append({"name": ch_map.get(head_id, "Other"), "value": count})
+        crime_types.sort(key=lambda x: x["value"], reverse=True)
+    except Exception as ex:
+        logger.warning(f"crime-type distribution failed for units {unit_ids}: {ex}")
+
+    # 3. Solved vs unsolved -- one grouped query + keyword classification.
+    status_names: Dict[Any, str] = {}
+    st_res = catalyst_app.zql().execute_query("SELECT CaseStatusID, CaseStatusName FROM CaseStatusMaster")
+    for r in st_res:
+        s = r.get("CaseStatusMaster", {})
+        status_names[s.get("CaseStatusID")] = s.get("CaseStatusName")
+
+    outcome_buckets = {"solved": 0, "unsolved": 0, "unclassified": 0}
+    status_count_res = catalyst_app.zql().execute_query(
+        f"SELECT CaseStatusID, COUNT(CaseMasterID) FROM CaseMaster{unit_filter} GROUP BY CaseStatusID"
+    )
+    for r in status_count_res:
+        cm = r.get("CaseMaster", {})
+        status_id = cm.get("CaseStatusID")
+        count = int(cm.get("COUNT(CaseMasterID)") or 0)
+        bucket = _classify_case_status(status_names.get(status_id, ""))
+        outcome_buckets[bucket] += count
+
+    # 4. Police presence: Employee headcount across exactly these units.
+    emp_res = catalyst_app.zql().execute_query("SELECT UnitID, COUNT(EmployeeID) FROM Employee GROUP BY UnitID")
+    unit_id_set = set(unit_ids)
+    headcount = sum(
+        int(r.get("Employee", {}).get("COUNT(EmployeeID)") or 0)
+        for r in emp_res if r.get("Employee", {}).get("UnitID") in unit_id_set
+    )
+
+    # 5. Most-wanted -- resolve these units' own CaseMasterIDs first (ZCQL has
+    # no nested-subquery support), then look up Accused against that literal list.
+    most_wanted = None
+    try:
+        cid_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID FROM CaseMaster{unit_filter} LIMIT 500")
+        case_ids = [r.get("CaseMaster", {}).get("CaseMasterID") for r in cid_res if r.get("CaseMaster", {}).get("CaseMasterID")]
+        if case_ids:
+            acc_res = catalyst_app.zql().execute_query(
+                f"SELECT AccusedName, CaseMasterID FROM Accused WHERE CaseMasterID IN ({','.join(str(c) for c in case_ids)})"
+            )
+            tally: Dict[str, int] = {}
+            for r in acc_res:
+                name = (r.get("Accused", {}).get("AccusedName") or "").strip()
+                if name and "unknown" not in name.lower():
+                    tally[name] = tally.get(name, 0) + 1
+            if tally:
+                top_name, top_count = max(tally.items(), key=lambda kv: kv[1])
+                if top_count > 1:
+                    most_wanted = {"suspect": top_name, "case_count": top_count}
+    except Exception as ex:
+        logger.warning(f"Could not resolve most-wanted for units {unit_ids}: {ex}")
+
+    # 6. Recent case activity -- last 5 registered cases in scope.
+    recent_cases = []
+    try:
+        recent_res = catalyst_app.zql().execute_query(
+            f"SELECT CrimeNo, CrimeRegisteredDate, BriefFacts FROM CaseMaster{unit_filter} "
+            f"ORDER BY CrimeRegisteredDate DESC LIMIT 5"
+        )
+        for r in recent_res:
+            cm = r.get("CaseMaster", {})
+            facts = (cm.get("BriefFacts") or "")[:120]
+            recent_cases.append({
+                "crime_no": cm.get("CrimeNo"),
+                "registered_date": cm.get("CrimeRegisteredDate"),
+                "brief_facts": facts,
+            })
+    except Exception as ex:
+        logger.warning(f"Could not fetch recent cases for units {unit_ids}: {ex}")
+
+    # 7. Monthly incident trend (12 months) -- real COUNT per month (aggregate,
+    # not 300-capped). A momentum figure (last 3 mo vs prior 3) gives the
+    # panel a headline direction.
+    monthly_trend = []
+    trend_pct = 0.0
+    try:
+        now = datetime.utcnow()
+        yy, mm = now.year, now.month
+        months = []
+        for _ in range(12):
+            months.append((yy, mm))
+            mm -= 1
+            if mm == 0:
+                mm = 12
+                yy -= 1
+        months.reverse()
+        for (y2, m2) in months:
+            start = f"{y2:04d}-{m2:02d}-01"
+            end = f"{y2+1:04d}-01-01" if m2 == 12 else f"{y2:04d}-{m2+1:02d}-01"
+            cnt = 0
+            if unit_ids:
+                tq = (f"SELECT COUNT(CaseMasterID) FROM CaseMaster WHERE CrimeRegisteredDate >= '{start}' "
+                      f"AND CrimeRegisteredDate < '{end}' AND PoliceStationID IN ({','.join(map(str, unit_ids))})")
+                tr = catalyst_app.zql().execute_query(tq)
+                if tr:
+                    cnt = int(tr[0].get("CaseMaster", {}).get("COUNT(CaseMasterID)") or 0)
+            monthly_trend.append({"label": datetime(y2, m2, 1).strftime("%b"), "month": f"{y2:04d}-{m2:02d}", "count": cnt})
+        if len(monthly_trend) >= 6:
+            recent3 = sum(x["count"] for x in monthly_trend[-3:])
+            prior3 = sum(x["count"] for x in monthly_trend[-6:-3])
+            trend_pct = round(((recent3 - prior3) / prior3 * 100.0), 1) if prior3 else 0.0
+    except Exception as ex:
+        logger.warning(f"monthly trend failed for units {unit_ids}: {ex}")
+
+    return {
+        "monthly_trend": monthly_trend,
+        "trend_pct": trend_pct,
+        "hotspots": hotspots,
+        "crime_type_distribution": crime_types,
+        "case_outcomes": [
+            {"name": "Solved", "value": outcome_buckets["solved"]},
+            {"name": "Unsolved", "value": outcome_buckets["unsolved"]},
+        ] + ([{"name": "Unclassified", "value": outcome_buckets["unclassified"]}] if outcome_buckets["unclassified"] else []),
+        "police_presence": {"employee_headcount": headcount, "station_count": len(unit_ids)},
+        "most_wanted": most_wanted,
+        "recent_cases": recent_cases,
+    }
+
+
+def _socio_chart_for_district(district_id: Any) -> Dict[str, Any]:
+    """Shared socio-economic bar-chart lookup -- illustrative synthetic
+    values, must be disclosed as such (see DistrictSocioProfile in
+    docs/SCHEMA.md). Used by both the district detail (its own district) and
+    the station detail (its PARENT district -- a single station has no
+    socio-economic row of its own, so that inheritance is disclosed too)."""
+    socio = {}
+    sp_res = catalyst_app.zql().execute_query(f"SELECT * FROM DistrictSocioProfile WHERE DistrictID = {district_id} LIMIT 1")
+    if sp_res:
+        socio = sp_res[0].get("DistrictSocioProfile", {})
+    return {
+        "data": [
+            {"name": "Literacy Rate", "value": socio.get("LiteracyRate")},
+            {"name": "Unemployment Rate", "value": socio.get("UnemploymentRate")},
+            {"name": "Urbanization Index", "value": socio.get("UrbanizationIndex")},
+            {"name": "Migration Index", "value": socio.get("MigrationIndex")},
+            {"name": "Economic Stress Index", "value": socio.get("EconomicStressIndex")},
+        ],
+        "disclaimer": "Illustrative synthetic estimates, not official Census/NCRB data.",
+    }
+
+
 @app.get("/api/dashboard/districts/{district_id}/detail")
 async def get_district_dashboard_detail(district_id: int, request: Request, location_context: str = Depends(security_firewall)):
     """
@@ -844,176 +1033,104 @@ async def get_district_dashboard_detail(district_id: int, request: Request, loca
 
         unit_res = catalyst_app.zql().execute_query(f"SELECT UnitID FROM Unit WHERE DistrictID = {district_id}")
         unit_ids = [u.get("Unit", {}).get("UnitID") for u in unit_res if u.get("Unit", {}).get("UnitID")]
-        unit_filter = f" WHERE PoliceStationID IN ({','.join(str(u) for u in unit_ids)})" if unit_ids else " WHERE 1=0"
 
-        # 1. Socio-economic bar chart -- illustrative synthetic values, must
-        # be disclosed as such (see DistrictSocioProfile in docs/SCHEMA.md).
-        socio = {}
-        sp_res = catalyst_app.zql().execute_query(f"SELECT * FROM DistrictSocioProfile WHERE DistrictID = {district_id} LIMIT 1")
-        if sp_res:
-            socio = sp_res[0].get("DistrictSocioProfile", {})
-        socio_chart = {
-            "data": [
-                {"name": "Literacy Rate", "value": socio.get("LiteracyRate")},
-                {"name": "Unemployment Rate", "value": socio.get("UnemploymentRate")},
-                {"name": "Urbanization Index", "value": socio.get("UrbanizationIndex")},
-                {"name": "Migration Index", "value": socio.get("MigrationIndex")},
-                {"name": "Economic Stress Index", "value": socio.get("EconomicStressIndex")},
-            ],
-            "disclaimer": "Illustrative synthetic estimates, not official Census/NCRB data.",
-        }
-
-        # 2. Hotspots -- reuses the SAME cluster_hotspots DBSCAN helper the
-        # chat agent's query_hotspots tool uses (see agent_loop.py), scoped
-        # to this district's own coordinates only. Never reimplemented.
-        coords = []
-        map_res = catalyst_app.zql().execute_query(
-            f"SELECT Latitude, Longitude, CrimeNo FROM CaseMaster{unit_filter} AND Latitude IS NOT NULL LIMIT 300"
-            if unit_ids else f"SELECT Latitude, Longitude, CrimeNo FROM CaseMaster{unit_filter}"
-        )
-        for r in map_res:
-            cm = r.get("CaseMaster", {})
-            lat, lng = cm.get("latitude"), cm.get("longitude")
-            if lat is not None and lng is not None:
-                coords.append({"lat": float(lat), "lng": float(lng), "label": cm.get("CrimeNo")})
-        hotspots = agent_loop.cluster_hotspots(coords) if coords else []
-
-        # 3. Crime-type pie -- reuses the existing tool directly (no
-        # reimplementation of the GROUP BY + fallback logic it already has).
-        dist_tool_res = agent_loop._execute_tool("get_case_types_distribution", {"district": district_name}, None, "dashboard", None)
-        crime_types = (dist_tool_res.get("data") or {}).get("series") or []
-
-        # 4. Solved vs unsolved -- one grouped query + keyword classification.
-        status_names: Dict[Any, str] = {}
-        st_res = catalyst_app.zql().execute_query("SELECT CaseStatusID, CaseStatusName FROM CaseStatusMaster")
-        for r in st_res:
-            s = r.get("CaseStatusMaster", {})
-            status_names[s.get("CaseStatusID")] = s.get("CaseStatusName")
-
-        outcome_buckets = {"solved": 0, "unsolved": 0, "unclassified": 0}
-        status_count_res = catalyst_app.zql().execute_query(
-            f"SELECT CaseStatusID, COUNT(CaseMasterID) FROM CaseMaster{unit_filter} GROUP BY CaseStatusID"
-        )
-        for r in status_count_res:
-            cm = r.get("CaseMaster", {})
-            status_id = cm.get("CaseStatusID")
-            count = int(cm.get("COUNT(CaseMasterID)") or 0)
-            bucket = _classify_case_status(status_names.get(status_id, ""))
-            outcome_buckets[bucket] += count
-
-        # 5. Police presence: Employee headcount per this district's units,
-        # plus the station count itself as a secondary figure.
-        emp_res = catalyst_app.zql().execute_query("SELECT UnitID, COUNT(EmployeeID) FROM Employee GROUP BY UnitID")
-        unit_id_set = set(unit_ids)
-        headcount = sum(
-            int(r.get("Employee", {}).get("COUNT(EmployeeID)") or 0)
-            for r in emp_res if r.get("Employee", {}).get("UnitID") in unit_id_set
-        )
-
-        # 6. Most-wanted -- same GROUP BY the district summary card already
-        # uses for its hover tooltip, but that number never carried through
-        # into the drill-down panel itself. Recomputed here scoped to this
-        # one district's units instead of threading it through as a param.
-        most_wanted = None
-        try:
-            # ZCQL has no nested-subquery support (confirmed by the same
-            # bounded-sample + literal IN-clause pattern the district summary
-            # endpoint above already uses) -- resolve this district's own
-            # CaseMasterIDs first, then look up Accused rows against that
-            # literal list, never a subquery.
-            cid_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID FROM CaseMaster{unit_filter} LIMIT 500")
-            case_ids = [r.get("CaseMaster", {}).get("CaseMasterID") for r in cid_res if r.get("CaseMaster", {}).get("CaseMasterID")]
-            if case_ids:
-                acc_res = catalyst_app.zql().execute_query(
-                    f"SELECT AccusedName, CaseMasterID FROM Accused WHERE CaseMasterID IN ({','.join(str(c) for c in case_ids)})"
-                )
-                tally: Dict[str, int] = {}
-                for r in acc_res:
-                    name = (r.get("Accused", {}).get("AccusedName") or "").strip()
-                    if name and "unknown" not in name.lower():
-                        tally[name] = tally.get(name, 0) + 1
-                if tally:
-                    top_name, top_count = max(tally.items(), key=lambda kv: kv[1])
-                    if top_count > 1:
-                        most_wanted = {"suspect": top_name, "case_count": top_count}
-        except Exception as ex:
-            logger.warning(f"Could not resolve most-wanted for district {district_id}: {ex}")
-
-        # 7. Recent case activity -- last 5 registered cases in this
-        # district, for a genuine "what's actually happening here" feed
-        # instead of only aggregate charts.
-        recent_cases = []
-        try:
-            recent_res = catalyst_app.zql().execute_query(
-                f"SELECT CrimeNo, CrimeRegisteredDate, BriefFacts FROM CaseMaster{unit_filter} "
-                f"ORDER BY CrimeRegisteredDate DESC LIMIT 5"
-            )
-            for r in recent_res:
-                cm = r.get("CaseMaster", {})
-                facts = (cm.get("BriefFacts") or "")[:120]
-                recent_cases.append({
-                    "crime_no": cm.get("CrimeNo"),
-                    "registered_date": cm.get("CrimeRegisteredDate"),
-                    "brief_facts": facts,
-                })
-        except Exception as ex:
-            logger.warning(f"Could not fetch recent cases for district {district_id}: {ex}")
-
-        # Monthly incident trend (12 months) — the time dimension the analytics
-        # tab lacked. Real COUNT per month over this district's stations
-        # (aggregate, not 300-capped). A momentum figure (last 3 mo vs prior 3)
-        # gives the panel a headline direction.
-        monthly_trend = []
-        trend_pct = 0.0
-        try:
-            now = datetime.utcnow()
-            yy, mm = now.year, now.month
-            months = []
-            for _ in range(12):
-                months.append((yy, mm))
-                mm -= 1
-                if mm == 0:
-                    mm = 12
-                    yy -= 1
-            months.reverse()
-            for (y2, m2) in months:
-                start = f"{y2:04d}-{m2:02d}-01"
-                end = f"{y2+1:04d}-01-01" if m2 == 12 else f"{y2:04d}-{m2+1:02d}-01"
-                cnt = 0
-                if unit_ids:
-                    tq = (f"SELECT COUNT(CaseMasterID) FROM CaseMaster WHERE CrimeRegisteredDate >= '{start}' "
-                          f"AND CrimeRegisteredDate < '{end}' AND PoliceStationID IN ({','.join(map(str, unit_ids))})")
-                    tr = catalyst_app.zql().execute_query(tq)
-                    if tr:
-                        cnt = int(tr[0].get("CaseMaster", {}).get("COUNT(CaseMasterID)") or 0)
-                monthly_trend.append({"label": datetime(y2, m2, 1).strftime("%b"), "month": f"{y2:04d}-{m2:02d}", "count": cnt})
-            if len(monthly_trend) >= 6:
-                recent3 = sum(x["count"] for x in monthly_trend[-3:])
-                prior3 = sum(x["count"] for x in monthly_trend[-6:-3])
-                trend_pct = round(((recent3 - prior3) / prior3 * 100.0), 1) if prior3 else 0.0
-        except Exception as ex:
-            logger.warning(f"district monthly trend failed for {district_id}: {ex}")
-
+        panels = _compute_dashboard_panels(unit_ids)
         return {
             "district_id": district_id,
             "district": district_name,
-            "monthly_trend": monthly_trend,
-            "trend_pct": trend_pct,
-            "socio_economic_chart": socio_chart,
-            "hotspots": hotspots,
-            "crime_type_distribution": crime_types,
-            "case_outcomes": [
-                {"name": "Solved", "value": outcome_buckets["solved"]},
-                {"name": "Unsolved", "value": outcome_buckets["unsolved"]},
-            ] + ([{"name": "Unclassified", "value": outcome_buckets["unclassified"]}] if outcome_buckets["unclassified"] else []),
-            "police_presence": {"employee_headcount": headcount, "station_count": len(unit_ids)},
-            "most_wanted": most_wanted,
-            "recent_cases": recent_cases,
+            "socio_economic_chart": _socio_chart_for_district(district_id),
+            **panels,
         }
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to compute district detail: {str(e)}")
+
+
+@app.get("/api/dashboard/districts/{district_id}/stations")
+async def list_district_stations(district_id: int, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Station picker for a district's drill-down -- PS-1's "and specific police
+    stations" ask, one level below the district grid. Real case counts (a
+    single GROUP BY, not per-station COUNT queries), so an officer can see at
+    a glance which station in the district actually needs attention before
+    drilling further into /api/dashboard/stations/{unit_id}/detail.
+    """
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    d_res = catalyst_app.zql().execute_query(f"SELECT DistrictName FROM District WHERE DistrictID = {district_id} LIMIT 1")
+    if not d_res:
+        raise HTTPException(status_code=404, detail=f"District {district_id} not found.")
+    district_name = d_res[0].get("District", {}).get("DistrictName")
+
+    unit_res = catalyst_app.zql().execute_query(f"SELECT UnitID, UnitName FROM Unit WHERE DistrictID = {district_id}")
+    units = [(u.get("Unit", {}).get("UnitID"), u.get("Unit", {}).get("UnitName")) for u in unit_res if u.get("Unit", {}).get("UnitID")]
+    unit_ids = [u[0] for u in units]
+
+    counts: Dict[Any, int] = {}
+    if unit_ids:
+        try:
+            cnt_res = catalyst_app.zql().execute_query(
+                f"SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster "
+                f"WHERE PoliceStationID IN ({','.join(str(u) for u in unit_ids)}) GROUP BY PoliceStationID"
+            )
+            for r in cnt_res:
+                cm = r.get("CaseMaster", {})
+                counts[cm.get("PoliceStationID")] = int(cm.get("COUNT(CaseMasterID)") or 0)
+        except Exception as ex:
+            logger.warning(f"station case counts failed for district {district_id}: {ex}")
+
+    stations = [
+        {"unit_id": uid, "unit_name": uname, "case_count": counts.get(uid, 0)}
+        for uid, uname in units
+    ]
+    stations.sort(key=lambda s: s["case_count"], reverse=True)
+    return {"district_id": district_id, "district": district_name, "stations": stations}
+
+
+@app.get("/api/dashboard/stations/{unit_id}/detail")
+async def get_station_dashboard_detail(unit_id: int, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    ONE police station's drill-down -- same panel shape as the district
+    detail, scoped to exactly this station (PoliceStationID = unit_id).
+    Socio-economic figures are inherited from the station's PARENT district
+    (a single station has no socio-economic row of its own in
+    DistrictSocioProfile) and explicitly labelled district-level so the
+    officer never reads them as station-specific.
+    """
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    u_res = catalyst_app.zql().execute_query(f"SELECT UnitName, DistrictID FROM Unit WHERE UnitID = {unit_id} LIMIT 1")
+    if not u_res:
+        raise HTTPException(status_code=404, detail=f"Station (unit) {unit_id} not found.")
+    u = u_res[0].get("Unit", {})
+    unit_name = u.get("UnitName")
+    parent_district_id = u.get("DistrictID")
+    parent_district_name = None
+    if parent_district_id:
+        d_res = catalyst_app.zql().execute_query(f"SELECT DistrictName FROM District WHERE DistrictID = {parent_district_id} LIMIT 1")
+        if d_res:
+            parent_district_name = d_res[0].get("District", {}).get("DistrictName")
+
+    try:
+        panels = _compute_dashboard_panels([unit_id])
+        socio_chart = _socio_chart_for_district(parent_district_id) if parent_district_id else None
+        if socio_chart:
+            socio_chart["disclaimer"] = (
+                f"District-level figures inherited from {parent_district_name or 'the parent district'} "
+                "(illustrative synthetic estimates, not official Census/NCRB data) -- this station has no "
+                "socio-economic row of its own."
+            )
+        return {
+            "unit_id": unit_id,
+            "station": unit_name,
+            "district_id": parent_district_id,
+            "district": parent_district_name,
+            "socio_economic_chart": socio_chart,
+            **panels,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to compute station detail: {str(e)}")
 
 
 @app.get("/api/intelligence/district-signals")
