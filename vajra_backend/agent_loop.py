@@ -13,7 +13,7 @@ import pandas as pd
 
 from vajra_core import catalyst_app, VajraGraphRAG, VajraSemanticMemory, MOBehavioralProfiler, zcql_insert_row, \
     is_pocso_sensitive, redact_pocso_name, redact_phone_numbers, is_supervisor_badge, \
-    has_active_pocso_grant, create_pocso_request, find_active_pocso_request
+    has_active_pocso_grant, create_pocso_request, find_active_pocso_request, _compute_mo_vector
 from session_memory import VajraSessionMemory
 from catalyst_llm import CatalystLLM
 from catalyst_qwen import CatalystQwen
@@ -1708,12 +1708,23 @@ class VajraAgentLoop:
         # is answered directly from a grounded fact bundle -- fast (~3s), reliable
         # (no RLS 'not found' false-negative, no GLM 'AI unavailable'), specific to
         # the question asked. Full 'everything' dossiers defer to the dossier tool.
-        case_ans = self._handle_case_question(routing_query, employee_id, session_id, user_unit_id)
-        if case_ans is not None:
-            history.append({"role": "assistant", "content": case_ans["text"]})
-            context["messages"] = history
-            session_memory.update_session_context(session_id, context)
-            return case_ans
+        #
+        # STANDARD MODE ONLY (confirmed live bug): this used to run unconditionally,
+        # BEFORE both the Full Dossier forced_decision built above (generate_case_
+        # dossier, at line ~1634) and the AI-Reasoning-beta semantic compiler
+        # further below ever got a turn -- so an officer picking "Full Dossier" or
+        # "AI Reasoning" for a case-number question silently got back the exact
+        # same 3-line Standard answer, all three modes indistinguishable. Gating
+        # this to answer_mode=="standard" lets Dossier's forced generate_case_
+        # dossier tool and the compiler's own plan actually run for case questions,
+        # while Standard keeps its fast, cheap, grounded lookup unchanged.
+        if answer_mode == "standard":
+            case_ans = self._handle_case_question(routing_query, employee_id, session_id, user_unit_id)
+            if case_ans is not None:
+                history.append({"role": "assistant", "content": case_ans["text"]})
+                context["messages"] = history
+                session_memory.update_session_context(session_id, context)
+                return case_ans
 
         # THINKING-LANE: contextual re-presentation -- "make this a pie chart",
         # "show this as a bar chart", "visualize this". Resolves "this" to the
@@ -2340,11 +2351,6 @@ class VajraAgentLoop:
         # GLM "thinking" model's 3-20s variance. Bilingual text_kn is still
         # generated downstream in main.py, so nothing bilingual is lost.
         final_answer = False
-        
-        # Enforce role-scoped station boundary
-        unit_filter_str = ""
-        if user_unit_id is not None and user_unit_id != 1:
-            unit_filter_str = f"AND PoliceStationID = {user_unit_id}"
 
         # NAME RESOLUTION for suspect tools: fuzzy-correct a (possibly misspelled
         # / transliterated) name to the closest real AccusedName -- this catches
@@ -2449,14 +2455,31 @@ class VajraAgentLoop:
             case_no = self.sanitize_sql_input(params.get("case_no", ""))
             if catalyst_app and case_no:
                 try:
-                    q = f"SELECT * FROM CaseMaster WHERE CrimeNo = '{case_no}' {unit_filter_str} LIMIT 1"
+                    # NO unit_filter_str here (confirmed live bug, surfaced once
+                    # the semantic compiler started actually reaching this tool
+                    # for case-number questions -- previously always shadowed by
+                    # the _handle_case_question fast-path, so invisible):
+                    # every OTHER exact-CrimeNo lookup in this codebase
+                    # (_resolve_case_no, _handle_case_question,
+                    # generate_case_dossier) deliberately skips the station
+                    # boundary for a query naming a SPECIFIC known case number --
+                    # RLS scoping is for discovery queries ("cases in my
+                    # station"), not for "I already have this exact CR number."
+                    # This tool alone still had the filter, so an officer asking
+                    # about a real, accessible case outside their own station
+                    # got a false "not found or access denied" -- indistinguishable
+                    # from the case genuinely not existing. See _resolve_case_no's
+                    # docstring: "query_case already took the CrimeNo string
+                    # directly and worked fine" (written before this filter was
+                    # added here, out of step with the rest of the tool suite).
+                    q = f"SELECT * FROM CaseMaster WHERE CrimeNo = '{case_no}' LIMIT 1"
                     res = catalyst_app.zql().execute_query(q)
                     if res:
                         data = res[0].get("CaseMaster", {})
                         text_result = f"Grounded Case Detail: CrimeNo: {data.get('CrimeNo')}, Registered: {data.get('CrimeRegisteredDate')}, Brief Facts: {data.get('BriefFacts')}"
                         citations.append({"type": "CCTNS Database Record", "id": case_no, "details": "Structured case metadata"})
                     else:
-                        text_result = f"Case {case_no} not found or access denied."
+                        text_result = f"Case {case_no} was not found in the database -- please double-check the case number."
                 except Exception as e:
                     text_result = f"Failed to query case: {e}"
             else:
@@ -3069,7 +3092,7 @@ class VajraAgentLoop:
             # Default fallback values for behavioral vector
             latitude = 13.027
             gravity_id = 4
-            incident_hour = 12
+            day_of_week = 0
             accused_count = 1
             crime_head_id = 5
 
@@ -3103,46 +3126,80 @@ class VajraAgentLoop:
                                 except Exception:
                                     pass
                                 
-                                raw_date = cm_data.get("IncidentFromDate") or "2026-06-25 12:00:00"
+                                # Real data is DATE-only ("2024-10-19", no
+                                # clock time) -- see _compute_mo_vector's
+                                # docstring. This used to parse a "YYYY-MM-DD
+                                # HH:MM:SS" shape real rows never have, so it
+                                # silently fell back to a constant hour=12 for
+                                # every case, ever call -- one of five cosine
+                                # dimensions carrying zero real signal. Now
+                                # shares the exact same feature construction
+                                # (_compute_mo_vector) as the reference
+                                # vectors below, guaranteeing they can never
+                                # drift out of sync again.
+                                raw_date = cm_data.get("IncidentFromDate") or ""
                                 try:
-                                    # Extract hour of day
-                                    if " " in raw_date:
-                                        time_str = raw_date.split()[1]
-                                        incident_hour = int(time_str.split(":")[0])
+                                    day_of_week = datetime.strptime(raw_date[:10], "%Y-%m-%d").weekday()
                                 except Exception:
                                     pass
                 except Exception as ex:
                     logger.warning(f"Failed fetching MO features from database: {ex}")
 
-            # Scale case properties between 0 and 1 to create behavioral signature vector
-            lat_factor = (latitude - 11.0) / 8.0 if (11.0 <= latitude <= 19.0) else 0.5
-            gravity_factor = min(gravity_id, 10) / 10.0
-            hour_factor = incident_hour / 24.0
-            group_factor = min(accused_count, 10) / 10.0
-            type_factor = min(crime_head_id, 50) / 50.0
-
-            target_vector = np.array([
-                lat_factor, gravity_factor, hour_factor, group_factor, type_factor
-            ])
+            target_vector = _compute_mo_vector(latitude, gravity_id, day_of_week, accused_count, crime_head_id)
 
             profiler = self._get_mo_profiler()
             matches = profiler.find_matches(target_vector, top_k=3)
-            
-            top_match = matches[0] if matches else {}
-            match_rate = round(top_match.get("similarity_score", 0.845) * 100, 1)
-            mo_signature = f"Incident pattern matching suspect {top_match.get('suspect', 'Unknown')} from case {top_match.get('case_id', 'Unknown')} at {top_match.get('station', 'Unknown')}"
-            
-            data = {
-                "suspect": suspect,
-                "profile_status": "Complete",
-                "mo_signature": mo_signature,
-                "match_rate": match_rate,
-                "matches": matches,
-                "engine_mode": "Live CaseMaster/Accused MO Vectors" if profiler.data_source == "live_db" else "Reference Simulation (no live case data available)"
-            }
-            response_type = "mo_match"
-            text_result = f"Behavioral MO Profile: Suspect {suspect} matches Modus Operandi '{mo_signature}' at a {match_rate}% similarity score."
-            citations.append({"type": "MO Behavioral Profiler", "id": suspect, "details": "Grounded cosine similarity search performed across reference narratives database"})
+            is_live = profiler.data_source == "live_db"
+
+            # SERIAL-OFFENDER MO FLAG: an explicit >=threshold chip on top of the
+            # cosine match that already ran, for the offender card (field
+            # officers' #1 ask -- the ML existed, it just never surfaced a plain
+            # yes/no signal). Gated STRICTLY to real matches against live-DB
+            # vectors: flagging a "serial pattern" off the synthetic/mock
+            # fallback vectors (np.random.rand seeded data, fictional
+            # "Suspect-0..49" names) would be presenting a fabricated pattern as
+            # a real investigative finding, which this project never does.
+            SERIAL_MO_THRESHOLD = 80.0
+            if not matches:
+                # Previously defaulted to a fake-looking 84.5% match against an
+                # "Unknown" suspect/case when the profiler had nothing to
+                # compare against -- silently fabricating a specific-sounding
+                # number. Say plainly that no comparable signature was found.
+                match_rate = 0.0
+                mo_signature = ""
+                is_probable_serial_pattern = False
+                data = {
+                    "suspect": suspect, "profile_status": "No reference match",
+                    "mo_signature": mo_signature, "match_rate": match_rate, "matches": [],
+                    "is_probable_serial_pattern": False,
+                    "engine_mode": "Live CaseMaster/Accused MO Vectors" if is_live else "Reference Simulation (no live case data available)",
+                }
+                text_result = f"No comparable modus-operandi signature was found for {suspect} in the reference set."
+                citations.append({"type": "MO Behavioral Profiler", "id": suspect, "details": "Cosine similarity search returned no comparable reference vector"})
+            else:
+                top_match = matches[0]
+                match_rate = round(top_match.get("similarity_score", 0.0) * 100, 1)
+                mo_signature = f"Incident pattern matching suspect {top_match.get('suspect', 'Unknown')} from case {top_match.get('case_id', 'Unknown')} at {top_match.get('station', 'Unknown')}"
+                is_probable_serial_pattern = bool(is_live and match_rate >= SERIAL_MO_THRESHOLD)
+
+                data = {
+                    "suspect": suspect,
+                    "profile_status": "Complete",
+                    "mo_signature": mo_signature,
+                    "match_rate": match_rate,
+                    "matches": matches,
+                    "is_probable_serial_pattern": is_probable_serial_pattern,
+                    "serial_mo_threshold": SERIAL_MO_THRESHOLD,
+                    "engine_mode": "Live CaseMaster/Accused MO Vectors" if is_live else "Reference Simulation (no live case data available)"
+                }
+                response_type = "mo_match"
+                serial_note = (
+                    f" This crosses the {SERIAL_MO_THRESHOLD:.0f}% serial-pattern threshold -- "
+                    "consistent with a repeating modus operandi across cases; cross-check the matched case below."
+                    if is_probable_serial_pattern else ""
+                )
+                text_result = f"Behavioral MO Profile: Suspect {suspect} matches Modus Operandi '{mo_signature}' at a {match_rate}% similarity score.{serial_note}"
+                citations.append({"type": "MO Behavioral Profiler", "id": suspect, "details": "Grounded cosine similarity search performed across reference narratives database"})
             self._write_audit_log(employee_id, "Behavioral MO Inquest", suspect, f"MO signature of {suspect}", text_result, session_id)
 
         # 11. summarize_case

@@ -676,19 +676,31 @@ class VajraSecurityFirewall:
             )
 
 
-def _compute_mo_vector(latitude: float, gravity_id: int, incident_hour: int, accused_count: int, crime_head_id: int) -> np.ndarray:
+def _compute_mo_vector(latitude: float, gravity_id: int, day_of_week: int, accused_count: int, crime_head_id: int) -> np.ndarray:
     """
     Shared normalization so a target suspect's MO signature and the reference
     vectors it's compared against (in MOBehavioralProfiler) are built from the
     exact same feature scaling -- must stay in sync with the target_vector
     construction in agent_loop.py's get_mo_profile.
+
+    Temporal feature is DAY OF WEEK (0=Monday..6=Sunday), not hour-of-day.
+    Confirmed live: CaseMaster.IncidentFromDate and Inv_OccuranceTime.
+    OccurrenceDate are both DATE-ONLY ("2024-10-19") across this entire
+    dataset -- no clock-time component exists anywhere in the real data. The
+    original "incident_hour" feature parsed a "YYYY-MM-DD HH:MM:SS" shape
+    that real rows never have, so it silently hit its exception handler and
+    fell back to a HARDCODED CONSTANT (hour=12) for every single real case --
+    one of five cosine-similarity dimensions was dead weight, contributing
+    zero actual signal to every MO match (including the serial-offender
+    threshold flag this profiler feeds). Day-of-week is the closest genuinely
+    groundable temporal signal this data actually supports.
     """
     lat_factor = (latitude - 11.0) / 8.0 if (11.0 <= latitude <= 19.0) else 0.5
     gravity_factor = min(gravity_id, 10) / 10.0
-    hour_factor = incident_hour / 24.0
+    day_factor = (day_of_week % 7) / 6.0
     group_factor = min(accused_count, 10) / 10.0
     type_factor = min(crime_head_id, 50) / 50.0
-    return np.array([lat_factor, gravity_factor, hour_factor, group_factor, type_factor])
+    return np.array([lat_factor, gravity_factor, day_factor, group_factor, type_factor])
 
 
 class MOBehavioralProfiler:
@@ -762,13 +774,28 @@ class MOBehavioralProfiler:
         unit_res = catalyst_app.zql().execute_query("SELECT UnitID, UnitName FROM Unit")
         unit_map = {r["Unit"]["UnitID"]: r["Unit"]["UnitName"] for r in unit_res}
 
-        accused_res = catalyst_app.zql().execute_query("SELECT CaseMasterID, AccusedName FROM Accused LIMIT 300")
+        # Fetch accused SCOPED to exactly these 250 cases (IN-list, no JOINs in
+        # ZCQL), not a flat "LIMIT 300" over the whole Accused table. Confirmed
+        # live bug: an unscoped LIMIT 300 samples accused rows independently of
+        # which 250 cases were selected above, so most of those cases' real,
+        # on-record accused fell outside the sample -- every MO reference match
+        # came back "suspect: Unknown" even for cases that DO have a named
+        # accused, an avoidable data-completeness gap presented as if no
+        # accused existed. Scoping the query to these specific case IDs (same
+        # IN-list pattern already used elsewhere in this file, e.g. the
+        # syndicate co-offense query below) closes that gap directly.
         accused_by_case: Dict[str, List[str]] = {}
-        for r in accused_res:
-            a = r.get("Accused", {})
-            cid = a.get("CaseMasterID")
-            if cid:
-                accused_by_case.setdefault(cid, []).append(a.get("AccusedName"))
+        case_ids = [str(r.get("CaseMaster", {}).get("CaseMasterID")) for r in cases_res
+                    if r.get("CaseMaster", {}).get("CaseMasterID")]
+        if case_ids:
+            ids_str = ",".join(case_ids)
+            accused_res = catalyst_app.zql().execute_query(
+                f"SELECT CaseMasterID, AccusedName FROM Accused WHERE CaseMasterID IN ({ids_str})")
+            for r in accused_res:
+                a = r.get("Accused", {})
+                cid = a.get("CaseMasterID")
+                if cid:
+                    accused_by_case.setdefault(cid, []).append(a.get("AccusedName"))
 
         for r in cases_res:
             c = r.get("CaseMaster", {})
@@ -779,18 +806,20 @@ class MOBehavioralProfiler:
                 ch_id_raw = c.get("CrimeMajorHeadID")
                 crime_head_id = int(ch_id_raw or 5)
 
-                raw_date = c.get("IncidentFromDate") or "2026-06-25 12:00:00"
-                incident_hour = 12
-                if " " in raw_date:
-                    try:
-                        incident_hour = int(raw_date.split()[1].split(":")[0])
-                    except Exception:
-                        pass
+                # Real data is DATE-only ("2024-10-19", no clock time) -- see
+                # _compute_mo_vector's docstring. day_of_week is the genuine
+                # temporal signal this field actually supports.
+                raw_date = c.get("IncidentFromDate") or ""
+                day_of_week = 0
+                try:
+                    day_of_week = datetime.strptime(raw_date[:10], "%Y-%m-%d").weekday()
+                except Exception:
+                    pass
 
                 names = accused_by_case.get(cm_id, [])
                 accused_count = len(names) or 1
 
-                vector = _compute_mo_vector(latitude, gravity_id, incident_hour, accused_count, crime_head_id)
+                vector = _compute_mo_vector(latitude, gravity_id, day_of_week, accused_count, crime_head_id)
                 self.vectors.append(vector)
                 self.metadata.append({
                     "fir_id": c.get("CrimeNo") or f"CASE-{cm_id}",

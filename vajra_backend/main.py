@@ -3530,7 +3530,7 @@ async def get_alerts_endpoint(request: Request, location_context: str = Depends(
             SELECT ROWID, AlertType, DistrictID, AlertMessage, TriggerTime, Severity, IsRead
             FROM ProactiveAlerts
             ORDER BY TriggerTime DESC
-            LIMIT 50
+            LIMIT 100
         """
         res = catalyst_app.zql().execute_query(zql)
         district_res = catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")
@@ -3539,9 +3539,24 @@ async def get_alerts_endpoint(request: Request, location_context: str = Depends(
             for d in district_res
         }
 
+        # SECURITY/BUG FIX: ProactiveAlerts is a shared table also repurposed as the
+        # persistence layer for internal approval workflows (export-approval,
+        # POCSO access-requests). Those rows carry raw JSON (requester name, case
+        # number, grant expiry) and are meant ONLY for their own dedicated
+        # supervisor-facing panels/endpoints (/api/exports/pending,
+        # /api/pocso/pending) -- never the general officer notification bell.
+        # Without this filter they leaked into every officer's "System Alerts"
+        # list as a raw JSON blob mislabeled under whatever AlertType string
+        # the frontend didn't recognize.
+        WORKFLOW_INTERNAL_ALERT_TYPES = {"EXPORT_APPROVAL", "POCSO_ACCESS"}
+
         alerts = []
         for row in res:
             a = row.get("ProactiveAlerts", {})
+            if a.get("AlertType") in WORKFLOW_INTERNAL_ALERT_TYPES:
+                continue
+            if len(alerts) >= 50:
+                break
             dist_id = a.get("DistrictID")
             alerts.append({
                 "id": f"AL-{a.get('ROWID')}",
@@ -5081,6 +5096,75 @@ async def pocso_request_status(request_id: str, location_context: str = Depends(
     m = row["meta"]
     return {"status": m.get("status", "pending"), "case_no": m.get("case_no"),
             "grant_expires_at": m.get("grant_expires_at")}
+
+
+@app.get("/api/approvals/history")
+async def approvals_history(request: Request, type: str = "all", status: str = "all",
+                             location_context: str = Depends(security_firewall)):
+    """Supervisor-only: a unified, filterable history of DECIDED approval-queue
+    items (export approvals + POCSO access requests) -- the paper trail of what
+    has already been approved/rejected, distinct from the live /pending
+    endpoints above (which only ever show items still awaiting a decision).
+    `type` narrows to one workflow lane ('export' | 'pocso' | 'all'); `status`
+    narrows to one outcome ('approved' | 'rejected' | 'all'). Built because the
+    two live queues alone gave a supervisor no way to review past decisions or
+    audit who approved what."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    type_f = (type or "all").lower()
+    status_f = (status or "all").lower()
+    out: List[Dict[str, Any]] = []
+    if catalyst_app:
+        if type_f in ("all", "export"):
+            try:
+                res = catalyst_app.zql().execute_query(
+                    "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+                    "WHERE AlertType = 'EXPORT_APPROVAL' ORDER BY ROWID DESC LIMIT 200")
+                for r in res:
+                    a = r.get("ProactiveAlerts", {})
+                    try:
+                        m = json.loads(a.get("AlertMessage") or "{}")
+                    except Exception:
+                        continue
+                    if m.get("status") in ("approved", "rejected"):
+                        out.append({
+                            "kind": "export", "rowid": a.get("ROWID"),
+                            "requester_badge": m.get("requester_badge"),
+                            "requester_name": m.get("requester_name"),
+                            "subject": m.get("summary") or ", ".join(m.get("reasons") or []),
+                            "status": m.get("status"), "approver_badge": m.get("approver_badge"),
+                            "decided_at": m.get("decided_at"), "created_at": m.get("created_at"),
+                        })
+            except Exception as e:
+                logger.warning(f"approvals_history export: {e}")
+        if type_f in ("all", "pocso"):
+            try:
+                res = catalyst_app.zql().execute_query(
+                    "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+                    "WHERE AlertType = 'POCSO_ACCESS' ORDER BY ROWID DESC LIMIT 200")
+                for r in res:
+                    a = r.get("ProactiveAlerts", {})
+                    try:
+                        m = json.loads(a.get("AlertMessage") or "{}")
+                    except Exception:
+                        continue
+                    if m.get("status") in ("approved", "rejected"):
+                        out.append({
+                            "kind": "pocso", "rowid": a.get("ROWID"),
+                            "requester_badge": m.get("requester_badge"),
+                            "requester_name": m.get("requester_name"),
+                            "subject": m.get("case_no"),
+                            "status": m.get("status"), "approver_badge": m.get("approver_badge"),
+                            "decided_at": m.get("decided_at"), "created_at": m.get("created_at"),
+                            "grant_expires_at": m.get("grant_expires_at"),
+                        })
+            except Exception as e:
+                logger.warning(f"approvals_history pocso: {e}")
+    if status_f in ("approved", "rejected"):
+        out = [o for o in out if o.get("status") == status_f]
+    out.sort(key=lambda o: o.get("decided_at") or o.get("created_at") or "", reverse=True)
+    out = out[:100]
+    return {"history": out, "count": len(out)}
 
 
 if __name__ == "__main__":

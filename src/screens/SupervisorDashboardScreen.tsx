@@ -138,6 +138,33 @@ export const SupervisorDashboardScreen: React.FC = () => {
     }
   };
 
+  // Approval history -- the decided (approved/rejected) paper trail for both
+  // workflow lanes above (exports + POCSO access), filterable by lane and
+  // outcome. Separate from the live queues: those only ever show items still
+  // awaiting a decision, this is "what already happened, and who decided it."
+  const [historyItems, setHistoryItems] = useState<any[]>([]);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
+  const [historyTypeFilter, setHistoryTypeFilter] = useState<"all" | "export" | "pocso">("all");
+  const [historyStatusFilter, setHistoryStatusFilter] = useState<"all" | "approved" | "rejected">("all");
+
+  const fetchApprovalHistory = async (typeF: string, statusF: string) => {
+    try {
+      setIsLoadingHistory(true);
+      const r = await fetch(
+        `${API_BASE}/api/approvals/history?type=${typeF}&status=${statusF}`,
+        { headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` } }
+      );
+      if (!r.ok) return;
+      const d = await r.json();
+      setHistoryItems(d.history || []);
+    } catch { /* transient -- filter change or manual refresh retries */ }
+    finally { setIsLoadingHistory(false); }
+  };
+
+  useEffect(() => {
+    fetchApprovalHistory(historyTypeFilter, historyStatusFilter);
+  }, [historyTypeFilter, historyStatusFilter]);
+
   // Fetch flags
   const fetchFlags = async () => {
     try {
@@ -479,6 +506,91 @@ export const SupervisorDashboardScreen: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Approval history -- decided export + POCSO items, filterable by lane
+          and outcome, rendered as a proper table (not another queue-card
+          list) since this is a review/audit surface, not an action queue. */}
+      <div className="shrink-0 rounded-xl border border-stone-800 bg-stone-900/40 p-4 space-y-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          <Fingerprint className="w-4 h-4 text-[#C79A4E]" />
+          <span className="text-xs font-black uppercase tracking-wider text-stone-300 font-mono">
+            {lang === "en" ? "Approval history" : "ಅನುಮೋದನೆ ಇತಿಹಾಸ"}
+          </span>
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-stone-800 text-stone-400">
+            {historyItems.length}
+          </span>
+          <div className="ml-auto flex items-center gap-2">
+            <select
+              value={historyTypeFilter}
+              onChange={(e) => setHistoryTypeFilter(e.target.value as any)}
+              className="text-[11px] font-mono bg-stone-950 border border-stone-700 rounded-md px-2 py-1 text-stone-300 cursor-pointer"
+            >
+              <option value="all">{lang === "en" ? "All types" : "ಎಲ್ಲಾ ಬಗೆ"}</option>
+              <option value="export">{lang === "en" ? "Export" : "ರಫ್ತು"}</option>
+              <option value="pocso">POCSO</option>
+            </select>
+            <select
+              value={historyStatusFilter}
+              onChange={(e) => setHistoryStatusFilter(e.target.value as any)}
+              className="text-[11px] font-mono bg-stone-950 border border-stone-700 rounded-md px-2 py-1 text-stone-300 cursor-pointer"
+            >
+              <option value="all">{lang === "en" ? "All outcomes" : "ಎಲ್ಲಾ ಫಲಿತಾಂಶ"}</option>
+              <option value="approved">{lang === "en" ? "Approved" : "ಅನುಮೋದಿಸಲಾಗಿದೆ"}</option>
+              <option value="rejected">{lang === "en" ? "Rejected" : "ತಿರಸ್ಕರಿಸಲಾಗಿದೆ"}</option>
+            </select>
+            <button
+              onClick={() => fetchApprovalHistory(historyTypeFilter, historyStatusFilter)}
+              disabled={isLoadingHistory}
+              className="p-1.5 rounded-md border border-stone-700 text-stone-400 hover:text-[#C79A4E] hover:border-[#C79A4E]/40 disabled:opacity-50 cursor-pointer"
+              title={lang === "en" ? "Refresh" : "ರಿಫ್ರೆಶ್"}
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingHistory ? "animate-spin" : ""}`} />
+            </button>
+          </div>
+        </div>
+        {historyItems.length === 0 ? (
+          <div className="text-[11px] text-stone-500 font-mono px-1 py-2">
+            {isLoadingHistory
+              ? (lang === "en" ? "Loading..." : "ಲೋಡ್ ಆಗುತ್ತಿದೆ...")
+              : (lang === "en" ? "No decided requests match this filter yet." : "ಈ ಫಿಲ್ಟರ್‌ಗೆ ಇನ್ನೂ ಯಾವುದೇ ನಿರ್ಧರಿತ ವಿನಂತಿಗಳಿಲ್ಲ.")}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-[11px] font-mono">
+              <thead>
+                <tr className="text-stone-500 uppercase tracking-wide text-[10px] border-b border-stone-800">
+                  <th className="text-left font-semibold py-1.5 pr-3">{lang === "en" ? "Type" : "ಬಗೆ"}</th>
+                  <th className="text-left font-semibold py-1.5 pr-3">{lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ"}</th>
+                  <th className="text-left font-semibold py-1.5 pr-3">{lang === "en" ? "Subject" : "ವಿಷಯ"}</th>
+                  <th className="text-left font-semibold py-1.5 pr-3">{lang === "en" ? "Decision" : "ನಿರ್ಧಾರ"}</th>
+                  <th className="text-left font-semibold py-1.5 pr-3">{lang === "en" ? "Decided by" : "ನಿರ್ಧರಿಸಿದವರು"}</th>
+                  <th className="text-left font-semibold py-1.5">{lang === "en" ? "When" : "ಯಾವಾಗ"}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {historyItems.map((h) => (
+                  <tr key={`${h.kind}-${h.rowid}`} className="border-b border-stone-900/80 text-stone-300">
+                    <td className="py-1.5 pr-3">
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${h.kind === "pocso" ? "bg-rose-500/15 text-rose-300" : "bg-[#C79A4E]/15 text-[#C79A4E]"}`}>
+                        {h.kind === "pocso" ? "POCSO" : (lang === "en" ? "Export" : "ರಫ್ತು")}
+                      </span>
+                    </td>
+                    <td className="py-1.5 pr-3 truncate max-w-[160px]">{h.requester_badge} {h.requester_name ? `(${h.requester_name})` : ""}</td>
+                    <td className="py-1.5 pr-3 truncate max-w-[220px] text-stone-400">{h.subject || "—"}</td>
+                    <td className="py-1.5 pr-3">
+                      <span className={h.status === "approved" ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>
+                        {h.status === "approved" ? (lang === "en" ? "Approved" : "ಅನುಮೋದಿಸಲಾಗಿದೆ") : (lang === "en" ? "Rejected" : "ತಿರಸ್ಕರಿಸಲಾಗಿದೆ")}
+                      </span>
+                    </td>
+                    <td className="py-1.5 pr-3 text-stone-400">{h.approver_badge || "—"}</td>
+                    <td className="py-1.5 text-stone-500">{h.decided_at ? new Date(h.decided_at + (h.decided_at.endsWith("Z") ? "" : "Z")).toLocaleString() : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
 
       {/* Quick-read telemetry strip -- derived from the same flags/auditLogs
           already fetched for the two panels below, no extra round-trip. */}

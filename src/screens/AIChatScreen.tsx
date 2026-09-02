@@ -197,8 +197,16 @@ export const AIChatScreen: React.FC = () => {
               // buried real on-screen controls under "+N more notifications".
               // alert.timestamp is the real TriggerTime from ProactiveAlerts,
               // not "now", so old alerts still read as old in the bell list.
+              // Explicit map, not a two-way ternary: an unrecognized AlertType
+              // (e.g. a future workflow type that slips past the backend's
+              // internal-type filter) must never be mislabeled as a specific
+              // alert kind it isn't -- fall back to a generic title instead.
+              const ALERT_TITLES: Record<string, string> = {
+                SPATIAL_SPIKE: "🚨 Spatial Crime Spike",
+                REPEAT_OFFENDER: "👤 Repeat Offender Alert",
+              };
               addNotification(
-                alert.type === "SPATIAL_SPIKE" ? "🚨 Spatial Crime Spike" : "👤 Repeat Offender Alert",
+                ALERT_TITLES[alert.type] ?? "🔔 System Alert",
                 alert.details,
                 "Warning",
                 alert.timestamp

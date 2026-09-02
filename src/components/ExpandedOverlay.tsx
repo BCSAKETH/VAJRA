@@ -360,8 +360,25 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                     {lang === "en" ? "Computed via calibrated XGBoost risk estimator. SHAP factors indicate localized contributions to final model log-odds." : "ಪರಿಷ್ಕೃತ XGBoost ಅಪಾಯ ಅಂದಾಜುದಾರ ಮೂಲಕ ಲೆಕ್ಕಹಾಕಲಾಗಿದೆ. SHAP ಅಂಶಗಳು ಅಂತಿಮ ಮಾದರಿ ಫಲಿತಾಂಶಕ್ಕೆ ಸ್ಥಳೀಯ ಕೊಡುಗೆಗಳನ್ನು ಸೂಚಿಸುತ್ತವೆ."}
                   </p>
                 </div>
-                <div className="px-4 py-2 rounded-xl bg-stone-900 border border-stone-800 text-[#C79A4E] font-mono font-bold text-sm tracking-wide shrink-0">
-                  {lang === "en" ? "Suspect:" : "ಶಂಕಿತ:"} {data.suspect || (lang === "en" ? "Unknown" : "ಅಜ್ಞಾತ")}
+                <div className="flex flex-col items-end gap-2 shrink-0">
+                  <div className="px-4 py-2 rounded-xl bg-stone-900 border border-stone-800 text-[#C79A4E] font-mono font-bold text-sm tracking-wide">
+                    {lang === "en" ? "Suspect:" : "ಶಂಕಿತ:"} {data.suspect || (lang === "en" ? "Unknown" : "ಅಜ್ಞಾತ")}
+                  </div>
+                  {/* Serial-MO chip: an explicit >=threshold flag on the cosine
+                      match the MO profiler already computes -- field officers'
+                      #1 ask was a plain yes/no signal instead of having to read
+                      a percentage themselves. Backend gates this to real
+                      matches against live-DB vectors only (never on the
+                      synthetic/mock fallback), so this chip never appears
+                      unless it reflects an actual grounded pattern. */}
+                  {data.mo_profile?.is_probable_serial_pattern && (
+                    <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/15 border border-rose-500/40 text-rose-300 font-mono text-[10px] font-bold uppercase tracking-wide">
+                      <Fingerprint className="w-3 h-3" />
+                      {lang === "en"
+                        ? `Serial MO match — ${data.mo_profile.match_rate}%`
+                        : `ಪುನರಾವರ್ತಿತ MO ಹೊಂದಾಣಿಕೆ — ${data.mo_profile.match_rate}%`}
+                    </div>
+                  )}
                 </div>
               </div>
 
@@ -626,6 +643,14 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                 <p className="text-xs text-stone-450 mt-1">
                   {lang === "en" ? "Cosine similarity ranking against primary historical incident profiles." : "ಪ್ರಾಥಮಿಕ ಐತಿಹಾಸಿಕ ಘಟನಾ ಪ್ರೊಫೈಲ್‌ಗಳ ವಿರುದ್ಧ ಕೊಸೈನ್ ಸಾಮ್ಯತೆ ಶ್ರೇಣಿ."}
                 </p>
+                {data.is_probable_serial_pattern && (
+                  <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/15 border border-rose-500/40 text-rose-300 font-mono text-[10px] font-bold uppercase tracking-wide">
+                    <Fingerprint className="w-3 h-3" />
+                    {lang === "en"
+                      ? `Serial MO match — crosses ${data.serial_mo_threshold ?? 80}% threshold`
+                      : `ಪುನರಾವರ್ತಿತ MO ಹೊಂದಾಣಿಕೆ — ${data.serial_mo_threshold ?? 80}% ಮಿತಿ ದಾಟಿದೆ`}
+                  </div>
+                )}
               </div>
               <div className="flex-1 overflow-y-auto space-y-3">
                 {(data.matches || []).map((m: any, idx: number) => (
