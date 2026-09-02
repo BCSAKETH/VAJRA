@@ -77,6 +77,17 @@ interface AnomalyRow {
   z_score: number;
 }
 
+// A cluster of accused sharing a phone or vehicle (AccusedContact demo
+// enrichment) within one district — the "hidden link" syndicate signal,
+// distinct from case co-offense. Always shown with its synthetic-data
+// disclaimer; never presented as verified fact.
+interface SyndicateGroup {
+  members: string[];
+  hub: string;
+  hub_links: number;
+  shared_kinds: string[];
+}
+
 // Fixed SVG coordinate space the map is drawn into (see MAP_PROJECTION
 // below) -- the <svg> itself scales responsively via viewBox, this is just
 // the internal unit space the projection targets.
@@ -141,6 +152,8 @@ export const DistrictDashboardScreen: React.FC = () => {
   // slow/failed analytics call must never blank the charts. null = still loading.
   const [spikes, setSpikes] = useState<SpikeRow[] | null>(null);
   const [anomalies, setAnomalies] = useState<AnomalyRow[] | null>(null);
+  const [syndicateGroups, setSyndicateGroups] = useState<SyndicateGroup[] | null>(null);
+  const [syndicateDisclaimer, setSyndicateDisclaimer] = useState("");
   const drilldownRef = useRef<HTMLDivElement | null>(null);
 
   // Station-level drill-down (one level below the district grid). `detail`
@@ -256,6 +269,14 @@ export const DistrictDashboardScreen: React.FC = () => {
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => setAnomalies(Array.isArray(d?.anomalies) ? d.anomalies : []))
       .catch(() => setAnomalies([]));
+    setSyndicateGroups(null);
+    fetch(`${API_BASE}/api/analytics/syndicate?district_id=${districtId}`, { headers: analyticsHeaders })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        setSyndicateGroups(Array.isArray(d?.groups) ? d.groups : []);
+        setSyndicateDisclaimer(d?.disclaimer || "");
+      })
+      .catch(() => setSyndicateGroups([]));
     try {
       const res = await fetch(`${API_BASE}/api/dashboard/districts/${districtId}/detail`, {
         headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
@@ -963,6 +984,53 @@ export const DistrictDashboardScreen: React.FC = () => {
                       </div>
                     )}
                   </div>
+
+                  {/* Syndicate Signals — accused sharing a phone/vehicle within
+                      this district (union-find over AccusedContact), the
+                      "hidden link" story distinct from case co-offense.
+                      District-level only (unit_id absent) -- not shown while
+                      drilled into one station. Always carries its synthetic-
+                      data disclaimer; never presented as verified fact. */}
+                  {!detail.unit_id && (
+                    <div className="glass-card p-4 border border-stone-850 space-y-3 lg:col-span-2">
+                      <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                        <ShieldAlert className="w-3.5 h-3.5 text-rose-450" />
+                        {lang === "en" ? "Syndicate Signals" : "ಸಿಂಡಿಕೇಟ್ ಸಂಕೇತಗಳು"}
+                      </h3>
+                      {syndicateGroups === null ? (
+                        <div className="space-y-2">
+                          {[1, 2].map((n) => <div key={n} className="h-12 rounded-lg shimmer-bg" />)}
+                        </div>
+                      ) : syndicateGroups.length === 0 ? (
+                        <div className="text-[10.5px] text-stone-500 font-mono py-3 leading-relaxed">
+                          {lang === "en"
+                            ? "No shared-phone/vehicle clusters found among this district's accused."
+                            : "ಈ ಜಿಲ್ಲೆಯ ಆರೋಪಿಗಳಲ್ಲಿ ಯಾವುದೇ ಹಂಚಿಕೆಯ ಫೋನ್/ವಾಹನ ಸಮೂಹಗಳು ಕಂಡುಬಂದಿಲ್ಲ."}
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {syndicateGroups.map((g, i) => (
+                            <div key={i} className="bg-rose-500/[0.06] border border-rose-500/20 rounded-lg p-2.5">
+                              <div className="flex items-start justify-between gap-2 flex-wrap">
+                                <span className="text-[11.5px] font-bold text-stone-100 leading-snug">
+                                  {g.members.join(", ")}
+                                </span>
+                                <span className="text-[9px] font-mono font-black text-rose-400 shrink-0 px-1.5 py-0.5 rounded bg-rose-500/10 border border-rose-500/20">
+                                  {lang === "en" ? "hub" : "ಕೇಂದ್ರ"}: {g.hub} ({g.hub_links})
+                                </span>
+                              </div>
+                              <div className="text-[9px] font-mono text-stone-500 uppercase tracking-wide mt-1">
+                                {lang === "en" ? "shared" : "ಹಂಚಿಕೆ"}: {g.shared_kinds.join(", ")}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {syndicateDisclaimer && (
+                        <p className="text-[9px] text-stone-600 italic">{syndicateDisclaimer}</p>
+                      )}
+                    </div>
+                  )}
                 </div>
               ) : null}
 

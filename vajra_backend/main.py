@@ -4305,6 +4305,116 @@ async def analytics_anomalies(request: Request, district_id: int = 0, location_c
     return {"anomalies": anomalies[:8]}
 
 
+@app.get("/api/analytics/syndicate")
+async def analytics_syndicate(request: Request, district_id: int = 0, location_context: str = Depends(security_firewall)):
+    """
+    District-scoped "Syndicate Signals" panel: accused in THIS district who
+    share a phone or vehicle (AccusedContact) with another accused in the
+    SAME district, clustered via union-find -- the hidden-link story the
+    chat-only `shared_attribute_links` tool already tells for one named
+    suspect at a time, extended to a whole district's own accused roster so
+    it surfaces on the Analytics tab without an officer needing to already
+    know who to ask about. Real seeded data (1500 AccusedContact rows with
+    genuine shared-number clusters, confirmed live), but the phone/vehicle
+    ASSIGNMENTS themselves are a synthetic demo enrichment (no real telecom/
+    RTO integration exists) -- every group is labelled as such, exactly like
+    the chat tool's own citation, so this is never presented as verified fact.
+    """
+    if not catalyst_app:
+        return {"groups": [], "disclaimer": ""}
+    unit_res = catalyst_app.zql().execute_query(f"SELECT UnitID FROM Unit WHERE DistrictID = {district_id}")
+    unit_ids = [u.get("Unit", {}).get("UnitID") for u in unit_res if u.get("Unit", {}).get("UnitID")]
+    groups: List[Dict[str, Any]] = []
+    disclaimer = ("Synthetic phone/vehicle overlaps (AccusedContact demo enrichment) -- "
+                  "investigative leads to verify independently, not proof of a real link.")
+    if not unit_ids:
+        return {"groups": groups, "disclaimer": disclaimer}
+    try:
+        cid_res = catalyst_app.zql().execute_query(
+            f"SELECT CaseMasterID FROM CaseMaster WHERE PoliceStationID IN ({','.join(str(u) for u in unit_ids)}) LIMIT 500")
+        case_ids = [r.get("CaseMaster", {}).get("CaseMasterID") for r in cid_res if r.get("CaseMaster", {}).get("CaseMasterID")]
+        if not case_ids:
+            return {"groups": groups, "disclaimer": disclaimer}
+
+        acc_res = catalyst_app.zql().execute_query(
+            f"SELECT AccusedName FROM Accused WHERE CaseMasterID IN ({','.join(str(c) for c in case_ids)})")
+        names = sorted({
+            (r.get("Accused", {}).get("AccusedName") or "").strip()
+            for r in acc_res
+            if (r.get("Accused", {}).get("AccusedName") or "").strip()
+            and "unknown" not in (r.get("Accused", {}).get("AccusedName") or "").lower()
+        })
+        if not names:
+            return {"groups": groups, "disclaimer": disclaimer}
+
+        esc_names = ",".join("'" + n.replace("'", "''") + "'" for n in names)
+        contact_res = catalyst_app.zql().execute_query(
+            f"SELECT AccusedName, PhoneNumber, VehicleNumber FROM AccusedContact WHERE AccusedName IN ({esc_names})")
+
+        # Union-find over shared phone OR shared vehicle, scoped to this
+        # district's own accused only -- same clustering pattern already
+        # proven in detect_crime_groups (there: shared CASES; here: shared
+        # CONTACT attributes), just a different edge definition.
+        parent: Dict[str, str] = {}
+
+        def find(x: str) -> str:
+            while parent.get(x, x) != x:
+                x = parent.get(x, x)
+            return x
+
+        def union(x: str, y: str):
+            parent.setdefault(x, x)
+            parent.setdefault(y, y)
+            rx, ry = find(x), find(y)
+            if rx != ry:
+                parent[rx] = ry
+
+        by_phone: Dict[str, set] = {}
+        by_vehicle: Dict[str, set] = {}
+        for r in contact_res:
+            c = r.get("AccusedContact", {})
+            nm = c.get("AccusedName")
+            if not nm:
+                continue
+            if c.get("PhoneNumber"):
+                by_phone.setdefault(c["PhoneNumber"], set()).add(nm)
+            if c.get("VehicleNumber"):
+                by_vehicle.setdefault(c["VehicleNumber"], set()).add(nm)
+
+        shared_via: Dict[str, Dict[str, str]] = {}  # name -> {other_name: "phone"/"vehicle"}
+        for attr_map, kind in ((by_phone, "phone"), (by_vehicle, "vehicle")):
+            for attr_val, members in attr_map.items():
+                if len(members) < 2:
+                    continue
+                ms = sorted(members)
+                for i in range(len(ms)):
+                    for j in range(i + 1, len(ms)):
+                        union(ms[i], ms[j])
+                        shared_via.setdefault(ms[i], {})[ms[j]] = kind
+                        shared_via.setdefault(ms[j], {})[ms[i]] = kind
+
+        members_by_root: Dict[str, set] = {}
+        for nm in parent:
+            members_by_root.setdefault(find(nm), set()).add(nm)
+
+        for root, members in members_by_root.items():
+            if len(members) < 2:
+                continue
+            ms = sorted(members)
+            degree = {m: len(shared_via.get(m, {})) for m in ms}
+            hub = max(ms, key=lambda m: degree[m])
+            kinds = sorted({shared_via.get(m, {}).get(o) for m in ms for o in shared_via.get(m, {})} - {None})
+            groups.append({
+                "members": ms, "hub": hub, "hub_links": degree[hub],
+                "shared_kinds": kinds,
+            })
+        groups.sort(key=lambda g: len(g["members"]), reverse=True)
+        groups = groups[:8]
+    except Exception as e:
+        logger.warning(f"analytics syndicate failed for district {district_id}: {e}")
+    return {"groups": groups, "disclaimer": disclaimer}
+
+
 def _build_accused_link_plan():
     """
     DETERMINISTIC generator of the synthetic phone/vehicle assignment (fixed RNG

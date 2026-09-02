@@ -372,11 +372,14 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                       synthetic/mock fallback), so this chip never appears
                       unless it reflects an actual grounded pattern. */}
                   {data.mo_profile?.is_probable_serial_pattern && (
-                    <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/15 border border-rose-500/40 text-rose-300 font-mono text-[10px] font-bold uppercase tracking-wide">
+                    <div
+                      className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/15 border border-rose-500/40 text-rose-300 font-mono text-[10px] font-bold uppercase tracking-wide cursor-help"
+                      title={lang === "en" ? "Investigative lead, not identification" : "ತನಿಖಾ ಸುಳಿವು, ಗುರುತಿಸುವಿಕೆ ಅಲ್ಲ"}
+                    >
                       <Fingerprint className="w-3 h-3" />
                       {lang === "en"
-                        ? `Serial MO match — ${data.mo_profile.match_rate}%`
-                        : `ಪುನರಾವರ್ತಿತ MO ಹೊಂದಾಣಿಕೆ — ${data.mo_profile.match_rate}%`}
+                        ? `Serial MO match — ${data.mo_profile.match_rate}% (lead, not ID)`
+                        : `ಪುನರಾವರ್ತಿತ MO ಹೊಂದಾಣಿಕೆ — ${data.mo_profile.match_rate}% (ಸುಳಿವು)`}
                     </div>
                   )}
                 </div>
@@ -641,14 +644,17 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                   )}
                 </h4>
                 <p className="text-xs text-stone-450 mt-1">
-                  {lang === "en" ? "Cosine similarity ranking against primary historical incident profiles." : "ಪ್ರಾಥಮಿಕ ಐತಿಹಾಸಿಕ ಘಟನಾ ಪ್ರೊಫೈಲ್‌ಗಳ ವಿರುದ್ಧ ಕೊಸೈನ್ ಸಾಮ್ಯತೆ ಶ್ರೇಣಿ."}
+                  {lang === "en" ? "Cosine similarity ranking against primary historical incident profiles. An investigative lead to cross-check, not an identification." : "ಪ್ರಾಥಮಿಕ ಐತಿಹಾಸಿಕ ಘಟನಾ ಪ್ರೊಫೈಲ್‌ಗಳ ವಿರುದ್ಧ ಕೊಸೈನ್ ಸಾಮ್ಯತೆ ಶ್ರೇಣಿ. ಇದು ಪರಿಶೀಲಿಸಬೇಕಾದ ತನಿಖಾ ಸುಳಿವು, ಗುರುತಿಸುವಿಕೆ ಅಲ್ಲ."}
                 </p>
                 {data.is_probable_serial_pattern && (
-                  <div className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/15 border border-rose-500/40 text-rose-300 font-mono text-[10px] font-bold uppercase tracking-wide">
+                  <div
+                    className="mt-2 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/15 border border-rose-500/40 text-rose-300 font-mono text-[10px] font-bold uppercase tracking-wide cursor-help"
+                    title={lang === "en" ? "Investigative lead, not identification" : "ತನಿಖಾ ಸುಳಿವು, ಗುರುತಿಸುವಿಕೆ ಅಲ್ಲ"}
+                  >
                     <Fingerprint className="w-3 h-3" />
                     {lang === "en"
-                      ? `Serial MO match — crosses ${data.serial_mo_threshold ?? 80}% threshold`
-                      : `ಪುನರಾವರ್ತಿತ MO ಹೊಂದಾಣಿಕೆ — ${data.serial_mo_threshold ?? 80}% ಮಿತಿ ದಾಟಿದೆ`}
+                      ? `Serial MO match — crosses ${data.serial_mo_threshold ?? 80}% threshold (lead, not ID)`
+                      : `ಪುನರಾವರ್ತಿತ MO ಹೊಂದಾಣಿಕೆ — ${data.serial_mo_threshold ?? 80}% ಮಿತಿ ದಾಟಿದೆ (ಸುಳಿವು)`}
                   </div>
                 )}
               </div>

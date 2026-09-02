@@ -463,6 +463,57 @@ class VajraAgentLoop:
             logger.error(f"Error resolving case_no '{case_no}' to CaseMasterID: {e}")
         return None
 
+    def _resolve_case_rowid(self, case_no: str) -> Optional[Dict[str, Any]]:
+        """
+        CRITICAL DATA-INTEGRITY FIX, confirmed live: CaseMasterID is NOT a
+        unique key in this dataset -- MAX(CaseMasterID)=8074 but the table
+        holds 20984 real rows, so on average every CaseMasterID value is
+        shared by ~2.6 genuinely different cases (different ROWID, CrimeNo,
+        station, dates, facts). Proven live: three different real case
+        numbers all sharing one CaseMasterID returned the IDENTICAL (wrong,
+        for two of them) answer, because every tool re-queried
+        "WHERE CaseMasterID = X LIMIT 1" after already resolving the case by
+        its actually-unique CrimeNo -- discarding the correct row it already
+        had, then re-fetching an arbitrary one of the colliding rows.
+
+        This resolves a CrimeNo ONCE and returns the row's real unique key
+        (ROWID, Zoho Catalyst's own per-row identifier -- confirmed live
+        COUNT(ROWID) exactly matches the real row count, no collisions
+        possible) so every CaseMaster-OWN-FIELD re-query can use
+        "WHERE ROWID = ..." instead and be airtight. `case_id` (the legacy,
+        non-unique field) is still returned too, because CHILD tables
+        (Accused, Victim, ComplainantDetails, ActSectionAssociation,
+        Inv_OccuranceTime, ChargesheetDetails) were seeded against that
+        field's value with no ROWID reference at all -- there is no way to
+        retroactively disambiguate which of the colliding cases a shared
+        child row truly belongs to, so those joins remain by necessity.
+        `collisions` (how many OTHER real cases share this case_id) lets
+        callers HONESTLY disclose that ambiguity instead of silently
+        presenting one case's child records as another's.
+        """
+        if not catalyst_app or not case_no:
+            return None
+        try:
+            res = catalyst_app.zql().execute_query(
+                f"SELECT ROWID, CaseMasterID FROM CaseMaster WHERE CrimeNo = '{self.sanitize_sql_input(case_no)}' LIMIT 1"
+            )
+            if not res:
+                return None
+            cm = res[0].get("CaseMaster", {})
+            rowid = cm.get("ROWID")
+            case_id = int(cm.get("CaseMasterID"))
+            collisions = 0
+            try:
+                cnt = catalyst_app.zql().execute_query(f"SELECT COUNT(ROWID) FROM CaseMaster WHERE CaseMasterID = {case_id}")
+                if cnt:
+                    collisions = max(0, int(cnt[0].get("CaseMaster", {}).get("COUNT(ROWID)") or 1) - 1)
+            except Exception:
+                pass
+            return {"rowid": rowid, "case_id": case_id, "collisions": collisions}
+        except Exception as e:
+            logger.error(f"Error resolving case_no '{case_no}' to ROWID: {e}")
+            return None
+
     # Real KSP crime-group names (from the CrimeHead table, see
     # get_crime_trends) -- a fixed list here rather than a live query since
     # this is a last-resort, zero-dependency fallback: it needs to work even
@@ -2932,6 +2983,12 @@ class VajraAgentLoop:
                 {"name": "District Crime Rate", "value": 0.15, "contribution": "positive"},
                 {"name": "Age Factor", "value": -0.12, "contribution": "negative"}
             ]
+            # CaseMasterID is NOT unique in this dataset (see _resolve_case_rowid)
+            # -- this path starts from Accused.CaseMasterID with no CrimeNo/ROWID
+            # to disambiguate against, so a collision here means the case-level
+            # features feeding the risk model below (station, date, crime type)
+            # may be drawn from a different real case than this suspect's own.
+            risk_id_collisions = 0
 
             if catalyst_app and suspect:
                 try:
@@ -2943,8 +3000,14 @@ class VajraAgentLoop:
                         acc_data = acc_res[0].get("Accused", {})
                         cm_id = acc_data.get("CaseMasterID")
                         age = acc_data.get("AgeYear") or 32
-                        
+
                         if cm_id:
+                            try:
+                                _cnt = catalyst_app.zql().execute_query(f"SELECT COUNT(ROWID) FROM CaseMaster WHERE CaseMasterID = {cm_id}")
+                                if _cnt:
+                                    risk_id_collisions = max(0, int(_cnt[0].get("CaseMaster", {}).get("COUNT(ROWID)") or 1) - 1)
+                            except Exception:
+                                pass
                             # Query CaseMaster for metadata. Note: CaseMaster has neither
                             # a DistrictID nor AccusedCount/VictimCount column (those used
                             # to be selected here, which made ZCQL 400 the whole query and
@@ -3082,6 +3145,12 @@ class VajraAgentLoop:
                 "shap_factors": shap_factors
             }
             text_result = f"Offender Risk Score: Suspect {suspect} has a {round(risk_score * 100, 1)}% conviction risk probability. Top predictor: *{shap_factors[0]['name'] if shap_factors else 'Prior History'}*."
+            if risk_id_collisions > 0:
+                text_result += (
+                    f" ⚠ Data-integrity note: this suspect's linked case ID is shared with {risk_id_collisions} "
+                    f"other case record(s) in this dataset; the case-level features (station, date, crime type) "
+                    f"behind this score may be drawn from a different one of those records."
+                )
             citations.append({"type": "XGBoost Conviction Predictor", "id": suspect, "details": f"SHAP Local feature waterfall computed dynamically for age={age}"})
             self._write_audit_log(employee_id, "Offender Risk Inquest", suspect, f"Risk score of {suspect}", text_result, session_id)
 
@@ -3096,6 +3165,12 @@ class VajraAgentLoop:
             accused_count = 1
             crime_head_id = 5
 
+            # See _resolve_case_rowid: CaseMasterID collides across ~2.6 real
+            # cases on average. This path starts from Accused.CaseMasterID
+            # with no CrimeNo/ROWID to disambiguate, so a collision here means
+            # the MO feature vector below (lat/gravity/day/crime-type) may be
+            # drawn from a different real case than this suspect's own.
+            mo_id_collisions = 0
             if catalyst_app and suspect:
                 try:
                     # Query Accused to find CaseMasterID
@@ -3105,6 +3180,12 @@ class VajraAgentLoop:
                     if acc_res:
                         cm_id = acc_res[0].get("Accused", {}).get("CaseMasterID")
                         if cm_id:
+                            try:
+                                _cnt = catalyst_app.zql().execute_query(f"SELECT COUNT(ROWID) FROM CaseMaster WHERE CaseMasterID = {cm_id}")
+                                if _cnt:
+                                    mo_id_collisions = max(0, int(_cnt[0].get("CaseMaster", {}).get("COUNT(ROWID)") or 1) - 1)
+                            except Exception:
+                                pass
                             # Query CaseMaster for actual MO characteristics. AccusedCount
                             # isn't a real column here (same phantom-column bug as
                             # get_offender_risk) -- computed via a COUNT query instead.
@@ -3193,24 +3274,36 @@ class VajraAgentLoop:
                     "engine_mode": "Live CaseMaster/Accused MO Vectors" if is_live else "Reference Simulation (no live case data available)"
                 }
                 response_type = "mo_match"
+                # Plan review (Part C #2): a cosine-similarity match is an
+                # INVESTIGATIVE LEAD, never an identification -- stated
+                # explicitly in the text an officer reads, not just buried in
+                # a citation tooltip, matching the exact language already used
+                # by the sibling shared_attribute_links tool.
                 serial_note = (
                     f" This crosses the {SERIAL_MO_THRESHOLD:.0f}% serial-pattern threshold -- "
-                    "consistent with a repeating modus operandi across cases; cross-check the matched case below."
+                    "consistent with a repeating modus operandi across cases. This is an investigative lead to "
+                    "cross-check against the matched case below, not an identification."
                     if is_probable_serial_pattern else ""
                 )
-                text_result = f"Behavioral MO Profile: Suspect {suspect} matches Modus Operandi '{mo_signature}' at a {match_rate}% similarity score.{serial_note}"
-                citations.append({"type": "MO Behavioral Profiler", "id": suspect, "details": "Grounded cosine similarity search performed across reference narratives database"})
+                collision_note = (
+                    f" ⚠ Data-integrity note: this suspect's linked case ID is shared with {mo_id_collisions} "
+                    f"other case record(s) in this dataset; the MO feature vector above may be drawn from a "
+                    f"different one of those records."
+                ) if mo_id_collisions > 0 else ""
+                text_result = f"Behavioral MO Profile: Suspect {suspect} matches Modus Operandi '{mo_signature}' at a {match_rate}% similarity score.{serial_note}{collision_note}"
+                citations.append({"type": "MO Behavioral Profiler", "id": suspect, "details": "Grounded cosine similarity search across reference case vectors -- an investigative lead to verify, not identification"})
             self._write_audit_log(employee_id, "Behavioral MO Inquest", suspect, f"MO signature of {suspect}", text_result, session_id)
 
         # 11. summarize_case
         elif tool_name == "summarize_case":
             case_no = params.get("case_no", "")
-            case_id = self._resolve_case_no(case_no)
+            _sr = self._resolve_case_rowid(case_no)
+            case_id = _sr["case_id"] if _sr else None
             if case_id is None:
                 summary = f"Case {case_no or '(none given)'} was not found in the database."
                 data = {"case_no": case_no}
             else:
-                summary = self.summarize_case(case_id)
+                summary = self.summarize_case(case_id, _sr["rowid"], _sr["collisions"])
                 data = {"case_no": case_no, "case_id": case_id, "summary": summary}
                 citations.append({"type": "CCTNS Grounded Summary", "id": case_no, "details": "Dynamically compiled case dossiers"})
             text_result = summary
@@ -3249,7 +3342,10 @@ class VajraAgentLoop:
         # 14. get_case_timeline
         elif tool_name == "get_case_timeline":
             case_no = params.get("case_no", "")
-            case_id = self._resolve_case_no(case_no)
+            resolved = self._resolve_case_rowid(case_no)
+            case_id = resolved["case_id"] if resolved else None
+            case_rowid = resolved["rowid"] if resolved else None
+            collisions = resolved["collisions"] if resolved else 0
             response_type = "timeline"
             events = []
             if case_id is None:
@@ -3263,9 +3359,12 @@ class VajraAgentLoop:
                         d_str = occ_res[0].get("Inv_OccuranceTime", {}).get("OccurrenceDate")
                         if d_str:
                             events.append({"date": d_str.split()[0], "event": "Crime Occurrence", "description": "Date of incident occurrence recorded in CCTNS."})
-                    
-                    # 2. FIR Date
-                    cm_res = catalyst_app.zql().execute_query(f"SELECT CrimeRegisteredDate, CrimeNo FROM CaseMaster WHERE CaseMasterID = {case_id} LIMIT 1")
+
+                    # 2. FIR Date -- CaseMaster's OWN field, fetched by the
+                    # definitely-unique ROWID (see _resolve_case_rowid), not
+                    # the non-unique CaseMasterID -- confirmed live that field
+                    # collides across ~2.6 real cases on average.
+                    cm_res = catalyst_app.zql().execute_query(f"SELECT CrimeRegisteredDate, CrimeNo FROM CaseMaster WHERE ROWID = {case_rowid} LIMIT 1")
                     if cm_res:
                         cm = cm_res[0].get("CaseMaster", {})
                         d_str = cm.get("CrimeRegisteredDate")
@@ -3301,6 +3400,15 @@ class VajraAgentLoop:
                 events.sort(key=lambda x: x["date"])
                 data = {"case_no": case_no, "case_id": case_id, "timeline": events}
                 text_result = f"Chronological Timeline for Case {case_no}:\n" + "\n".join([f"- [{e['date']}] {e['event']}: {e['description']}" for e in events])
+                if collisions > 0:
+                    # Occurrence/Arrest/Chargesheet events all join by the
+                    # non-unique CaseMasterID field (see _resolve_case_rowid);
+                    # only "FIR Registered" is fetched by ROWID and unaffected.
+                    text_result += (
+                        f"\n\n⚠ Data-integrity note: this record's internal case-linkage ID is shared with "
+                        f"{collisions} other case record(s); the occurrence/arrest/chargesheet events above "
+                        f"(other than the FIR registration date) may belong to a different one of those records."
+                    )
                 citations.append({"type": "ZCQL Joined Timeline", "id": case_no, "details": "Occurrence, FIR, Arrest, and Chargesheet logs merged"})
             self._write_audit_log(employee_id, "Case Timeline Inquest", f"Case {case_no}", f"Get timeline for case {case_no}", text_result, session_id)
 
@@ -4135,7 +4243,10 @@ class VajraAgentLoop:
         # show something, while data.panels carries the full multi-panel set.
         elif tool_name == "generate_case_dossier":
             case_no = params.get("case_no", "")
-            case_id = self._resolve_case_no(case_no)
+            _resolved = self._resolve_case_rowid(case_no)
+            case_id = _resolved["case_id"] if _resolved else None
+            case_rowid = _resolved["rowid"] if _resolved else None
+            dossier_collisions = _resolved["collisions"] if _resolved else 0
             response_type = "dossier"
             if case_id is None:
                 text_result = f"Case {case_no or '(none given)'} was not found, so no dossier could be assembled."
@@ -4183,13 +4294,23 @@ class VajraAgentLoop:
                 facts_text = ""
                 case_station = ""
                 try:
+                    # CaseMaster's OWN fields, fetched by the definitely-unique
+                    # ROWID (see _resolve_case_rowid) -- CaseMasterID collides
+                    # across ~2.6 real cases on average in this dataset.
                     fr = catalyst_app.zql().execute_query(
-                        f"SELECT CrimeNo, CrimeRegisteredDate, BriefFacts, PoliceStationID FROM CaseMaster WHERE CaseMasterID = {case_id} LIMIT 1"
+                        f"SELECT CrimeNo, CrimeRegisteredDate, BriefFacts, PoliceStationID FROM CaseMaster WHERE ROWID = {case_rowid} LIMIT 1"
                     )
                     if fr:
                         cm = fr[0].get("CaseMaster", {})
                         facts_data = {"CrimeNo": cm.get("CrimeNo"), "CrimeRegisteredDate": cm.get("CrimeRegisteredDate"), "BriefFacts": cm.get("BriefFacts")}
                         facts_text = f"CrimeNo {cm.get('CrimeNo')} - registered {cm.get('CrimeRegisteredDate')}. {cm.get('BriefFacts') or ''}".strip()
+                        if dossier_collisions > 0:
+                            facts_text += (
+                                f" ⚠ Data-integrity note: this record's internal case-linkage ID is shared with "
+                                f"{dossier_collisions} other case record(s); the accused/risk/network/sections/"
+                                f"timeline panels below (joined via that ID) may belong to a different one of "
+                                f"those records -- verify against the original FIR."
+                            )
                         # Resolve the filing station so "which station?" is answerable.
                         ps = cm.get("PoliceStationID")
                         if ps:
@@ -5098,21 +5219,35 @@ class VajraAgentLoop:
         if not m:
             return None
         case_no = m.group(0).upper()
-        case_id = self._resolve_case_no(case_no)
+        resolved = self._resolve_case_rowid(case_no)
         ql = query.lower()
         if any(w in ql for w in ("full", "everything", "complete", "all detail", "dossier", "deep dive", "full report on case")):
             return None  # the full multi-panel dossier is generate_case_dossier's job
-        if case_id is None:
+        if resolved is None:
             return {"text": f"Case {case_no} was not found in the database -- please double-check the case number.",
                     "response_type": "text", "data": {"case_no": case_no},
                     "citations": [{"type": "CCTNS Database Record", "id": case_no, "details": "No CrimeNo matches."}],
                     "is_simulated": False, "simulated_reason": ""}
+        case_id, rowid, collisions = resolved["case_id"], resolved["rowid"], resolved["collisions"]
+        # Data-integrity disclosure: CaseMasterID is NOT unique in this dataset
+        # (see _resolve_case_rowid) -- when this case's ID collides with N
+        # others, child-table data (accused/victim/complainant/sections, all
+        # joined by that non-unique field) may actually belong to a different
+        # one of those N cases. CaseMaster's OWN fields below (station, date,
+        # brief facts) are fetched by ROWID and are NOT affected -- only
+        # branches that surface child-table data append this note.
+        collision_note = (
+            f"\n\n⚠ Data-integrity note: this record's internal case-linkage ID is shared with "
+            f"{collisions} other case record(s) in this dataset; the accused/victim/complainant/sections "
+            f"shown may belong to a different one of those records -- verify against the original FIR "
+            f"before acting on it."
+        ) if collisions > 0 else ""
         crimeno, reg, brief, station, accused = case_no, "", "", "", ""
         age = gender = prior = None
         sections: List[str] = []
         try:
             fr = catalyst_app.zql().execute_query(
-                f"SELECT CrimeNo, CrimeRegisteredDate, BriefFacts, PoliceStationID FROM CaseMaster WHERE CaseMasterID = {case_id} LIMIT 1")
+                f"SELECT CrimeNo, CrimeRegisteredDate, BriefFacts, PoliceStationID FROM CaseMaster WHERE ROWID = {rowid} LIMIT 1")
             if fr:
                 cm = fr[0].get("CaseMaster", {})
                 crimeno = cm.get("CrimeNo") or case_no
@@ -5161,7 +5296,7 @@ class VajraAgentLoop:
         if any(w in ql for w in ("dangerous", "risk", "threat", "ಅಪಾಯ", "ಅಪಾಯಕಾರಿ")) and accused:
             rr = self._execute_tool("get_offender_risk", {"suspect_name": accused}, employee_id, session_id, user_unit_id)
             ans = (f"The accused in {crimeno} is {acc_desc}. {(rr.get('text_result') or '').strip()} "
-                   f"Note: this is a model-derived lead to verify, not proof of guilt.")
+                   f"Note: this is a model-derived lead to verify, not proof of guilt.{collision_note}")
             rt, data = "risk", (rr.get("data") or {})
         elif any(w in ql for w in ("which station", "what station", "filed at", "registered at", "where was", "station", "ಠಾಣೆ")):
             ans = f"Case {crimeno} was filed at {station or 'the registering unit (station name not on record)'}."
@@ -5222,7 +5357,7 @@ class VajraAgentLoop:
             lines.append(f"Complainant: {complainant}" if complainant else "Complainant: not separately recorded.")
             ans = (f"For case {crimeno}:\n- " + "\n- ".join(lines)
                    + (f"\n\nBrief facts: {case_brief_for_answer}" if case_brief_for_answer else "")
-                   + _redacted_note)
+                   + _redacted_note + collision_note)
             data = {"case_no": crimeno, "victim": victim, "complainant": complainant,
                     "pocso_redacted": bool(_sensitive and not (_is_super or _has_grant))}
         elif any(w in ql for w in ("linked", "other case", "related case", "connected case", "ಸಂಬಂಧಿತ", "ಇತರ ಪ್ರಕರಣ")):
@@ -5252,7 +5387,7 @@ class VajraAgentLoop:
             steps.append("DO: confirm the applied sections (" + (", ".join(sections) if sections else "verify against the FIR")
                          + "), record witness statements, and preserve scene / electronic evidence.")
             steps.append("DO NOT: treat any AI risk/network output as proof -- they are leads to verify; and don't act outside jurisdiction without the SHO's authorisation.")
-            ans = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(steps))
+            ans = "\n".join(f"{i + 1}. {s}" for i, s in enumerate(steps)) + (collision_note if (accused or sections) else "")
         else:
             bits = [f"Case {crimeno}"]
             if reg:
@@ -5265,7 +5400,7 @@ class VajraAgentLoop:
                 bits.append(f"accused: {acc_desc}")
             if sections:
                 bits.append(f"sections: {', '.join(sections)}")
-            ans = ". ".join(bits) + "."
+            ans = ". ".join(bits) + "." + (collision_note if (accused or sections) else "")
         self._write_audit_log(employee_id, "Case Q&A", crimeno, query, ans, session_id)
         return {"text": ans, "response_type": rt, "data": data,
                 "citations": [{"type": "CCTNS Database Record", "id": crimeno,
@@ -6009,9 +6144,9 @@ class VajraAgentLoop:
         crime_label = ""
         try:
             if case_no:
-                cid = self._resolve_case_no(case_no)
-                if cid is not None:
-                    cm = catalyst_app.zql().execute_query(f"SELECT CrimeMajorHeadID FROM CaseMaster WHERE CaseMasterID = {cid} LIMIT 1")
+                _rr = self._resolve_case_rowid(case_no)
+                if _rr is not None:
+                    cm = catalyst_app.zql().execute_query(f"SELECT CrimeMajorHeadID FROM CaseMaster WHERE ROWID = {_rr['rowid']} LIMIT 1")
                     if cm and cm[0].get("CaseMaster", {}).get("CrimeMajorHeadID"):
                         head_ids = [cm[0]["CaseMaster"]["CrimeMajorHeadID"]]
             if not head_ids and desc:
@@ -6165,16 +6300,26 @@ class VajraAgentLoop:
             "disclaimer": "*Disclaimer: IPC/BNS mappings are AI-generated based on the KSP Datathon 2026 schema and must be verified against official gazettes. Confirm with your SHO or legal officer before filing.*"
         }
 
-    def summarize_case(self, case_id: int) -> str:
+    def summarize_case(self, case_id: int, case_rowid: Optional[int] = None, collisions: int = 0) -> str:
         """
         Fetches related rows and compiles a clean bilingual summary of the case.
+        `case_rowid`/`collisions` come from _resolve_case_rowid: CaseMaster's
+        OWN fields are fetched by ROWID (definitely unique), while the
+        Accused/Victim/ComplainantDetails joins below still use case_id (the
+        non-unique legacy field -- those child tables have no ROWID
+        reference), so a `collisions` disclosure is appended when relevant.
         """
         if not catalyst_app:
             return "Database offline. Summary unavailable."
-            
+
         try:
-            # 1. Fetch Case Details
-            case_res = catalyst_app.zql().execute_query(f"SELECT CrimeNo, BriefFacts, CrimeRegisteredDate FROM CaseMaster WHERE CaseMasterID = {case_id}")
+            # 1. Fetch Case Details -- by ROWID when available (airtight);
+            # falls back to the legacy CaseMasterID lookup only for callers
+            # that haven't been threaded through to pass a rowid yet.
+            if case_rowid is not None:
+                case_res = catalyst_app.zql().execute_query(f"SELECT CrimeNo, BriefFacts, CrimeRegisteredDate FROM CaseMaster WHERE ROWID = {case_rowid}")
+            else:
+                case_res = catalyst_app.zql().execute_query(f"SELECT CrimeNo, BriefFacts, CrimeRegisteredDate FROM CaseMaster WHERE CaseMasterID = {case_id}")
             if not case_res:
                 return f"Case with ID {case_id} not found."
                 
@@ -6200,6 +6345,12 @@ class VajraAgentLoop:
             summary_en = f"Official Summary for Case **{crime_no}** (Registered: {reg_date}). " \
                          f"Brief Facts: {facts} Accused: {accused_str}. Victim(s): {victim_str}. " \
                          f"Complainant: {comp_name}."
+            if collisions > 0:
+                summary_en += (
+                    f" ⚠ Data-integrity note: this record's internal case-linkage ID is shared with "
+                    f"{collisions} other case record(s); the accused/victim/complainant above may belong "
+                    f"to a different one of those records -- verify against the original FIR."
+                )
             return summary_en
         except Exception as e:
             logger.error(f"Error compiling case summary: {e}")
