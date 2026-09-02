@@ -11,7 +11,8 @@ from typing import Dict, Any, List, Tuple, Optional
 import numpy as np
 import pandas as pd
 
-from vajra_core import catalyst_app, VajraGraphRAG, VajraSemanticMemory, MOBehavioralProfiler, zcql_insert_row
+from vajra_core import catalyst_app, VajraGraphRAG, VajraSemanticMemory, MOBehavioralProfiler, zcql_insert_row, \
+    is_pocso_sensitive, redact_pocso_name, redact_phone_numbers, is_supervisor_badge
 from session_memory import VajraSessionMemory
 from catalyst_llm import CatalystLLM
 from catalyst_qwen import CatalystQwen
@@ -5108,10 +5109,33 @@ class VajraAgentLoop:
             data = {"case_no": crimeno, "station": station}
         elif any(w in ql for w in ("victim", "complainant", "ಸಂತ್ರಸ್ತ", "ದೂರುದಾರ", "ಬಲಿಪಶು")):
             victim, complainant = _name_from("Victim"), _name_from("ComplainantDetails")
+            # POCSO / juvenile-victim auto-redaction (Section 74 JJA): a sexual-
+            # offence or minor-victim case masks the real name for everyone below
+            # supervisor tier, with the redaction itself stated plainly (not
+            # silently dropped) and unmasking by a supervisor logged to audit.
+            _sensitive = is_pocso_sensitive(brief, crimeno)
+            _is_super = is_supervisor_badge(getattr(self, "officer_badge", None))
+            _redacted_note = ""
+            case_brief_for_answer = brief
+            if _sensitive and not _is_super:
+                if victim:
+                    victim = redact_pocso_name(victim)
+                if complainant:
+                    complainant = redact_pocso_name(complainant)
+                case_brief_for_answer = redact_phone_numbers(brief)
+                _redacted_note = ("\n\n(Victim identity masked under Section 74, Juvenile Justice Act -- "
+                                  "this case is flagged as a sensitive/POCSO matter. A supervisor can view "
+                                  "the unredacted record.)")
+            elif _sensitive and _is_super:
+                self._write_audit_log(employee_id, "POCSO Unmask", crimeno,
+                                      f"Supervisor viewed unredacted victim identity for {crimeno}",
+                                      "Unmasked -- supervisor tier", session_id)
             lines = [f"Victim: {victim}" if victim else "Victim: not separately recorded (see the FIR narrative below)."]
             lines.append(f"Complainant: {complainant}" if complainant else "Complainant: not separately recorded.")
-            ans = f"For case {crimeno}:\n- " + "\n- ".join(lines) + (f"\n\nBrief facts: {brief}" if brief else "")
-            data = {"case_no": crimeno, "victim": victim, "complainant": complainant}
+            ans = (f"For case {crimeno}:\n- " + "\n- ".join(lines)
+                   + (f"\n\nBrief facts: {case_brief_for_answer}" if case_brief_for_answer else "")
+                   + _redacted_note)
+            data = {"case_no": crimeno, "victim": victim, "complainant": complainant, "pocso_redacted": bool(_sensitive and not _is_super)}
         elif any(w in ql for w in ("linked", "other case", "related case", "connected case", "ಸಂಬಂಧಿತ", "ಇತರ ಪ್ರಕರಣ")):
             sr = self._execute_tool("find_similar_cases", {"query": brief or case_no}, employee_id, session_id, user_unit_id)
             matches = [(mm.get("fir_id") or "") for mm in ((sr.get("data") or {}).get("matches") or [])]

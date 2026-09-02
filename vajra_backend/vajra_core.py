@@ -20,6 +20,7 @@ if _os.path.exists(_cfg_path):
         pass
 
 import os
+import re
 import json
 import logging
 import time
@@ -369,6 +370,42 @@ def verify_catalyst_token_direct(jwt_token: str) -> Optional[Dict[str, Any]]:
 # the Supervisor dashboard tab (hidden in the frontend for non-supervisors),
 # the supervisor-only endpoints, and two-person co-sign eligibility.
 SUPERVISOR_KGIDS = {"2346836"}
+
+
+# POCSO / juvenile-victim auto-redaction (Section 74, Juvenile Justice Act).
+# Shared with main.py's export pre-screen so "sensitive" means the same thing
+# everywhere in the app -- one definition, not two drifting copies.
+POCSO_SENSITIVE_KEYWORDS = (
+    "rape", "pocso", "sexual assault", "sexual offence", "sexual offense",
+    "molest", "outrage of modesty", "minor victim", "juvenile", "child victim",
+    "underage", "child abuse",
+    "ಅತ್ಯಾಚಾರ", "ಲೈಂಗಿಕ", "ಅಶ್ಲೀಲ", "ಅಪ್ರಾಪ್ತ", "ಬಾಲಾಪರಾಧಿ", "ಮಕ್ಕಳ ಮೇಲಿನ",
+)
+_PHONE_RE = re.compile(r"\b([6-9]\d{5})(\d{4})\b")
+
+
+def is_pocso_sensitive(*texts: str) -> bool:
+    """True if any of the given texts (brief facts, category, etc.) name a
+    POCSO/juvenile-victim matter -- the trigger for auto-redaction below."""
+    blob = " ".join((t or "") for t in texts).lower()
+    return any(k in blob for k in POCSO_SENSITIVE_KEYWORDS)
+
+
+def redact_pocso_name(name: str) -> str:
+    """Rank-gated PII mask for a POCSO-sensitive case's victim/complainant name."""
+    return "[REDACTED UNDER POCSO ACT §74 JJA]" if (name or "").strip() else name
+
+
+def redact_phone_numbers(text: str) -> str:
+    """Mask any 10-digit Indian mobile number in text to XXXXXX1234 (last 4 kept
+    for cross-reference), for POCSO-sensitive answers shown to non-supervisors."""
+    if not text:
+        return text
+    return _PHONE_RE.sub(lambda m: "XXXXXX" + m.group(2), text)
+
+
+def is_supervisor_badge(badge: Optional[str]) -> bool:
+    return bool(badge) and str(badge).strip() in SUPERVISOR_KGIDS
 
 
 def derive_role_tier(rank_id: Optional[int], kgid: Optional[str] = None) -> str:
