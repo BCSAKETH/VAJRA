@@ -7,7 +7,7 @@ import copy
 import hashlib
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional, Callable
 import numpy as np
 import pandas as pd
 
@@ -1520,12 +1520,21 @@ class VajraAgentLoop:
             logger.warning(f"durable history load failed for {session_id}: {e}")
         return out
 
-    def run_agent_loop(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None, answer_mode: str = "standard", officer_badge: Optional[str] = None) -> Dict[str, Any]:
+    def run_agent_loop(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None, answer_mode: str = "standard", officer_badge: Optional[str] = None, progress_cb: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
         """
         Primary execution entry point. Decides what tools to run in sequence using LLM function calling.
+
+        progress_cb (Part C item #8): an optional callback the SSE live-
+        progress ticker hooks into (see progress_tracker.py). Called with a
+        short, honest description of whatever real step is actually
+        happening -- never a fabricated status, never a specific latency
+        claim. None by default so every existing caller (tests, other code
+        paths) is unaffected.
         """
         self.officer_badge = officer_badge
         self.officer_name = officer_name
+        _progress = progress_cb or (lambda _msg: None)
+        _progress("Understanding your question...")
         # main.py prepends officer-identity and case-context headers to
         # `query` -- e.g. "[Context: you are speaking with Officer X ... or
         # current assignment, call the get_my_profile tool ...]". Those are
@@ -1976,6 +1985,7 @@ class VajraAgentLoop:
             if allow_tools and forced_decision is not None:
                 llm_res = {"choices": [{"message": {"content": json.dumps(forced_decision)}}]}
             else:
+                _progress("Deciding which records to check..." if allow_tools else "Writing your answer...")
                 # A1: on the tool-selection iteration, send GLM only the tools
                 # this query could plausibly need (~6) instead of all 25 --
                 # cuts the prompt from ~3,240 to ~800 tokens so the model
@@ -2805,10 +2815,26 @@ class VajraAgentLoop:
                     "type": "suspect" if n == seed else ("case" if role in ("collection hub", "distribution hub") else "person"),
                 })
             edges = [{"source": s, "target": rc} for s, rc in edges_set]
-            # Most-recent-first, capped -- the ledger panel is a review aid,
-            # not a full export; real transactions can run into the hundreds
-            # across a 6-hop traversal.
+            # Order so every EDGE drawn in the graph gets at least one
+            # representative transaction in the ledger before any edge gets
+            # a second -- confirmed live this was a real gap: a naive global
+            # most-recent-first sort let heavily-transacted pairs crowd out
+            # single-transaction pairs entirely once the datastore size cap
+            # (_fit_json, main.py) trimmed the list, leaving most edges with
+            # ZERO backing ledger entry even though nothing shown was wrong.
+            # One pass picks the newest transaction per (sender,receiver)
+            # pair as its representative; a second pass appends every
+            # remaining transaction, still newest-first. _fit_json only ever
+            # trims from the END of this list, so representatives -- always
+            # at the front -- survive trimming first.
             tx_records.sort(key=lambda t: t.get("txn_time") or "", reverse=True)
+            seen_pairs = set()
+            representatives, extras = [], []
+            for t in tx_records:
+                pair = (t["sender"], t["receiver"])
+                (representatives if pair not in seen_pairs else extras).append(t)
+                seen_pairs.add(pair)
+            tx_records = representatives + extras
             data = {"nodes": nodes, "edges": edges, "seed": seed, "max_hop_reached": deepest_hop_reached,
                     "financial_transactions": tx_records[:60]}
 
