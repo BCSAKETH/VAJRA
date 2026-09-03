@@ -134,6 +134,50 @@ export const AIChatScreen: React.FC = () => {
   // frozen UI well before that; a live counter makes the wait legible
   // without needing to guess at (and risk understating) a fixed ETA.
   const [thinkingSeconds, setThinkingSeconds] = useState(0);
+  // Live-progress ticker (Part C item #8, backend built earlier -- this is
+  // the missing frontend half): real step names the agent loop actually
+  // reaches (see progress_tracker.py / GET /api/chat/progress/{session_id}),
+  // NOT a fabricated countdown. Native EventSource can't send the
+  // Authorization header this API requires, so this is consumed via a plain
+  // fetch + manual stream reader instead (see streamTicker below).
+  const [tickerMessage, setTickerMessage] = useState("");
+  const tickerAbortRef = useRef<AbortController | null>(null);
+  const streamTicker = useCallback(async (sessionId: string) => {
+    tickerAbortRef.current?.abort();
+    const controller = new AbortController();
+    tickerAbortRef.current = controller;
+    setTickerMessage("");
+    try {
+      const res = await fetch(`${API_BASE}/api/chat/progress/${sessionId}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) return;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const chunks = buf.split("\n\n");
+        buf = chunks.pop() || "";
+        for (const chunk of chunks) {
+          const line = chunk.split("\n").find((l) => l.startsWith("data:"));
+          if (!line) continue;
+          try {
+            const payload = JSON.parse(line.slice(5).trim());
+            if (payload.message) setTickerMessage(payload.message);
+            if (payload.done) return;
+          } catch { /* ignore a malformed chunk -- next one still works */ }
+        }
+      }
+    } catch {
+      // Aborted (a new turn started, or this one finished) or a transient
+      // network hiccup -- the static thinkingIndicator text below still
+      // covers the wait either way, this is purely a UX enhancement.
+    }
+  }, []);
 
   const [expandedWidget, setExpandedWidget] = useState<{ type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend"; data: any } | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
@@ -149,9 +193,15 @@ export const AIChatScreen: React.FC = () => {
   // Full Dossier -- forces the multi-panel composite for the query's case/
   // suspect). Chosen via the composer selector; persisted so the officer's
   // preference sticks across sessions.
-  const [answerMode, setAnswerMode] = useState<"standard" | "dossier" | "compiler">(
-    () => (localStorage.getItem("vajra_answer_mode") as "standard" | "dossier" | "compiler") || "standard"
-  );
+  // 2-MODE CONSOLIDATION: "compiler" ("AI Reasoning β") retired as a 3rd
+  // choice -- a returning officer's browser may still have that value saved
+  // from before, so normalize it to "dossier" on load (the backend does the
+  // same normalization independently, but fixing it here too keeps the UI
+  // itself from ever showing a mode that no longer exists as an option).
+  const [answerMode, setAnswerMode] = useState<"standard" | "dossier">(() => {
+    const saved = localStorage.getItem("vajra_answer_mode");
+    return saved === "dossier" ? "dossier" : "standard";
+  });
   useEffect(() => { localStorage.setItem("vajra_answer_mode", answerMode); }, [answerMode]);
   const [showInvitePanel, setShowInvitePanel] = useState(false);
   const [inviteBadge, setInviteBadge] = useState("");
@@ -450,7 +500,7 @@ export const AIChatScreen: React.FC = () => {
     let pendingKey = sendSessionId ?? "__new__";
 
     let queryForAgent = textToSend;
-    let uploadedAttachmentRefs: { file_name: string; type: string; page_count: number; stratus_id?: string; data_uri?: string }[] = [];
+    let uploadedAttachmentRefs: { file_name: string; type: string; page_count: number; stratus_id?: string; data_uri?: string; page_stratus_ids?: string[] }[] = [];
     if (filesToSend.length > 0) {
       setIsUploadingAttachments(true);
       try {
@@ -563,6 +613,9 @@ export const AIChatScreen: React.FC = () => {
       // conversation, or the id the backend just auto-created if this was
       // the first message of a brand new one.
       const turnSessionId = sendSessionId || data.session_id || null;
+      if (turnSessionId) {
+        streamTicker(turnSessionId);
+      }
 
       // First turn of a new conversation: the backend just auto-created a
       // real ChatSession and handed back its id. Only auto-adopt it (switch
@@ -600,6 +653,8 @@ export const AIChatScreen: React.FC = () => {
         });
         const baselineRaw = baselineRes.ok ? await baselineRes.json() : [];
         await pollForPendingReply(turnSessionId, baselineRaw.length);
+        tickerAbortRef.current?.abort();
+        setTickerMessage("");
       } else if (data.ai_invoked !== false) {
         // Rendered directly from this response, always -- see clientMsgId
         // comment above for why. The WS handler skips its own echo of this
@@ -650,6 +705,8 @@ export const AIChatScreen: React.FC = () => {
       // flight meant this line never ran, leaving the composer locked
       // everywhere until a page refresh.
       clearPending(pendingKey);
+      tickerAbortRef.current?.abort();
+      setTickerMessage("");
       if (activeSessionIdRef.current === sendSessionId) {
         setThinkingType("standard");
       }
@@ -990,6 +1047,7 @@ export const AIChatScreen: React.FC = () => {
               lang={lang}
               onExpandWidget={(widgetType, widgetData) => setExpandedWidget({ type: widgetType as any, data: widgetData })}
               onRetry={msg.retryText ? () => handleSend(msg.retryText!) : undefined}
+              onQuickReply={(text) => handleSend(text)}
               addToast={addToast}
               isLast={idx === chatMessages.length - 1}
             />
@@ -1011,6 +1069,17 @@ export const AIChatScreen: React.FC = () => {
                 </span>
                 <span className="text-[#C79A4E]">{thinkingSeconds}s</span>
               </div>
+              {/* Live-progress ticker: a REAL step name the backend agent
+                  loop actually just reached (see streamTicker above) --
+                  never a fabricated status or a fake countdown. Empty until
+                  the first real step is emitted, so it simply doesn't show
+                  for the first moment of a turn. */}
+              {tickerMessage && (
+                <div className="text-[10px] text-[#C79A4E]/80 font-mono flex items-center gap-1.5">
+                  <span className="w-1 h-1 rounded-full bg-[#C79A4E] animate-pulse shrink-0" />
+                  {tickerMessage}
+                </div>
+              )}
               {/* GLM is a "thinking" model that reasons at length before
                   answering -- confirmed live, 15-140s is normal, not stuck.
                   Past 20s (well within one uneventful turn) this softens the

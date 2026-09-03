@@ -257,23 +257,34 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                       attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                     />
                     <MapSizeAndBoundsFixer points={hotspots} />
-                    {hotspots.map((marker, idx) => {
-                      // Hotspot labels from the DBSCAN path read "DBSCAN
-                      // Hotspot N (M incidents)" -- pull the count to scale
-                      // the highlight so denser clusters read as visually
-                      // bigger, not just another same-size pin.
-                      const countMatch = marker.label?.match(/\((\d+)\s*incidents?\)/i);
-                      const incidentCount = countMatch ? parseInt(countMatch[1], 10) : null;
-                      const radius = incidentCount ? Math.min(28, 10 + incidentCount * 1.5) : 12;
-                      return (
+                    {(() => {
+                      // Same severity-intensity logic as the inline chat map
+                      // (InlineWidget.tsx) -- confirmed live this expanded
+                      // view was scaling CIRCLE SIZE by incident count but
+                      // hardcoding every circle to the identical gold color,
+                      // so nothing here visually distinguished a genuinely
+                      // hot cluster from a quiet one once you opened it. Both
+                      // views now read the same way: red = hottest relative
+                      // to the others on screen, gold = coolest.
+                      const counts = hotspots.map((h) => {
+                        const m = h.label?.match(/\((\d+)\s*incidents?\)/i);
+                        return m ? parseInt(m[1], 10) : 0;
+                      });
+                      const maxC = Math.max(1, ...counts);
+                      return hotspots.map((marker, idx) => {
+                        const incidentCount = counts[idx] || null;
+                        const radius = incidentCount ? Math.min(28, 10 + incidentCount * 1.5) : 12;
+                        const intensity = incidentCount ? incidentCount / maxC : 0.35;
+                        const color = intensity > 0.66 ? "#E24B4A" : intensity > 0.33 ? "#E4C590" : "#C79A4E";
+                        return (
                         <CircleMarker
                           key={idx}
                           center={[marker.lat, marker.lng]}
                           radius={radius}
                           pathOptions={{
-                            color: "#C79A4E",
+                            color,
                             weight: 2,
-                            fillColor: "#C79A4E",
+                            fillColor: color,
                             fillOpacity: 0.35,
                           }}
                         >
@@ -284,8 +295,9 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                             </div>
                           </Popup>
                         </CircleMarker>
-                      );
-                    })}
+                        );
+                      });
+                    })()}
                   </MapContainer>
                 </div>
               </div>

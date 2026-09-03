@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ChatMessage } from "../AppContext";
 import { translations } from "../i18n";
-import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages } from "lucide-react";
+import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 import { API_BASE } from "../config";
 
@@ -11,6 +11,16 @@ interface ChatBubbleProps {
   lang: "en" | "kn";
   onExpandWidget: (type: string, data: any) => void;
   onRetry?: () => void;
+  // Clickable-answer overlay for a clarifying question: only rendered when
+  // the answer itself carries real, structured candidates (data.
+  // candidate_names) -- e.g. a suspect name matching multiple distinct real
+  // people. Deliberately NOT rendered for a free-text clarifying question
+  // with no structured options (data.needs_clarification alone) -- there's
+  // nothing real to turn into buttons there, and fabricating generic
+  // Yes/No-style choices would be exactly the kind of dishonest UI this
+  // project avoids everywhere else. Clicking a chip sends it as the
+  // officer's own next message, same as typing it.
+  onQuickReply?: (text: string) => void;
   addToast?: (title: string, message: string, severity: "Critical" | "Warning" | "Info" | "Success") => void;
   isLast?: boolean;
 }
@@ -194,19 +204,68 @@ const speakText = (text: string, lang: "en" | "kn", onEnd: () => void): SpeakRes
   return "started";
 };
 
-export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang, onExpandWidget, onRetry, addToast, isLast }) => {
+export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang, onExpandWidget, onRetry, onQuickReply, addToast, isLast }) => {
   const t = translations[lang];
   const isAI = message.sender === "assistant";
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
+  // Real per-page pagination (confirmed live complaint: the old viewer
+  // showed every page of a multi-page PDF pre-stitched into one long
+  // scrolling image, with no way to actually page through it). When a
+  // document has real per-page data (page_stratus_ids), this holds one
+  // object URL per page and the current page index; Prev/Next just moves
+  // the index, no re-fetch. viewingImageUrl (above) stays exactly as-is for
+  // a single plain image attachment -- this is additive, not a replacement.
+  const [viewingPages, setViewingPages] = useState<string[] | null>(null);
+  const [viewingPageIdx, setViewingPageIdx] = useState(0);
   const [loadingAttachmentId, setLoadingAttachmentId] = useState<string | null>(null);
   // USP-3 "explainable by default" -- one tap reveals the evidence trail
   // (which tools/records/queries produced this answer) already carried on
   // every message as citations. Collapsed by default so it never clutters
   // the calm chat, one click away when an officer needs to trust/verify.
   const [showEvidence, setShowEvidence] = useState(false);
+  // POCSO access-request button: a deterministic alternative to typing a
+  // phrase like "request access" (confirmed live: natural phrasing that
+  // missed the text-trigger fell through to GLM and got a fabricated,
+  // disconnected-from-reality process instead of this real flow). Shown only
+  // when this specific answer was itself redacted (data.pocso_redacted).
+  const [pocsoReqStatus, setPocsoReqStatus] = useState<"idle" | "pending" | "approved" | "rejected">("idle");
+  const [isPocsoRequesting, setIsPocsoRequesting] = useState(false);
+  const pocsoPollRef = useRef<number | null>(null);
+  useEffect(() => () => { if (pocsoPollRef.current) window.clearInterval(pocsoPollRef.current); }, []);
+  const requestPocsoAccess = async () => {
+    const caseNo = message.data?.case_no;
+    if (!caseNo) return;
+    setIsPocsoRequesting(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/pocso/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({ case_no: caseNo }),
+      });
+      if (!res.ok) throw new Error("request failed");
+      setPocsoReqStatus("pending");
+      if (pocsoPollRef.current) window.clearInterval(pocsoPollRef.current);
+      pocsoPollRef.current = window.setInterval(async () => {
+        try {
+          const sres = await fetch(`${API_BASE}/api/pocso/request-status?case_no=${encodeURIComponent(caseNo)}`, {
+            headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+          });
+          const sd = await sres.json();
+          if (sd.status === "approved" || sd.status === "rejected") {
+            if (pocsoPollRef.current) window.clearInterval(pocsoPollRef.current);
+            setPocsoReqStatus(sd.status);
+          }
+        } catch { /* transient -- next tick retries */ }
+      }, 5000);
+    } catch {
+      setPocsoReqStatus("idle");
+    } finally {
+      setIsPocsoRequesting(false);
+    }
+  };
   // Multi-lens explainability [B7]: on-demand, so it never slows the dossier.
   const [lenses, setLenses] = useState<{ role_tier?: string; primary?: string; engine?: string; lenses?: Record<string, string> } | null>(null);
   const [lensLoading, setLensLoading] = useState(false);
@@ -307,6 +366,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
       // Release the blob URL so the browser doesn't hold the decoded image
       // in memory for the lifetime of the page after the viewer closes.
       if (viewingImageUrl) URL.revokeObjectURL(viewingImageUrl);
+      if (viewingPages) viewingPages.forEach((u) => URL.revokeObjectURL(u));
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSpeaking]);
@@ -538,15 +598,25 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   // Stratus (currently unreachable from the backend). stratus_id-only
   // fetching is kept as a fallback for older messages saved before this
   // change, on the off chance storage does come back online later.
-  const handleViewAttachment = async (stratusId: string) => {
+  const handleViewAttachment = async (stratusId: string, pageIds?: string[]) => {
     setLoadingAttachmentId(stratusId);
+    const auth = { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` };
     try {
-      const res = await fetch(`${API_BASE}/api/attachments/${stratusId}`, {
-        headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-      });
-      if (!res.ok) throw new Error("Attachment not available.");
-      const blob = await res.blob();
-      setViewingImageUrl(URL.createObjectURL(blob));
+      // Real multi-page doc: fetch every page (capped at 3 server-side
+      // already) and let Prev/Next just flip between already-loaded
+      // pages -- no re-fetch per page, no all-pages-stitched scroll.
+      const ids = pageIds && pageIds.length > 1 ? pageIds : [stratusId];
+      const urls = await Promise.all(ids.map(async (id) => {
+        const res = await fetch(`${API_BASE}/api/attachments/${id}`, { headers: auth });
+        if (!res.ok) throw new Error("Attachment not available.");
+        return URL.createObjectURL(await res.blob());
+      }));
+      if (urls.length > 1) {
+        setViewingPageIdx(0);
+        setViewingPages(urls);
+      } else {
+        setViewingImageUrl(urls[0]);
+      }
     } catch (err) {
       console.error("Failed to load attachment:", err);
     } finally {
@@ -592,18 +662,15 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
               : "bg-stone-900 border-[#C79A4E]/20 text-stone-100 shadow-sm"
           }`}
         >
-          {/* Main Text Content -- AI answers render light markdown (bold /
-              headings / bullets / numbered) so they read as a scannable brief,
-              not a raw-asterisk wall of text. User messages stay verbatim. */}
-          {isAI
-            ? <div className="font-sans text-stone-200 text-[13.5px]">{renderRich(displayText)}</div>
-            : <div className="whitespace-pre-wrap font-sans text-stone-200">{displayText}</div>}
-
-          {/* Attachment indicator -- clickable when an inline thumbnail or a
-              Stratus reference exists, so an officer can actually view what
-              they attached instead of only seeing the filename chip. */}
+          {/* Attachment strip -- a SEPARATE area above the message text, not
+              buried inline below it (confirmed live complaint: it read as
+              an afterthought stuck under the text, unlike ChatGPT/Claude/
+              Gemini which show attachments as their own row above what was
+              typed). Clickable when an inline thumbnail or a Stratus
+              reference exists, so an officer can actually view what they
+              attached instead of only seeing the filename chip. */}
           {message.attachments && message.attachments.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mt-2.5">
+            <div className="flex flex-wrap gap-1.5 mb-2.5 pb-2.5 border-b border-stone-800/60">
               {message.attachments.map((a, i) => {
                 const isViewable = !!a.data_uri || !!a.stratus_id;
                 const isLoadingThis = loadingAttachmentId === a.stratus_id;
@@ -611,7 +678,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
                 const handleClick = a.data_uri
                   ? () => setViewingImageUrl(a.data_uri!)
                   : a.stratus_id
-                  ? () => handleViewAttachment(a.stratus_id!)
+                  ? () => handleViewAttachment(a.stratus_id!, a.page_stratus_ids)
                   : undefined;
                 return (
                   <Wrapper
@@ -628,6 +695,31 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
                   </Wrapper>
                 );
               })}
+            </div>
+          )}
+
+          {/* Main Text Content -- AI answers render light markdown (bold /
+              headings / bullets / numbered) so they read as a scannable brief,
+              not a raw-asterisk wall of text. User messages stay verbatim. */}
+          {isAI
+            ? <div className="font-sans text-stone-200 text-[13.5px]">{renderRich(displayText)}</div>
+            : <div className="whitespace-pre-wrap font-sans text-stone-200">{displayText}</div>}
+
+          {/* Clarifying-question quick-reply chips: only when the answer
+              carries REAL structured candidates (an ambiguous name matching
+              several distinct real people), not a generic yes/no guess. */}
+          {isAI && isLast && Array.isArray(message.data?.candidate_names) && message.data.candidate_names.length > 0 && onQuickReply && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {message.data.candidate_names.slice(0, 8).map((name: string, i: number) => (
+                <button
+                  key={`${name}-${i}`}
+                  type="button"
+                  onClick={() => onQuickReply(name)}
+                  className="text-[11px] font-mono px-2.5 py-1 rounded-full bg-[#C79A4E]/10 border border-[#C79A4E]/30 text-[#C79A4E] hover:bg-[#C79A4E]/20 transition-colors cursor-pointer"
+                >
+                  {name}
+                </button>
+              ))}
             </div>
           )}
 
@@ -654,8 +746,36 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
                   <ShieldCheck className="w-2.5 h-2.5 shrink-0" />
                   {showEvidence
                     ? (lang === "en" ? "Hide evidence" : "ಸಾಕ್ಷ್ಯ ಮರೆಮಾಡಿ")
-                    : (lang === "en" ? "Why this answer?" : "ಈ ಉತ್ತರ ಏಕೆ?")}
+                    : (lang === "en" ? "🔍 View Grounding & ZCQL Provenance" : "🔍 ಆಧಾರ ಮತ್ತು ZCQL ಪುರಾವೆ ವೀಕ್ಷಿಸಿ")}
                 </button>
+                {message.data?.pocso_redacted && message.data?.case_no && (
+                  pocsoReqStatus === "pending" ? (
+                    <span className="flex items-center gap-1 text-[10px] font-mono text-amber-400">
+                      <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                      {lang === "en" ? "Awaiting supervisor..." : "ಮೇಲ್ವಿಚಾರಕರಿಗಾಗಿ ಕಾಯಲಾಗುತ್ತಿದೆ..."}
+                    </span>
+                  ) : pocsoReqStatus === "approved" ? (
+                    <span className="text-[10px] font-mono text-emerald-400">
+                      {lang === "en" ? "Access approved -- ask again to view" : "ಪ್ರವೇಶ ಅನುಮೋದಿಸಲಾಗಿದೆ -- ಮತ್ತೆ ಕೇಳಿ"}
+                    </span>
+                  ) : pocsoReqStatus === "rejected" ? (
+                    <span className="text-[10px] font-mono text-rose-400">
+                      {lang === "en" ? "Access denied" : "ಪ್ರವೇಶ ನಿರಾಕರಿಸಲಾಗಿದೆ"}
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={requestPocsoAccess}
+                      disabled={isPocsoRequesting}
+                      className="flex items-center gap-1 text-[10px] font-mono text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/40 px-2 py-0.5 rounded transition-colors disabled:opacity-50 cursor-pointer"
+                    >
+                      <ShieldCheck className="w-2.5 h-2.5 shrink-0" />
+                      {isPocsoRequesting
+                        ? (lang === "en" ? "Requesting..." : "ವಿನಂತಿಸಲಾಗುತ್ತಿದೆ...")
+                        : (lang === "en" ? "Request Access" : "ಪ್ರವೇಶ ವಿನಂತಿಸಿ")}
+                    </button>
+                  )
+                )}
               </div>
               {showEvidence && (
                 <div className="rounded-lg border border-stone-800 bg-stone-950/50 p-3 text-[11px] space-y-2 animate-fade-in">
@@ -697,6 +817,26 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
                       <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[9px] text-stone-500 font-mono">
                         {message.data._provenance.operator_badge && <span>{lang === "en" ? "Operator" : "ಅಧಿಕಾರಿ"}: {message.data._provenance.operator_badge}</span>}
                         {message.data._provenance.generated_utc && <span>{String(message.data._provenance.generated_utc).replace("T", " ").slice(0, 19)} UTC</span>}
+                      </div>
+                    </div>
+                  )}
+                  {/* Court-Admissible Provenance HUD (implementation_plan.md
+                      #7): the exact real ZCQL SQL strings this turn executed
+                      -- captured at the one real choke point every query
+                      already passes through (see vajra_core.py's
+                      patched_execute_query), not reconstructed or guessed. */}
+                  {Array.isArray(message.data?._zcql_provenance) && message.data._zcql_provenance.length > 0 && (
+                    <div className="rounded-md border border-stone-800 bg-stone-950/70 p-2.5 space-y-1">
+                      <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-wider text-stone-400 font-mono">
+                        <ShieldCheck className="w-2.5 h-2.5 shrink-0" />
+                        {lang === "en" ? "🔍 Grounding & ZCQL provenance" : "🔍 ಆಧಾರ ಮತ್ತು ZCQL ಪುರಾವೆ"}
+                      </div>
+                      <div className="space-y-1 max-h-40 overflow-y-auto">
+                        {message.data._zcql_provenance.map((q: string, i: number) => (
+                          <div key={i} className="text-[9.5px] font-mono text-stone-400 break-all bg-stone-900/60 rounded px-1.5 py-1">
+                            {q}
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}
@@ -899,6 +1039,55 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
             className="max-w-full max-h-full rounded-xl border border-stone-800 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           />
+        </div>,
+        document.body
+      )}
+
+      {/* Real paginated document viewer -- one page at a time, Prev/Next
+          navigation, page indicator. Replaces the old behavior of showing
+          every page pre-stitched into one long scrolling image. */}
+      {viewingPages && createPortal(
+        <div
+          className="fixed inset-0 z-[100] bg-stone-950/95 backdrop-blur-sm flex items-center justify-center p-6"
+          onClick={() => { viewingPages.forEach((u) => URL.revokeObjectURL(u)); setViewingPages(null); }}
+          role="dialog"
+          aria-modal="true"
+        >
+          <button
+            className="absolute top-4 right-4 p-2 rounded-lg bg-stone-900/80 border border-stone-800 text-stone-400 hover:text-stone-100 cursor-pointer"
+            onClick={() => { viewingPages.forEach((u) => URL.revokeObjectURL(u)); setViewingPages(null); }}
+            aria-label="Close preview"
+          >
+            <X className="w-5 h-5" />
+          </button>
+          <div className="flex flex-col items-center gap-3 max-w-full max-h-full" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-4">
+              <button
+                onClick={() => setViewingPageIdx((i) => Math.max(0, i - 1))}
+                disabled={viewingPageIdx === 0}
+                className="p-2 rounded-lg bg-stone-900/80 border border-stone-800 text-stone-300 hover:text-[#C79A4E] hover:border-[#C79A4E]/40 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                aria-label="Previous page"
+              >
+                <ChevronLeft className="w-5 h-5" />
+              </button>
+              <span className="text-[11px] font-mono text-stone-400 uppercase tracking-wide">
+                {lang === "en" ? "Page" : "ಪುಟ"} {viewingPageIdx + 1} / {viewingPages.length}
+              </span>
+              <button
+                onClick={() => setViewingPageIdx((i) => Math.min(viewingPages.length - 1, i + 1))}
+                disabled={viewingPageIdx === viewingPages.length - 1}
+                className="p-2 rounded-lg bg-stone-900/80 border border-stone-800 text-stone-300 hover:text-[#C79A4E] hover:border-[#C79A4E]/40 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                aria-label="Next page"
+              >
+                <ChevronRight className="w-5 h-5" />
+              </button>
+            </div>
+            <img
+              src={viewingPages[viewingPageIdx]}
+              alt={`Page ${viewingPageIdx + 1}`}
+              className="max-w-full max-h-[75vh] rounded-xl border border-stone-800 shadow-2xl"
+            />
+          </div>
         </div>,
         document.body
       )}

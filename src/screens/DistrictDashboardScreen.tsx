@@ -174,6 +174,7 @@ export const DistrictDashboardScreen: React.FC = () => {
   const [accessRequestId, setAccessRequestId] = useState<string | null>(null);
   const [accessRequestStatus, setAccessRequestStatus] = useState<"idle" | "pending" | "approved" | "rejected">("idle");
   const [isRequestingAccess, setIsRequestingAccess] = useState(false);
+  const [isEmergencyRequesting, setIsEmergencyRequesting] = useState(false);
   const accessPollRef = useRef<number | null>(null);
 
   const stopAccessPoll = () => {
@@ -219,6 +220,46 @@ export const DistrictDashboardScreen: React.FC = () => {
       );
     } finally {
       setIsRequestingAccess(false);
+    }
+  };
+
+  // Break-glass emergency override (Section 185 BNSS emergency-entry
+  // principle): grants immediate, self-approved, short-lived access when a
+  // genuine emergency can't wait for a supervisor to be online. Mandatory
+  // justification, logged to audit, surfaced for supervisor post-hoc review
+  // -- never a silent bypass.
+  const requestEmergencyAccess = async (retryFn: () => void) => {
+    if (!gatedInfo) return;
+    const reason = window.prompt(
+      lang === "en"
+        ? "Emergency access is logged and reviewed by a supervisor afterwards. State why this cannot wait for approval:"
+        : "ತುರ್ತು ಪ್ರವೇಶವನ್ನು ದಾಖಲಿಸಲಾಗುತ್ತದೆ ಮತ್ತು ನಂತರ ಮೇಲ್ವಿಚಾರಕರು ಪರಿಶೀಲಿಸುತ್ತಾರೆ. ಇದು ಅನುಮೋದನೆಗಾಗಿ ಏಕೆ ಕಾಯಲು ಸಾಧ್ಯವಿಲ್ಲ ಎಂಬುದನ್ನು ತಿಳಿಸಿ:"
+    );
+    if (!reason || !reason.trim()) return;
+    setIsEmergencyRequesting(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/district-access/emergency`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({ district_id: gatedInfo.districtId, reason: reason.trim() }),
+      });
+      if (!res.ok) throw new Error("emergency request failed");
+      setGatedInfo(null);
+      setAccessRequestStatus("idle");
+      retryFn();
+      addToast(
+        lang === "en" ? "Emergency Access Granted" : "ತುರ್ತು ಪ್ರವೇಶ ನೀಡಲಾಗಿದೆ",
+        lang === "en" ? "This is logged and will be reviewed by a supervisor." : "ಇದನ್ನು ದಾಖಲಿಸಲಾಗಿದೆ ಮತ್ತು ಮೇಲ್ವಿಚಾರಕರು ಪರಿಶೀಲಿಸುತ್ತಾರೆ.",
+        "Warning"
+      );
+    } catch {
+      addToast(
+        lang === "en" ? "Request Failed" : "ವಿನಂತಿ ವಿಫಲವಾಗಿದೆ",
+        lang === "en" ? "Could not grant emergency access." : "ತುರ್ತು ಪ್ರವೇಶ ನೀಡಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+        "Critical"
+      );
+    } finally {
+      setIsEmergencyRequesting(false);
     }
   };
 
@@ -663,17 +704,33 @@ export const DistrictDashboardScreen: React.FC = () => {
                       {lang === "en" ? "Access request was denied." : "ಪ್ರವೇಶ ವಿನಂತಿ ನಿರಾಕರಿಸಲಾಗಿದೆ."}
                     </div>
                   ) : (
-                    <button
-                      onClick={() => requestDistrictAccess(() =>
-                        selectedStationId !== null ? handleSelectStation(selectedStationId) : handleSelectDistrict(selectedId!)
-                      )}
-                      disabled={isRequestingAccess}
-                      className="px-4 py-2 rounded-lg bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs font-bold uppercase tracking-wide hover:bg-rose-500/25 disabled:opacity-50 cursor-pointer"
-                    >
-                      {isRequestingAccess
-                        ? (lang === "en" ? "Submitting..." : "ಸಲ್ಲಿಸಲಾಗುತ್ತಿದೆ...")
-                        : (lang === "en" ? "Request Access" : "ಪ್ರವೇಶ ವಿನಂತಿಸಿ")}
-                    </button>
+                    <div className="flex flex-col items-center gap-2">
+                      <button
+                        onClick={() => requestDistrictAccess(() =>
+                          selectedStationId !== null ? handleSelectStation(selectedStationId) : handleSelectDistrict(selectedId!)
+                        )}
+                        disabled={isRequestingAccess || isEmergencyRequesting}
+                        className="px-4 py-2 rounded-lg bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs font-bold uppercase tracking-wide hover:bg-rose-500/25 disabled:opacity-50 cursor-pointer"
+                      >
+                        {isRequestingAccess
+                          ? (lang === "en" ? "Submitting..." : "ಸಲ್ಲಿಸಲಾಗುತ್ತಿದೆ...")
+                          : (lang === "en" ? "Request Access" : "ಪ್ರವೇಶ ವಿನಂತಿಸಿ")}
+                      </button>
+                      <button
+                        onClick={() => requestEmergencyAccess(() =>
+                          selectedStationId !== null ? handleSelectStation(selectedStationId) : handleSelectDistrict(selectedId!)
+                        )}
+                        disabled={isRequestingAccess || isEmergencyRequesting}
+                        title={lang === "en"
+                          ? "Only for a genuine active situation that cannot wait -- every use is logged and reviewed."
+                          : "ಕಾಯಲಾಗದ ನಿಜವಾದ ಸಕ್ರಿಯ ಪರಿಸ್ಥಿತಿಗೆ ಮಾತ್ರ -- ಪ್ರತಿ ಬಳಕೆ ದಾಖಲಾಗುತ್ತದೆ ಮತ್ತು ಪರಿಶೀಲಿಸಲಾಗುತ್ತದೆ."}
+                        className="text-[10px] font-mono uppercase tracking-wide text-amber-400/80 hover:text-amber-300 underline underline-offset-2 disabled:opacity-50 cursor-pointer"
+                      >
+                        {isEmergencyRequesting
+                          ? (lang === "en" ? "Granting..." : "ನೀಡಲಾಗುತ್ತಿದೆ...")
+                          : (lang === "en" ? "Emergency access (logged & reviewed)" : "ತುರ್ತು ಪ್ರವೇಶ (ದಾಖಲಿಸಲಾಗಿದೆ)")}
+                      </button>
+                    </div>
                   )}
                 </div>
               ) : detail ? (

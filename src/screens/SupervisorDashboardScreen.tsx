@@ -176,6 +176,30 @@ export const SupervisorDashboardScreen: React.FC = () => {
     }
   };
 
+  // Break-glass (Section 185 BNSS) post-hoc review: an emergency grant is
+  // already active by the time a supervisor sees it -- there's nothing to
+  // "approve", only to acknowledge (or revoke if the use wasn't justified).
+  const reviewEmergencyDistrict = async (rowid: string, revoke: boolean) => {
+    setDecidingDistrictId(rowid);
+    try {
+      const r = await fetch(`${API_BASE}/api/district-access/${rowid}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({ revoke }),
+      });
+      if (r.ok) {
+        setPendingDistrict((prev) => prev.filter((p) => String(p.rowid) !== String(rowid)));
+        addToast(
+          revoke ? (lang === "en" ? "Emergency grant revoked" : "ತುರ್ತು ಅನುಮತಿ ಹಿಂಪಡೆಯಲಾಗಿದೆ") : (lang === "en" ? "Reviewed" : "ಪರಿಶೀಲಿಸಲಾಗಿದೆ"),
+          lang === "en" ? "Marked as reviewed." : "ಪರಿಶೀಲಿಸಲಾಗಿದೆ ಎಂದು ಗುರುತಿಸಲಾಗಿದೆ.",
+          revoke ? "Warning" : "Info"
+        );
+      }
+    } catch { /* ignore */ } finally {
+      setDecidingDistrictId(null);
+    }
+  };
+
   // Approval history -- the decided (approved/rejected) paper trail for both
   // workflow lanes above (exports + POCSO access), filterable by lane and
   // outcome. Separate from the live queues: those only ever show items still
@@ -565,27 +589,53 @@ export const SupervisorDashboardScreen: React.FC = () => {
           </div>
           <div className="space-y-2">
             {pendingDistrict.map((p) => (
-              <div key={p.rowid} className="flex items-center gap-3 rounded-lg bg-stone-950/40 border border-stone-800 px-3 py-2.5">
+              <div key={p.rowid} className={`flex items-center gap-3 rounded-lg bg-stone-950/40 border px-3 py-2.5 ${p.emergency ? "border-amber-500/50" : "border-stone-800"}`}>
                 <div className="min-w-0 flex-1">
-                  <div className="text-[12px] text-stone-200 font-mono truncate">
+                  <div className="text-[12px] text-stone-200 font-mono truncate flex items-center gap-2">
+                    {p.emergency && (
+                      <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-amber-500/20 border border-amber-500/50 text-amber-300 uppercase tracking-wide shrink-0">
+                        {lang === "en" ? "Break-glass · already active" : "ತುರ್ತು · ಈಗಾಗಲೇ ಸಕ್ರಿಯ"}
+                      </span>
+                    )}
                     {lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ"} {p.requester_badge} ({p.requester_name || ""}) · {lang === "en" ? "district" : "ಜಿಲ್ಲೆ"} {p.target_district_name}
                   </div>
                   <div className="text-[10px] text-stone-500 truncate">{p.reason || (lang === "en" ? "No reason given" : "ಕಾರಣ ನೀಡಿಲ್ಲ")}</div>
                 </div>
-                <button
-                  onClick={() => decideDistrict(String(p.rowid), true)}
-                  disabled={decidingDistrictId === String(p.rowid)}
-                  className="px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold uppercase tracking-wide text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 cursor-pointer"
-                >
-                  {lang === "en" ? "Approve" : "ಅನುಮೋದಿಸಿ"}
-                </button>
-                <button
-                  onClick={() => decideDistrict(String(p.rowid), false)}
-                  disabled={decidingDistrictId === String(p.rowid)}
-                  className="px-3 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/40 text-[11px] font-bold uppercase tracking-wide text-rose-300 hover:bg-rose-500/20 disabled:opacity-50 cursor-pointer"
-                >
-                  {lang === "en" ? "Deny" : "ನಿರಾಕರಿಸಿ"}
-                </button>
+                {p.emergency ? (
+                  <>
+                    <button
+                      onClick={() => reviewEmergencyDistrict(String(p.rowid), false)}
+                      disabled={decidingDistrictId === String(p.rowid)}
+                      className="px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold uppercase tracking-wide text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 cursor-pointer"
+                    >
+                      {lang === "en" ? "Acknowledge" : "ಒಪ್ಪಿಕೊಳ್ಳಿ"}
+                    </button>
+                    <button
+                      onClick={() => reviewEmergencyDistrict(String(p.rowid), true)}
+                      disabled={decidingDistrictId === String(p.rowid)}
+                      className="px-3 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/40 text-[11px] font-bold uppercase tracking-wide text-rose-300 hover:bg-rose-500/20 disabled:opacity-50 cursor-pointer"
+                    >
+                      {lang === "en" ? "Revoke" : "ಹಿಂಪಡೆಯಿರಿ"}
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => decideDistrict(String(p.rowid), true)}
+                      disabled={decidingDistrictId === String(p.rowid)}
+                      className="px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold uppercase tracking-wide text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 cursor-pointer"
+                    >
+                      {lang === "en" ? "Approve" : "ಅನುಮೋದಿಸಿ"}
+                    </button>
+                    <button
+                      onClick={() => decideDistrict(String(p.rowid), false)}
+                      disabled={decidingDistrictId === String(p.rowid)}
+                      className="px-3 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/40 text-[11px] font-bold uppercase tracking-wide text-rose-300 hover:bg-rose-500/20 disabled:opacity-50 cursor-pointer"
+                    >
+                      {lang === "en" ? "Deny" : "ನಿರಾಕರಿಸಿ"}
+                    </button>
+                  </>
+                )}
               </div>
             ))}
           </div>
@@ -641,9 +691,9 @@ export const SupervisorDashboardScreen: React.FC = () => {
               : (lang === "en" ? "No decided requests match this filter yet." : "ಈ ಫಿಲ್ಟರ್‌ಗೆ ಇನ್ನೂ ಯಾವುದೇ ನಿರ್ಧರಿತ ವಿನಂತಿಗಳಿಲ್ಲ.")}
           </div>
         ) : (
-          <div className="overflow-x-auto">
+          <div className="overflow-x-auto overflow-y-auto max-h-80">
             <table className="w-full text-[11px] font-mono">
-              <thead>
+              <thead className="sticky top-0 bg-stone-900/95 backdrop-blur-sm">
                 <tr className="text-stone-500 uppercase tracking-wide text-[10px] border-b border-stone-800">
                   <th className="text-left font-semibold py-1.5 pr-3">{lang === "en" ? "Type" : "ಬಗೆ"}</th>
                   <th className="text-left font-semibold py-1.5 pr-3">{lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ"}</th>

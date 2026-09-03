@@ -13,10 +13,12 @@ import pandas as pd
 
 from vajra_core import catalyst_app, VajraGraphRAG, VajraSemanticMemory, MOBehavioralProfiler, zcql_insert_row, \
     is_pocso_sensitive, redact_pocso_name, redact_phone_numbers, is_supervisor_badge, \
-    has_active_pocso_grant, create_pocso_request, find_active_pocso_request, _compute_mo_vector
+    has_active_pocso_grant, create_pocso_request, find_active_pocso_request, _compute_mo_vector, \
+    start_zql_log, get_zql_log
 from session_memory import VajraSessionMemory
 from catalyst_llm import CatalystLLM
 from catalyst_qwen import CatalystQwen
+from vajra_cognitive_brain import CognitiveBrainMixin
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +67,55 @@ def get_real_districts() -> List[str]:
             logger.warning(f"Could not load real district list: {e}")
     return _real_districts_cache or ["Bengaluru Urban", "Bengaluru Rural", "Mysuru", "Belagavi"]
 
-class VajraAgentLoop:
+
+# Kanglish (Kannada spoken/typed in Latin letters, e.g. "yaake station illa"
+# instead of English or Kannada script) matches NEITHER the English keyword
+# router NOR _route_kannada (which only fires on Kannada Unicode) -- it falls
+# straight to GLM every time, at the same 20-140s cost KN-script queries used
+# to pay before _route_kannada existed. This is a SMALL, deliberately
+# conservative starter map of unambiguous, high-frequency investigative
+# Kanglish tokens, word-boundary-substituted to their English equivalent so
+# the existing fast-paths/keyword router can recognize the intent -- it is
+# NOT a transliteration engine and does not touch officer_query/query (the
+# LLM still sees the officer's original words unchanged; only the internal
+# routing_query used for keyword matching is normalized).
+# HONESTY NOTE: this list is a best-effort starter set, not verified by a
+# native Kannada speaker -- flag any wrong/missing mapping for a KSP officer
+# to correct before relying on it for anything but routing hints.
+_KANGLISH_MAP = {
+    r"\byaake\b": "why", r"\byavaga\b": "when", r"\byaru\b": "who", r"\byaaru\b": "who",
+    r"\byavudu\b": "which", r"\bello\b": "where", r"\belli\b": "where", r"\byelli\b": "where",
+    r"\bhesaru\b": "name", r"\bhesru\b": "name",
+    r"\bprakarana\b": "case", r"\bprakaran\b": "case", r"\bkeisu\b": "case",
+    r"\bsthana\b": "station", r"\bthane\b": "station",
+    r"\baparadhi\b": "accused", r"\baparaadhi\b": "accused",
+    r"\bsanthrasta\b": "victim", r"\bbalipashu\b": "victim",
+    r"\bdoorudar\b": "complainant", r"\bdooru\b": "complaint",
+    r"\bapaya\b": "risk", r"\baparaya\b": "danger",
+    r"\bhelidre\b": "tell me", r"\bhelu\b": "tell",
+    r"\bidiya\b": "is there", r"\bide\b": "is there", r"\bilva\b": "is there not",
+}
+_KANGLISH_RE = [(re.compile(pat, re.IGNORECASE), rep) for pat, rep in _KANGLISH_MAP.items()]
+
+
+def _normalize_kanglish(text: str) -> str:
+    """Best-effort Kanglish -> English token normalization for ROUTING ONLY
+    (see the note above _KANGLISH_MAP). Skips text that already contains
+    Kannada Unicode (that's _route_kannada's job) or that matches no Kanglish
+    token at all (the overwhelmingly common case -- plain English queries
+    pass through byte-for-byte, zero behavior change)."""
+    if not text or any('ಀ' <= ch <= '೿' for ch in text):
+        return text
+    out = text
+    hit = False
+    for rx, rep in _KANGLISH_RE:
+        if rx.search(out):
+            out = rx.sub(rep, out)
+            hit = True
+    return out if hit else text
+
+
+class VajraAgentLoop(CognitiveBrainMixin):
     """
     Intelligent Agent Loop with Tool Registry, multi-turn session memory resolution,
     vague query validation, and role-scoped enforcement.
@@ -1340,14 +1390,26 @@ class VajraAgentLoop:
         suspect_candidates = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', query)
         # Prioritize multi-word capitalized names ("Sanaya Patla") over single-word command verbs
         suspect_candidates.sort(key=lambda c: (len(c.split()) > 1, len(c)), reverse=True)
+        # SECOND distinct name (general fix, not phrasing-specific): a query
+        # naming TWO people ("how is X involved with Y") used to silently
+        # collapse to just the first match here, which is the real root
+        # cause behind Full Dossier mode force-building a single-person
+        # report for a two-person question -- confirmed live. Collecting a
+        # second candidate (any wording) lets the forced-composite decision
+        # below step aside for ANY two-name query, not just the one exact
+        # phrasing the dedicated relationship-handler regex recognizes.
+        suspect2_match = None
         for cand in suspect_candidates:
             cl = cand.lower()
             if cl in excluded_names:
                 continue
             if " " not in cand and cl in self._NAME_STOPWORDS:
                 continue
-            suspect_match = cand
-            break
+            if suspect_match is None:
+                suspect_match = cand
+            elif cl != suspect_match.lower() and cand.lower() not in suspect_match.lower():
+                suspect2_match = cand
+                break
 
         # Check for districts (real KSP district list, not a hardcoded guess)
         resolved_district = None
@@ -1370,6 +1432,9 @@ class VajraAgentLoop:
             canonical = self._fuzzy_accused_match(suspect_match)
             if canonical:
                 suspect = canonical
+        suspect2 = None
+        if suspect2_match:
+            suspect2 = self._fuzzy_accused_match(suspect2_match) or suspect2_match
 
         # Update cache context
         updated_ctx = {
@@ -1387,6 +1452,7 @@ class VajraAgentLoop:
         return {
             "case_id": case_id,
             "suspect": suspect,
+            "suspect2": suspect2,
             "district": district,
             "original_ctx": context
         }
@@ -1520,7 +1586,102 @@ class VajraAgentLoop:
             logger.warning(f"durable history load failed for {session_id}: {e}")
         return out
 
+    def _check_pending_clarification(self, session_id: str) -> Optional[Dict[str, str]]:
+        """
+        The REAL equivalent of "pause and resume," engineered for what this
+        platform actually allows -- not a copy of a synchronous tool-call
+        pause. VAJRA's turns are background tasks served off a small shared
+        AppSail worker pool across MANY officers; a turn that literally
+        blocked a thread waiting on a human reply (who might answer in 10s
+        or never) would starve every other officer's turn behind it. That
+        would be a real reliability bug, not a missing nicety, so it's not
+        what this does.
+
+        Instead: reads the DURABLE ChatMessage store directly (same fix as
+        _load_durable_history -- the in-process session_memory object is NOT
+        shared across AppSail workers, so relying on it here could silently
+        miss a pending clarification handled by a different worker) to
+        DETERMINISTICALLY find whether the assistant's last turn was a
+        clarifying question, and if so, the exact original request that
+        triggered it. This replaces hoping the LLM correctly re-derives that
+        connection from a raw conversation-history window with a guaranteed,
+        structural answer -- more reliable than inference, which is the
+        actual goal here (not literal thread-blocking).
+        """
+        if not catalyst_app or not session_id:
+            return None
+        try:
+            sid = str(session_id).replace("'", "''")
+            rows = catalyst_app.zql().execute_query(
+                f"SELECT sender, text, data_json, sent_at FROM ChatMessage WHERE session_id = '{sid}' "
+                "ORDER BY sent_at DESC LIMIT 6")
+            recs = []
+            for r in rows:
+                cm = r.get("ChatMessage", {})
+                recs.append((cm.get("sent_at") or "", cm.get("sender") or "", cm.get("text") or "", cm.get("data_json") or ""))
+            recs.sort(key=lambda x: x[0])  # chronological, oldest first
+            if len(recs) < 2:
+                return None
+            # recs[-1] is the officer's CURRENT message (already persisted by
+            # chat_endpoint before this background turn started -- same
+            # ordering _load_durable_history relies on). recs[-2] is
+            # whatever the assistant said last turn -- check if THAT was a
+            # clarifying question.
+            _, last_sender, last_text, last_data = recs[-2]
+            if last_sender != "assistant":
+                return None
+            try:
+                parsed = json.loads(last_data) if last_data else {}
+            except Exception:
+                parsed = {}
+            if not parsed.get("needs_clarification"):
+                return None
+            for _, sender, text, _ in reversed(recs[:-2]):
+                if sender == "user" and (text or "").strip():
+                    return {"original_query": text, "question": last_text}
+            return None
+        except Exception as e:
+            logger.warning(f"_check_pending_clarification failed: {e}")
+            return None
+
     def run_agent_loop(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None, answer_mode: str = "standard", officer_badge: Optional[str] = None, progress_cb: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+        """
+        Public entry point. Thin wrapper around _run_agent_loop_inner (the
+        real logic, unchanged) that pipes every result through
+        _grounding_safety_net before it ever reaches an officer -- the
+        "Brain's" single honesty checkpoint (see that method's docstring).
+        This is a deliberately MECHANICAL wrap, not a rewrite: every existing
+        fast-path, keyword router, and the semantic compiler keep their
+        exact tested behavior and ordering; only the final result passes
+        through one more gate before returning.
+
+        Also starts the Court-Admissible Provenance HUD's ZCQL query log
+        (implementation_plan.md #7) for this turn -- see start_zql_log's
+        docstring. Every real SQL string the turn executes, on any path,
+        gets attached to the final result before it returns.
+        """
+        start_zql_log()
+        result = self._run_agent_loop_inner(
+            query, session_id, employee_id, user_unit_id, officer_name, answer_mode, officer_badge, progress_cb)
+        result = self._grounding_safety_net(result, employee_id, session_id)
+        try:
+            zqueries = get_zql_log()
+            if zqueries:
+                result = dict(result)
+                data = dict(result.get("data") or {})
+                # Bounded on BOTH axes -- count and per-string length. The
+                # real _DATA_JSON_CAP silent-truncation bug found earlier
+                # this project (28000 -> 9000, a systemic corruption source)
+                # means this must stay conservative: a turn can run dozens
+                # of queries across sub-tools; the last 12, trimmed, are
+                # what actually produced the final answer and easily fit.
+                data["_zcql_provenance"] = [q[:300] for q in zqueries[-12:]]
+                result["data"] = data
+        except Exception:
+            pass
+        return result
+
+    def _run_agent_loop_inner(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None, answer_mode: str = "standard", officer_badge: Optional[str] = None, progress_cb: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
         """
         Primary execution entry point. Decides what tools to run in sequence using LLM function calling.
 
@@ -1533,6 +1694,14 @@ class VajraAgentLoop:
         """
         self.officer_badge = officer_badge
         self.officer_name = officer_name
+        # 2-MODE CONSOLIDATION: "compiler" ("AI Reasoning β") is retired as a
+        # separate officer-facing mode -- normalize any stray value here (a
+        # cached old frontend build, or a stale mobile client) to "dossier" so
+        # it still gets the deep/comprehensive planning behavior it always
+        # meant to opt into, rather than silently losing that behavior because
+        # no downstream check recognizes "compiler" as a value anymore.
+        if answer_mode == "compiler":
+            answer_mode = "dossier"
         _progress = progress_cb or (lambda _msg: None)
         _progress("Understanding your question...")
         # main.py prepends officer-identity and case-context headers to
@@ -1583,6 +1752,26 @@ class VajraAgentLoop:
                 _att_present = True          # nothing specific asked -> just show the analysis
             else:
                 routing_query = _asked        # a real question -> route on the officer's words only
+
+        # Kanglish normalization (routing only -- see _normalize_kanglish):
+        # lets the existing fast English keyword router recognize a
+        # romanized-Kannada intent instead of falling through to a 20-140s
+        # GLM round trip every single time, same speedup _route_kannada
+        # already gives pure Kannada-script queries.
+        routing_query = _normalize_kanglish(routing_query)
+
+        # RESUME a pending clarifying question (see _check_pending_clarification's
+        # docstring for why this is a durable, deterministic lookup rather than
+        # a blocked thread or an LLM guess). A short reply like "Bengaluru
+        # Urban" is combined with the ORIGINAL request it's answering here,
+        # once, before anything else (entity resolution, fast-paths, the
+        # compiler) ever sees it -- so every downstream path benefits from
+        # the real context, not just the compiler's own history window.
+        _pending_clarification = self._check_pending_clarification(session_id)
+        if _pending_clarification:
+            _progress("Continuing from where we left off...")
+            routing_query = f"{_pending_clarification['original_query']} (officer's answer to \"{_pending_clarification['question']}\": {routing_query})"
+            logger.info(f"Resumed pending clarification for session {session_id}")
 
         # 1. Resolve Entities & Context
         entities = self._resolve_entities(routing_query, session_id, exclude_name=officer_name)
@@ -1672,6 +1861,28 @@ class VajraAgentLoop:
                                    "details": "Answered directly from this session's history — no model call."}],
                     "is_simulated": False, "simulated_reason": ""}
 
+        # RELATIONSHIP-BETWEEN-TWO-NAMES: confirmed live failure on two
+        # fronts -- (1) the generic case-search path found one semantically-
+        # similar case and just told the officer to go read it themselves
+        # instead of answering ("retrieve the full report for Case ID..."),
+        # and (2) Full Dossier mode ignored the two-person question entirely
+        # and dumped a single-person dossier for whichever name it resolved
+        # first. Neither existing path is built to answer "how are X and Y
+        # connected" specifically. This runs BEFORE mode-specific forcing,
+        # in both modes, because the question itself (not the mode) demands
+        # a two-entity answer. Deterministic, real-data-grounded (shared
+        # CaseMasterID + the synthetic AccusedContact overlap graph), and
+        # honestly says "no link found" rather than pointing at a
+        # loosely-related case and calling it an answer.
+        _rel_pair = self._detect_relationship_query(routing_query)
+        if _rel_pair:
+            rel_ans = self._answer_relationship_between(_rel_pair[0], _rel_pair[1], employee_id, session_id)
+            if rel_ans is not None:
+                history.append({"role": "assistant", "content": rel_ans["text"]})
+                context["messages"] = history
+                session_memory.update_session_context(session_id, context)
+                return rel_ans
+
         # True only if GLM, Qwen, AND the keyword router all failed to even
         # pick a tool (see the fallback ladder below), or a later synthesis
         # step fails with nothing to fall back to. A police intelligence
@@ -1706,24 +1917,29 @@ class VajraAgentLoop:
         # nothing to go deep on is just a normal answer). Spliced into the same
         # shape self.llm.chat returns so the loop below runs unchanged.
         forced_decision = None
+        # BRAIN-FIRST FULL DOSSIER (per explicit user direction 2026-09-03):
+        # a fixed panel template is no longer the default answer shape for
+        # Dossier mode -- the semantic compiler (the Brain) decides what to
+        # pull and how for EVERY Dossier request now, not just the ones with
+        # no clean entity. This composite decision is still computed here,
+        # but held as a FALLBACK ONLY (used later, only if the compiler
+        # itself genuinely fails to produce a plan) -- never as the default
+        # path that bypasses the Brain. See _run_semantic_compiler's
+        # docstring: its own "deep" instruction now explicitly requires a
+        # comprehensive multi-capability sweep for a named suspect/case, so
+        # this fallback should rarely be needed in practice; it exists so a
+        # genuine LLM outage still leaves the officer with a real answer
+        # instead of nothing.
+        _dossier_fixed_fallback = None
         if answer_mode == "dossier":
             if entities.get("case_id"):
-                # Thread the officer's ACTUAL question in so the dossier can lead
-                # with a grounded answer to what they asked (e.g. "which station?"),
-                # not a fixed template.
-                forced_decision = {"tool": "generate_case_dossier", "parameters": {"case_no": entities["case_id"], "user_query": officer_query}}
-            elif entities.get("suspect"):
-                forced_decision = {"tool": "generate_full_report", "parameters": {"suspect_name": entities["suspect"]}}
+                _dossier_fixed_fallback = {"tool": "generate_case_dossier", "parameters": {"case_no": entities["case_id"], "user_query": officer_query}}
+            elif entities.get("suspect") and not entities.get("suspect2"):
+                # (suspect2 check preserved: a two-person question should
+                # never fall back to a single-person composite either.)
+                _dossier_fixed_fallback = {"tool": "generate_full_report", "parameters": {"suspect_name": entities["suspect"]}}
             elif entities.get("district"):
-                # A district-scoped deep view: the multi-chart crime overview
-                # (trend + case-type mix + hotspots) is the district's dossier.
-                forced_decision = {"tool": "generate_crime_overview", "parameters": {"district": entities["district"]}}
-            if forced_decision:
-                citations.append({
-                    "type": "Full Dossier Mode",
-                    "id": forced_decision["parameters"].get("case_no") or forced_decision["parameters"].get("suspect_name") or "",
-                    "details": "Officer selected the deep Full Dossier view; the complete composite was assembled directly.",
-                })
+                _dossier_fixed_fallback = {"tool": "generate_crime_overview", "parameters": {"district": entities["district"]}}
 
         # ELABORATION follow-up: a vague "in detail" / "more" / "elaborate"
         # should EXPAND THE PREVIOUS ANSWER conversationally -- explain what was
@@ -1799,7 +2015,29 @@ class VajraAgentLoop:
         # dossier tool and the compiler's own plan actually run for case questions,
         # while Standard keeps its fast, cheap, grounded lookup unchanged.
         if answer_mode == "standard":
-            case_ans = self._handle_case_question(routing_query, employee_id, session_id, user_unit_id)
+            # Carry the case number over from history for a bare access-request
+            # follow-up ("ask permission to access this information") that
+            # names no case itself -- confirmed live: this fell through to GLM
+            # entirely (case-number regex found nothing, so the fast-path
+            # returned None before even reaching the request-access branch)
+            # and GLM invented a generic, disconnected-from-reality "contact
+            # Records Branch" process instead of the real request/supervisor-
+            # approve flow. Deliberately narrow: only used when the CURRENT
+            # message itself has no case number AND reads like an access
+            # request, so an unrelated caseless question is never misrouted
+            # onto a stale case from earlier in the conversation.
+            _last_case_no = None
+            if not re.search(r"\bCR-\d{4}-\d+\b", routing_query, re.IGNORECASE):
+                _ql_now = routing_query.lower()
+                if any(w in _ql_now for w in ("permission", "access", "reveal", "unmask", "unredact",
+                                               "un-redact", "clearance", "real name", "actual name", "full name")):
+                    for _h in reversed(history[-12:]):
+                        _hm = re.search(r"\bCR-\d{4}-\d+\b", _h.get("content") or "", re.IGNORECASE)
+                        if _hm:
+                            _last_case_no = _hm.group(0).upper()
+                            break
+            case_ans = self._handle_case_question(routing_query, employee_id, session_id, user_unit_id,
+                                                  fallback_case_no=_last_case_no)
             if case_ans is not None:
                 history.append({"role": "assistant", "content": case_ans["text"]})
                 context["messages"] = history
@@ -1854,18 +2092,84 @@ class VajraAgentLoop:
                     "data": comparison["data"], "citations": comparison["citations"],
                     "is_simulated": False, "simulated_reason": ""}
 
-        # SEMANTIC COMPILER (opt-in beta, answer_mode=="compiler"): for anything
-        # the fast thinking-lane handlers above didn't already answer, let the LLM
-        # COMPILE the query into a JSON execution plan and run it deterministically
-        # over the grounded tools (the LLM never touches execution). Falls back to
-        # the standard path below when planning fails, so this can never dead-end.
-        if answer_mode == "compiler" or (answer_mode == "standard" and self._is_complex_query(routing_query)):
-            compiled = self._run_semantic_compiler(routing_query, employee_id, session_id, user_unit_id)
+        # SEMANTIC COMPILER -- THE BRAIN, now Full Dossier's PRIMARY decision-
+        # maker (changed 2026-09-03 per explicit direction: no fixed template
+        # as the default answer shape). This is the ONE planning engine both
+        # modes share; only `deep` changes between them.
+        #   - Standard: only when _is_complex_query flags a genuinely compound
+        #     ask (unchanged -- a simple lookup never pays the planning-LLM
+        #     tax; the case fast-path/keyword routers above still answer those
+        #     instantly). deep=False asks for the MINIMAL plan.
+        #   - Full Dossier: ALWAYS runs first, regardless of whether a clean
+        #     case/suspect/district entity was found -- choosing this mode IS
+        #     the instruction to let the Brain decide, not a hardcoded
+        #     composite. deep=True's own prompt now explicitly requires a
+        #     comprehensive multi-capability sweep (see _run_semantic_
+        #     compiler's depth_rule) instead of relying on a fixed template.
+        # Only on genuine compiler failure (LLM outage/malformed plan) does
+        # Dossier mode fall back to the fixed composite (_dossier_fixed_
+        # fallback, set above) -- a safety net for when the Brain can't run
+        # at all, never the default path that bypasses it.
+        if answer_mode == "dossier" or (answer_mode == "standard" and self._is_complex_query(routing_query)):
+            # ONE retry before giving up on the Brain (confirmed live: a
+            # single planning call can fail transiently -- malformed JSON,
+            # a rate-limit blip -- not a genuine outage; retrying once
+            # before falling back to the fixed composite gives the Brain a
+            # real second chance instead of surrendering to the safety net
+            # on the first hiccup. Two attempts, not more -- Dossier mode
+            # already pays one real LLM round-trip; don't double that cost
+            # on every genuine outage too.
+            _progress("Planning the right steps to answer this..." if answer_mode == "dossier"
+                     else "This looks like a multi-part question -- planning it out...")
+            compiled = self._run_semantic_compiler(
+                routing_query, employee_id, session_id, user_unit_id,
+                deep=(answer_mode == "dossier"), progress_cb=_progress, history=history
+            )
+            if compiled is None:
+                logger.info("compiler: first attempt failed, retrying once before falling back.")
+                _progress("Re-checking the plan...")
+                compiled = self._run_semantic_compiler(
+                    routing_query, employee_id, session_id, user_unit_id,
+                    deep=(answer_mode == "dossier"), progress_cb=_progress, history=history
+                )
             if compiled is not None:
                 history.append({"role": "assistant", "content": compiled["text"]})
                 context["messages"] = history
                 session_memory.update_session_context(session_id, context)
                 return compiled
+            # Both attempts failed. ALWAYS surface a diagnostic citation here
+            # -- previously this was only added when a single clean entity
+            # (case/suspect/district) let Dossier mode fall back to the
+            # fixed composite; a query naming TWO entities (e.g. "compare
+            # district A and B") resolves to NO clean single entity, so
+            # _dossier_fixed_fallback stays None and this failure was
+            # completely invisible -- confirmed live: a two-district
+            # comparison in Dossier mode silently fell through to the
+            # slow, unguided GLM tool-selection loop, which picked an
+            # unrelated single tool with zero disclosure anything had gone
+            # wrong. Now every compiler failure leaves a visible trail
+            # regardless of what (if anything) happens next.
+            _fail_reason = getattr(self, "_last_compiler_failure_reason", None) or "unknown"
+            logger.warning(f"compiler: both attempts failed (mode={answer_mode}) -- reason: {_fail_reason}")
+            citations.append({
+                "type": "AI Planner Diagnostic",
+                "id": answer_mode,
+                "details": f"The AI planner could not produce a plan for this question ({_fail_reason}).",
+            })
+            if answer_mode == "dossier" and _dossier_fixed_fallback is not None:
+                # A single clean entity WAS resolved -- fall back to the
+                # fixed composite so the officer still gets a real, complete
+                # answer instead of nothing. This is a SAFETY NET, not the
+                # default path. (No equivalent fixed fallback exists for a
+                # two-entity Dossier query or for Standard mode -- those
+                # fall through to the general tool-selection loop below,
+                # now at least with the diagnostic above on record.)
+                forced_decision = _dossier_fixed_fallback
+                citations.append({
+                    "type": "Full Dossier Mode",
+                    "id": forced_decision["parameters"].get("case_no") or forced_decision["parameters"].get("suspect_name") or "",
+                    "details": "The standard complete composite was assembled instead.",
+                })
 
         # A2 FAST-ROUTE: when the officer's command clearly maps to exactly one
         # tool ("network of X", "risk for X", "hotspots", "which sections for
@@ -1880,22 +2184,9 @@ class VajraAgentLoop:
         # actually need the model to reason.
         multi_decisions = None
         if forced_decision is None and answer_mode != "dossier":
-            # Kannada intent router first (Kannada never matches the English router
-            # and the translator garbles it) -- gives KN the same fast grounded
-            # answers as English instead of a GLM misfire to the officer's profile.
-            kn_dec = self._route_kannada(officer_query)
-            if kn_dec:
-                forced_decision = kn_dec
-                logger.info(f"Kannada-route: '{kn_dec['tool']}' chosen deterministically, skipping GLM")
-            else:
-                multi_decisions = self._keyword_route_multi(routing_query)
-                if multi_decisions:
-                    logger.info(f"Multi-tool route: {[d['tool'] for d in multi_decisions]}")
-                else:
-                    fast = self._keyword_route_tool(routing_query)
-                    if fast:
-                        forced_decision = fast
-                        logger.info(f"Fast-route: '{fast['tool']}' chosen deterministically, skipping GLM tool-selection")
+            _routed = self._classify_intent(routing_query, officer_query)
+            forced_decision = _routed["forced_decision"]
+            multi_decisions = _routed["multi_decisions"]
 
         # MULTI-TOOL execution: run every requested facet and stack the results
         # as panels (reusing the dossier's panel rendering), with the grounded
@@ -2388,12 +2679,24 @@ class VajraAgentLoop:
         any caller only ever sees up to a 300-row slice of the real incident
         volume, and a lower threshold was confirmed live to still find real
         clusters within that sample size without false-positive noise.
+
+        REAL DEPTH, not just a location blob (confirmed live complaint: every
+        cluster looked identical once opened -- just a dot with an incident
+        count, nothing telling an officer what's actually happening there or
+        which station covers it). When a point carries optional
+        crime_head_name / station_name fields (query_hotspots now attaches
+        these), each returned cluster also reports its DOMINANT crime type
+        and station -- computed here, once, from real per-point data, never
+        invented. Callers that don't attach those fields (e.g. an older
+        coordinate list) get the exact same output as before -- purely
+        additive, backward compatible.
         """
         centroids: List[Dict[str, Any]] = []
         if not coordinates:
             return centroids
         try:
             from sklearn.cluster import DBSCAN
+            from collections import Counter
             X = np.array([[c["lat"], c["lng"]] for c in coordinates])
             db = DBSCAN(eps=eps, min_samples=min_samples, metric='euclidean')
             labels = db.fit_predict(X)
@@ -2403,15 +2706,35 @@ class VajraAgentLoop:
                 unique_labels.remove(-1)
 
             for idx, label in enumerate(sorted(unique_labels)):
-                cluster_points = X[labels == label]
+                mask = labels == label
+                cluster_points = X[mask]
+                member_points = [c for c, m in zip(coordinates, mask) if m]
                 lat_center = float(np.mean(cluster_points[:, 0]))
                 lng_center = float(np.mean(cluster_points[:, 1]))
                 point_count = len(cluster_points)
+
+                crime_names = [p.get("crime_head_name") for p in member_points if p.get("crime_head_name")]
+                station_names = [p.get("station_name") for p in member_points if p.get("station_name")]
+                dominant_crime, crime_share = None, None
+                if crime_names:
+                    name, cnt = Counter(crime_names).most_common(1)[0]
+                    dominant_crime, crime_share = name, round(cnt / len(crime_names) * 100)
+                dominant_station = Counter(station_names).most_common(1)[0][0] if station_names else None
+
+                depth_bits = []
+                if dominant_crime:
+                    depth_bits.append(f"mostly {dominant_crime}{f' ({crime_share}%)' if crime_share else ''}")
+                if dominant_station:
+                    depth_bits.append(f"near {dominant_station}")
+                depth_txt = f" -- {', '.join(depth_bits)}" if depth_bits else ""
+
                 centroids.append({
                     "lat": lat_center,
                     "lng": lng_center,
-                    "label": f"DBSCAN Hotspot {idx + 1} ({point_count} incidents)",
+                    "label": f"DBSCAN Hotspot {idx + 1} ({point_count} incidents){depth_txt}",
                     "point_count": point_count,
+                    "dominant_crime": dominant_crime,
+                    "dominant_station": dominant_station,
                 })
         except Exception as db_err:
             logger.warning(f"DBSCAN clustering failed: {db_err}")
@@ -2442,6 +2765,39 @@ class VajraAgentLoop:
         # simply not on record (the requested behaviour).
         if tool_name in ("query_graph_network", "get_offender_risk", "get_mo_profile", "generate_full_report") and (params.get("suspect_name") or "").strip():
             _raw_name = str(params.get("suspect_name")).strip()
+            # ASK, DON'T GUESS: query_graph_network already had its own separate
+            # check for this (a name matching multiple distinct real people used
+            # to get silently fabricated into one fake combined syndicate --
+            # confirmed live with "ramesh" matching ~15 people). get_offender_risk
+            # and get_mo_profile had NO equivalent check at all: _fuzzy_accused_
+            # match's LIMIT 1 silently picked whichever matching person came
+            # first and confidently reported a risk score / MO profile for
+            # possibly the WRONG person with the same name. This closes that
+            # gap for all three by checking DISTINCT matches before resolving,
+            # and asking the officer to disambiguate instead of guessing --
+            # same honest behavior the network tool already had, extended here.
+            if catalyst_app:
+                try:
+                    _esc = self.sanitize_sql_input(_raw_name)
+                    _dist_res = catalyst_app.zql().execute_query(
+                        f"SELECT DISTINCT AccusedName FROM Accused WHERE AccusedName LIKE '*{_esc}*' LIMIT 10")
+                    _dist_names = [r.get("Accused", {}).get("AccusedName") for r in _dist_res
+                                  if r.get("Accused", {}).get("AccusedName")]
+                except Exception:
+                    _dist_names = []
+                if len(_dist_names) > 1:
+                    return {
+                        "text_result": (
+                            f"\"{_raw_name}\" matches {len(_dist_names)}{'+' if len(_dist_names) == 10 else ''} "
+                            f"different people in the database, not one suspect ({', '.join(sorted(_dist_names)[:5])}"
+                            f"{', ...' if len(_dist_names) > 5 else ''}). Please provide a fuller name (full first "
+                            f"and last name) to identify a specific person."
+                        ),
+                        "response_type": "text", "data": {"candidate_names": _dist_names, "needs_clarification": True},
+                        "citations": [{"type": "Accused Datastore", "id": _raw_name,
+                                       "details": "Name matched multiple distinct accused records -- ambiguous, not resolved."}],
+                        "final": True,
+                    }
             _canon = self._fuzzy_accused_match(_raw_name)
             if _canon:
                 params["suspect_name"] = _canon
@@ -2902,10 +3258,32 @@ class VajraAgentLoop:
             coordinates = []
             if catalyst_app:
                 try:
+                    # Real depth per cluster (see cluster_hotspots): resolve
+                    # crime-type and station NAMES once, up front (2 small
+                    # queries), rather than per-point -- then every point
+                    # carries what it actually is, not just where it is.
+                    crime_names_by_id: Dict[Any, str] = {}
+                    try:
+                        for h in catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead"):
+                            hd = h.get("CrimeHead", {})
+                            if hd.get("CrimeHeadID"):
+                                crime_names_by_id[str(hd["CrimeHeadID"])] = hd.get("CrimeGroupName")
+                    except Exception:
+                        pass
+                    station_names_by_id: Dict[Any, str] = {}
+                    try:
+                        for u in catalyst_app.zql().execute_query("SELECT UnitID, UnitName FROM Unit"):
+                            ud = u.get("Unit", {})
+                            if ud.get("UnitID"):
+                                station_names_by_id[str(ud["UnitID"])] = ud.get("UnitName")
+                    except Exception:
+                        pass
+
                     where_clause = "WHERE Latitude IS NOT NULL"
                     if unit_ids:
                         where_clause += f" AND PoliceStationID IN ({','.join(map(str, unit_ids))})"
-                    map_query = f"SELECT Latitude, Longitude, CrimeNo FROM CaseMaster {where_clause} LIMIT 300"
+                    map_query = (f"SELECT Latitude, Longitude, CrimeNo, CrimeMajorHeadID, PoliceStationID "
+                                 f"FROM CaseMaster {where_clause} LIMIT 300")
                     map_res = catalyst_app.zql().execute_query(map_query)
                     for r in map_res:
                         cm = r.get("CaseMaster", {})
@@ -2915,7 +3293,9 @@ class VajraAgentLoop:
                             coordinates.append({
                                 "lat": float(lat),
                                 "lng": float(lng),
-                                "label": cm.get("CrimeNo")
+                                "label": cm.get("CrimeNo"),
+                                "crime_head_name": crime_names_by_id.get(str(cm.get("CrimeMajorHeadID"))),
+                                "station_name": station_names_by_id.get(str(cm.get("PoliceStationID"))),
                             })
                 except Exception as ex:
                     logger.error(f"Failed to fetch coordinates for hotspot: {ex}")
@@ -3550,6 +3930,18 @@ class VajraAgentLoop:
         # 16. get_repeat_offenders
         elif tool_name == "get_repeat_offenders":
             district = self.sanitize_sql_input(params.get("district", ""))
+            # Confirmed live: an officer asked for "top 20" and got a
+            # hardcoded 15 with NO way to ask for a different count -- this
+            # capability never exposed a quantity parameter at all, so even
+            # the AI planner had no way to honor an explicit number in the
+            # request. Accepts top_n now (bounded 1-50: the backing
+            # ProactiveAlerts query itself is LIMIT 100, so 50 stays safely
+            # within what's actually fetched).
+            try:
+                _top_n = int(params.get("top_n") or params.get("limit") or 15)
+            except (TypeError, ValueError):
+                _top_n = 15
+            _top_n = max(1, min(_top_n, 50))
             response_type = "repeat_offenders"
             offenders = []
             if catalyst_app:
@@ -3588,8 +3980,8 @@ class VajraAgentLoop:
                 except Exception as ex:
                     logger.warning(f"get_repeat_offenders query failed: {ex}")
             offenders.sort(key=lambda x: x["case_count"], reverse=True)
-            offenders = offenders[:15]
-            data = {"offenders": offenders, "district_filter": district or None}
+            offenders = offenders[:_top_n]
+            data = {"offenders": offenders, "district_filter": district or None, "requested_top_n": _top_n}
             if offenders:
                 top_lines = "; ".join(f"{o['suspect']} ({o['case_count']} cases, {o['district']})" for o in offenders[:5])
                 text_result = (
@@ -3688,7 +4080,11 @@ class VajraAgentLoop:
                             "case_ids": sorted(all_case_ids.get(root, set()), key=str)[:10]
                         })
                     groups.sort(key=lambda g: (len(g["members"]), g["shared_case_count"]), reverse=True)
-                    groups = groups[:10]
+                    try:
+                        _dcg_top_n = max(1, min(int(params.get("top_n") or params.get("limit") or 10), 30))
+                    except (TypeError, ValueError):
+                        _dcg_top_n = 10
+                    groups = groups[:_dcg_top_n]
                 except Exception as ex:
                     logger.warning(f"detect_crime_groups query failed: {ex}")
             data = {"groups": groups, "scan_scope": "First 300 Accused records (one database page)"}
@@ -3769,7 +4165,11 @@ class VajraAgentLoop:
 
         elif tool_name == "get_priority_concerns":
             district = self.sanitize_sql_input(params.get("district", ""))
-            pc_res = self._compute_priority_concerns(district)
+            try:
+                _pc_top_n = max(1, min(int(params.get("top_n") or params.get("limit") or 10), 30))
+            except (TypeError, ValueError):
+                _pc_top_n = 10
+            pc_res = self._compute_priority_concerns(district, top_n=_pc_top_n)
             data = pc_res["data"]
             text_result = pc_res["text_result"]
             # Only emit the visual widget when there's real ranked data; the
@@ -4031,14 +4431,21 @@ class VajraAgentLoop:
             for n in list(parent.keys()):
                 clusters.setdefault(_find(n), []).append(n)
             big = sorted([c for c in clusters.values() if len(c) > 1], key=len, reverse=True)
+            # Same class of bug as get_repeat_offenders' hardcoded 15: honor
+            # an explicit count the officer asked for instead of always
+            # showing a fixed 8, bounded to a sane ceiling.
+            try:
+                _cd_top_n = max(1, min(int(params.get("top_n") or params.get("limit") or 8), 30))
+            except (TypeError, ValueError):
+                _cd_top_n = 8
             response_type = "text"
             if big:
                 lines = [f"Detected {len(big)} syndicate cluster(s) of accused bound by a shared phone/vehicle "
                          f"(synthetic contact data; investigative leads to verify, not proof):"]
-                for i, c in enumerate(big[:8], 1):
+                for i, c in enumerate(big[:_cd_top_n], 1):
                     lines.append(f"{i}. {len(c)} members -- {', '.join(sorted(c)[:6])}{' ...' if len(c) > 6 else ''}")
                 text_result = "\n".join(lines)
-                data = {"clusters": [{"members": sorted(c), "size": len(c)} for c in big[:8]]}
+                data = {"clusters": [{"members": sorted(c), "size": len(c)} for c in big[:_cd_top_n]]}
             else:
                 text_result = "No shared-attribute clusters detected in the current contact data."
             citations.append({"type": "Community Detection", "id": "All",
@@ -4056,14 +4463,18 @@ class VajraAgentLoop:
                             if a != b:
                                 links.setdefault(a, set()).add(b)
             ranked = sorted(((n, len(s)) for n, s in links.items()), key=lambda x: x[1], reverse=True)
+            try:
+                _cr_top_n = max(1, min(int(params.get("top_n") or params.get("limit") or 10), 30))
+            except (TypeError, ValueError):
+                _cr_top_n = 10
             response_type = "text"
             if ranked:
                 lines = ["Most-connected accused by shared-attribute degree (higher = more central, a likely hub -- "
                          "leads to verify, not proof):"]
-                for i, (n, deg) in enumerate(ranked[:10], 1):
+                for i, (n, deg) in enumerate(ranked[:_cr_top_n], 1):
                     lines.append(f"{i}. {n} -- linked to {deg} other accused")
                 text_result = "\n".join(lines)
-                data = {"ranking": [{"name": n, "degree": deg} for n, deg in ranked[:10]]}
+                data = {"ranking": [{"name": n, "degree": deg} for n, deg in ranked[:_cr_top_n]]}
             else:
                 text_result = "No shared-attribute links exist to rank centrality in the current contact data."
             citations.append({"type": "Centrality Ranking", "id": "All",
@@ -4795,7 +5206,7 @@ class VajraAgentLoop:
                                "details": "Offence classification + evidence guidance; provisions to verify against the statute."}],
                 "final": True}
 
-    def _compute_priority_concerns(self, district: str = "") -> Dict[str, Any]:
+    def _compute_priority_concerns(self, district: str = "", top_n: int = 10) -> Dict[str, Any]:
         """
         Answers "what should I be most concerned about right now" with SPECIFICS
         instead of a generic all-crime aggregate: ranks crime TYPES by a concern
@@ -4908,7 +5319,7 @@ class VajraAgentLoop:
 
         data = {"scope": scope, "overall_growth_pct": overall_growth,
                 "total_recent": total_recent, "total_prior": total_prior,
-                "top_rising": top_rising, "concerns": concerns[:10]}
+                "top_rising": top_rising, "concerns": concerns[:max(1, min(top_n, 30))]}
         citations = [{"type": "Priority Concern Analysis", "id": scope,
                       "details": "Crime-type momentum — real COUNT/GROUP BY over the full table, recent 90d vs prior 90d."}]
         result = {"text_result": text, "response_type": "text", "data": data, "citations": citations}
@@ -4989,56 +5400,16 @@ class VajraAgentLoop:
                 ordered.append(d)
         return ordered
 
-    # ================= SEMANTIC COMPILER (Plan-then-Execute, opt-in beta) ======
+    # ================= SEMANTIC COMPILER (Plan-then-Execute) ======
     # The LLM is used ONLY as a compiler: it reads the officer's query and emits a
     # JSON execution plan referencing these capabilities by name. A deterministic
     # engine then runs the plan over VAJRA's grounded tools -- the LLM is
     # quarantined from execution, so it cannot leak reasoning, hallucinate a
-    # number, or run an unapproved operation. Gated behind answer_mode=="compiler"
-    # so it never touches the stable Standard/Dossier paths.
-    _COMPILER_CAPABILITIES = [
-        {"name": "query_hotspots", "does": "crime hotspot clusters on a map, per district or statewide", "params": {"district": "district name, optional"}},
-        {"name": "get_crime_trends", "does": "monthly crime counts/trend over time for a district", "params": {"district": "optional", "crime_group": "crime type, optional"}},
-        {"name": "get_repeat_offenders", "does": "ranked list of repeat/habitual offenders", "params": {"district": "optional"}},
-        {"name": "get_offender_risk", "does": "conviction-risk score for ONE named suspect", "params": {"suspect_name": "required"}},
-        {"name": "query_graph_network", "does": "criminal network/associates of ONE named suspect", "params": {"suspect_name": "required"}},
-        {"name": "get_mo_profile", "does": "modus-operandi profile for ONE named suspect", "params": {"suspect_name": "required"}},
-        {"name": "query_financial_links", "does": "financial transaction links for a named entity", "params": {"entity_id": "required name"}},
-        {"name": "get_case_types_distribution", "does": "breakdown of cases by crime type (pie/bar)", "params": {"district": "optional"}},
-        {"name": "get_priority_concerns", "does": "top emerging crime concerns ranked by momentum", "params": {"district": "optional"}},
-        {"name": "get_forecast", "does": "next-period crime forecast for a district", "params": {"district": "optional", "crime_type": "optional"}},
-        {"name": "get_demographic_correlation", "does": "socio-economic correlation with crime for a district", "params": {"district": "required"}},
-        {"name": "rank_districts", "does": "rank ALL districts by crime volume, worst first", "params": {}},
-        {"name": "get_database_overview", "does": "total FIRs + crime-type overview for the whole database", "params": {}},
-        {"name": "count_cases", "does": "exact COUNT of cases, optionally filtered by crime type, district, and/or a 4-digit year (answers 'how many X in Y in YYYY')", "params": {"district": "optional", "crime_group": "optional crime type", "year": "optional 4-digit year"}},
-        {"name": "query_case", "does": "details of ONE case by its case number", "params": {"case_no": "required"}},
-        {"name": "get_case_timeline", "does": "chronological timeline of ONE case", "params": {"case_no": "required"}},
-        {"name": "get_case_sections", "does": "legal sections applied to ONE case", "params": {"case_no": "required"}},
-        {"name": "find_similar_cases", "does": "semantic search for cases matching a description", "params": {"query": "the search text"}},
-        {"name": "analyze_online_abuse", "does": "triage an online-abuse/cybercrime complaint into offences + evidence steps", "params": {"content": "the complaint text"}},
-        {"name": "get_live_news", "does": "live open-source news headlines for a district/topic (unverified public leads, not official records)", "params": {"district": "district or topic, optional", "query": "the raw request, optional"}},
-        {"name": "web_search", "does": "live open-source web search for any external topic (unverified public results, not official records)", "params": {"query": "what to search for"}},
-        {"name": "shared_attribute_links", "does": "find OTHER accused who share a named suspect's phone or vehicle (hidden syndicate links)", "params": {"suspect_name": "required"}},
-        {"name": "community_detection", "does": "detect syndicate clusters of accused bound by a shared phone/vehicle", "params": {}},
-        {"name": "centrality_ranking", "does": "rank accused by how connected they are over the shared-attribute graph (likely hubs/kingpins)", "params": {}},
-        {"name": "anomaly_detection", "does": "statistical anomaly call-outs (monthly z-score spike + category-momentum break) for a district", "params": {"district": "optional"}},
-        {"name": "summarize_url", "does": "read and summarize any public web page/article by URL (unverified external content)", "params": {"url": "the URL", "query": "the raw request, optional"}},
-    ]
-
-    # Multi-step cues + analytical keywords used by the AUTO-ROUTER to decide when
-    # a Standard query is complex enough to deserve the AI Reasoning compiler.
-    _COMPLEX_STRONG_CUES = (
-        "network of the", "risk of the", "compare", "difference between", "differences between",
-        "for each", " then ", "along with", "combined with", "as well as", "relationship between",
-        "connected to the", "who else", "and also", "and their", "and show", "and give",
-    )
-    _CAP_KEYWORDS = (
-        "hotspot", "trend", "network", "risk", "modus", "financial", "money", "offender",
-        "forecast", "predict", "demographic", "socio", "case", "section", "timeline",
-        "distribution", "concern", "victim", "conviction", "clearance", "community",
-        "cluster", "associate", "syndicate", "ranking",
-    )
-
+    # number, or run an unapproved operation. 2-MODE CONSOLIDATION: this is now
+    # shared machinery under BOTH Standard and Full Dossier (see
+    # _run_semantic_compiler's `deep` parameter) -- not a separate 3rd mode an
+    # officer picks. It only runs after the free deterministic fast-paths above
+    # it in run_agent_loop have already had a chance to answer.
     def _build_shared_attr_maps(self):
         """phone -> [names] and vehicle -> [names] from AccusedContact (capped at
         300 rows by ZCQL). Shared by community_detection and centrality_ranking --
@@ -5062,152 +5433,6 @@ class VajraAgentLoop:
         except Exception as e:
             logger.warning(f"_build_shared_attr_maps failed: {e}")
         return by_phone, by_veh
-
-    def _is_complex_query(self, query: str) -> bool:
-        """Auto-router heuristic: a Standard query is 'complex' (route to the AI
-        Reasoning compiler) when it has an explicit multi-step cue, OR touches 2+
-        analytical facets joined by 'and'/','. Kept conservative so simple lookups
-        stay on the fast ~3s path and don't pay the planning-LLM tax."""
-        q = (query or "").lower()
-        if any(c in q for c in self._COMPLEX_STRONG_CUES):
-            return True
-        hits = sum(1 for k in self._CAP_KEYWORDS if k in q)
-        return hits >= 2 and (" and " in q or ", " in q)
-
-    @staticmethod
-    def _resolve_plan_ref(ref: str, results: Dict[str, Any]) -> Any:
-        """Resolve a DAG dependency like "$s1.data.offenders.0.suspect" against the
-        stored outputs of earlier steps. Returns None if the path can't be walked
-        (the step then simply runs without that param)."""
-        parts = ref[1:].split(".")
-        cur: Any = results.get(parts[0])
-        for p in parts[1:]:
-            if cur is None:
-                return None
-            if isinstance(cur, dict):
-                cur = cur.get(p)
-            elif isinstance(cur, list):
-                try:
-                    cur = cur[int(p)]
-                except (ValueError, IndexError):
-                    return None
-            else:
-                return None
-        return cur
-
-    def _run_semantic_compiler(self, query: str, employee_id: int, session_id: str,
-                               user_unit_id: Optional[int]) -> Optional[Dict[str, Any]]:
-        """
-        Compile the officer's natural-language query into a JSON execution plan
-        via the LLM, then execute it DETERMINISTICALLY over the grounded tools.
-        Returns a run_agent_loop-style dict, or None to fall back to the standard
-        path (graceful degradation) when planning fails.
-        """
-        names = {c["name"] for c in self._COMPILER_CAPABILITIES}
-        registry = "\n".join(f"- {c['name']}: {c['does']} | params: {json.dumps(c['params'])}"
-                             for c in self._COMPILER_CAPABILITIES)
-        planner_sys = (
-            "You are the PLANNER for VAJRA, a Karnataka State Police intelligence system. You do NOT answer the "
-            "officer. You COMPILE their request into a JSON execution plan that a deterministic engine runs.\n\n"
-            "CAPABILITIES (use ONLY these names):\n" + registry + "\n\n"
-            "Output ONLY one JSON object, no prose, no markdown. Schema:\n"
-            '{"intent": "<one short sentence>", "steps": [{"id": "s1", "capability": "<name>", "params": {..}}], '
-            '"present_as": "auto|pie|bar|line|map|network|timeline|table|text"}\n\n'
-            "RULES:\n"
-            "- Give each step a short id (s1, s2, ...). Steps run in order.\n"
-            "- DEPENDENCIES: a later step may USE an earlier step's output as a param value with the syntax "
-            '"$<id>.<path>". Chainable outputs: get_repeat_offenders -> "$s1.data.offenders.0.suspect" is the top '
-            'offender name; rank_districts -> "$s1.data.series.0.name" is the worst district.\n'
-            '  Example -- "network of the most active offender": '
-            '{"intent":"Network of the top repeat offender","steps":['
-            '{"id":"s1","capability":"get_repeat_offenders","params":{}},'
-            '{"id":"s2","capability":"query_graph_network","params":{"suspect_name":"$s1.data.offenders.0.suspect"}}],'
-            '"present_as":"network"}\n'
-            "- Extract quantifiers, district names, suspect names, and case numbers into params.\n"
-            "- Use MULTIPLE steps for compound asks. To compare two districts, add get_crime_trends once PER district.\n"
-            "- Choose present_as to fit the answer (a distribution -> pie/bar, a network -> network, a route over time -> line).\n"
-            "- If the request is a greeting or needs no data, return steps: [] and put a short reply in intent.\n"
-            "- NEVER invent capability names or data. Plan only; the engine executes."
-        )
-        try:
-            res = self.llm.chat([{"role": "system", "content": planner_sys},
-                                 {"role": "user", "content": query}], None, max_tokens=800)
-            if res.get("error"):
-                logger.warning("compiler: planner LLM unavailable; falling back.")
-                return None
-            raw = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
-            plan = json.loads(self._extract_json(raw))
-        except Exception as e:
-            logger.warning(f"compiler: plan parse failed ({e}); falling back to standard path.")
-            return None
-        if not isinstance(plan, dict):
-            return None
-        intent = (plan.get("intent") or "").strip()
-        present_as = str(plan.get("present_as") or "auto").lower()
-        steps = [s for s in (plan.get("steps") or [])
-                 if isinstance(s, dict) and s.get("capability") in names]
-        # No-data intent (greeting / direct reply the planner already wrote).
-        if not steps:
-            if intent:
-                return {"text": intent, "response_type": "text", "data": {},
-                        "citations": [{"type": "AI Execution Plan", "id": "direct",
-                                       "details": "Answered directly; the plan required no data lookup."}],
-                        "is_simulated": False, "simulated_reason": ""}
-            return None
-        # DETERMINISTIC EXECUTION -- run each planned step over the grounded tools.
-        # Steps can DEPEND on earlier ones: a "$s1.data.offenders.0.suspect" param
-        # is resolved from the stored output of step s1 before this step runs.
-        panels, combined, citations, last = [], [], [], None
-        results: Dict[str, Any] = {}
-        for idx, st in enumerate(steps[:6]):
-            sid = st.get("id") or f"s{idx + 1}"
-            cap = st["capability"]
-            params = {}
-            for k, v in (st.get("params") or {}).items():
-                rv = self._resolve_plan_ref(v, results) if isinstance(v, str) and v.startswith("$") else v
-                if rv not in (None, ""):
-                    params[k] = rv
-            try:
-                out = self._execute_tool(cap, params, employee_id, session_id, user_unit_id)
-            except Exception as e:
-                logger.warning(f"compiler: step '{cap}' failed: {e}")
-                results[sid] = {}
-                continue
-            results[sid] = out
-            if out.get("citations"):
-                citations.extend(out["citations"])
-            rt = out.get("response_type") or "text"
-            rtext = (out.get("text_result") or "").strip()
-            last = out
-            panels.append({"type": rt if rt != "text" else "text", "panel_key": cap,
-                           "title_en": cap.replace("_", " ").title(), "title_kn": cap.replace("_", " ").title(),
-                           "data": out.get("data"), "text": rtext})
-            if rtext:
-                combined.append(rtext)
-        if not panels or last is None:
-            return None
-        if len(panels) == 1:
-            resp_type = last.get("response_type") or "text"
-            data_payload = last.get("data") or {}
-            text_out = (last.get("text_result") or intent or "Done.").strip()
-            # honour a chart present_as on chartable data (e.g. "... as a pie chart")
-            if present_as in ("pie", "bar") and (data_payload.get("series") or data_payload.get("offenders")):
-                series = self._extract_chartable_series(resp_type, data_payload)
-                if series:
-                    data_payload = {"series": series, "total": sum(s["value"] for s in series),
-                                    "district": "", "chart_hint": present_as}
-                    resp_type = "case_distribution"
-        else:
-            resp_type = "dossier"
-            data_payload = {"panels": panels}
-            text_out = intent or "\n\n".join(combined[:4])
-        citations.append({"type": "AI Execution Plan", "id": (intent[:60] or "plan"),
-                          "details": (f"Compiled to {len(panels)} grounded step(s): "
-                                      f"{', '.join(p['panel_key'] for p in panels)}. "
-                                      "The AI planned; a deterministic engine executed each step.")})
-        self._write_audit_log(employee_id, "Semantic Compiler", intent[:80], query, text_out, session_id)
-        return {"text": text_out, "response_type": resp_type, "data": data_payload,
-                "citations": citations, "is_simulated": False, "simulated_reason": ""}
 
     @staticmethod
     def _extract_chartable_series(response_type: str, d: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -5299,7 +5524,7 @@ class VajraAgentLoop:
         }
 
     def _handle_case_question(self, query: str, employee_id: int, session_id: str,
-                              user_unit_id: Optional[int]) -> Optional[Dict[str, Any]]:
+                              user_unit_id: Optional[int], fallback_case_no: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         DETERMINISTIC fast-path for any question that names a case (CR-YYYY-NNNNN).
         Single-case questions ("which station", "who is the victim", "summarise",
@@ -5312,9 +5537,9 @@ class VajraAgentLoop:
         'everything' dossier to generate_case_dossier.
         """
         m = re.search(r"\bCR-\d{4}-\d+\b", query, re.IGNORECASE)
-        if not m:
+        if not m and not fallback_case_no:
             return None
-        case_no = m.group(0).upper()
+        case_no = m.group(0).upper() if m else fallback_case_no
         resolved = self._resolve_case_rowid(case_no)
         ql = query.lower()
         if any(w in ql for w in ("full", "everything", "complete", "all detail", "dossier", "deep dive", "full report on case")):
@@ -5398,7 +5623,20 @@ class VajraAgentLoop:
             ans = f"Case {crimeno} was filed at {station or 'the registering unit (station name not on record)'}."
             data = {"case_no": crimeno, "station": station}
         elif is_pocso_sensitive(brief, crimeno) and any(w in ql for w in
-                ("request access", "request pocso", "need access", "unlock", "request unmask", "grant access")):
+                # Broadened from the original 6 exact phrases after a live
+                # miss: an officer who typed "ask permission to access this
+                # information" (a completely natural phrasing) matched NONE
+                # of them, fell through to GLM, and got a plausible-sounding
+                # but wrong made-up process instead of the real
+                # request/supervisor-approve flow below. This must catch how
+                # officers actually ask, not just the phrase this code
+                # itself suggests back to them.
+                ("request access", "request pocso", "need access", "unlock", "request unmask", "grant access",
+                 "permission", "ask for access", "can i view", "can i see", "let me see", "let me view",
+                 "reveal", "unredact", "un-redact", "unmask", "real name", "actual name", "full name",
+                 "clearance", "supervisor approval", "approve access", "give me access", "give access",
+                 "provide access", "how do i access", "how to access", "how can i access",
+                 "ಅನುಮತಿ", "ಪ್ರವೇಶ")):
             # Officer-initiated access request for a redacted case -- a live,
             # supervisor-approved, time-boxed alternative to permanent denial.
             # Reuses the same ProactiveAlerts request/approve/notify pattern as
@@ -5421,41 +5659,22 @@ class VajraAgentLoop:
             rt = "text"
         elif any(w in ql for w in ("victim", "complainant", "ಸಂತ್ರಸ್ತ", "ದೂರುದಾರ", "ಬಲಿಪಶು")):
             victim, complainant = _name_from("Victim"), _name_from("ComplainantDetails")
-            # POCSO / juvenile-victim auto-redaction (Section 74 JJA): a sexual-
-            # offence or minor-victim case masks the real name for everyone below
-            # supervisor tier (unless they hold a live, supervisor-approved access
-            # grant for this specific case), with the redaction stated plainly
-            # (not silently dropped) and unmasking always logged to audit.
-            _sensitive = is_pocso_sensitive(brief, crimeno)
-            _badge = getattr(self, "officer_badge", None)
-            _is_super = is_supervisor_badge(_badge)
-            _has_grant = (not _is_super) and has_active_pocso_grant(_badge, crimeno)
-            _redacted_note = ""
-            case_brief_for_answer = brief
-            if _sensitive and not (_is_super or _has_grant):
-                if victim:
-                    victim = redact_pocso_name(victim)
-                if complainant:
-                    complainant = redact_pocso_name(complainant)
-                case_brief_for_answer = redact_phone_numbers(brief)
-                _redacted_note = ("\n\n(Victim identity masked under Section 74, Juvenile Justice Act -- "
-                                  "this case is flagged as a sensitive/POCSO matter. A supervisor can view "
-                                  "it, or ask me to 'request access to this case' for supervisor approval.)")
-            elif _sensitive and _is_super:
-                self._write_audit_log(employee_id, "POCSO Unmask", crimeno,
-                                      f"Supervisor viewed unredacted victim identity for {crimeno}",
-                                      "Unmasked -- supervisor tier", session_id)
-            elif _sensitive and _has_grant:
-                self._write_audit_log(employee_id, "POCSO Unmask", crimeno,
-                                      f"Officer {_badge} viewed unredacted victim identity for {crimeno} via approved grant",
-                                      "Unmasked -- approved access grant", session_id)
+            # POCSO / juvenile-victim auto-redaction (Section 74 JJA), routed
+            # through the shared _pocso_egress_gate so this and every other
+            # path (e.g. the Full Dossier's summarize_case sub-tool) apply the
+            # exact same rule instead of each re-implementing it inline.
+            _gate = self._pocso_egress_gate(brief, crimeno, victim_name=victim, complainant_name=complainant,
+                                             session_id=session_id, employee_id=employee_id)
+            victim, complainant = _gate["victim"], _gate["complainant"]
+            case_brief_for_answer = redact_phone_numbers(brief) if _gate["redacted"] else brief
+            _redacted_note = f"\n\n({_gate['note']})" if _gate["redacted"] else ""
             lines = [f"Victim: {victim}" if victim else "Victim: not separately recorded (see the FIR narrative below)."]
             lines.append(f"Complainant: {complainant}" if complainant else "Complainant: not separately recorded.")
             ans = (f"For case {crimeno}:\n- " + "\n- ".join(lines)
                    + (f"\n\nBrief facts: {case_brief_for_answer}" if case_brief_for_answer else "")
                    + _redacted_note + collision_note)
             data = {"case_no": crimeno, "victim": victim, "complainant": complainant,
-                    "pocso_redacted": bool(_sensitive and not (_is_super or _has_grant))}
+                    "pocso_redacted": bool(_gate["redacted"])}
         elif any(w in ql for w in ("linked", "other case", "related case", "connected case", "ಸಂಬಂಧಿತ", "ಇತರ ಪ್ರಕರಣ")):
             sr = self._execute_tool("find_similar_cases", {"query": brief or case_no}, employee_id, session_id, user_unit_id)
             matches = [(mm.get("fir_id") or "") for mm in ((sr.get("data") or {}).get("matches") or [])]
@@ -6396,6 +6615,49 @@ class VajraAgentLoop:
             "disclaimer": "*Disclaimer: IPC/BNS mappings are AI-generated based on the KSP Datathon 2026 schema and must be verified against official gazettes. Confirm with your SHO or legal officer before filing.*"
         }
 
+    def _pocso_egress_gate(self, brief: Optional[str], crimeno: Optional[str],
+                            victim_name: Optional[str] = None,
+                            complainant_name: Optional[str] = None,
+                            session_id: Optional[str] = None,
+                            employee_id: Optional[str] = None) -> Dict[str, Any]:
+        """Single choke-point for victim/complainant PII on a POCSO/juvenile-
+        victim case (Section 74, JJA). Every code path that can surface a
+        victim or complainant name must route through this instead of
+        re-implementing the redaction check inline -- that's what let one real
+        bypass through: generate_case_dossier's summarize_case() sub-call
+        fetched VictimName/ComplainantName straight from the datastore with no
+        check at all, while the "who is the victim" case-question path
+        already redacted the same field for the same case. One case, two
+        answers, one of them leaking. Logs an audit entry on unmask exactly
+        like the case-question path did.
+        """
+        sensitive = is_pocso_sensitive(brief or "", crimeno or "")
+        if not sensitive:
+            return {"victim": victim_name, "complainant": complainant_name,
+                    "redacted": False, "sensitive": False, "note": ""}
+        badge = getattr(self, "officer_badge", None)
+        is_super = is_supervisor_badge(badge)
+        has_grant = (not is_super) and has_active_pocso_grant(badge, crimeno)
+        if is_super or has_grant:
+            if employee_id and session_id:
+                reason = "supervisor tier" if is_super else f"approved access grant ({badge})"
+                try:
+                    self._write_audit_log(employee_id, "POCSO Unmask", crimeno or "unknown",
+                                          f"Viewed unredacted victim identity for {crimeno} -- {reason}",
+                                          "Unmasked", session_id)
+                except Exception:
+                    pass
+            return {"victim": victim_name, "complainant": complainant_name,
+                    "redacted": False, "sensitive": True, "note": ""}
+        return {
+            "victim": redact_pocso_name(victim_name) if victim_name else victim_name,
+            "complainant": redact_pocso_name(complainant_name) if complainant_name else complainant_name,
+            "redacted": True, "sensitive": True,
+            "note": ("Victim identity masked under Section 74, Juvenile Justice Act -- "
+                     "this case is flagged as a sensitive/POCSO matter. A supervisor can view "
+                     "it, or ask me to 'request access to this case' for supervisor approval."),
+        }
+
     def summarize_case(self, case_id: int, case_rowid: Optional[int] = None, collisions: int = 0) -> str:
         """
         Fetches related rows and compiles a clean bilingual summary of the case.
@@ -6432,15 +6694,28 @@ class VajraAgentLoop:
             # 3. Fetch Victim list
             vic_res = catalyst_app.zql().execute_query(f"SELECT VictimName FROM Victim WHERE CaseMasterID = {case_id}")
             victim_names = [r.get("Victim", {}).get("VictimName") for r in vic_res if r.get("Victim", {}).get("VictimName")]
-            victim_str = ", ".join(victim_names) if victim_names else "None listed"
 
             # 4. Fetch Complainant
             comp_res = catalyst_app.zql().execute_query(f"SELECT ComplainantName FROM ComplainantDetails WHERE CaseMasterID = {case_id}")
-            comp_name = comp_res[0].get("ComplainantDetails", {}).get("ComplainantName") if comp_res else "None listed"
-            
+            comp_name = comp_res[0].get("ComplainantDetails", {}).get("ComplainantName") if comp_res else None
+
+            # POCSO/juvenile-victim gate (Section 74 JJA) -- same choke point the
+            # "who is the victim" case-question answer uses, so a Full Dossier
+            # (which calls this method as its "summ" sub-tool) can't bypass it.
+            _gate = self._pocso_egress_gate(facts, crime_no, victim_name=(victim_names[0] if victim_names else None),
+                                             complainant_name=comp_name)
+            if _gate["redacted"]:
+                victim_names = [_gate["victim"]] if victim_names else []
+                comp_name = _gate["complainant"]
+                facts = redact_phone_numbers(facts)
+            victim_str = ", ".join(victim_names) if victim_names else "None listed"
+            comp_name = comp_name or "None listed"
+
             summary_en = f"Official Summary for Case **{crime_no}** (Registered: {reg_date}). " \
                          f"Brief Facts: {facts} Accused: {accused_str}. Victim(s): {victim_str}. " \
                          f"Complainant: {comp_name}."
+            if _gate["redacted"]:
+                summary_en += f"\n\n({_gate['note']})"
             if collisions > 0:
                 summary_en += (
                     f" ⚠ Data-integrity note: this record's internal case-linkage ID is shared with "

@@ -13,8 +13,15 @@ interface ChatInputProps {
   isUploading: boolean;
   lang: "en" | "kn";
   addToast: (title: string, message: string, severity: "Critical" | "Warning" | "Info" | "Success") => void;
-  answerMode: "standard" | "dossier" | "compiler";
-  onAnswerModeChange: (m: "standard" | "dossier" | "compiler") => void;
+  // 2-MODE CONSOLIDATION (matches implementation_plan.md's real design):
+  // "compiler" ("AI Reasoning β") retired as a 3rd officer-facing choice --
+  // that planning engine is now shared, invisible machinery under BOTH modes
+  // (see agent_loop.py's _run_semantic_compiler `deep` param), not something
+  // the officer opts into separately. A stale client that still sends
+  // "compiler" is still accepted server-side as an alias for deep dossier
+  // planning, so nothing breaks if a cached old build sends it.
+  answerMode: "standard" | "dossier";
+  onAnswerModeChange: (m: "standard" | "dossier") => void;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = React.memo(({
@@ -473,8 +480,6 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
             <span className={answerMode !== "standard" ? "text-[#C79A4E]" : "text-stone-300"}>
               ◈ {answerMode === "dossier"
                     ? (lang === "en" ? "Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್")
-                    : answerMode === "compiler"
-                    ? (lang === "en" ? "AI Reasoning β" : "AI ತಾರ್ಕಿಕ β")
                     : (lang === "en" ? "Standard" : "ಸಾಮಾನ್ಯ")}
             </span>
             <ChevronDown className="w-3 h-3 text-stone-500" />
@@ -484,9 +489,8 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
               <div className="fixed inset-0 z-40" onClick={() => setModeMenuOpen(false)} />
               <div className="absolute bottom-9 left-0 z-50 w-64 bg-stone-900 border border-stone-800 rounded-xl shadow-2xl py-1.5">
                 {([
-                  ["standard", lang === "en" ? "Standard" : "ಸಾಮಾನ್ಯ", lang === "en" ? "Fast, focused answer with one key view." : "ವೇಗದ, ಕೇಂದ್ರೀಕೃತ ಉತ್ತರ."],
-                  ["dossier", lang === "en" ? "Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್", lang === "en" ? "Deep: risk, network, timeline, sections, map & similar cases in one." : "ಆಳವಾದ: ಅಪಾಯ, ಜಾಲ, ಕಾಲಾನುಕ್ರಮ, ಸೆಕ್ಷನ್‌ಗಳು ಒಟ್ಟಿಗೆ."],
-                  ["compiler", lang === "en" ? "AI Reasoning β" : "AI ತಾರ್ಕಿಕ β", lang === "en" ? "The AI plans a multi-step execution over the data, then runs it deterministically. Smarter on novel/compound questions; a bit slower." : "AI ದತ್ತಾಂಶದ ಮೇಲೆ ಬಹು-ಹಂತದ ಯೋಜನೆ ರೂಪಿಸಿ ನಿರ್ಣಾಯಕವಾಗಿ ಚಲಾಯಿಸುತ್ತದೆ. ಸ್ವಲ್ಪ ನಿಧಾನ."],
+                  ["standard", lang === "en" ? "Standard" : "ಸಾಮಾನ್ಯ", lang === "en" ? "Fast, focused answer -- the AI plans internally when a question needs it, kept minimal." : "ವೇಗದ, ಕೇಂದ್ರೀಕೃತ ಉತ್ತರ."],
+                  ["dossier", lang === "en" ? "Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್", lang === "en" ? "Deep: risk, network, timeline, sections, map & similar cases -- a deliberately comprehensive sweep." : "ಆಳವಾದ: ಅಪಾಯ, ಜಾಲ, ಕಾಲಾನುಕ್ರಮ, ಸೆಕ್ಷನ್‌ಗಳು ಒಟ್ಟಿಗೆ."],
                 ] as const).map(([val, title, desc]) => (
                   <button
                     key={val}

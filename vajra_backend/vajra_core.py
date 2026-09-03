@@ -25,6 +25,7 @@ import json
 import uuid
 import logging
 import time
+import threading
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import numpy as np
@@ -41,6 +42,24 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
+
+# Court-Admissible Provenance HUD backing store (see patched_execute_query
+# below, the one real choke point every ZCQL call in the app passes
+# through). Thread-local so concurrent officers' turns (each on its own
+# AppSail worker thread) never see each other's queries.
+_zql_query_log = threading.local()
+
+
+def start_zql_log() -> None:
+    """Call once at the start of a turn to begin collecting the exact ZCQL
+    queries it executes."""
+    _zql_query_log.queries = []
+
+
+def get_zql_log() -> List[str]:
+    """The exact ZCQL SQL strings executed so far on this thread this turn."""
+    return list(getattr(_zql_query_log, "queries", []))
+
 
 # Initialize Zoho Catalyst SDK client
 try:
@@ -151,6 +170,21 @@ try:
     # Monkeypatch execute_query with self-healing token refresh & retry on 401
     def patched_execute_query(self, query: str):
         logger.info(f"Patched ZCQL query: {query}")
+        # Court-Admissible Provenance HUD (implementation_plan.md #7): every
+        # real ZCQL SQL string executed during a turn is logged here, into a
+        # PER-THREAD list -- this is the ONE existing choke point every ZCQL
+        # call in the whole app already passes through (already patched here
+        # for token refresh), so this closes the "exact SQL query executed"
+        # gap without touching any of the hundreds of individual call sites.
+        # Thread-local, not global: AppSail runs each turn on its own
+        # worker thread (run_in_threadpool), so this never leaks one
+        # officer's queries into another's concurrent turn.
+        try:
+            _log = getattr(_zql_query_log, "queries", None)
+            if _log is not None:
+                _log.append(query)
+        except Exception:
+            pass
         token = get_cached_access_token()
         if not token:
             try:
@@ -612,6 +646,70 @@ def find_active_district_access_request(badge: str, target_district_id: Any) -> 
             except Exception:
                 pass
     return None
+
+
+# ---- Emergency "Break-Glass" override (Section 185 BNSS emergency-entry
+# principle applied to the data air-lock): the normal request/approve flow
+# above requires a supervisor to be online. A genuine emergency ("active
+# abduction crossed into District X, need the case file NOW") can't wait on
+# that. This grants access IMMEDIATELY and self-approved -- the safety valve
+# is that it's short-lived (well under the normal 8h grant), MANDATORY reason
+# text is required (no silent bypass), and it always surfaces in the
+# supervisor queue as a post-hoc review item, distinct from a normal
+# approval decision -- the supervisor can't stop it in the moment, but every
+# use is visible and revocable after the fact.
+BREAK_GLASS_GRANT_HOURS = 2
+
+
+def create_emergency_district_access(requester_badge: str, requester_name: str,
+                                     home_district_id: Any, target_district_id: Any,
+                                     target_district_name: str, reason: str) -> Dict[str, Any]:
+    """Self-granting emergency override. Caller MUST have already validated
+    `reason` is non-empty -- this function does not silently default it."""
+    request_id = uuid.uuid4().hex[:16]
+    now = datetime.utcnow()
+    meta = {
+        "request_id": request_id, "requester_badge": str(requester_badge or ""),
+        "requester_name": requester_name or "Officer",
+        "home_district_id": home_district_id, "target_district_id": target_district_id,
+        "target_district_name": target_district_name,
+        "reason": (reason or "").strip()[:200], "status": "approved",
+        "approver_badge": None,  # self-granted, not supervisor-decided
+        "decided_at": now.isoformat(),
+        "grant_expires_at": (now + timedelta(hours=BREAK_GLASS_GRANT_HOURS)).isoformat(),
+        "created_at": now.isoformat(),
+        "emergency": True, "reviewed": False,
+    }
+    try:
+        zcql_insert_row("ProactiveAlerts", {
+            "AlertType": "DISTRICT_ACCESS", "Severity": "Critical",
+            "TriggerTime": now.isoformat(), "IsRead": False,
+            "DistrictID": str(target_district_id or "0"), "AlertMessage": json.dumps(meta),
+        })
+    except Exception as e:
+        logging.getLogger("vajra_core").warning(f"create_emergency_district_access insert failed: {e}")
+    return meta
+
+
+def mark_district_access_reviewed(request_id: str, reviewer_badge: str, revoke: bool = False) -> Optional[Dict[str, Any]]:
+    """Supervisor post-hoc review of an emergency grant: acknowledges it, and
+    optionally revokes the still-active grant immediately (status ->
+    'revoked', which has_active_district_access_grant no longer treats as
+    'approved')."""
+    row = find_district_access_row(request_id)
+    if not row:
+        return None
+    meta = row["meta"]
+    meta["reviewed"] = True
+    meta["reviewer_badge"] = reviewer_badge
+    meta["reviewed_at"] = datetime.utcnow().isoformat()
+    if revoke:
+        meta["status"] = "revoked"
+    try:
+        zcql_update_row("ProactiveAlerts", {"ROWID": row["rowid"], "AlertMessage": json.dumps(meta)})
+    except Exception as e:
+        logging.getLogger("vajra_core").warning(f"mark_district_access_reviewed update failed: {e}")
+    return meta
 
 
 def has_active_district_access_grant(badge: Optional[str], home_district_id: Any, target_district_id: Any) -> bool:

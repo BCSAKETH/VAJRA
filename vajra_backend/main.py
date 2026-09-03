@@ -45,7 +45,9 @@ import pandas as pd
 import joblib
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, status, Request, WebSocket, WebSocketDisconnect, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
+import progress_tracker
 from pydantic import BaseModel, Field
 import zcatalyst_sdk
 
@@ -60,10 +62,14 @@ from vajra_core import (
     zcql_update_row,
     find_pocso_row,
     POCSO_GRANT_HOURS,
+    create_pocso_request,
+    find_active_pocso_request,
     find_district_access_row,
     create_district_access_request,
     has_active_district_access_grant,
     DISTRICT_ACCESS_GRANT_HOURS,
+    create_emergency_district_access,
+    mark_district_access_reviewed,
     is_supervisor_badge,
 )
 from agent_loop import VajraAgentLoop
@@ -2099,7 +2105,7 @@ def _fit_json(obj: Any, cap: int) -> str:
     # whitelist and silently fell all the way to an empty {}.
     minimal = {k: d.get(k) for k in
                ("case_no", "primary_accused", "_text_en", "news", "scope",
-                "nodes", "edges", "seed", "max_hop_reached") if d.get(k)}
+                "nodes", "edges", "seed", "max_hop_reached", "_zcql_provenance") if d.get(k)}
     s = json.dumps(minimal, ensure_ascii=False, default=str)
     return s if len(s) <= cap else "{}"
 
@@ -2669,6 +2675,14 @@ async def _run_ai_turn_and_persist(
     """
     query_for_agent = VAJRA_MENTION_RE.sub("", message).strip() or message
 
+    # Live-progress ticker (Part C item #8): start a fresh log for this turn.
+    # Real steps get emit()'d via progress_cb from inside run_agent_loop
+    # below; GET /api/chat/progress/{session_id} streams them out over SSE
+    # so the officer sees real, honest step names instead of a blind spinner
+    # for the 3-140s a real GLM turn can take. Safe no-op if nothing ever
+    # polls it -- this is a UX nicety, never a hard dependency of the turn.
+    progress_tracker.start_turn(session_id)
+
     # The agent has no tool and no other way to know who it's talking to --
     # confirmed live via "what is my name"/"@vajra what is my name" both
     # getting "I don't have access to your personal identity," which is an
@@ -2765,6 +2779,7 @@ async def _run_ai_turn_and_persist(
     # not ambiguous). Detect the marker and say so plainly instead of
     # routing garbage into tool selection.
     if lang == "kn" and processed_query.startswith("[Translation temporarily unavailable"):
+        progress_tracker.finish_turn(session_id)
         text_kn = "ಅನುವಾದ ಸೇವೆ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ. ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ ಅಥವಾ ಇಂಗ್ಲಿಷ್‌ನಲ್ಲಿ ಟೈಪ್ ಮಾಡಿ."
         text_en = "Kannada translation is temporarily unavailable. Please try again shortly, or type your query in English."
         _persist_chat_message(
@@ -2790,7 +2805,8 @@ async def _run_ai_turn_and_persist(
         user_unit_id=unit_id,
         officer_name=officer_name,
         answer_mode=answer_mode,
-        officer_badge=officer_badge
+        officer_badge=officer_badge,
+        progress_cb=lambda msg: progress_tracker.emit(session_id, msg)
     )
 
     # Generate BOTH language versions of the answer, always -- not just the
@@ -2831,6 +2847,11 @@ async def _run_ai_turn_and_persist(
         # English display -> no eager Kannada; the ⇄ button translates on demand.
         text_kn = text_en
     text = text_kn if lang == "kn" else text_en
+    # The real answer text exists now -- the ticker's job (bridging the blind
+    # wait) is done. Panel-body translation/persist/broadcast/TTS-pregen
+    # below are comparatively fast tail work, not what the officer was
+    # waiting on.
+    progress_tracker.finish_turn(session_id)
 
     # Translate Full-Dossier panel BODIES to Kannada too, so every section reads
     # in Kannada -- not just the top summary and the (hardcoded) section titles.
@@ -2947,6 +2968,40 @@ async def _run_ai_turn_and_persist(
             except Exception as _e:
                 logger.debug(f"Eager TTS pre-gen failed (non-fatal): {_e}")
         asyncio.create_task(_eager_tts_pregen())
+
+
+@app.get("/api/chat/progress/{session_id}")
+async def chat_progress_stream(session_id: str, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Live-progress SSE ticker (Part C item #8, now actually wired end to end):
+    streams each real step the background agent-loop task reaches for this
+    session -- see progress_tracker.py's docstring for why this exists
+    (AppSail kills the triggering HTTP request at ~30-36s, so the real
+    3-140s GLM turn always runs as a background task the frontend has only
+    ever blindly polled for; this gives that wait honest content instead of
+    a silent spinner). Never asserts a latency number, only what step is
+    actually happening. Self-closes on client disconnect, on the turn being
+    marked done, or after a bounded ceiling -- never an indefinitely open
+    connection.
+    """
+    progress_tracker.cleanup_stale()
+
+    async def _gen():
+        since = 0
+        deadline = time.time() + 150  # generous ceiling for a real 3-140s GLM turn
+        while time.time() < deadline:
+            if await request.is_disconnected():
+                break
+            new, done, since = progress_tracker.get_since(session_id, since)
+            for msg in new:
+                yield f"data: {json.dumps({'message': msg})}\n\n"
+            if done:
+                yield f"data: {json.dumps({'done': True})}\n\n"
+                break
+            await asyncio.sleep(0.7)
+
+    return StreamingResponse(_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/api/chat")
@@ -3664,6 +3719,7 @@ async def upload_chat_attachments(
             )
 
         page_count = 1
+        page_stratus_ids: List[str] = []
         if f.content_type == "application/pdf":
             try:
                 page_bytes_list = _rasterize_pdf(content)
@@ -3672,22 +3728,29 @@ async def upload_chat_attachments(
             page_count = len(page_bytes_list)
             downscaled_pages = [_downscale_image(p) for p in page_bytes_list]
             processed_images.extend(downscaled_pages)   # per-page, for Qwen analysis
-            # Preview: stitch ALL pages into one tall image and store THAT, so the
-            # viewer shows every page. Previously the loop overwrote stratus_key each
-            # iteration, leaving only the LAST page viewable (confirmed live on a
-            # 2-page PDF).
-            preview_img = _stitch_vertical(downscaled_pages)
-            stratus_key = store_attachment(preview_img, "jpg", "image/jpeg")
+            # REAL per-page pagination (confirmed live complaint: the old
+            # single stitched all-pages-in-one-tall-image preview gave no way
+            # to actually page through a document -- everything was one long
+            # scroll). Every page is now stored as its OWN Stratus object, so
+            # the viewer can fetch and show exactly one page at a time with
+            # real Prev/Next navigation. stratus_id (singular) stays pointed
+            # at page 1 for old/simple callers that only ever showed one
+            # image; page_stratus_ids is the real per-page list the frontend
+            # now uses when there's more than one page.
+            page_stratus_ids = [store_attachment(p, "jpg", "image/jpeg") for p in downscaled_pages]
+            stratus_key = page_stratus_ids[0]
         else:
             downscaled = _downscale_image(content)
             processed_images.append(downscaled)
             stratus_key = store_attachment(downscaled, "jpg", "image/jpeg")
+            page_stratus_ids = [stratus_key]
 
         attachment_refs.append({
             "file_name": f.filename,
             "type": f.content_type,
             "stratus_id": stratus_key,
-            "page_count": page_count
+            "page_count": page_count,
+            "page_stratus_ids": page_stratus_ids,
         })
 
     qwen = CatalystQwen()
@@ -5341,6 +5404,41 @@ async def export_request_status(request_id: str, request: Request = None,
             "approver": m.get("approver_badge")}
 
 
+@app.post("/api/pocso/request")
+async def request_pocso_access(payload: Dict[str, Any] = Body(default={}),
+                               request: Request = None, location_context: str = Depends(security_firewall)):
+    """Officer-initiated request for time-boxed access to a POCSO-redacted
+    case's victim identity, via an explicit button on the answer itself --
+    NOT text-intent matching. This is the dedicated endpoint the chat's
+    inline text-trigger should have had from the start: a natural phrasing
+    that didn't match the hardcoded trigger words fell through to GLM and
+    got a plausible-sounding but fictional 'contact Records Branch' process
+    instead of this real, working flow (confirmed live). A button removes
+    the guessing entirely -- same request/approve/time-boxed-grant pattern,
+    same supervisor queue, just reachable without needing to phrase it right."""
+    case_no = (payload.get("case_no") or "").strip().upper()
+    if not case_no:
+        raise HTTPException(status_code=400, detail="case_no is required.")
+    badge = getattr(request.state, "kgid", None)
+    officer_name = (getattr(request.state, "user_profile", {}) or {}).get("FirstName") or "Officer"
+    meta = create_pocso_request(badge, officer_name, case_no, reason=(payload.get("reason") or "").strip())
+    return {"status": meta.get("status"), "request_id": meta.get("request_id"), "case_no": case_no}
+
+
+@app.get("/api/pocso/request-status")
+async def pocso_request_status_for_case(case_no: str, request: Request = None,
+                                        location_context: str = Depends(security_firewall)):
+    """Officer polls this with their own badge + case_no to know their current
+    request state (idle/pending/approved/rejected) without needing to have
+    kept the request_id around client-side."""
+    badge = getattr(request.state, "kgid", None)
+    m = find_active_pocso_request(badge, (case_no or "").strip().upper())
+    if not m:
+        return {"status": "idle"}
+    return {"status": m.get("status", "pending"), "request_id": m.get("request_id"),
+            "grant_expires_at": m.get("grant_expires_at")}
+
+
 @app.get("/api/pocso/pending")
 async def list_pending_pocso(request: Request, location_context: str = Depends(security_firewall)):
     """Supervisor-only: pending POCSO access requests (live queue, same pattern
@@ -5457,9 +5555,69 @@ async def request_district_access(payload: Dict[str, Any] = Body(default={}),
     return {"status": meta.get("status"), "request_id": meta.get("request_id"), "target_district": target_district_name}
 
 
+@app.post("/api/district-access/emergency")
+async def emergency_district_access(payload: Dict[str, Any] = Body(default={}),
+                                    request: Request = None, location_context: str = Depends(security_firewall)):
+    """Break-glass override (Section 185 BNSS emergency-entry principle):
+    grants immediate, self-approved, short-lived access to a district outside
+    the officer's own -- for when an active situation genuinely cannot wait
+    for a supervisor to be online. `reason` is mandatory (no silent bypass);
+    every use is logged to the immutable audit chain AND surfaces in the
+    supervisor's review queue -- it can't be stopped in the moment, but it is
+    never invisible, and a supervisor can revoke the grant immediately on
+    review (see /api/district-access/{request_id}/review)."""
+    target_district_id = payload.get("district_id")
+    reason = (payload.get("reason") or "").strip()
+    if target_district_id is None:
+        raise HTTPException(status_code=400, detail="district_id is required.")
+    if not reason:
+        raise HTTPException(status_code=400, detail="A justification is required to use emergency access.")
+    target_district_name = ""
+    if catalyst_app:
+        try:
+            d_res = catalyst_app.zql().execute_query(f"SELECT DistrictName FROM District WHERE DistrictID = {int(target_district_id)} LIMIT 1")
+            if d_res:
+                target_district_name = d_res[0].get("District", {}).get("DistrictName") or ""
+        except Exception:
+            pass
+    badge = getattr(request.state, "kgid", None)
+    officer_name = (getattr(request.state, "user_profile", {}) or {}).get("FirstName") or "Officer"
+    home_district_id = getattr(request.state, "home_district_id", None)
+    meta = create_emergency_district_access(
+        badge, officer_name, home_district_id, target_district_id, target_district_name, reason)
+    try:
+        employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId") or 4003385
+        agent_loop._write_audit_log(
+            employee_id, "EMERGENCY District Access (Break-Glass)",
+            target_district_name or str(target_district_id),
+            f"Officer {badge} self-granted emergency access to {target_district_name}: {reason}",
+            f"Approved -- expires {meta.get('grant_expires_at')}", f"session-{badge}")
+    except Exception as e:
+        logger.warning(f"emergency_district_access audit log: {e}")
+    return {"status": "approved", "request_id": meta.get("request_id"), "target_district": target_district_name,
+            "grant_expires_at": meta.get("grant_expires_at"), "emergency": True}
+
+
+@app.post("/api/district-access/{request_id}/review")
+async def review_district_access(request_id: str, payload: Dict[str, Any] = Body(default={}),
+                                 request: Request = None, location_context: str = Depends(security_firewall)):
+    """Supervisor-only: post-hoc acknowledgement of an emergency (break-glass)
+    grant, with an option to revoke it immediately if the use wasn't
+    justified."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    meta = mark_district_access_reviewed(request_id, request.state.kgid, revoke=bool(payload.get("revoke")))
+    if not meta:
+        raise HTTPException(status_code=404, detail="Access request not found.")
+    return {"status": meta.get("status"), "reviewed": True, "revoked": meta.get("status") == "revoked"}
+
+
 @app.get("/api/district-access/pending")
 async def list_pending_district_access(request: Request, location_context: str = Depends(security_firewall)):
-    """Supervisor-only: pending inter-district access requests."""
+    """Supervisor-only: pending inter-district access requests AWAITING a
+    decision, plus emergency (break-glass) grants awaiting post-hoc review --
+    the two are tagged distinctly (`emergency: true`) since one needs a
+    decision and the other only needs an acknowledgement."""
     if getattr(request.state, "role_tier", "officer") != "supervisor":
         raise HTTPException(status_code=403, detail="Supervisor access only.")
     out = []
@@ -5475,6 +5633,9 @@ async def list_pending_district_access(request: Request, location_context: str =
                 except Exception:
                     continue
                 if m.get("status") == "pending":
+                    m["rowid"] = a.get("ROWID")
+                    out.append(m)
+                elif m.get("emergency") and not m.get("reviewed"):
                     m["rowid"] = a.get("ROWID")
                     out.append(m)
         except Exception as e:
