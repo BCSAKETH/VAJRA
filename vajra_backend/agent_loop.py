@@ -2611,6 +2611,19 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     llm_res = {"choices": [{"message": {"content": json.dumps(fallback_decision)}}]}
                 else:
                     ai_unavailable = True
+                    # Confirmed live gap: unlike the compiler's own "AI
+                    # Planner Diagnostic" citation, this path -- the more
+                    # common one, hit on every plain Standard-mode turn --
+                    # never surfaced WHY GLM was unavailable (auth failure?
+                    # rate limit? genuine outage? guardrail refusal?), only
+                    # the generic officer-facing message. Real diagnosis
+                    # needed actual server-log access this session didn't
+                    # have; this closes that gap for next time.
+                    citations.append({
+                        "type": "AI Unavailable Diagnostic",
+                        "id": "standard",
+                        "details": f"GLM error: {str(llm_res.get('error'))[:200]}. Qwen and keyword-match fallbacks also found no usable tool for this message.",
+                    })
                     break
 
             try:

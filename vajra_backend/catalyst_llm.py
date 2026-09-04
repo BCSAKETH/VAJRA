@@ -267,8 +267,10 @@ class CatalystLLM:
         # confirmed the endpoint down -- avoids every chat turn during a real
         # outage paying the full [1, 2, 4]s backoff + 25s timeout before
         # falling back, mirroring get_cached_access_token()'s own retry pattern.
+        _last_failure_reason = "unknown"
         if _is_endpoint_marked_down():
             logger.info("Catalyst LLM endpoint recently confirmed down (in-process cooldown) -- skipping to fallback.")
+            _last_failure_reason = "skipped_cooldown_from_recent_failure"
         else:
             # Confirmed live: this is a "thinking" model that writes
             # extensive step-by-step reasoning before answering -- real
@@ -301,6 +303,7 @@ class CatalystLLM:
             # can now hold an officer's chat turn open for minutes before
             # ever falling back -- accepted deliberately in exchange for
             # letting slow-but-working turns actually complete.
+            _last_failure_reason = "unknown"
             for attempt, delay in enumerate([0, 3]):
                 if delay:
                     time.sleep(delay)
@@ -347,23 +350,28 @@ class CatalystLLM:
                         # loudly once and go straight to fallback instead of
                         # burning the retry budget.
                         logger.critical(f"Catalyst LLM endpoint misconfigured ({res.status_code}): {res.text}")
+                        _last_failure_reason = f"http_{res.status_code}: {res.text[:150]}"
                         _mark_endpoint_down()
                         break
 
                     if res.status_code == 429 or res.status_code >= 500:
                         logger.warning(f"Catalyst LLM transient error {res.status_code}, retrying: {res.text[:200]}")
+                        _last_failure_reason = f"http_{res.status_code}: {res.text[:150]}"
                         continue
 
                     # Any other 4xx (e.g. the current request-schema mismatch)
                     # is also not something a retry will fix.
                     logger.warning(f"Catalyst LLM API call failed with status: {res.status_code} - {res.text[:300]}")
+                    _last_failure_reason = f"http_{res.status_code}: {res.text[:150]}"
                     _mark_endpoint_down()
                     break
                 except requests.exceptions.Timeout:
                     logger.warning(f"Catalyst LLM request timed out (attempt {attempt + 1}), retrying.")
+                    _last_failure_reason = "timeout_90s"
                     continue
                 except Exception as e:
                     logger.error(f"Error calling Catalyst LLM Serving: {e}")
+                    _last_failure_reason = f"exception: {type(e).__name__}: {str(e)[:150]}"
                     _mark_endpoint_down()
                     break
             else:
@@ -380,8 +388,14 @@ class CatalystLLM:
         # presented as an answer at all, even a clearly-labeled one. Callers
         # (run_agent_loop, translate) check for this "error" key and stop
         # rather than trying to use any part of the response.
-        logger.warning("Catalyst LLM endpoint unavailable -- reporting unavailable rather than falling back to keyword simulation.")
-        return {"error": "llm_unavailable"}
+        #
+        # Confirmed live gap: this used to always return the bare string
+        # "llm_unavailable" regardless of WHY -- a 401 (real misconfigured
+        # credentials, fixable) and a 90s timeout (genuine upstream slowness,
+        # nothing to fix) look identical to every caller and every diagnostic
+        # citation built on top of this. The real reason is now preserved.
+        logger.warning(f"Catalyst LLM endpoint unavailable ({_last_failure_reason}) -- reporting unavailable rather than falling back to keyword simulation.")
+        return {"error": f"llm_unavailable ({_last_failure_reason})"}
 
     def translate(self, text: str, source_lang: str, target_lang: str) -> Dict[str, Any]:
         """
