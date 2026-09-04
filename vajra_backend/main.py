@@ -4491,6 +4491,54 @@ async def tts_endpoint(payload: TTSRequest, request: Request, location_context: 
     return Response(content=audio_bytes, media_type=media_type, headers={"X-Cache": cache_status})
 
 
+class SendInvestigationEmailRequest(BaseModel):
+    to_email: List[str]
+    subject: str
+    content: str
+    case_no: Optional[str] = None
+
+
+@app.post("/api/investigation/send-email")
+async def send_investigation_email(payload: SendInvestigationEmailRequest, request: Request,
+                                   location_context: str = Depends(security_firewall)):
+    """
+    Dispatches an investigation summary/update via Catalyst Mail. HONEST
+    LIMITATION: sending mail through Catalyst requires a sender address on a
+    domain verified in this project's Catalyst console (DNS-level proof of
+    ownership) -- something no amount of backend code can substitute for,
+    and this deployment has no CATALYST_MAIL_FROM_EMAIL configured, meaning
+    no domain has been verified yet. This endpoint is real and will actually
+    send mail the moment that env var points at a verified sender; until
+    then it fails with a clear, honest 503 rather than silently no-op'ing
+    or claiming success on a mail that never left Zoho's servers.
+    """
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    from_email = os.getenv("CATALYST_MAIL_FROM_EMAIL")
+    if not from_email:
+        raise HTTPException(
+            status_code=503,
+            detail="Email dispatch is not configured. Verify a sending domain in the Catalyst "
+                   "console (Mail component) and set CATALYST_MAIL_FROM_EMAIL to the verified "
+                   "sender address before this can send real mail."
+        )
+    if not payload.to_email or not payload.subject or not payload.content:
+        raise HTTPException(status_code=400, detail="to_email, subject, and content are required.")
+    try:
+        resp = catalyst_app.email().send_mail({
+            "from_email": from_email,
+            "to_email": payload.to_email,
+            "subject": payload.subject,
+            "content": payload.content,
+            "display_name": "VAJRA AI Copilot",
+        })
+        logger.info(f"Investigation email sent to {payload.to_email} (case {payload.case_no or 'n/a'})")
+        return {"status": "sent", "detail": resp}
+    except Exception as e:
+        logger.error(f"send_investigation_email failed: {e}")
+        raise HTTPException(status_code=502, detail=f"Email dispatch failed: {e}")
+
+
 @app.get("/api/voice/personas")
 async def list_voice_personas(location_context: str = Depends(security_firewall)):
     """Officer-selectable TTS delivery presets for the Settings screen."""
