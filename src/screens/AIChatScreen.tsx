@@ -78,6 +78,7 @@ export const AIChatScreen: React.FC = () => {
     addToast,
     addNotification,
     setIsAuthenticated,
+    voicePersona,
   } = useApp();
 
   const [inputVal, setInputVal] = useState("");
@@ -1145,6 +1146,7 @@ export const AIChatScreen: React.FC = () => {
               key={msg.id}
               message={msg}
               lang={lang}
+              voicePersona={voicePersona}
               onExpandWidget={(widgetType, widgetData) => setExpandedWidget({ type: widgetType as any, data: widgetData })}
               onRetry={msg.retryText ? () => handleSend(msg.retryText!) : undefined}
               onQuickReply={(text) => handleSend(text)}

@@ -4463,6 +4463,10 @@ async def review_consistency_flag(flag_id: int, payload: ReviewFlagRequest, requ
 class TTSRequest(BaseModel):
     text: str
     lang: str = "en"
+    # Voice persona (pitch/speed/emotion preset on the same per-language
+    # speaker) -- see catalyst_speech.VOICE_PERSONAS. Unknown/omitted values
+    # fall back to "standard" (this endpoint's original, always-safe params).
+    persona: str = "standard"
 
 
 @app.post("/api/voice/tts")
@@ -4477,13 +4481,44 @@ async def tts_endpoint(payload: TTSRequest, request: Request, location_context: 
     Performance: checks in-memory LRU and disk cache before calling Zia. Returns
     X-Cache: HIT on cache hits (0ms synthesis) or X-Cache: MISS on fresh synthesis.
     """
-    from catalyst_speech import synthesize_speech, get_tts_cache_status
-    cache_status = get_tts_cache_status(payload.text, payload.lang)
-    result = await run_in_threadpool(synthesize_speech, payload.text, payload.lang)
+    from catalyst_speech import synthesize_speech, get_tts_cache_status, VOICE_PERSONAS
+    persona = payload.persona if payload.persona in VOICE_PERSONAS else "standard"
+    cache_status = get_tts_cache_status(payload.text, payload.lang, persona)
+    result = await run_in_threadpool(synthesize_speech, payload.text, payload.lang, persona)
     if not result:
         raise HTTPException(status_code=502, detail="Speech synthesis is temporarily unavailable.")
     audio_bytes, media_type = result
     return Response(content=audio_bytes, media_type=media_type, headers={"X-Cache": cache_status})
+
+
+@app.get("/api/voice/personas")
+async def list_voice_personas(location_context: str = Depends(security_firewall)):
+    """Officer-selectable TTS delivery presets for the Settings screen."""
+    from catalyst_speech import VOICE_PERSONAS
+    labels = {
+        "standard": {"en": "Standard", "kn": "ಸ್ಟ್ಯಾಂಡರ್ಡ್"},
+        "calm": {"en": "Calm", "kn": "ಶಾಂತ"},
+        "warm": {"en": "Warm", "kn": "ಆತ್ಮೀಯ"},
+        "urgent": {"en": "Urgent", "kn": "ತುರ್ತು"},
+    }
+    return {"personas": [{"id": p, "label": labels.get(p, {"en": p, "kn": p})} for p in VOICE_PERSONAS]}
+
+
+@app.get("/api/voice/_probe-persona")
+async def probe_persona_endpoint(persona: str, lang: str = "en", request: Request = None,
+                                 location_context: str = Depends(security_firewall)):
+    """
+    Supervisor-only diagnostic: makes ONE real (uncached) Zia TTS call with
+    the given persona's pitch/speed/emotion and returns Zia's raw
+    status/response, so a new persona preset can be confirmed to actually
+    work before it's ever offered to officers -- rather than discovering a
+    bad enum value from a silent 502 in the field.
+    """
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    from catalyst_speech import probe_persona
+    result = await run_in_threadpool(probe_persona, persona, lang)
+    return result
 
 
 class TranslateRequest(BaseModel):

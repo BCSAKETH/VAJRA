@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { Settings, ShieldCheck, Database, Languages, Clock, User, IdCard, MapPin, Lock, Pencil, X, Hourglass } from "lucide-react";
+import { Settings, ShieldCheck, Database, Languages, Clock, User, IdCard, MapPin, Lock, Pencil, X, Hourglass, Mic2 } from "lucide-react";
 
 interface OfficerProfile {
   kgid: string;
@@ -22,8 +22,28 @@ export const SettingsScreen: React.FC = () => {
     isDbConnected,
     theme,
     setTheme,
+    voicePersona,
+    setVoicePersona,
     addToast,
   } = useApp();
+
+  // Voice persona options -- fetched from the live /api/voice/personas list
+  // (each preset already verified against real Zia synthesis; see
+  // catalyst_speech.py VOICE_PERSONAS) rather than hardcoded here, so a
+  // future persona added server-side shows up without a frontend redeploy.
+  const [personaOptions, setPersonaOptions] = useState<{ id: string; label: { en: string; kn: string } }[]>([
+    { id: "standard", label: { en: "Standard", kn: "ಸ್ಟ್ಯಾಂಡರ್ಡ್" } },
+  ]);
+  useEffect(() => {
+    fetch(`${API_BASE}/api/voice/personas`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.personas?.length) setPersonaOptions(data.personas);
+      })
+      .catch(() => {});
+  }, []);
 
   const [profile, setProfile] = useState<OfficerProfile | null>(null);
   useEffect(() => {
@@ -222,6 +242,25 @@ export const SettingsScreen: React.FC = () => {
                 >
                   <option value="high-contrast-dark">{t.settingsThemeDark}</option>
                   <option value="light">{t.settingsThemeLight}</option>
+                </select>
+              </div>
+
+              {/* Voice Persona Selector -- delivery preset for the AI's
+                  spoken-answer TTS (pitch/speed/emotion), same voice/speaker
+                  per language either way. */}
+              <div className="flex justify-between items-center bg-stone-950/40 p-3 rounded-lg border border-stone-900">
+                <span className="font-semibold text-stone-400 flex items-center gap-1.5">
+                  <Mic2 className="w-3.5 h-3.5 text-[#C79A4E]" />
+                  {lang === "en" ? "Voice Persona" : "ಧ್ವನಿ ವ್ಯಕ್ತಿತ್ವ"}
+                </span>
+                <select
+                  value={voicePersona}
+                  onChange={(e) => setVoicePersona(e.target.value)}
+                  className="bg-stone-900 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-2.5 py-1 text-stone-200 font-bold text-xs"
+                >
+                  {personaOptions.map((p) => (
+                    <option key={p.id} value={p.id}>{lang === "en" ? p.label.en : p.label.kn}</option>
+                  ))}
                 </select>
               </div>
             </div>

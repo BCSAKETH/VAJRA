@@ -114,6 +114,8 @@ interface AppContextType {
   removeNotification: (id: string) => void;
   theme: "light" | "high-contrast-dark";
   setTheme: (theme: "light" | "high-contrast-dark") => void;
+  voicePersona: string;
+  setVoicePersona: (persona: string) => void;
   selectedFirNo: string | null;
   setSelectedFirNo: (firNo: string | null) => void;
   chatMessages: ChatMessage[];
@@ -212,6 +214,16 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
   const [theme, setThemeState] = useState<"light" | "high-contrast-dark">(( ) => {
     const saved = localStorage.getItem("vajra_theme");
     return saved === "light" || saved === "high-contrast-dark" ? saved : "high-contrast-dark";
+  });
+
+  // Voice persona: officer's preferred TTS delivery preset (pitch/speed/
+  // emotion on the same per-language speaker -- see catalyst_speech.py's
+  // VOICE_PERSONAS). Defaults to "standard", same params TTS always used
+  // before this existed, so nobody who never opens the picker notices a
+  // change. Validated against the live /api/voice/personas list on load so
+  // a stale saved id from a removed preset can't silently break playback.
+  const [voicePersona, setVoicePersonaState] = useState<string>(() => {
+    return localStorage.getItem("vajra_voice_persona") || "standard";
   });
 
   const [selectedFirNo, setSelectedFirNoState] = useState<string | null>(() => {
@@ -345,6 +357,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     setThemeState(newTheme);
   };
 
+  useEffect(() => {
+    localStorage.setItem("vajra_voice_persona", voicePersona);
+  }, [voicePersona]);
+
+  const setVoicePersona = (persona: string) => {
+    setVoicePersonaState(persona);
+  };
+
   const setLang = (newLang: Language) => {
     setLangState(newLang);
   };
@@ -434,6 +454,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         removeNotification,
         theme,
         setTheme,
+        voicePersona,
+        setVoicePersona,
         selectedFirNo,
         setSelectedFirNo,
         chatMessages,

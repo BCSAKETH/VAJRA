@@ -9,6 +9,11 @@ import { API_BASE } from "../config";
 interface ChatBubbleProps {
   message: ChatMessage;
   lang: "en" | "kn";
+  // TTS delivery preset (pitch/speed/emotion) -- see catalyst_speech.py's
+  // VOICE_PERSONAS. Optional so any caller that doesn't pass one (there
+  // shouldn't be any, but this stays defensive) gets the server's own
+  // "standard" default via the backend's own fallback.
+  voicePersona?: string;
   onExpandWidget: (type: string, data: any) => void;
   onRetry?: () => void;
   // Clickable-answer overlay for a clarifying question: only rendered when
@@ -213,7 +218,7 @@ const speakText = (text: string, lang: "en" | "kn", onEnd: () => void): SpeakRes
 };
 
 export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
-  message, lang, onExpandWidget, onRetry, onQuickReply, addToast, isLast,
+  message, lang, voicePersona, onExpandWidget, onRetry, onQuickReply, addToast, isLast,
   onEditMessage, onRetryVariant, totalVariants, activeVariantIndex, onCycleVariant,
 }) => {
   const t = translations[lang];
@@ -501,7 +506,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     // between chunks, never a cutoff of the whole message).
     const firstChunk = splitIntoSpeechChunks(toSpeak)[0];
     if (!firstChunk) return;
-    const key = `${message.id}:${vlang}:0`;
+    const key = `${message.id}:${vlang}:${voicePersona || "standard"}:0`;
     if (_ttsCache.has(key) || _ttsPending.has(key)) return;
     // RACE CONDITION FIX: when effectiveLang is "kn" but the text is still in
     // English (translation hasn't arrived yet), DON'T send English text to the
@@ -519,7 +524,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
         const r = await fetch(`${API_BASE}/api/voice/tts`, {
           method: "POST",
           headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-          body: JSON.stringify({ text: firstChunk, lang: vlang }),
+          body: JSON.stringify({ text: firstChunk, lang: vlang, persona: voicePersona || "standard" }),
           signal: ctrl.signal,
         });
         if (!r.ok) return null;
@@ -537,7 +542,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
       finally { clearTimeout(to); _ttsPending.delete(key); }
     })();
     _ttsPending.set(key, p);
-  }, [isLast, isAI, message.id, message.isSimulated, effectiveLang, getSpeakText]);
+  }, [isLast, isAI, message.id, message.isSimulated, effectiveLang, getSpeakText, voicePersona]);
 
   // Plays ONE chunk to completion (server Zia audio, falling back to the
   // browser voice for just this chunk if the server fails) and resolves only
@@ -564,7 +569,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
               "Content-Type": "application/json",
               "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
             },
-            body: JSON.stringify({ text, lang: vlang }),
+            body: JSON.stringify({ text, lang: vlang, persona: voicePersona || "standard" }),
             signal: ctrl.signal,
           });
         } finally {
@@ -607,7 +612,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     let anyPlayed = false;
     for (let i = 0; i < chunks.length; i++) {
       if (speakCancelRef.current) break;
-      const key = `${message.id}:${vlang}:${i}`;
+      const key = `${message.id}:${vlang}:${voicePersona || "standard"}:${i}`;
       const ok = await playChunk(chunks[i], vlang, key);
       anyPlayed = anyPlayed || ok;
       if (speakCancelRef.current) break;

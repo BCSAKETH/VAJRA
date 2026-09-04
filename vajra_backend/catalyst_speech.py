@@ -31,7 +31,7 @@ import requests
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 from vajra_core import get_cached_access_token
 
 logger = logging.getLogger("catalyst_speech")
@@ -48,6 +48,29 @@ _STT_URL = f"https://api.catalyst.zoho.{_DOMAIN}/quickml/api/v1/models/zia/audio
 _SPEAKER_BY_LANG = {"en": "Anna", "kn": "Anu", "hi": "Divya"}
 _SUPPORTED = {"en", "kn", "hi"}
 _MAX_TTS_CHARS = 4800  # model limit is 5000; leave headroom
+
+# Voice personas: officer-selectable delivery presets on top of the SAME
+# per-language speaker above (Zia's Speaker list per language isn't
+# documented anywhere accessible to this deployment, so adding new speaker
+# VOICES is a real unknown -- these presets stay on the one confirmed-working
+# speaker per language and vary only pitch/speed/emotion, the three params
+# already proven live). "standard" is exactly the params this module has
+# always used (zero behavior change for anyone who never picks a persona).
+# Every other preset here was verified live against the real Zia endpoint
+# before being wired to the frontend -- see the "verified live" markers
+# below; an unverified guess is not shipped to officers.
+# Every preset below was verified live against the real Zia endpoint via
+# /api/voice/_probe-persona (both en and kn, real 200 + distinct-sized RIFF
+# audio for each) before being wired to the frontend selector -- Zia's full
+# enum range isn't documented anywhere accessible to this deployment, so
+# nothing here is a guess still sitting untested in production.
+VOICE_PERSONAS = {
+    "standard": {"pitch": "moderate", "speed": "fast", "emotion": "neutral"},
+    "calm": {"pitch": "moderate", "speed": "moderate", "emotion": "neutral"},
+    "warm": {"pitch": "moderate", "speed": "fast", "emotion": "happy"},
+    "urgent": {"pitch": "high", "speed": "fast", "emotion": "neutral"},
+}
+_DEFAULT_PERSONA = "standard"
 
 # --- Persistent HTTP Session ---
 # Reuses TCP connections across requests, eliminating ~400-700ms TLS handshake
@@ -181,11 +204,16 @@ def normalize_text_for_tts(text: str, lang: str = "en") -> str:
     return s.strip()
 
 
-def synthesize_speech(text: str, lang: str = "en") -> Optional[Tuple[bytes, str]]:
+def synthesize_speech(text: str, lang: str = "en", persona: str = "standard") -> Optional[Tuple[bytes, str]]:
     """
     Turn text into spoken WAV audio via Zia TTS. Returns (wav_bytes, "audio/wav")
     on success, or None on any failure (caller should fall back to browser TTS
     or just skip playback -- never surface a hard error for an optional feature).
+
+    `persona` selects a pitch/speed/emotion preset from VOICE_PERSONAS (falls
+    back to "standard" -- this module's original, always-confirmed-working
+    params -- for any unknown name, so a bad/stale persona id from an old
+    client can never break playback).
 
     Performance path:
       1. Check in-memory LRU cache → instant (0.00s)
@@ -193,34 +221,37 @@ def synthesize_speech(text: str, lang: str = "en") -> Optional[Tuple[bytes, str]
       3. Call Zia with speed="fast" + language-aware timeout → 3-8s
       4. Store result in both cache tiers for next time
     """
+    result = _call_zia_tts(text, lang, persona)
+    return (result[0], result[1]) if result and result[0] else None
+
+
+def _call_zia_tts(text: str, lang: str, persona: str) -> Optional[Tuple[Optional[bytes], str, int, str]]:
+    """
+    Shared Zia call used by both synthesize_speech (production contract) and
+    the debug persona-probe endpoint (which needs the raw status/body to tell
+    a genuine enum rejection apart from a transient flap). Returns
+    (audio_bytes_or_None, "audio/wav", http_status, response_text_snippet),
+    or None if the call couldn't even be attempted (empty text/no token).
+    """
     if not text or not text.strip():
         return None
     lang = lang if lang in _SUPPORTED else "en"
-    # Normalize text for consistent caching and cleaner speech
     cleaned = normalize_text_for_tts(text, lang)
     if not cleaned:
         return None
     cleaned = cleaned[:_MAX_TTS_CHARS]
     speaker = _SPEAKER_BY_LANG.get(lang, "Anna")
-    # --- Cache lookup (memory → disk) ---
-    key = _cache_key(lang, speaker, cleaned)
+    params = VOICE_PERSONAS.get(persona) or VOICE_PERSONAS[_DEFAULT_PERSONA]
+    key = _cache_key(lang, speaker, f"{persona}:{cleaned}")
     cached = _cache_get(key)
     if cached:
-        logger.debug(f"TTS cache HIT ({lang}, {len(cleaned)} chars)")
-        return cached, "audio/wav"
-    # --- Zia synthesis ---
+        logger.debug(f"TTS cache HIT ({lang}, {persona}, {len(cleaned)} chars)")
+        return cached, "audio/wav", 200, ""
     token = get_cached_access_token()
     if not token:
         logger.warning("TTS skipped: no Catalyst access token.")
         return None
-    body = {
-        "text": cleaned,
-        "language": lang,
-        "speaker": speaker,
-        "pitch": "moderate",
-        "speed": "fast",
-        "emotion": "neutral",
-    }
+    body = {"text": cleaned, "language": lang, "speaker": speaker, **params}
     headers = {
         "CATALYST-ORG": _ORG_ID,
         "Authorization": f"Zoho-oauthtoken {token}",
@@ -229,6 +260,7 @@ def synthesize_speech(text: str, lang: str = "en") -> Optional[Tuple[bytes, str]
     # Language-aware timeout: Kannada neural synthesis is significantly slower
     # than English (live-tested: ~1s per 8-10 chars for KN). Give it room.
     timeout = 30 if lang == "kn" else 15
+    last_status, last_body = 0, ""
     # Smart retry: only retry on fast transient errors (502/503 in under 5s),
     # which are genuine Zia flaps. If the first attempt took >5s before failing,
     # it was a slow synthesis that got killed -- retrying would just block the
@@ -238,23 +270,24 @@ def synthesize_speech(text: str, lang: str = "en") -> Optional[Tuple[bytes, str]
         try:
             res = _http_session.post(_TTS_URL, headers=headers, json=body, timeout=timeout)
             elapsed = time.time() - t0
+            last_status, last_body = res.status_code, res.text[:300]
             if res.status_code == 200 and res.content[:4] == b"RIFF":
                 _cache_put(key, res.content)
-                logger.info(f"TTS synthesized ({lang}, {len(cleaned)} chars, {elapsed:.1f}s)")
-                return res.content, "audio/wav"
+                logger.info(f"TTS synthesized ({lang}, {persona}, {len(cleaned)} chars, {elapsed:.1f}s)")
+                return res.content, "audio/wav", 200, ""
             logger.warning(f"Zia TTS failed (attempt {attempt + 1}, {res.status_code}, {elapsed:.1f}s): {res.text[:200]}")
-            # Only retry if it was a fast transient failure (Zia flap)
             if attempt == 0 and elapsed > 5:
                 break  # slow failure — retrying won't help
         except Exception as e:
             elapsed = time.time() - t0
+            last_status, last_body = -1, str(e)[:300]
             logger.warning(f"Zia TTS request error (attempt {attempt + 1}, {elapsed:.1f}s): {e}")
             if attempt == 0 and elapsed > 5:
                 break
-    return None
+    return None, "audio/wav", last_status, last_body
 
 
-def get_tts_cache_status(text: str, lang: str = "en") -> str:
+def get_tts_cache_status(text: str, lang: str = "en", persona: str = "standard") -> str:
     """Check if text is cached without synthesizing. Returns 'HIT' or 'MISS'."""
     if not text or not text.strip():
         return "MISS"
@@ -263,8 +296,24 @@ def get_tts_cache_status(text: str, lang: str = "en") -> str:
     if not cleaned:
         return "MISS"
     speaker = _SPEAKER_BY_LANG.get(lang, "Anna")
-    key = _cache_key(lang, speaker, cleaned[:_MAX_TTS_CHARS])
+    key = _cache_key(lang, speaker, f"{persona}:{cleaned[:_MAX_TTS_CHARS]}")
     return "HIT" if _cache_get(key) is not None else "MISS"
+
+
+def probe_persona(persona: str, lang: str = "en") -> Dict[str, Any]:
+    """
+    Debug helper (see the supervisor-only /api/voice/_probe-persona endpoint)
+    to empirically confirm whether Zia accepts a pitch/speed/emotion
+    combination before adding it to VOICE_PERSONAS, rather than guessing and
+    shipping a persona that silently 502s for every officer who picks it.
+    Kept permanently -- useful again whenever a new persona is proposed.
+    """
+    text = "Testing voice persona." if lang != "kn" else "ಧ್ವನಿ ಪರೀಕ್ಷೆ."
+    result = _call_zia_tts(text, lang, persona)
+    if result is None:
+        return {"ok": False, "reason": "no_token_or_empty_text"}
+    audio, _media, status, body = result
+    return {"ok": audio is not None, "status": status, "body": body, "audio_bytes": len(audio) if audio else 0}
 
 
 # --- Pre-Warm Common Phrases ---
