@@ -43,7 +43,7 @@ from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 import pandas as pd
 import joblib
-from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, status, Request, WebSocket, WebSocketDisconnect, Query, Body
+from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException, status, Request, WebSocket, WebSocketDisconnect, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
@@ -165,6 +165,16 @@ class ConnectionManager:
                 del self.active_connections[session_id]
 
     async def broadcast(self, session_id: str, message: Dict[str, Any]):
+        # Real path in production: this WebSocket loop below has never
+        # actually reached a browser on the deployed app (see cowork_feed.py's
+        # docstring -- the gateway 404s the upgrade). Publishing here too
+        # means every existing broadcast() call site (5 of them) gets the
+        # real SSE feed for free, with no per-call-site changes needed.
+        try:
+            import cowork_feed
+            cowork_feed.publish(session_id, message)
+        except Exception:
+            pass
         for ws in list(self.active_connections.get(session_id, [])):
             try:
                 await ws.send_json(message)
@@ -2551,7 +2561,20 @@ async def get_attachment(stratus_key: str, request: Request, location_context: s
         bucket = catalyst_app.stratus().bucket(ATTACHMENTS_BUCKET)
         obj = bucket.get_object(key=stratus_key)
         content = obj.content if hasattr(obj, "content") else obj
-        return Response(content=content, media_type="image/jpeg")
+        # Confirmed bug: this used to hardcode "image/jpeg" for every
+        # attachment -- invisible while only JPEGs were ever stored, but
+        # would have silently broken audio playback (a browser <audio> tag
+        # trusts the declared Content-Type) the moment audio attachments
+        # were added. Infer the real type from the key's own extension
+        # (store_attachment always writes "<uuid>.<extension>").
+        _ext_to_mime = {
+            "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+            "wav": "audio/wav", "mp3": "audio/mpeg", "webm": "audio/webm", "ogg": "audio/ogg",
+            "mp4": "video/mp4", "webmv": "video/webm",
+        }
+        _ext = stratus_key.rsplit(".", 1)[-1].lower() if "." in stratus_key else "jpg"
+        media_type = _ext_to_mime.get(_ext, "image/jpeg")
+        return Response(content=content, media_type=media_type)
     except Exception as e:
         logger.warning(f"Could not retrieve attachment '{stratus_key}' from Stratus: {e}")
         raise HTTPException(status_code=404, detail="Attachment not found or storage unavailable.")
@@ -2999,6 +3022,49 @@ async def chat_progress_stream(session_id: str, request: Request, location_conte
                 yield f"data: {json.dumps({'done': True})}\n\n"
                 break
             await asyncio.sleep(0.7)
+
+    return StreamingResponse(_gen(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/cowork/stream/{session_id}")
+async def cowork_message_stream(session_id: str, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Real-time Cowork message push over SSE -- replaces the 4-second poll
+    (see cowork_feed.py's docstring for why SSE, not WebSocket, is the real
+    working mechanism on this platform). Every message ConnectionManager.
+    broadcast() already sends (user messages, assistant replies, both
+    persisted turns) lands here with sub-second latency instead of waiting
+    for the next poll tick. Self-closes after a bounded ceiling so no
+    connection stays open forever; the frontend reconnects immediately,
+    same reconnect-loop pattern as the existing progress ticker.
+    """
+    import cowork_feed
+    cowork_feed.cleanup_stale()
+
+    async def _gen():
+        since = 0
+        deadline = time.time() + 300  # bounded ceiling; frontend reconnects on close
+        last_activity = time.time()
+        while time.time() < deadline:
+            if await request.is_disconnected():
+                break
+            new, since = cowork_feed.get_since(session_id, since)
+            if new:
+                last_activity = time.time()
+            for msg in new:
+                yield f"data: {json.dumps(msg, default=str)}\n\n"
+            # A quiet Cowork thread (nobody typing for a while) would otherwise
+            # send zero bytes for minutes -- some intermediary between here
+            # and the browser could treat that as a hung connection and kill
+            # it well before the 300s ceiling. A `:`-prefixed SSE comment line
+            # is invisible to the frontend's own line parser (it only acts on
+            # lines starting with "data:") but keeps real bytes flowing.
+            if time.time() - last_activity > 15:
+                yield ": keep-alive\n\n"
+                last_activity = time.time()
+            await asyncio.sleep(0.3)
+        yield f"data: {json.dumps({'_reconnect': True})}\n\n"
 
     return StreamingResponse(_gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -3609,7 +3675,23 @@ MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024
 MAX_ATTACHMENTS_PER_MESSAGE = 3
 MAX_AGGREGATE_BYTES = 20 * 1024 * 1024
 MAX_IMAGE_DIMENSION = 1568
-ALLOWED_ATTACHMENT_TYPES = {"application/pdf", "image/jpeg", "image/jpg"}
+# PNG added (was JPEG-only). Audio types added: transcribed via the REAL,
+# already-working Zia STT (catalyst_speech.transcribe_audio, previously only
+# wired to the live-mic endpoint, never to file uploads). Video is accepted
+# for STORAGE AND PLAYBACK ONLY -- no automated content analysis. No frame-
+# extraction library is vendored (no opencv/PyAV/ffmpeg; only Pillow is
+# installed), and adding one this close to the deadline risks the ~1GB
+# vendor disk cap and an untested native dependency. An officer can still
+# upload and play back a CCTV/interrogation clip; the honest limitation is
+# disclosed directly in attachment_analysis rather than silently doing
+# nothing or fabricating a description of content nobody actually looked at.
+ALLOWED_ATTACHMENT_TYPES = {
+    "application/pdf", "image/jpeg", "image/jpg", "image/png",
+    "audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3", "audio/webm", "audio/ogg",
+    "video/mp4", "video/webm",
+}
+AUDIO_ATTACHMENT_TYPES = {"audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3", "audio/webm", "audio/ogg"}
+VIDEO_ATTACHMENT_TYPES = {"video/mp4", "video/webm"}
 
 
 def _downscale_image(image_bytes: bytes) -> bytes:
@@ -3676,17 +3758,39 @@ def _stitch_vertical(image_bytes_list: List[bytes], gap: int = 10) -> bytes:
 async def upload_chat_attachments(
     request: Request,
     files: List[UploadFile] = File(...),
+    lang: str = Form("en"),
     location_context: str = Depends(security_firewall)
 ):
     """
-    Accepts PDF/JPEG evidence attachments alongside a chat message. Rasterizes
-    PDFs to page images (capped at 3 pages), downscales every image to
-    MAX_IMAGE_DIMENSION regardless of upload size, stores each in Stratus
-    (see catalyst_stratus.py), and calls Qwen for extraction/description.
+    Accepts PDF/JPEG/PNG/audio/video evidence attachments alongside a chat
+    message. Rasterizes PDFs to page images (capped at 3 pages), downscales
+    every image to MAX_IMAGE_DIMENSION regardless of upload size, stores
+    each in Stratus (see catalyst_stratus.py), and calls Qwen for
+    extraction/description. Audio files are transcribed via the real Zia
+    STT (catalyst_speech.transcribe_audio) instead of vision analysis --
+    that function already existed for the live-mic endpoint but was never
+    wired to file uploads, so an uploaded interrogation/witness recording
+    had no analysis path at all. Video gets REAL timestamped analysis too:
+    a vendored static ffmpeg binary (av_analysis.py, imageio_ffmpeg -- bundled
+    directly in the deploy, no runtime download) samples up to 3 real frames
+    across the clip's actual duration and Qwen describes each one against
+    its real timestamp; long audio (>30s) is split into real, exactly-timed
+    chunks and each is transcribed separately for a genuine per-segment
+    timeline instead of one flat transcript. Any ffmpeg failure (missing
+    binary, corrupt media, timeout) falls back to the honest store-only /
+    single-shot-transcript path -- never a fabricated timestamp or frame
+    description. Only the FIRST video and FIRST long-audio in a batch get
+    this deeper pass, to keep total processing inside AppSail's ~30s
+    request ceiling; any additional ones are stored only, disclosed as such.
     Frontend calls this BEFORE /api/chat when a message has attachments,
     then prepends attachment_analysis to the query text as context.
     """
     from catalyst_stratus import store_attachment
+    from catalyst_speech import transcribe_audio
+    from av_analysis import extract_video_frames, chunk_audio, get_media_duration, format_timestamp
+
+    _deep_video_used = False
+    _deep_audio_used = False
 
     if len(files) > MAX_ATTACHMENTS_PER_MESSAGE:
         raise HTTPException(
@@ -3696,16 +3800,24 @@ async def upload_chat_attachments(
 
     aggregate_size = 0
     processed_images: List[bytes] = []
+    audio_transcripts: List[str] = []
+    video_notes: List[str] = []
     attachment_refs: List[Dict[str, Any]] = []
 
     for f in files:
         content = await f.read()
         aggregate_size += len(content)
 
-        if len(content) > MAX_ATTACHMENT_BYTES:
+        # Video gets its own, higher per-file ceiling (a useful clip is
+        # rarely under 8MB) but stays inside the existing 20MB aggregate
+        # cap -- a single video can use the whole budget, multiple videos
+        # in one message still can't exceed it, so no platform request-size
+        # assumption elsewhere in the stack needs to change.
+        per_file_cap = MAX_AGGREGATE_BYTES if f.content_type in VIDEO_ATTACHMENT_TYPES else MAX_ATTACHMENT_BYTES
+        if len(content) > per_file_cap:
             raise HTTPException(
                 status_code=400,
-                detail=f"'{f.filename}' exceeds the 8 MB per-file limit."
+                detail=f"'{f.filename}' exceeds the {per_file_cap // (1024*1024)} MB per-file limit."
             )
         if aggregate_size > MAX_AGGREGATE_BYTES:
             raise HTTPException(
@@ -3715,7 +3827,7 @@ async def upload_chat_attachments(
         if f.content_type not in ALLOWED_ATTACHMENT_TYPES:
             raise HTTPException(
                 status_code=400,
-                detail=f"'{f.filename}' has unsupported type '{f.content_type}'. Only PDF and JPEG are allowed."
+                detail=f"'{f.filename}' has unsupported type '{f.content_type}'. Only PDF, JPEG/PNG, audio (wav/mp3/webm/ogg), and video (mp4/webm) are allowed."
             )
 
         page_count = 1
@@ -3739,6 +3851,76 @@ async def upload_chat_attachments(
             # now uses when there's more than one page.
             page_stratus_ids = [store_attachment(p, "jpg", "image/jpeg") for p in downscaled_pages]
             stratus_key = page_stratus_ids[0]
+        elif f.content_type in AUDIO_ATTACHMENT_TYPES:
+            ext = (f.filename or "audio").rsplit(".", 1)[-1].lower() if "." in (f.filename or "") else "wav"
+            stratus_key = store_attachment(content, ext, f.content_type)
+            page_stratus_ids = [stratus_key] if stratus_key else []
+            segments = []
+            if not _deep_audio_used:
+                try:
+                    segments = chunk_audio(content, ext, chunk_sec=20, max_chunks=3)
+                except Exception as ex:
+                    logger.warning(f"audio chunking failed for '{f.filename}': {ex}")
+                _deep_audio_used = True  # only the first long clip gets chunked, regardless of outcome
+            if segments:
+                lines = [f"[Audio Timeline -- {f.filename}] (real {len(segments)}-segment breakdown, ~20s each):"]
+                for start, end, wav_bytes in segments:
+                    seg_text = transcribe_audio(wav_bytes, f"seg.wav", "audio/wav", lang=lang)
+                    lines.append(
+                        f"  {format_timestamp(start)}-{format_timestamp(end)}: {seg_text}" if seg_text
+                        else f"  {format_timestamp(start)}-{format_timestamp(end)}: [inaudible / transcription failed for this segment]"
+                    )
+                audio_transcripts.append("\n".join(lines))
+            else:
+                transcript = transcribe_audio(content, f.filename or f"audio.{ext}", f.content_type, lang=lang)
+                audio_transcripts.append(
+                    f"[Audio Transcript -- {f.filename}]: {transcript}" if transcript
+                    else f"[Audio Transcript -- {f.filename}]: transcription unavailable (Zia STT returned no usable result)."
+                )
+        elif f.content_type in VIDEO_ATTACHMENT_TYPES:
+            # "webmv" (not "webm") deliberately -- audio/webm already claims
+            # the ".webm" extension in Stratus keys (see get_attachment's
+            # extension->mimetype map); a real video/webm needs its own
+            # extension so the two content-types can't collide on the same
+            # stored key format.
+            ext = "mp4" if f.content_type == "video/mp4" else "webmv"
+            stratus_key = store_attachment(content, ext, f.content_type)
+            page_stratus_ids = [stratus_key] if stratus_key else []
+            real_ext = "mp4" if f.content_type == "video/mp4" else "webm"
+            frames = []
+            if not _deep_video_used:
+                try:
+                    frames = extract_video_frames(content, real_ext, max_frames=3)
+                except Exception as ex:
+                    logger.warning(f"video frame extraction failed for '{f.filename}': {ex}")
+                _deep_video_used = True
+            if frames:
+                try:
+                    qwen_v = CatalystQwen()
+                    ts_list = ", ".join(format_timestamp(t) for t, _ in frames)
+                    instruction = (
+                        f"These {len(frames)} images are frames sampled from a video attachment, in order, at "
+                        f"real timestamps {ts_list}. For EACH frame in order, on its own line prefixed with its "
+                        f"exact timestamp (e.g. '{format_timestamp(frames[0][0])}: ...'), describe what is "
+                        f"visible and flag anything investigatively relevant -- people, vehicles/plates, "
+                        f"actions, visible text. Be concise and factual; this is for a police case file."
+                    )
+                    vres = qwen_v.analyze([b for _, b in frames], instruction=instruction)
+                    if vres.get("available") and vres.get("text"):
+                        video_notes.append(f"[Video Analysis -- {f.filename}] (sampled {len(frames)} frames):\n{vres['text']}")
+                    else:
+                        video_notes.append(
+                            f"[Video Attachment -- {f.filename}]: {len(frames)} frames extracted but Qwen vision "
+                            f"analysis was unavailable -- review manually."
+                        )
+                except Exception as ex:
+                    logger.warning(f"video Qwen analysis failed for '{f.filename}': {ex}")
+                    video_notes.append(f"[Video Attachment -- {f.filename}]: stored for playback; frame analysis failed -- review manually.")
+            else:
+                video_notes.append(
+                    f"[Video Attachment -- {f.filename}]: stored for playback. Automated frame analysis was not "
+                    f"available for this file (ffmpeg extraction unavailable or failed) -- review the video manually."
+            )
         else:
             downscaled = _downscale_image(content)
             processed_images.append(downscaled)
@@ -3753,13 +3935,32 @@ async def upload_chat_attachments(
             "page_stratus_ids": page_stratus_ids,
         })
 
-    qwen = CatalystQwen()
-    analysis = qwen.analyze(processed_images)
+    analysis_text_parts: List[str] = []
+    analysis_available = False
+    if processed_images:
+        qwen = CatalystQwen()
+        vis = qwen.analyze(processed_images)
+        analysis_available = analysis_available or vis["available"]
+        if vis["text"]:
+            analysis_text_parts.append(vis["text"])
+    if audio_transcripts:
+        analysis_available = analysis_available or any("unavailable" not in t for t in audio_transcripts)
+        analysis_text_parts.extend(audio_transcripts)
+    if video_notes:
+        # Never counted toward analysis_available -- storing a file isn't
+        # "analysis," and claiming otherwise would overstate what happened.
+        analysis_text_parts.extend(video_notes)
 
+    # TEMPORARY -- see av_analysis.py's _last_debug docstring. Exposes why
+    # ffmpeg-based chunking/frame-extraction did or didn't run, since this
+    # can only be verified against the real deployed container. Remove once
+    # confirmed working.
+    from av_analysis import get_last_debug
     return {
-        "attachment_analysis": analysis["text"],
-        "analysis_available": analysis["available"],
-        "attachments": attachment_refs
+        "attachment_analysis": "\n\n".join(analysis_text_parts),
+        "analysis_available": analysis_available,
+        "attachments": attachment_refs,
+        "_debug_av": get_last_debug(),
     }
 
 

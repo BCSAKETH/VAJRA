@@ -194,6 +194,56 @@ class CatalystQwen:
 
         return {"available": False, "text": text}
 
+    def plan(self, system_prompt: str, user_content: str, max_tokens: int = 3500) -> Optional[str]:
+        """
+        Generic single-shot planning fallback for vajra_cognitive_brain.py's
+        semantic compiler: when GLM's own planning call errors out OR hits
+        its baked-in guardrail refusal (confirmed live -- see catalyst_llm.py's
+        _is_guardrail_refusal), the compiler previously had NO fallback at
+        all for this specific call (unlike the agent loop's tool-selection
+        call, which already falls back to decide_tool() above) -- both
+        retry attempts just hit the same unreliable GLM path twice. Reuses
+        this same Qwen deployment as a differently-tuned second model that
+        doesn't share GLM's outage windows or this exact guardrail quirk.
+        Returns the raw response text for the caller to JSON-parse (same
+        contract as GLM's own raw content), or None on any failure -- never
+        a fabricated plan.
+        """
+        if not self.is_configured():
+            return None
+        token = get_cached_access_token()
+        if not token:
+            return None
+        headers = {
+            "Authorization": f"Zoho-oauthtoken {token}",
+            "Content-Type": "application/json",
+            "CATALYST-ORG": self.org_id
+        }
+        if self.endpoint_key:
+            headers["X-QUICKML-ENDPOINT-KEY"] = self.endpoint_key
+        prompt = f"{system_prompt}\n\nOfficer's request: {user_content}"
+        payload = {
+            "prompt": prompt,
+            "model": self.model_name,
+            "images": [_BLANK_PNG_B64],
+            "system_prompt": "Output only a single valid JSON object, nothing else -- no prose, no markdown.",
+            "top_k": 50,
+            "top_p": 0.9,
+            "temperature": 0.1,
+            "max_tokens": max_tokens
+        }
+        try:
+            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
+            if res.status_code == 200:
+                data = res.json()
+                text = (data.get("response") or "").strip()
+                if text:
+                    return text
+            logger.warning(f"Qwen planning fallback failed: {res.status_code} - {res.text[:300]}")
+        except Exception as e:
+            logger.error(f"Error calling Qwen planning endpoint: {e}")
+        return None
+
     def decide_tool(
         self,
         query: str,

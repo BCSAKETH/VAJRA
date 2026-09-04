@@ -237,6 +237,12 @@ class CognitiveBrainMixin:
         {"name": "query_hotspots", "does": "crime hotspot clusters on a map, per district or statewide", "params": {"district": "district name, optional"}},
         {"name": "get_crime_trends", "does": "monthly crime counts/trend over time for a district", "params": {"district": "optional", "crime_group": "crime type, optional"}},
         {"name": "get_repeat_offenders", "does": "ranked list of repeat/habitual offenders", "params": {"district": "optional", "top_n": "optional integer 1-50, defaults to 15 -- pass the exact number the officer asked for (e.g. 'top 20')"}},
+        {"name": "list_suspects_by_crime_type", "does": "list suspects/accused linked to a specific crime type/category (e.g. money laundering, cybercrime, theft) -- use this, NOT get_repeat_offenders, when the officer asks for suspects by crime type rather than by district", "params": {"crime_type": "required -- the crime category to filter by", "district": "optional", "top_n": "optional integer 1-50, defaults to 15"}},
+        {"name": "list_cases", "does": "list the ACTUAL cases (crime number, date, station) matching a crime type/district/station/year -- use this, NOT count_cases, when the officer wants the specific cases named rather than just a total", "params": {"crime_group": "optional crime category", "district": "optional", "station": "optional specific police station, more specific than district", "year": "optional 4-digit year", "top_n": "optional integer, defaults to 15, max 30"}},
+        {"name": "search_by_identifier", "does": "look up which suspect a bare phone number or vehicle number belongs to (from a tip-off, CCTV plate, or call record) -- use when the officer has a raw number, NOT a suspect name", "params": {"identifier": "required -- the phone number or vehicle number to search for"}},
+        {"name": "list_wanted_accused", "does": "list accused persons who are still at large / absconding (no arrest record on file), optionally filtered by crime type and/or district", "params": {"crime_group": "optional", "district": "optional", "top_n": "optional integer, defaults to 15, max 30"}},
+        {"name": "list_cases_by_status", "does": "list actual cases that are pending chargesheet or already chargesheeted -- use this, NOT case_outcome_analytics, when the officer wants the specific cases named rather than a percentage", "params": {"status": "'pending' (default) or 'chargesheeted'", "crime_group": "optional", "district": "optional", "top_n": "optional integer, defaults to 15, max 30"}},
+        {"name": "list_victims_by_category", "does": "list victims linked to cases of a specific crime type/district -- identities auto-masked on POCSO/juvenile-victim sensitive cases", "params": {"crime_group": "optional", "district": "optional", "top_n": "optional integer, defaults to 15, max 25"}},
         {"name": "get_offender_risk", "does": "conviction-risk score for ONE named suspect", "params": {"suspect_name": "required"}},
         {"name": "query_graph_network", "does": "criminal network/associates of ONE named suspect", "params": {"suspect_name": "required"}},
         {"name": "get_mo_profile", "does": "modus-operandi profile for ONE named suspect", "params": {"suspect_name": "required"}},
@@ -376,7 +382,37 @@ class CognitiveBrainMixin:
         names = {c["name"] for c in self._COMPILER_CAPABILITIES}
         registry = "\n".join(f"- {c['name']}: {c['does']} | params: {json.dumps(c['params'])}"
                              for c in self._COMPILER_CAPABILITIES)
+        # Confirmed live: "show their case id" inside an ongoing Full Dossier
+        # thread took ~70s because deep=True's depth_rule unconditionally
+        # demands a comprehensive multi-capability sweep REGARDLESS of what
+        # was actually asked -- a short, specific follow-up referring back to
+        # something already on screen paid the same cost as the original
+        # "tell me everything" request. The comprehensive sweep already ran
+        # for that original question; a narrow follow-up should get a fast,
+        # targeted answer instead of repeating it. Deliberately narrow
+        # trigger (short query + a back-reference pronoun + real prior
+        # history) so an actual fresh "tell me everything about X" request
+        # in Dossier mode is never downgraded.
+        # Confirmed live bug: `query` here almost always carries a prepended
+        # "[Context: you are speaking with Officer ...]\n\n" block (~50+
+        # words, added in main.py whenever the officer's identity is known --
+        # i.e. basically always in real use), which blew past the word-count
+        # check below on every single real request, so this heuristic never
+        # actually fired outside a bare, context-free test call. Strip that
+        # known prefix before measuring the query's real length.
+        _core_query = re.sub(r"^\[Context:.*?\]\n\n", "", (query or ""), flags=re.DOTALL)
+        _FOLLOWUP_PRONOUNS = ("their", "his", "her", "its", "that", "this", "it ", "them", "those", "these")
+        _is_narrow_followup = (
+            deep and bool(history) and len(_core_query.split()) <= 10
+            and any(p in f" {_core_query.strip().lower()} " for p in _FOLLOWUP_PRONOUNS)
+        )
         depth_rule = (
+            "- NARROW FOLLOW-UP (even though Full Dossier is the overall mode): this message is short and refers "
+            "back to something already discussed (\"their\", \"his\", \"it\", \"that\", etc.) -- the comprehensive "
+            "sweep already happened for the original question in CONTEXT ABOVE. Plan ONLY the minimal steps that "
+            "answer THIS specific follow-up, using CONTEXT ABOVE to resolve what the pronoun refers to. Do not "
+            "repeat a full comprehensive sweep for a narrow, specific ask."
+            if _is_narrow_followup else
             "- FULL DOSSIER MODE: the officer explicitly chose the deep, comprehensive view -- this is an "
             "instruction to go deep, not just answer the literal wording. This mode has NO fixed template to "
             "fall back on -- YOU decide the complete set of steps. Concretely:\n"
@@ -457,11 +493,27 @@ class CognitiveBrainMixin:
             res = self.llm.chat(
                 [{"role": "system", "content": planner_sys}] + _history_msgs + [{"role": "user", "content": query}],
                 None, max_tokens=6000)
+            raw = ""
             if res.get("error"):
-                self._last_compiler_failure_reason = f"llm_error: {str(res.get('error'))[:150]}"
-                logger.warning(f"compiler: planner LLM unavailable ({res.get('error')}); falling back.")
-                return None
-            raw = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+                # Confirmed live: this call previously had NO fallback at all
+                # -- an outage or GLM's own baked-in guardrail refusal
+                # (llm_guardrail_refusal) meant the SAME unreliable call just
+                # got retried once more by the caller, hitting the identical
+                # failure twice, then silently downgrading to the fixed
+                # comprehensive composite regardless of what was actually
+                # asked. Try Qwen (a genuinely different model/deployment,
+                # confirmed this session to have independent uptime from
+                # GLM) before giving up on this attempt.
+                logger.warning(f"compiler: GLM planner unavailable ({res.get('error')}); trying Qwen fallback.")
+                from catalyst_qwen import CatalystQwen
+                qwen_raw = CatalystQwen().plan(planner_sys, query)
+                if not qwen_raw:
+                    self._last_compiler_failure_reason = f"llm_error: {str(res.get('error'))[:120]} (qwen fallback also failed)"
+                    logger.warning("compiler: Qwen planning fallback also failed; falling back.")
+                    return None
+                raw = qwen_raw
+            else:
+                raw = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
             plan = json.loads(self._extract_json(raw))
         except Exception as e:
             self._last_compiler_failure_reason = f"plan_parse_failed: {str(e)[:150]}"
@@ -568,6 +620,32 @@ class CognitiveBrainMixin:
             # "Done." when a step genuinely produced no text at all.
             _text_parts = ([intent] if intent else []) + (["\n\n".join(combined[:4])] if combined else [])
             text_out = "\n\n".join(_text_parts) if _text_parts else "Done."
+
+            # MULTI-HYPOTHESIS REASONING + DEVIL'S ADVOCATE (Full Dossier
+            # only, one bounded extra call, never on the fast Standard path):
+            # a genuinely deeper investigative layer on top of the already-
+            # grounded findings above -- NOT a replacement for them. Every
+            # hypothesis here is explicitly Tier 2 (an inferential working
+            # theory, scored, never presented as a fact) and must be
+            # supported by SOMETHING already gathered in `combined` -- the
+            # model is not asked to invent new facts, only to reason over
+            # what these real tool results already show. Best-effort: a
+            # failure here silently drops this section, never breaks or
+            # delays the grounded Tier-1 dossier above.
+            if deep and combined and not _is_narrow_followup:
+                hyp = self._generate_hypotheses_and_devils_advocate(query, combined)
+                if hyp and hyp.get("hypotheses"):
+                    data_payload["hypotheses"] = hyp["hypotheses"]
+                    data_payload["devils_advocate"] = hyp.get("devils_advocate")
+                    lines = ["\n\n---\n**Tier 2 -- Investigative Working Hypotheses** "
+                            "(inferential, not established fact -- verify before acting):"]
+                    for h in hyp["hypotheses"]:
+                        lines.append(f"- **{h.get('theory', 'Hypothesis')}** (confidence {h.get('confidence', 0):.0%}): "
+                                     f"{h.get('rationale', '')}")
+                    if hyp.get("devils_advocate"):
+                        lines.append(f"\n**Devil's Advocate -- counter-evidence to check before relying on the "
+                                     f"leading theory:** {hyp['devils_advocate']}")
+                    text_out += "\n".join(lines)
         citations.append({"type": "AI Execution Plan", "id": (intent[:60] or "plan"),
                           "details": (f"Compiled to {len(panels)} grounded step(s): "
                                       f"{', '.join(p['panel_key'] for p in panels)}. "
@@ -575,6 +653,57 @@ class CognitiveBrainMixin:
         self._write_audit_log(employee_id, "Semantic Compiler", intent[:80], query, text_out, session_id)
         return {"text": text_out, "response_type": resp_type, "data": data_payload,
                 "citations": citations, "is_simulated": False, "simulated_reason": ""}
+
+    def _generate_hypotheses_and_devils_advocate(self, query: str, combined_findings: List[str]) -> Optional[Dict[str, Any]]:
+        """
+        ONE bounded extra LLM call (Full Dossier only) that reasons over the
+        ALREADY-GROUNDED findings from this turn's compiled steps -- never a
+        separate live data-gathering pass, and never invited to invent new
+        facts. Produces 2-3 distinct investigative theories (Tree-of-Thought
+        style branches), each scored 0-1 on how well the given findings
+        actually support it; branches under 0.30 are pruned before they ever
+        reach the officer. Also asks for a Devil's Advocate critique of the
+        single leading theory -- the specific counter-evidence, alibi angle,
+        or procedural gap an officer should check before trusting it, so
+        this never becomes one-sided tunnel vision. Returns None on any
+        failure (malformed JSON, LLM error) -- this is an enrichment layer,
+        never a hard dependency of the dossier itself.
+        """
+        findings_text = "\n".join(f"- {f}" for f in combined_findings[:6])[:3000]
+        sys_prompt = (
+            "You are a senior investigative analyst reviewing ALREADY-GATHERED, grounded findings for one case/"
+            "suspect (below). You do NOT have access to any other data and must NOT invent facts not implied by "
+            "these findings.\n\n"
+            f"GROUNDED FINDINGS:\n{findings_text}\n\n"
+            "Task: propose 2-3 DISTINCT investigative hypotheses (different plausible explanations/directions this "
+            "could be, e.g. an isolated incident vs. a repeat pattern vs. an organized/financial angle) that are "
+            "actually consistent with the findings above. For EACH, give a confidence score 0.0-1.0 for how well "
+            "these specific findings support it (be honest -- most real cases don't support a high-confidence "
+            "theory from partial data) and a one-sentence rationale citing which finding(s) support it. Then, for "
+            "the SINGLE highest-confidence hypothesis, act as a Devil's Advocate: name one concrete counter-"
+            "argument, gap, or thing an officer should verify before trusting it (e.g. missing corroboration, an "
+            "alternative innocent explanation, a data-quality caveat already visible in the findings).\n\n"
+            'Output ONLY one JSON object: {"hypotheses": [{"theory": "...", "confidence": 0.0, "rationale": "..."}], '
+            '"devils_advocate": "..."}\n'
+            "If the findings are too thin to support ANY real hypothesis distinct from just restating them, return "
+            '{"hypotheses": [], "devils_advocate": null} rather than inventing one.'
+        )
+        try:
+            res = self.llm.chat([{"role": "system", "content": sys_prompt},
+                                 {"role": "user", "content": query}], None, max_tokens=1200)
+            if res.get("error"):
+                return None
+            raw = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+            plan = json.loads(self._extract_json(raw))
+        except Exception as e:
+            logger.warning(f"hypothesis generation failed (non-fatal): {e}")
+            return None
+        if not isinstance(plan, dict):
+            return None
+        hyps = [h for h in (plan.get("hypotheses") or [])
+                if isinstance(h, dict) and h.get("theory") and float(h.get("confidence") or 0) >= 0.30]
+        hyps.sort(key=lambda h: float(h.get("confidence") or 0), reverse=True)
+        return {"hypotheses": hyps[:3], "devils_advocate": plan.get("devils_advocate") if hyps else None}
 
     # ---- 4. GROUNDING -----------------------------------------------------
 

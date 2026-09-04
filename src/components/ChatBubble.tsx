@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ChatMessage } from "../AppContext";
 import { translations } from "../i18n";
-import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight } from "lucide-react";
+import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 import { API_BASE } from "../config";
 
@@ -30,7 +30,7 @@ interface ChatBubbleProps {
 // renders as its grounded text block instead).
 const WIDGET_PANEL_TYPES = new Set([
   "map", "network", "risk", "forecast", "timeline",
-  "mo_match", "correlation", "repeat_offenders", "crime_groups", "trend", "case_distribution",
+  "mo_match", "correlation", "repeat_offenders", "crime_groups", "trend", "case_distribution", "case_list",
 ]);
 
 // Normalize any stored text for display: turn SQL-escaped newlines back into
@@ -221,6 +221,49 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   const [viewingPages, setViewingPages] = useState<string[] | null>(null);
   const [viewingPageIdx, setViewingPageIdx] = useState(0);
   const [loadingAttachmentId, setLoadingAttachmentId] = useState<string | null>(null);
+  // Real inline previews for every attachment type -- confirmed live
+  // complaint: attachments only ever showed as a filename chip requiring a
+  // click to see anything, unlike how a normal chat app shows the actual
+  // image/PDF-page/audio-player/video-player right in the bubble. Fetched
+  // once per stratus_id and cached in this map (keyed by stratus_id) so
+  // re-renders never re-fetch the same blob.
+  const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  const previewUrlsRef = useRef<Record<string, string>>({});
+  useEffect(() => {
+    const atts = message.attachments || [];
+    const auth = { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` };
+    atts.forEach((a) => {
+      const id = a.stratus_id;
+      if (!id || previewUrlsRef.current[id]) return;
+      previewUrlsRef.current[id] = "__pending__";
+      fetch(`${API_BASE}/api/attachments/${id}`, { headers: auth })
+        .then((res) => (res.ok ? res.blob() : Promise.reject()))
+        .then((blob) => {
+          const url = URL.createObjectURL(blob);
+          previewUrlsRef.current[id] = url;
+          setPreviewUrls((prev) => ({ ...prev, [id]: url }));
+        })
+        .catch(() => {
+          delete previewUrlsRef.current[id];
+        });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [message.attachments]);
+  useEffect(() => {
+    return () => {
+      (Object.values(previewUrlsRef.current) as string[]).forEach((u) => {
+        if (u && u !== "__pending__") URL.revokeObjectURL(u);
+      });
+    };
+  }, []);
+  // Uploaded audio attachments (now transcribed server-side via Zia STT) --
+  // clicking one used to reuse the image viewer, which silently rendered a
+  // broken <img> for an audio blob. Separate state so it opens a real
+  // <audio> player instead.
+  const [viewingAudioUrl, setViewingAudioUrl] = useState<string | null>(null);
+  // Uploaded video attachments -- same reasoning as audio above, a video
+  // blob needs a <video> element, not an <img>.
+  const [viewingVideoUrl, setViewingVideoUrl] = useState<string | null>(null);
   // USP-3 "explainable by default" -- one tap reveals the evidence trail
   // (which tools/records/queries produced this answer) already carried on
   // every message as citations. Collapsed by default so it never clutters
@@ -367,6 +410,8 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
       // in memory for the lifetime of the page after the viewer closes.
       if (viewingImageUrl) URL.revokeObjectURL(viewingImageUrl);
       if (viewingPages) viewingPages.forEach((u) => URL.revokeObjectURL(u));
+      if (viewingAudioUrl) URL.revokeObjectURL(viewingAudioUrl);
+      if (viewingVideoUrl) URL.revokeObjectURL(viewingVideoUrl);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSpeaking]);
@@ -598,6 +643,34 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
   // Stratus (currently unreachable from the backend). stratus_id-only
   // fetching is kept as a fallback for older messages saved before this
   // change, on the off chance storage does come back online later.
+  const handleViewAudioAttachment = async (stratusId: string) => {
+    setLoadingAttachmentId(stratusId);
+    const auth = { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` };
+    try {
+      const res = await fetch(`${API_BASE}/api/attachments/${stratusId}`, { headers: auth });
+      if (!res.ok) throw new Error("Attachment not available.");
+      setViewingAudioUrl(URL.createObjectURL(await res.blob()));
+    } catch (err) {
+      console.error("Failed to load audio attachment:", err);
+    } finally {
+      setLoadingAttachmentId(null);
+    }
+  };
+
+  const handleViewVideoAttachment = async (stratusId: string) => {
+    setLoadingAttachmentId(stratusId);
+    const auth = { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` };
+    try {
+      const res = await fetch(`${API_BASE}/api/attachments/${stratusId}`, { headers: auth });
+      if (!res.ok) throw new Error("Attachment not available.");
+      setViewingVideoUrl(URL.createObjectURL(await res.blob()));
+    } catch (err) {
+      console.error("Failed to load video attachment:", err);
+    } finally {
+      setLoadingAttachmentId(null);
+    }
+  };
+
   const handleViewAttachment = async (stratusId: string, pageIds?: string[]) => {
     setLoadingAttachmentId(stratusId);
     const auth = { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` };
@@ -670,12 +743,69 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
               reference exists, so an officer can actually view what they
               attached instead of only seeing the filename chip. */}
           {message.attachments && message.attachments.length > 0 && (
-            <div className="flex flex-wrap gap-1.5 mb-2.5 pb-2.5 border-b border-stone-800/60">
+            <div className="flex flex-wrap gap-2 mb-2.5 pb-2.5 border-b border-stone-800/60">
               {message.attachments.map((a, i) => {
+                const isAudio = (a.type || "").startsWith("audio/");
+                const isVideo = (a.type || "").startsWith("video/");
+                const isImage = (a.type || "").startsWith("image/");
+                const isPdf = a.type === "application/pdf";
+                const previewUrl = a.data_uri || (a.stratus_id ? previewUrls[a.stratus_id] : undefined);
+                const isLoadingThis = !!a.stratus_id && previewUrlsRef.current[a.stratus_id] === "__pending__";
+
+                // Real inline thumbnail: image, or a PDF's own first-page
+                // raster (stratus_id already points at page 1's real JPEG).
+                if ((isImage || isPdf) && previewUrl) {
+                  return (
+                    <button
+                      key={i}
+                      onClick={() => a.stratus_id ? handleViewAttachment(a.stratus_id, a.page_stratus_ids) : setViewingImageUrl(previewUrl)}
+                      className="relative rounded-lg overflow-hidden border border-stone-800 hover:border-[#C79A4E]/40 transition-colors cursor-pointer group"
+                    >
+                      <img src={previewUrl} alt={a.file_name} className="h-32 w-auto max-w-[180px] object-cover" />
+                      <div className="absolute inset-0 bg-stone-950/0 group-hover:bg-stone-950/30 transition-colors flex items-center justify-center">
+                        <Eye className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                      </div>
+                      {isPdf && (
+                        <span className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-stone-950/80 text-[9px] font-mono text-[#C79A4E] flex items-center gap-1">
+                          <FileText className="w-2.5 h-2.5" /> {a.page_count > 1 ? `${a.page_count}p` : "PDF"}
+                        </span>
+                      )}
+                    </button>
+                  );
+                }
+
+                // Real inline audio player -- a compact bar, not a click-to-open chip.
+                if (isAudio && previewUrl) {
+                  return (
+                    <div key={i} className="flex flex-col gap-1 px-2.5 py-2 rounded-lg bg-stone-950/40 border border-stone-800 min-w-[220px]">
+                      <span className="flex items-center gap-1.5 text-[10px] text-stone-450 font-mono truncate">
+                        <Mic className="w-3 h-3 text-[#5DCAA5] shrink-0" /> {a.file_name}
+                      </span>
+                      <audio controls src={previewUrl} className="h-8 w-full" style={{ maxWidth: 260 }} />
+                    </div>
+                  );
+                }
+
+                // Real inline video player -- preload=metadata keeps the
+                // initial fetch light even though the full blob is already
+                // in memory (needed for auth -- a plain <video src> can't
+                // send the Bearer header this endpoint requires).
+                if (isVideo && previewUrl) {
+                  return (
+                    <div key={i} className="rounded-lg overflow-hidden border border-stone-800 bg-stone-950/40">
+                      <video controls preload="metadata" src={previewUrl} className="h-40 w-auto max-w-[240px]" />
+                    </div>
+                  );
+                }
+
+                // Fallback chip -- still loading, or the preview fetch failed.
                 const isViewable = !!a.data_uri || !!a.stratus_id;
-                const isLoadingThis = loadingAttachmentId === a.stratus_id;
                 const Wrapper: any = isViewable ? "button" : "span";
-                const handleClick = a.data_uri
+                const handleClick = isAudio && a.stratus_id
+                  ? () => handleViewAudioAttachment(a.stratus_id!)
+                  : isVideo && a.stratus_id
+                  ? () => handleViewVideoAttachment(a.stratus_id!)
+                  : a.data_uri
                   ? () => setViewingImageUrl(a.data_uri!)
                   : a.stratus_id
                   ? () => handleViewAttachment(a.stratus_id!, a.page_stratus_ids)
@@ -689,7 +819,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
                       isViewable ? "hover:border-[#C79A4E]/40 hover:text-stone-200 transition-colors cursor-pointer" : ""
                     }`}
                   >
-                    {isLoadingThis ? <Loader2 className="w-3 h-3 animate-spin" /> : <Paperclip className="w-3 h-3" />}
+                    {isLoadingThis ? <Loader2 className="w-3 h-3 animate-spin" /> : isAudio ? <Mic className="w-3 h-3 text-[#5DCAA5]" /> : isVideo ? <Video className="w-3 h-3 text-[#9085e9]" /> : <Paperclip className="w-3 h-3" />}
                     {a.file_name}{a.page_count > 1 ? ` (${a.page_count}p)` : ""}
                     {isViewable && !isLoadingThis && <Eye className="w-3 h-3 ml-0.5 text-[#C79A4E]" />}
                   </Wrapper>
@@ -1036,6 +1166,57 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
           <img
             src={viewingImageUrl}
             alt="Attachment preview"
+            className="max-w-full max-h-full rounded-xl border border-stone-800 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          />
+        </div>,
+        document.body
+      )}
+
+      {/* Audio attachment playback -- separate from the image lightbox above
+          since an <img> silently renders broken for an audio blob. */}
+      {viewingAudioUrl && createPortal(
+        <div
+          className="fixed inset-0 z-[100] bg-stone-950/95 backdrop-blur-sm flex items-center justify-center p-6"
+          onClick={() => { URL.revokeObjectURL(viewingAudioUrl); setViewingAudioUrl(null); }}
+          role="dialog"
+          aria-modal="true"
+        >
+          <button
+            className="absolute top-4 right-4 p-2 rounded-lg bg-stone-900/80 border border-stone-800 text-stone-400 hover:text-stone-100 cursor-pointer"
+            onClick={() => { URL.revokeObjectURL(viewingAudioUrl); setViewingAudioUrl(null); }}
+            aria-label="Close preview"
+          >
+            <X className="w-5 h-5" />
+          </button>
+          <div
+            className="glass-panel border border-stone-800 rounded-2xl p-6 flex flex-col items-center gap-3 max-w-sm w-full"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <Mic className="w-8 h-8 text-[#5DCAA5]" />
+            <audio controls autoPlay src={viewingAudioUrl} className="w-full" />
+          </div>
+        </div>,
+        document.body
+      )}
+
+      {/* Video attachment playback -- same reasoning as the audio modal. */}
+      {viewingVideoUrl && createPortal(
+        <div
+          className="fixed inset-0 z-[100] bg-stone-950/95 backdrop-blur-sm flex items-center justify-center p-6"
+          onClick={() => { URL.revokeObjectURL(viewingVideoUrl); setViewingVideoUrl(null); }}
+          role="dialog"
+          aria-modal="true"
+        >
+          <button
+            className="absolute top-4 right-4 p-2 rounded-lg bg-stone-900/80 border border-stone-800 text-stone-400 hover:text-stone-100 cursor-pointer"
+            onClick={() => { URL.revokeObjectURL(viewingVideoUrl); setViewingVideoUrl(null); }}
+            aria-label="Close preview"
+          >
+            <X className="w-5 h-5" />
+          </button>
+          <video
+            controls autoPlay src={viewingVideoUrl}
             className="max-w-full max-h-full rounded-xl border border-stone-800 shadow-2xl"
             onClick={(e) => e.stopPropagation()}
           />

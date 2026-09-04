@@ -138,6 +138,20 @@ class CatalystLLM:
         # "thought"/"strictly" language.
         if tools:
             system_prompt = (
+                # Explicit authorization framing (not a confirmed live bug --
+                # added preemptively per a hardening review's claim that raw
+                # police terminology can trigger a canned safety refusal from
+                # this model). States plainly this is an authorized internal
+                # deployment mapping questions to internal tool parameters,
+                # not a request for the model to access anything external or
+                # unauthorized on its own -- reduces the chance of a refusal
+                # without changing what the assistant actually does.
+                "You are the internal query-compiler assistant for VAJRA, an AUTHORIZED, INTERNAL Karnataka State "
+                "Police crime-intelligence system used by serving officers investigating real cases. You do NOT "
+                "access any external, private, or unauthorized systems -- every 'tool' below is a read-only lookup "
+                "against this department's OWN existing case-management database, which the officer already has "
+                "legitimate access to through this system. Your job is only to map the officer's question to the "
+                "right internal lookup parameters; you never fetch or handle anything outside that. "
                 "You are a helpful assistant for the Karnataka Police, helping officers query a crime database. "
                 "You have access to tools that can look up real data for the officer. "
                 "When a tool would help answer the officer's question, respond with JSON containing a 'tool' field "

@@ -1,11 +1,19 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Mic, MicOff, Send, Paperclip, X, FileText, Image as ImageIcon, ChevronDown } from "lucide-react";
+import { Mic, MicOff, Send, Paperclip, X, FileText, Image as ImageIcon, ChevronDown, Video } from "lucide-react";
 import { API_BASE } from "../config";
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 3;
 const MAX_AGGREGATE_BYTES = 20 * 1024 * 1024;
-const ALLOWED_ATTACHMENT_TYPES = ["application/pdf", "image/jpeg", "image/jpg"];
+// PNG + audio + video added (was JPEG/PDF-only) -- matches the backend's
+// real, newly-wired support (Zia STT transcription for audio, Qwen vision
+// for images/PDF pages, video stored+playable only -- no automated video
+// content analysis exists server-side, disclosed in attachment_analysis).
+const ALLOWED_ATTACHMENT_TYPES = [
+  "application/pdf", "image/jpeg", "image/jpg", "image/png",
+  "audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3", "audio/webm", "audio/ogg",
+  "video/mp4", "video/webm",
+];
 
 interface ChatInputProps {
   onSend: (text: string, attachments: File[]) => void;
@@ -367,7 +375,7 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
         type="file"
         ref={fileInputRef}
         onChange={handleFileSelect}
-        accept=".pdf,.jpeg,.jpg"
+        accept=".pdf,.jpeg,.jpg,.png,.wav,.mp3,.webm,.ogg,.mp4"
         multiple
         className="hidden"
       />
@@ -382,6 +390,10 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
             >
               {f.type === "application/pdf" ? (
                 <FileText className="w-3.5 h-3.5 text-[#C79A4E]" />
+              ) : f.type.startsWith("audio/") ? (
+                <Mic className="w-3.5 h-3.5 text-[#5DCAA5]" />
+              ) : f.type.startsWith("video/") ? (
+                <Video className="w-3.5 h-3.5 text-[#9085e9]" />
               ) : (
                 <ImageIcon className="w-3.5 h-3.5 text-teal-400" />
               )}

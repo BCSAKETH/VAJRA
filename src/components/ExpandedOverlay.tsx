@@ -78,7 +78,7 @@ const MapSizeAndBoundsFixer: React.FC<{ points: { lat: number; lng: number }[] }
 };
 
 interface ExpandedOverlayProps {
-  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution";
+  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "case_list";
   data: any;
   onClose: () => void;
   // When true, render only the rich content pane (no fixed backdrop, no modal
@@ -202,6 +202,12 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
               <>
                 <Link2 className="w-5 h-5 text-amber-500" />
                 <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Detected Organized Crime Groups" : "ಪತ್ತೆಯಾದ ಸಂಘಟಿತ ಅಪರಾಧ ಗುಂಪುಗಳು"}</h3>
+              </>
+            )}
+            {type === "case_list" && (
+              <>
+                <Fingerprint className="w-5 h-5 text-amber-500" />
+                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Records" : "ಪ್ರಕರಣ ದಾಖಲೆಗಳು"}</h3>
               </>
             )}
             {type === "trend" && (
@@ -785,6 +791,38 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                 ))}
                 {(data.offenders || []).length === 0 && (
                   <div className="text-center py-10 text-stone-550">{lang === "en" ? "No repeat offenders on record." : "ಯಾವುದೇ ಪುನರಾವರ್ತಿತ ಅಪರಾಧಿಗಳ ದಾಖಲೆ ಇಲ್ಲ."}</div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {type === "case_list" && (
+            <div className="h-full flex flex-col gap-4">
+              <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl">
+                <h4 className="font-black text-stone-100 text-sm">
+                  {lang === "en"
+                    ? `${(data.cases || []).length} Case(s)${data.crime_group ? ` — ${data.crime_group}` : ""}${data.district ? ` — ${data.district}` : ""}`
+                    : `${(data.cases || []).length} ಪ್ರಕರಣಗಳು${data.crime_group ? ` — ${data.crime_group}` : ""}${data.district ? ` — ${data.district}` : ""}`}
+                </h4>
+                {data.scan_scope || data.total_matched_scanned || data.total_matched ? (
+                  <p className="text-xs text-stone-450 mt-1">
+                    {lang === "en" ? "Real case records from CaseMaster." : "CaseMaster ದಿಂದ ನೈಜ ಪ್ರಕರಣ ದಾಖಲೆಗಳು."}
+                    {(data.total_matched_scanned || data.total_matched) ? ` (${data.total_matched_scanned || data.total_matched} ${lang === "en" ? "matched, first 300 scanned" : "ಹೊಂದಾಣಿಕೆ, ಮೊದಲ 300 ಸ್ಕ್ಯಾನ್"})` : ""}
+                  </p>
+                ) : null}
+              </div>
+              <div className="flex-1 overflow-y-auto space-y-2">
+                {(data.cases || []).map((c: any, idx: number) => (
+                  <div key={idx} className="bg-stone-900/60 border border-stone-850 p-3.5 rounded-lg flex justify-between items-center gap-3">
+                    <div className="space-y-0.5 min-w-0">
+                      <span className="text-xs font-black text-stone-250 block truncate font-mono">{c.crime_no}</span>
+                      <span className="text-[11px] text-stone-450">{c.station}</span>
+                    </div>
+                    <div className="shrink-0 text-right text-[11px] text-stone-450 font-mono">{c.registered_date}</div>
+                  </div>
+                ))}
+                {(data.cases || []).length === 0 && (
+                  <div className="text-center py-10 text-stone-550">{lang === "en" ? "No matching cases on record." : "ಯಾವುದೇ ಹೊಂದಾಣಿಕೆಯ ಪ್ರಕರಣಗಳ ದಾಖಲೆ ಇಲ್ಲ."}</div>
                 )}
               </div>
             </div>

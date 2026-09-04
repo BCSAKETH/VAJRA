@@ -52,7 +52,11 @@ const mapSessionMessages = (sessionId: string, messages: any[]): ChatMessage[] =
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 3;
 const MAX_AGGREGATE_BYTES = 20 * 1024 * 1024;
-const ALLOWED_ATTACHMENT_TYPES = ["application/pdf", "image/jpeg", "image/jpg"];
+const ALLOWED_ATTACHMENT_TYPES = [
+  "application/pdf", "image/jpeg", "image/jpg", "image/png",
+  "audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3", "audio/webm", "audio/ogg",
+  "video/mp4", "video/webm",
+];
 
 export const AIChatScreen: React.FC = () => {
   const {
@@ -179,7 +183,7 @@ export const AIChatScreen: React.FC = () => {
     }
   }, []);
 
-  const [expandedWidget, setExpandedWidget] = useState<{ type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend"; data: any } | null>(null);
+  const [expandedWidget, setExpandedWidget] = useState<{ type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_list"; data: any } | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
@@ -207,12 +211,18 @@ export const AIChatScreen: React.FC = () => {
   const [inviteBadge, setInviteBadge] = useState("");
   const [inviteRole, setInviteRole] = useState<"viewer" | "collaborator">("collaborator");
   const [isInviting, setIsInviting] = useState(false);
+  // Confirmed live confusion: the invite panel used to auto-close after ONE
+  // successful invite, with no participant count shown anywhere -- nothing
+  // in the backend actually limits Cowork to 2 officers (CoworkParticipant
+  // has no such cap), but the UI made adding a 3rd+ officer non-obvious
+  // enough to look like a hard limit. Tracks who's been invited THIS
+  // session-open so the panel can show it and stay open for the next one.
+  const [invitedThisOpen, setInvitedThisOpen] = useState<string[]>([]);
   const [hasParticipants, setHasParticipants] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
   // client_msg_ids this tab has already rendered directly from its own HTTP
   // /api/chat response (both "<id>" for the user bubble and "<id>-ai" for
   // the assistant reply) -- the same turn also arrives over the WebSocket
@@ -301,70 +311,6 @@ export const AIChatScreen: React.FC = () => {
     setVoiceAvailable(Boolean(SpeechRecognitionCtor));
   }, []);
 
-  // Live message push for Cowork sessions -- a real WebSocket on the same
-  // backend process (AppSail hosts this as a persistent server, not
-  // serverless-per-request, so holding a socket open is genuinely viable).
-  // Connects for every active session (not just Cowork ones) so the flow is
-  // uniform; solo sessions just never have anyone else to broadcast to.
-  useEffect(() => {
-    if (!activeSessionId || chatMode !== "cowork" || API_BASE.includes("catalystappsail.in")) return;
-
-    const wsProtocol = API_BASE.startsWith("https") ? "wss" : "ws";
-    const wsHost = API_BASE.replace(/^https?:\/\//, "");
-    const token = localStorage.getItem("vajra_token") || "";
-    let ws: WebSocket | null = null;
-    try {
-      ws = new WebSocket(`${wsProtocol}://${wsHost}/ws/chat/${activeSessionId}?token=${encodeURIComponent(token)}`);
-      wsRef.current = ws;
-
-      ws.onmessage = (event) => {
-        try {
-          const payload = JSON.parse(event.data);
-          if (payload.type !== "message") return;
-          if (payload.client_msg_id && sentClientMsgIdsRef.current.has(payload.client_msg_id)) {
-            sentClientMsgIdsRef.current.delete(payload.client_msg_id);
-            if (payload.sender === "assistant") clearPending(activeSessionId ?? "__new__");
-            return;
-          }
-          setChatMessages((prev) => {
-            const newMsg: ChatMessage = {
-              id: `ws-${Date.now()}-${Math.random()}`,
-              sender: payload.sender === "user" ? "user" : "assistant",
-              text: payload.text,
-              textEn: payload.text_en,
-              textKn: payload.text_kn,
-              timestamp: parseServerTimestamp(payload.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-              responseType: payload.response_type,
-              data: payload.data,
-              citations: payload.citations,
-              senderName: payload.sender_name,
-              senderEmployeeId: payload.sender_employee_id,
-              isSimulated: payload.is_simulated,
-              simulatedReason: payload.simulated_reason,
-            };
-            return [...prev, newMsg];
-          });
-          if (payload.sender === "assistant") {
-            clearPending(activeSessionId ?? "__new__");
-          }
-        } catch (err) {
-          console.error("Failed to parse WebSocket message:", err);
-        }
-      };
-
-      ws.onerror = () => {
-        // Quiet
-      };
-    } catch {
-      // Quiet
-    }
-
-    return () => {
-      if (ws) ws.close();
-      wsRef.current = null;
-    };
-  }, [activeSessionId, chatMode, clearPending]);
-
   // Whether the active session already has a real participant (used to
   // decide whether "Cowork" mode shows an invite prompt or just behaves
   // as a normal shared thread).
@@ -381,38 +327,90 @@ export const AIChatScreen: React.FC = () => {
       .catch(() => setHasParticipants(false));
   }, [activeSessionId]);
 
-  // Cowork live-push replacement: Zoho Catalyst's AppSail gateway (ZGS)
-  // does not proxy WebSocket upgrade requests in this environment --
-  // confirmed directly, a raw handshake against /ws/chat/... comes back a
-  // plain HTTP 404 from FastAPI itself, not a 101 Switching Protocols, so
-  // the browser's WebSocket connection can never succeed here regardless of
-  // anything in this app's own code. Short-interval polling is the real
-  // working substitute: only runs for genuine multi-participant sessions
-  // (not every solo chat), and only ever grows the thread -- if the server
-  // has no more messages than what's already on screen, this is a silent
-  // no-op, so it can never clobber an in-flight optimistic update with
-  // stale data.
+  // Cowork live-push, real-time: Zoho Catalyst's AppSail gateway (ZGS) does
+  // not proxy WebSocket upgrade requests in this environment -- confirmed
+  // directly, a raw handshake against /ws/chat/... comes back a plain HTTP
+  // 404 from FastAPI itself, not a 101 Switching Protocols. SSE is NOT a
+  // protocol upgrade (a plain HTTP GET with a chunked response) and is
+  // already proven to survive this exact gateway -- the live-progress
+  // ticker above (GET /api/chat/progress/{id}) has worked in production all
+  // along on the identical mechanism. This reuses that same proven pattern
+  // (cowork_feed.py backs it) for genuinely instant (sub-second) push
+  // instead of the previous 4-second poll. Only runs for genuine
+  // multi-participant sessions; reconnects automatically on any drop or on
+  // the stream's own bounded server-side ceiling, so it behaves as one
+  // continuous live connection from the officer's point of view.
   useEffect(() => {
     if (!activeSessionId || !hasParticipants) return;
-    const pollForNewMessages = async () => {
-      try {
-        const res = await fetch(`${API_BASE}/api/sessions/${activeSessionId}/messages`, {
-          headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-        });
-        if (!res.ok) return;
-        const raw = await res.json();
-        const loaded = mapSessionMessages(activeSessionId, raw);
-        sessionMessagesCacheRef.current.set(activeSessionId, loaded);
-        setChatMessages((prev) => (loaded.length > prev.length ? loaded : prev));
-      } catch {
-        // Silent -- this is a background convenience poll, not a
-        // user-initiated action; a transient failure just means this
-        // particular tick found nothing new, next tick tries again.
+    let cancelled = false;
+    const controller = new AbortController();
+
+    const connect = async () => {
+      while (!cancelled) {
+        try {
+          const res = await fetch(`${API_BASE}/api/cowork/stream/${activeSessionId}`, {
+            headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+            signal: controller.signal,
+          });
+          if (!res.ok || !res.body) throw new Error("stream unavailable");
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buf = "";
+          while (!cancelled) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buf += decoder.decode(value, { stream: true });
+            const chunks = buf.split("\n\n");
+            buf = chunks.pop() || "";
+            for (const chunk of chunks) {
+              const line = chunk.split("\n").find((l) => l.startsWith("data:"));
+              if (!line) continue;
+              try {
+                const payload = JSON.parse(line.slice(5).trim());
+                if (payload._reconnect || payload.type !== "message") continue;
+                if (payload.client_msg_id && sentClientMsgIdsRef.current.has(payload.client_msg_id)) {
+                  sentClientMsgIdsRef.current.delete(payload.client_msg_id);
+                  if (payload.sender === "assistant") clearPending(activeSessionId ?? "__new__");
+                  continue;
+                }
+                setChatMessages((prev) => {
+                  const newMsg: ChatMessage = {
+                    id: `sse-${Date.now()}-${Math.random()}`,
+                    sender: payload.sender === "user" ? "user" : "assistant",
+                    text: payload.text,
+                    textEn: payload.text_en,
+                    textKn: payload.text_kn,
+                    timestamp: parseServerTimestamp(payload.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+                    responseType: payload.response_type,
+                    data: payload.data,
+                    citations: payload.citations,
+                    senderName: payload.sender_name,
+                    senderEmployeeId: payload.sender_employee_id,
+                    isSimulated: payload.is_simulated,
+                    simulatedReason: payload.simulated_reason,
+                  };
+                  return [...prev, newMsg];
+                });
+                if (payload.sender === "assistant") clearPending(activeSessionId ?? "__new__");
+              } catch {
+                // ignore one malformed SSE frame -- the next one still works
+              }
+            }
+          }
+        } catch {
+          // network hiccup, or the server's own bounded ceiling closed the
+          // stream -- reconnect below rather than leaving Cowork silently
+          // stale for the rest of the session.
+        }
+        if (!cancelled) await new Promise((r) => setTimeout(r, 1000));
       }
     };
-    const interval = setInterval(pollForNewMessages, 4000);
-    return () => clearInterval(interval);
-  }, [activeSessionId, hasParticipants]);
+    connect();
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [activeSessionId, hasParticipants, clearPending]);
 
 
 
@@ -506,6 +504,7 @@ export const AIChatScreen: React.FC = () => {
       try {
         const formData = new FormData();
         filesToSend.forEach((f) => formData.append("files", f));
+        formData.append("lang", lang);
         const uploadRes = await fetch(`${API_BASE}/api/chat/attachments`, {
           method: "POST",
           headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
@@ -778,7 +777,9 @@ export const AIChatScreen: React.FC = () => {
         lang === "en" ? `Badge ${inviteBadge} invited as ${inviteRole}.` : `ಬ್ಯಾಡ್ಜ್ ${inviteBadge} ಅನ್ನು ${inviteRole === "viewer" ? "ವೀಕ್ಷಕ" : "ಸಹಯೋಗಿ"} ಆಗಿ ಆಹ್ವಾನಿಸಲಾಗಿದೆ.`,
         "Success"
       );
-      setShowInvitePanel(false);
+      // Stay open (was auto-closing after one invite -- no backend limit
+      // exists, this just made a 3rd/4th officer non-obvious to add).
+      setInvitedThisOpen((prev) => [...prev, inviteBadge]);
       setInviteBadge("");
     } catch (err) {
       console.error("Failed to send cowork invite:", err);
@@ -1173,12 +1174,26 @@ export const AIChatScreen: React.FC = () => {
               <h3 className="text-xs font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">
                 <Users className="w-4 h-4 text-[#C79A4E]" /> {t.inviteToCowork}
               </h3>
-              <button onClick={() => setShowInvitePanel(false)} className="text-stone-500 hover:text-stone-200 cursor-pointer">
+              <button onClick={() => { setShowInvitePanel(false); setInvitedThisOpen([]); }} className="text-stone-500 hover:text-stone-200 cursor-pointer">
                 <X className="w-4 h-4" />
               </button>
             </div>
+            {/* No participant cap exists server-side -- invite as many
+                officers as needed, one at a time; each shows up here so it's
+                obvious the panel stays open for the next one. */}
+            {invitedThisOpen.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {invitedThisOpen.map((b, i) => (
+                  <span key={i} className="text-[10px] font-mono px-2 py-1 rounded-md bg-[#5DCAA5]/10 border border-[#5DCAA5]/30 text-[#5DCAA5]">
+                    ✓ {b}
+                  </span>
+                ))}
+              </div>
+            )}
             <div className="space-y-1">
-              <label className="block text-[10px] font-black text-stone-450 uppercase font-mono">{t.badgeNumberKgidLabel}</label>
+              <label className="block text-[10px] font-black text-stone-450 uppercase font-mono">
+                {t.badgeNumberKgidLabel}{invitedThisOpen.length > 0 ? (lang === "en" ? " (invite another)" : " (ಇನ್ನೊಬ್ಬರನ್ನು ಆಹ್ವಾನಿಸಿ)") : ""}
+              </label>
               <input
                 type="text"
                 value={inviteBadge}

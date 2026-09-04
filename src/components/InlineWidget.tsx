@@ -185,7 +185,7 @@ const PriorityConcernsView: React.FC<{ data: any; lang: "en" | "kn" }> = ({ data
 };
 
 interface InlineWidgetProps {
-  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "priority_concerns";
+  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "priority_concerns" | "case_list";
   data: any;
   onExpand: () => void;
 }
@@ -273,6 +273,12 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
             <>
               <Newspaper className="w-4 h-4 text-[#C79A4E]" />
               <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Open-Source Signals" : "ಮುಕ್ತ-ಮೂಲ ಸಂಕೇತಗಳು"}</span>
+            </>
+          )}
+          {type === "case_list" && (
+            <>
+              <Fingerprint className="w-4 h-4 text-amber-500" />
+              <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "Case Records" : "ಪ್ರಕರಣ ದಾಖಲೆಗಳು"}</span>
             </>
           )}
         </div>
