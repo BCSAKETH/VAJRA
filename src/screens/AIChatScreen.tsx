@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, Suspense, lazy } from "react";
+import React, { useState, useEffect, useRef, useCallback, useMemo, Suspense, lazy } from "react";
 import { useApp, ChatMessage } from "../AppContext";
 import { API_BASE } from "../config";
 import { ChatBubble } from "../components/ChatBubble";
@@ -47,6 +47,15 @@ const mapSessionMessages = (sessionId: string, messages: any[]): ChatMessage[] =
     attachments: m.data?.attachments,
     senderName: m.sender_name,
     senderEmployeeId: m.sender_employee_id,
+    // Conversation branching (edit/retry/variants) -- packed into data_json
+    // server-side, no new columns. msgId is this message's own stable id;
+    // variantGroup/versionIndex let the UI group alternate versions of the
+    // same turn and cycle between them. Older, pre-branching messages have
+    // none of these -- they just render as single-version turns, same as
+    // today, no migration needed.
+    msgId: m.data?.msg_id,
+    variantGroup: m.data?.variant_group,
+    versionIndex: m.data?.version_index,
   }));
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
@@ -480,8 +489,88 @@ export const AIChatScreen: React.FC = () => {
     }, turnSessionId);
   }, [lang, appendMessageForTurn]);
 
+  // CONVERSATION BRANCHING (edit/retry/variants): messages sharing a
+  // variantGroup are alternate versions of the SAME turn (see backend's
+  // _resolve_variant_info). By default the LATEST version of each group is
+  // shown; this map holds any manual overrides from clicking the < 1/2 >
+  // pill, keyed by variantGroup. Messages with no variantGroup (the vast
+  // majority -- anything never edited/retried) pass through unchanged.
+  const [activeVariantOverride, setActiveVariantOverride] = useState<Record<string, number>>({});
+
+  // Edit and retry both write into the same variant_group, but they need
+  // different pairing behavior: editing a question bumps BOTH the user
+  // message and its answer together (cycling should move them as a pair,
+  // like ChatGPT), while retrying an answer bumps ONLY the assistant side
+  // (cycling must NOT also swap out the still-current question). One shared
+  // per-group override number handles both correctly: each side's shown
+  // version is that shared number CLAMPED to how many versions THAT side
+  // actually has. A side with only 1 version (e.g. the question, untouched
+  // by a retry) always clamps back to its own v1 regardless of how far the
+  // other side has cycled -- so retrying never disturbs the question, while
+  // an edit (which advances both sides' version counts together) keeps them
+  // moving in lockstep since the clamp is a no-op when both sides tie.
+  const { displayMessages, variantMeta } = useMemo(() => {
+    const bySender = { user: new Map<string, ChatMessage[]>(), assistant: new Map<string, ChatMessage[]>() };
+    for (const m of chatMessages) {
+      if (!m.variantGroup || m.sender !== "user" && m.sender !== "assistant") continue;
+      const map = bySender[m.sender as "user" | "assistant"];
+      const arr = map.get(m.variantGroup) || [];
+      arr.push(m);
+      map.set(m.variantGroup, arr);
+    }
+    const allGroups = new Set<string>([...bySender.user.keys(), ...bySender.assistant.keys()]);
+    const meta: Record<string, { total: number; activeIndex: number }> = {};
+    const skip = new Set<string>(); // ids of non-active variants to hide
+    allGroups.forEach((group) => {
+      const userSorted = [...(bySender.user.get(group) || [])].sort((a, b) => (a.versionIndex || 1) - (b.versionIndex || 1));
+      const asstSorted = [...(bySender.assistant.get(group) || [])].sort((a, b) => (a.versionIndex || 1) - (b.versionIndex || 1));
+      const userMax = userSorted.length || 1;
+      const asstMax = asstSorted.length || 1;
+      const shared = activeVariantOverride[group] ?? Math.max(userMax, asstMax);
+      const clampedUser = Math.max(1, Math.min(shared, userMax));
+      const clampedAsst = Math.max(1, Math.min(shared, asstMax));
+      if (userSorted.length) {
+        meta[`${group}::user`] = { total: userSorted.length, activeIndex: clampedUser };
+        for (const m of userSorted) if ((m.versionIndex || 1) !== clampedUser) skip.add(m.id);
+      }
+      if (asstSorted.length) {
+        meta[`${group}::assistant`] = { total: asstSorted.length, activeIndex: clampedAsst };
+        for (const m of asstSorted) if ((m.versionIndex || 1) !== clampedAsst) skip.add(m.id);
+      }
+    });
+    return { displayMessages: chatMessages.filter((m) => !skip.has(m.id)), variantMeta: meta };
+  }, [chatMessages, activeVariantOverride]);
+
+  const handleCycleVariant = useCallback((group: string, direction: 1 | -1) => {
+    setActiveVariantOverride((prev) => {
+      const userTotal = variantMeta[`${group}::user`]?.total || 1;
+      const asstTotal = variantMeta[`${group}::assistant`]?.total || 1;
+      const overallMax = Math.max(userTotal, asstTotal);
+      const current = prev[group] ?? overallMax;
+      const next = Math.min(overallMax, Math.max(1, current + direction));
+      return { ...prev, [group]: next };
+    });
+  }, [variantMeta]);
+
+  // Handlers wired below to ChatBubble's Edit/Retry actions -- both simply
+  // resend through the normal handleSend pipeline (same attachment/session/
+  // pending-poll handling as any turn), just tagged with which existing
+  // message they're a new version of.
+  const handleEditMessage = useCallback((msgId: string, newText: string) => {
+    handleSend(newText, [], { editOfMsgId: msgId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const handleRetryVariant = useCallback((msgId: string, originalQuestionText: string) => {
+    handleSend(originalQuestionText, [], { retryOfMsgId: msgId });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Submit Text Query to Copilot Agent Loop
-  const handleSend = useCallback(async (textToSend: string, filesToSend: File[] = []) => {
+  const handleSend = useCallback(async (
+    textToSend: string,
+    filesToSend: File[] = [],
+    variantOptions?: { editOfMsgId?: string; retryOfMsgId?: string }
+  ) => {
     if (isThinking || isUploadingAttachments) return;
     if (!textToSend.trim() && filesToSend.length === 0) return;
 
@@ -550,15 +639,21 @@ export const AIChatScreen: React.FC = () => {
     const clientMsgId = `cmid-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     sentClientMsgIdsRef.current.add(clientMsgId);
     sentClientMsgIdsRef.current.add(`${clientMsgId}-ai`);
-    const userMsg: ChatMessage = {
-      id: `msg-${Date.now()}-user`,
-      sender: "user",
-      text: textToSend,
-      timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-      attachments: uploadedAttachmentRefs.length > 0 ? uploadedAttachmentRefs : undefined,
-      senderName: officerName || undefined,
-    };
-    setChatMessages((prev) => [...prev, userMsg]);
+    // A RETRY reuses the already-asked question -- no new user bubble is
+    // persisted server-side (see chat_endpoint's _is_retry branch), so none
+    // is optimistically added here either; the existing user bubble on
+    // screen stays exactly as it was.
+    if (!variantOptions?.retryOfMsgId) {
+      const userMsg: ChatMessage = {
+        id: `msg-${Date.now()}-user`,
+        sender: "user",
+        text: textToSend,
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        attachments: uploadedAttachmentRefs.length > 0 ? uploadedAttachmentRefs : undefined,
+        senderName: officerName || undefined,
+      };
+      setChatMessages((prev) => [...prev, userMsg]);
+    }
     setInputVal("");
     setThinkingType(lang === "kn" ? "translation" : "standard");
     // Keyed by sendSessionId (or "__new__"), not a bare flag -- this is the
@@ -590,6 +685,8 @@ export const AIChatScreen: React.FC = () => {
           attachments: uploadedAttachmentRefs.length > 0 ? uploadedAttachmentRefs : undefined,
           // Standard vs Full Dossier -- chosen in the composer selector.
           answer_mode: answerMode,
+          edit_of_msg_id: variantOptions?.editOfMsgId,
+          retry_of_msg_id: variantOptions?.retryOfMsgId,
         }),
       });
 
@@ -1041,7 +1138,9 @@ export const AIChatScreen: React.FC = () => {
             </div>
           </div>
         ) : (
-          chatMessages.map((msg, idx) => (
+          displayMessages.map((msg, idx) => {
+            const vmeta = msg.variantGroup ? variantMeta[`${msg.variantGroup}::${msg.sender}`] : undefined;
+            return (
             <ChatBubble
               key={msg.id}
               message={msg}
@@ -1050,9 +1149,23 @@ export const AIChatScreen: React.FC = () => {
               onRetry={msg.retryText ? () => handleSend(msg.retryText!) : undefined}
               onQuickReply={(text) => handleSend(text)}
               addToast={addToast}
-              isLast={idx === chatMessages.length - 1}
+              isLast={idx === displayMessages.length - 1}
+              onEditMessage={msg.sender === "user" && msg.msgId ? (newText) => handleEditMessage(msg.msgId!, newText) : undefined}
+              onRetryVariant={msg.sender === "assistant" && msg.msgId ? () => {
+                // The paired question is whichever user turn immediately
+                // precedes this assistant reply in the FULL (unfiltered)
+                // history -- not displayMessages, since an earlier variant
+                // toggle could have hidden it.
+                const fullIdx = chatMessages.findIndex((m) => m.id === msg.id);
+                const pairedUser = [...chatMessages.slice(0, fullIdx)].reverse().find((m) => m.sender === "user");
+                if (pairedUser) handleRetryVariant(msg.msgId!, pairedUser.text);
+              } : undefined}
+              totalVariants={vmeta?.total}
+              activeVariantIndex={vmeta?.activeIndex}
+              onCycleVariant={msg.variantGroup ? (dir) => handleCycleVariant(msg.variantGroup!, dir) : undefined}
             />
-          ))
+            );
+          })
         )}
 
         {/* Shimmer loading / Thinking indicator */}

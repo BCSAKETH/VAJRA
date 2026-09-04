@@ -62,3 +62,9 @@ vajra_backend/scratch/
 **/scratch/
 vajra_backend_manual_deploy.zip
 vajra_client_deploy.zip
+
+# Backup of real numba/llvmlite + local .venv, moved out of vajra_backend/vendor
+# during the CLI-deploy size fix (see vajra_backend/vendor/numba/__init__.py) --
+# local-only, never meant for git (the local .venv copy alone is 1.4GB).
+vendor_backup_numba/
+vlogin11.json

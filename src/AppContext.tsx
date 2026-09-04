@@ -59,6 +59,14 @@ export interface ChatMessage {
   // Cowork sender attribution -- who actually typed this in a shared session.
   senderName?: string;
   senderEmployeeId?: number | string | null;
+  // Conversation branching (edit a past question / retry an answer): this
+  // message's own stable id, plus the shared group id and 1-based version
+  // number if it's one of several alternate versions of the same turn.
+  // Absent on messages predating this feature -- they simply have no
+  // variant controls, same as any single-version turn.
+  msgId?: string;
+  variantGroup?: string;
+  versionIndex?: number;
 }
 
 export interface ToastMessage {
@@ -113,12 +121,6 @@ interface AppContextType {
   isGlobalLoading: boolean;
   globalLoadingMessage: string;
   setGlobalLoading: (isLoading: boolean, message?: string) => void;
-  writeAuditLog: (
-    actionType: string,
-    targetEntity: string,
-    queryText: string,
-    responseSummary: string,
-  ) => Promise<boolean>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -401,32 +403,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     setBadgeNumberState(badge);
   };
 
-  const writeAuditLog = async (
-    actionType: string,
-    targetEntity: string,
-    queryText: string,
-    responseSummary: string,
-  ): Promise<boolean> => {
-    try {
-      const response = await fetch(`${API_BASE}/api/audit-logs/write`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
-        },
-        body: JSON.stringify({
-          action_type: actionType,
-          target_entity: targetEntity,
-          query_text: queryText,
-          response_summary: responseSummary,
-        }),
-      });
-      return response.ok;
-    } catch (e) {
-      console.error("Failed to write audit log:", e);
-      return false;
-    }
-  };
 
   const t = translations[lang];
 
@@ -465,7 +441,6 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         isGlobalLoading,
         globalLoadingMessage,
         setGlobalLoading,
-        writeAuditLog,
       }}
     >
       {children}

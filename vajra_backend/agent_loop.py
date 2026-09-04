@@ -168,6 +168,17 @@ class VajraAgentLoop(CognitiveBrainMixin):
             }
         },
         {
+            "name": "list_cases_sharing_id",
+            "description": "List the OTHER cases that share the same internal database ID (CaseMasterID) as a given case number -- use this, NOT query_graph_network or find_similar_cases, when the officer asks about cases 'linked by internal ID', 'sharing this ID', or a flagged data-integrity/shared-ID note. This is a known data-quality quirk in the records, not a real investigative connection.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "case_no": {"type": "string", "description": "The case number whose internal-ID collisions to list"}
+                },
+                "required": ["case_no"]
+            }
+        },
+        {
             "name": "query_case",
             "description": "Structured FIR lookup. Retrieve case details by Case Number (e.g. CrimeNo like 'FIR-2026-0814').",
             "parameters": {
@@ -1238,6 +1249,19 @@ class VajraAgentLoop(CognitiveBrainMixin):
               "find syndicates", "hidden syndicates", "clusters of accused", "group detection"], "community_detection", {}, "yes"),
             (["most connected", "kingpin", "central figure", "most central", "network hub", "who is the kingpin",
               "most influential accused", "centrality", "ringleader"], "centrality_ranking", {}, "yes"),
+            # Confirmed live bug: "cases that linked to this internal ID
+            # CR-2026-41245" matched "linked to" below and got routed to
+            # query_graph_network (or, with no name to extract, fell through
+            # to GLM which -- with no correct tool available at the time --
+            # picked find_similar_cases and returned unrelated cases matched
+            # by TEXT similarity, presented as if "linked", then had to admit
+            # under a follow-up that the connection wasn't real). Checked
+            # BEFORE the generic "linked to" pattern so this specific,
+            # unambiguous phrasing about the internal database ID always
+            # wins the match.
+            (["internal id", "internal database id", "shared id", "share this id", "share this internal",
+              "same internal id", "same case id", "linked by internal", "cases linked to this internal",
+              "shares the internal", "shares this internal"], "list_cases_sharing_id", {"case_no": case_no}, case_no),
             (["network", "syndicate", "co-accused", "connections for", "connections of", "connected to",
               "connected with", "associated with", "crimes associated", "crimes connected", "crimes linked",
               "main crimes", "crimes involving", "involved in", "linked to", "crimes is", "crimes does",
@@ -1421,6 +1445,9 @@ class VajraAgentLoop(CognitiveBrainMixin):
     _TOOL_HINTS = {
         "get_my_profile": ["my name", "my profile", "my details", "who am i", "my rank",
                            "my station", "my posting", "my assignment", "my designation", "am i posted"],
+        "list_cases_sharing_id": ["internal id", "internal ID", "shared id", "shared ID", "share this id",
+                                 "share this ID", "same internal id", "same case id", "linked by internal",
+                                 "cases linked to this internal", "shares the internal", "casemasterid"],
         "query_case": ["case", "cr-", "fir", "case number", "case no", "about case", "details of case"],
         "get_case_sections": ["section", "ipc", "bns", "legal provision", "charges", "act", "which section"],
         "suggest_sections": ["what section", "which section", "sections can be applied", "applicable section",
@@ -1710,7 +1737,23 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "suspect": suspect,
             "suspect2": suspect2,
             "district": district,
-            "original_ctx": context
+            "original_ctx": context,
+            # Confirmed live bug: "who's still wanted" (no name/case/district
+            # of its own) silently inherited a STALE entity from session
+            # memory (whatever case/suspect was last discussed), and Dossier
+            # mode's fixed safety-net fallback then built a full comprehensive
+            # dossier on that unrelated stale subject instead of answering
+            # the actual, different question -- a confidently wrong answer,
+            # not just an unhelpful one. These flags let callers that build a
+            # FORCED single-subject composite (the fixed-fallback safety net)
+            # require a FRESH mention, so a genuinely topic-less/generic
+            # question fails honestly instead of masquerading as an answer
+            # about whoever was last discussed. Callers that just want
+            # continuity (e.g. "his risk score" as a real follow-up) should
+            # keep using the plain fields above unchanged.
+            "case_id_fresh": bool(case_match),
+            "suspect_fresh": bool(suspect_match),
+            "district_fresh": bool(resolved_district),
         }
 
     def _write_audit_log(self, employee_id: int, action_type: str, target: str, query: str, response: str, session_id: str):
@@ -2216,13 +2259,22 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # instead of nothing.
         _dossier_fixed_fallback = None
         if answer_mode == "dossier":
-            if entities.get("case_id"):
+            # Confirmed live bug: this used to accept a case/suspect/district
+            # inherited from STALE session memory just as readily as a fresh
+            # mention in the CURRENT message -- a generic, topic-less request
+            # ("who's still wanted") then force-built a full comprehensive
+            # dossier on whatever was last discussed, a confidently wrong
+            # answer to a different question. Now requires the entity to be
+            # FRESH (present in this exact message) before this safety net
+            # will force a single-subject composite -- a genuinely topic-less
+            # request when the compiler is down now fails honestly instead.
+            if entities.get("case_id") and entities.get("case_id_fresh"):
                 _dossier_fixed_fallback = {"tool": "generate_case_dossier", "parameters": {"case_no": entities["case_id"], "user_query": officer_query}}
-            elif entities.get("suspect") and not entities.get("suspect2"):
+            elif entities.get("suspect") and entities.get("suspect_fresh") and not entities.get("suspect2"):
                 # (suspect2 check preserved: a two-person question should
                 # never fall back to a single-person composite either.)
                 _dossier_fixed_fallback = {"tool": "generate_full_report", "parameters": {"suspect_name": entities["suspect"]}}
-            elif entities.get("district"):
+            elif entities.get("district") and entities.get("district_fresh"):
                 _dossier_fixed_fallback = {"tool": "generate_crime_overview", "parameters": {"district": entities["district"]}}
 
         # ELABORATION follow-up: a vague "in detail" / "more" / "elaborate"
@@ -3185,6 +3237,60 @@ class VajraAgentLoop(CognitiveBrainMixin):
             self._write_audit_log(employee_id, "Self Profile Inquiry", str(employee_id), "Officer requested own profile", text_result, session_id)
 
         # 1. query_case
+        elif tool_name == "list_cases_sharing_id":
+            # Confirmed live gap: several tools already DETECT and disclose
+            # a CaseMasterID collision (see _resolve_case_rowid's docstring
+            # -- this dataset's CaseMasterID isn't a real unique key, ~2.6
+            # genuinely different cases share each value on average), but
+            # nothing could actually LIST the other cases it's shared with
+            # when an officer naturally asked the obvious follow-up. This
+            # closes that gap using the exact same resolution the collision
+            # warnings themselves are built on.
+            case_no = self.sanitize_sql_input(params.get("case_no", ""))
+            response_type = "case_list"
+            _sr = self._resolve_case_rowid(case_no) if case_no else None
+            if not _sr:
+                text_result = f"Case {case_no or '(none given)'} was not found in the database."
+                data = {"cases": []}
+            elif _sr["collisions"] == 0:
+                text_result = f"{case_no}'s internal case ID is not shared with any other case record -- no collision to list."
+                data = {"cases": [], "case_no": case_no}
+                citations.append({"type": "CaseMaster Datastore", "id": case_no,
+                                  "details": "No CaseMasterID collision found for this case."})
+            else:
+                try:
+                    rows = catalyst_app.zql().execute_query(
+                        f"SELECT CrimeNo, CrimeRegisteredDate, PoliceStationID FROM CaseMaster "
+                        f"WHERE CaseMasterID = {_sr['case_id']} LIMIT 20")
+                    others = [r.get("CaseMaster", {}) for r in rows if r.get("CaseMaster", {}).get("CrimeNo") != case_no]
+                    st_ids = {c.get("PoliceStationID") for c in others if c.get("PoliceStationID")}
+                    st_names: Dict[Any, str] = {}
+                    if st_ids:
+                        u_res = catalyst_app.zql().execute_query(f"SELECT UnitID, UnitName FROM Unit WHERE UnitID IN ({','.join(str(s) for s in st_ids)})")
+                        for u in u_res:
+                            ud = u.get("Unit", {})
+                            st_names[ud.get("UnitID")] = ud.get("UnitName")
+                    cases_out = [{"crime_no": c.get("CrimeNo"), "registered_date": c.get("CrimeRegisteredDate"),
+                                "station": st_names.get(c.get("PoliceStationID"), "Unknown")} for c in others]
+                    listing = "; ".join(f"{c['crime_no']} ({c['station']}, {c['registered_date']})" for c in cases_out)
+                    text_result = (
+                        f"{case_no}'s internal case ID (CaseMasterID) is shared with {len(cases_out)} other case "
+                        f"record(s) in this dataset: {listing}. ⚠ This is a DATA-INTEGRITY artifact of this "
+                        f"dataset, not evidence these cases are related, connected, or part of the same "
+                        f"investigation -- CaseMasterID is not a reliable unique key here (confirmed: ~2.6 "
+                        f"genuinely different cases share each value on average). Verify any real connection "
+                        f"independently before treating these as linked."
+                    )
+                    data = {"cases": cases_out, "case_no": case_no, "total_matched_scanned": len(cases_out)}
+                    citations.append({"type": "CaseMaster Datastore", "id": case_no,
+                                      "details": f"Real CaseMasterID collision listing -- {len(cases_out)} other case(s) share this internal ID (data-integrity artifact, not a real link)."})
+                except Exception as e:
+                    logger.warning(f"list_cases_sharing_id failed: {e}")
+                    text_result = "Could not retrieve the colliding case records right now."
+                    data = {"cases": []}
+            final_answer = True
+            self._write_audit_log(employee_id, "List Cases Sharing ID", case_no, "List cases sharing internal CaseMasterID", text_result, session_id)
+
         elif tool_name == "query_case":
             case_no = self.sanitize_sql_input(params.get("case_no", ""))
             if catalyst_app and case_no:

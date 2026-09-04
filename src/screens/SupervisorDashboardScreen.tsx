@@ -3,7 +3,7 @@ import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import { TwoPersonApprovalModal } from "../components/TwoPersonApprovalModal";
 import { WatermarkOverlay } from "../components/WatermarkOverlay";
-import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database } from "lucide-react";
+import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard } from "lucide-react";
 
 interface ConsistencyFlag {
   ROWID: number;
@@ -173,6 +173,52 @@ export const SupervisorDashboardScreen: React.FC = () => {
       }
     } catch { /* ignore */ } finally {
       setDecidingDistrictId(null);
+    }
+  };
+
+  // Live profile-change-request queue -- an officer requesting a correction
+  // to their own identity fields (name/station/rank/designation) is held here
+  // for supervisor sign-off before it's applied to the real Employee row;
+  // same live-queue pattern as export/POCSO/district access above.
+  const [pendingProfile, setPendingProfile] = useState<any[]>([]);
+  const [decidingProfileId, setDecidingProfileId] = useState<string | null>(null);
+
+  const fetchPendingProfile = async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/profile/pending-requests`, {
+        headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      });
+      if (!r.ok) return;
+      const d = await r.json();
+      setPendingProfile(d.pending || []);
+    } catch { /* transient -- next poll retries */ }
+  };
+
+  const decideProfile = async (rowid: string, approve: boolean) => {
+    setDecidingProfileId(rowid);
+    try {
+      const r = await fetch(`${API_BASE}/api/profile/review-request/${rowid}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({ approve }),
+      });
+      if (r.ok) {
+        setPendingProfile((prev) => prev.filter((p) => String(p.rowid) !== String(rowid)));
+        addToast(
+          approve ? (lang === "en" ? "Profile change applied" : "ಪ್ರೊಫೈಲ್ ಬದಲಾವಣೆ ಅನ್ವಯಿಸಲಾಗಿದೆ") : (lang === "en" ? "Profile change rejected" : "ಪ್ರೊಫೈಲ್ ಬದಲಾವಣೆ ತಿರಸ್ಕರಿಸಲಾಗಿದೆ"),
+          lang === "en" ? "The requesting officer has been notified." : "ವಿನಂತಿಸಿದ ಅಧಿಕಾರಿಗೆ ಸೂಚಿಸಲಾಗಿದೆ.",
+          approve ? "Info" : "Warning"
+        );
+      } else {
+        const err = await r.json().catch(() => ({}));
+        addToast(
+          lang === "en" ? "Could not decide" : "ನಿರ್ಧರಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ",
+          err.detail || (lang === "en" ? "Try refreshing the queue." : "ಸಾಲನ್ನು ರಿಫ್ರೆಶ್ ಮಾಡಿ."),
+          "Critical"
+        );
+      }
+    } catch { /* ignore */ } finally {
+      setDecidingProfileId(null);
     }
   };
 
@@ -355,9 +401,10 @@ export const SupervisorDashboardScreen: React.FC = () => {
     fetchPendingExports();
     fetchPendingPocso();
     fetchPendingDistrict();
-    // Live poll for held exports + POCSO + inter-district access requests so
-    // all three queues + counts update with no manual refresh.
-    const iv = setInterval(() => { fetchPendingExports(); fetchPendingPocso(); fetchPendingDistrict(); }, 5000);
+    fetchPendingProfile();
+    // Live poll for held exports + POCSO + inter-district access + profile-
+    // change requests so all four queues + counts update with no manual refresh.
+    const iv = setInterval(() => { fetchPendingExports(); fetchPendingPocso(); fetchPendingDistrict(); fetchPendingProfile(); }, 5000);
     return () => clearInterval(iv);
   }, []);
 
@@ -636,6 +683,55 @@ export const SupervisorDashboardScreen: React.FC = () => {
                     </button>
                   </>
                 )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Live profile-change-request queue -- an officer asking to correct a
+          name/station/rank/designation field on their own record; approving
+          applies the change directly to Employee, rejecting leaves it alone. */}
+      {pendingProfile.length > 0 && (
+        <div className="shrink-0 rounded-xl border border-teal-500/40 bg-teal-500/[0.06] p-4 space-y-3">
+          <div className="flex items-center gap-2">
+            <IdCard className="w-4 h-4 text-teal-400" />
+            <span className="text-xs font-black uppercase tracking-wider text-teal-300 font-mono">
+              {lang === "en" ? "Profile change requests" : "ಪ್ರೊಫೈಲ್ ಬದಲಾವಣೆ ವಿನಂತಿಗಳು"}
+            </span>
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-teal-400 text-stone-950 font-bold">
+              {pendingProfile.length}
+            </span>
+            <span className="text-[10px] text-stone-500 font-mono">
+              {lang === "en" ? "Identity fields are read-only until you sign off" : "ನೀವು ಅನುಮೋದಿಸುವವರೆಗೆ ಗುರುತಿನ ಕ್ಷೇತ್ರಗಳು ಓದಲು-ಮಾತ್ರ"}
+            </span>
+          </div>
+          <div className="space-y-2">
+            {pendingProfile.map((p) => (
+              <div key={p.rowid} className="flex items-center gap-3 rounded-lg bg-stone-950/40 border border-stone-800 px-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="text-[12px] text-stone-200 font-mono truncate">
+                    {lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ"} {p.requester_badge} ({p.requester_name || ""})
+                  </div>
+                  <div className="text-[10px] text-stone-500 truncate">
+                    {Object.entries(p.requested_changes || {}).map(([k, v]) => `${k}: ${(p.current_values || {})[k] ?? "—"} → ${v}`).join(" · ")}
+                  </div>
+                  {p.reason && <div className="text-[10px] text-stone-600 truncate italic">"{p.reason}"</div>}
+                </div>
+                <button
+                  onClick={() => decideProfile(String(p.rowid), true)}
+                  disabled={decidingProfileId === String(p.rowid)}
+                  className="px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold uppercase tracking-wide text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 cursor-pointer"
+                >
+                  {lang === "en" ? "Approve" : "ಅನುಮೋದಿಸಿ"}
+                </button>
+                <button
+                  onClick={() => decideProfile(String(p.rowid), false)}
+                  disabled={decidingProfileId === String(p.rowid)}
+                  className="px-3 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/40 text-[11px] font-bold uppercase tracking-wide text-rose-300 hover:bg-rose-500/20 disabled:opacity-50 cursor-pointer"
+                >
+                  {lang === "en" ? "Reject" : "ತಿರಸ್ಕರಿಸಿ"}
+                </button>
               </div>
             ))}
           </div>

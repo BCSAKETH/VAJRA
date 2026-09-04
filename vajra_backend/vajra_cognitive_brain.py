@@ -254,6 +254,7 @@ class CognitiveBrainMixin:
         {"name": "rank_districts", "does": "rank ALL districts by crime volume, worst first", "params": {}},
         {"name": "get_database_overview", "does": "total FIRs + crime-type overview for the whole database", "params": {}},
         {"name": "count_cases", "does": "exact COUNT of cases, optionally filtered by crime type, district, and/or a 4-digit year (answers 'how many X in Y in YYYY')", "params": {"district": "optional", "crime_group": "optional crime type", "year": "optional 4-digit year"}},
+        {"name": "list_cases_sharing_id", "does": "list the OTHER cases sharing the same internal database ID (CaseMasterID) as a given case -- use this, NOT query_graph_network or find_similar_cases, for 'linked by internal ID' / 'shares this ID' questions; this is a data-quality quirk, not a real link", "params": {"case_no": "required"}},
         {"name": "query_case", "does": "details of ONE case by its case number", "params": {"case_no": "required"}},
         {"name": "get_case_timeline", "does": "chronological timeline of ONE case", "params": {"case_no": "required"}},
         {"name": "get_case_sections", "does": "legal sections applied to ONE case", "params": {"case_no": "required"}},
@@ -455,7 +456,10 @@ class CognitiveBrainMixin:
             "- Extract quantifiers, district names, suspect names, and case numbers into params.\n"
             "- Use MULTIPLE steps for compound asks. To compare two districts, add get_crime_trends once PER district.\n"
             "- Choose present_as to fit the answer (a distribution -> pie/bar, a network -> network, a route over time -> line).\n"
-            "- If the request is a greeting or needs no data, return steps: [] and put a short reply in intent.\n"
+            "- If the request is a greeting or needs no data, return steps: [] and put a short reply in intent. "
+            "Write it like a sharp colleague greeting an officer -- plain, warm, direct, no stiff form-letter "
+            "phrasing (\"I am ready to assist you with your queries\") -- but never playful/emoji, this stays a "
+            "professional police tool.\n"
             "- ASK, DON'T GUESS (applies to EVERY request, not a special case): if the request is genuinely "
             "ambiguous, or is missing information you would need to answer well -- a name/case/district that "
             "could reasonably mean more than one thing, a request too vague to plan concrete steps for, a "

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ChatMessage } from "../AppContext";
 import { translations } from "../i18n";
-import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText } from "lucide-react";
+import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 import { API_BASE } from "../config";
 
@@ -23,6 +23,14 @@ interface ChatBubbleProps {
   onQuickReply?: (text: string) => void;
   addToast?: (title: string, message: string, severity: "Critical" | "Warning" | "Info" | "Success") => void;
   isLast?: boolean;
+  // Conversation branching (edit/retry/variants) -- all optional so a
+  // message with no msgId (any turn predating this feature) simply renders
+  // with none of these controls, exactly as it always has.
+  onEditMessage?: (newText: string) => void;
+  onRetryVariant?: () => void;
+  totalVariants?: number;
+  activeVariantIndex?: number;
+  onCycleVariant?: (direction: 1 | -1) => void;
 }
 
 // Panel types that InlineWidget can render as a visual (everything else in a
@@ -204,12 +212,19 @@ const speakText = (text: string, lang: "en" | "kn", onEnd: () => void): SpeakRes
   return "started";
 };
 
-export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang, onExpandWidget, onRetry, onQuickReply, addToast, isLast }) => {
+export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
+  message, lang, onExpandWidget, onRetry, onQuickReply, addToast, isLast,
+  onEditMessage, onRetryVariant, totalVariants, activeVariantIndex, onCycleVariant,
+}) => {
   const t = translations[lang];
   const isAI = message.sender === "assistant";
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
+  // Conversation branching: inline edit mode for a user message.
+  const [isEditing, setIsEditing] = useState(false);
+  const [editDraft, setEditDraft] = useState(message.text);
+  const [isRetrying, setIsRetrying] = useState(false);
   const [viewingImageUrl, setViewingImageUrl] = useState<string | null>(null);
   // Real per-page pagination (confirmed live complaint: the old viewer
   // showed every page of a multi-page PDF pre-stitched into one long
@@ -830,8 +845,41 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
 
           {/* Main Text Content -- AI answers render light markdown (bold /
               headings / bullets / numbered) so they read as a scannable brief,
-              not a raw-asterisk wall of text. User messages stay verbatim. */}
-          {isAI
+              not a raw-asterisk wall of text. User messages stay verbatim,
+              or an inline edit textarea when isEditing (conversation
+              branching -- editing re-asks the question as a new version
+              sharing the original turn's variant group, never overwriting
+              the original). */}
+          {!isAI && isEditing ? (
+            <div className="w-full flex flex-col gap-2">
+              <textarea
+                value={editDraft}
+                onChange={(e) => setEditDraft(e.target.value)}
+                autoFocus
+                rows={Math.min(6, Math.max(2, editDraft.split("\n").length))}
+                className="w-full bg-stone-950/60 border border-[#C79A4E]/40 rounded-lg p-2 text-sm text-stone-100 focus:outline-none focus:border-[#C79A4E] resize-none"
+              />
+              <div className="flex items-center gap-2 justify-end">
+                <button
+                  onClick={() => { setIsEditing(false); setEditDraft(message.text); }}
+                  className="text-[11px] px-2.5 py-1 rounded-lg text-stone-400 hover:text-stone-200 hover:bg-stone-800 transition-colors cursor-pointer"
+                >
+                  {lang === "en" ? "Cancel" : "ರದ್ದುಮಾಡಿ"}
+                </button>
+                <button
+                  onClick={() => {
+                    const trimmed = editDraft.trim();
+                    if (trimmed && onEditMessage) onEditMessage(trimmed);
+                    setIsEditing(false);
+                  }}
+                  disabled={!editDraft.trim()}
+                  className="text-[11px] px-2.5 py-1 rounded-lg bg-[#C79A4E]/15 border border-[#C79A4E]/40 text-[#C79A4E] hover:bg-[#C79A4E]/25 transition-colors cursor-pointer disabled:opacity-40"
+                >
+                  {lang === "en" ? "Update & Run" : "ನವೀಕರಿಸಿ ಮತ್ತು ರನ್ ಮಾಡಿ"}
+                </button>
+              </div>
+            </div>
+          ) : isAI
             ? <div className="font-sans text-stone-200 text-[13.5px]">{renderRich(displayText)}</div>
             : <div className="whitespace-pre-wrap font-sans text-stone-200">{displayText}</div>}
 
@@ -1078,10 +1126,58 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
           </div>
         )}
 
-        {/* Message actions -- visible on hover, hidden otherwise so the
-            thread stays uncluttered. Copy works for any message; Speak
-            (moved down from the sender label) stays AI-only. */}
-        <div className={`flex items-center gap-1 px-1 opacity-0 group-hover:opacity-100 transition-opacity ${isAI ? "" : "self-end"}`}>
+        {/* Message actions row. The variant-cycle pill is a real navigation
+            control (not clutter) so it stays always-visible once a message
+            has 2+ versions -- it used to live inside the hover-only wrapper
+            below, but cycling to a shorter/longer version text reflows the
+            bubble, which can move the cursor outside the bubble's new
+            bounds and silently drop the CSS hover state, hiding the very
+            button the officer just clicked to get here (reported live: could
+            go back a version but then had no visible way back forward).
+            Copy/Edit/Retry/Speak/etc. stay hover-only so the thread stays
+            uncluttered otherwise. */}
+        <div className={`flex items-center gap-1 px-1 ${isAI ? "" : "self-end"}`}>
+          {totalVariants && totalVariants > 1 && (
+            <div className="flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-stone-900 border border-stone-850 text-[10px] font-mono text-stone-400 mr-0.5">
+              <button
+                onClick={() => onCycleVariant?.(-1)}
+                disabled={(activeVariantIndex || 1) <= 1}
+                className="hover:text-[#C79A4E] disabled:opacity-30 cursor-pointer"
+                title={lang === "en" ? "Previous version" : "ಹಿಂದಿನ ಆವೃತ್ತಿ"}
+              >
+                <ChevronLeft className="w-3 h-3" />
+              </button>
+              <span className="text-[#C79A4E] font-bold">{activeVariantIndex || 1}/{totalVariants}</span>
+              <button
+                onClick={() => onCycleVariant?.(1)}
+                disabled={(activeVariantIndex || 1) >= totalVariants}
+                className="hover:text-[#C79A4E] disabled:opacity-30 cursor-pointer"
+                title={lang === "en" ? "Next version" : "ಮುಂದಿನ ಆವೃತ್ತಿ"}
+              >
+                <ChevronRight className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+          <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          {!isAI && onEditMessage && !isEditing && (
+            <button
+              onClick={() => { setEditDraft(message.text); setIsEditing(true); }}
+              title={lang === "en" ? "Edit message" : "ಸಂದೇಶ ಸಂಪಾದಿಸಿ"}
+              className="p-1 rounded hover:bg-stone-800 text-stone-600 hover:text-[#C79A4E] transition-colors cursor-pointer"
+            >
+              <Pencil className="w-3 h-3" />
+            </button>
+          )}
+          {isAI && onRetryVariant && !message.isSimulated && (
+            <button
+              onClick={() => { setIsRetrying(true); onRetryVariant(); setTimeout(() => setIsRetrying(false), 2000); }}
+              disabled={isRetrying}
+              title={lang === "en" ? "Retry / Regenerate" : "ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ"}
+              className="p-1 rounded hover:bg-stone-800 text-stone-600 hover:text-[#C79A4E] transition-colors cursor-pointer disabled:opacity-40"
+            >
+              <RotateCcw className={`w-3 h-3 ${isRetrying ? "animate-spin text-[#C79A4E]" : ""}`} />
+            </button>
+          )}
           <button
             onClick={handleCopy}
             title={lang === "en" ? "Copy" : "ನಕಲಿಸಿ"}
@@ -1138,6 +1234,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({ message, lang
               </button>
             </>
           )}
+          </div>
         </div>
         </>
         )}

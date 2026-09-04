@@ -92,13 +92,16 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   // ledger verification, consistency-flag review) -- only shown to
   // Supervisor-tier+ officers, matching the backend enforcement on
   // /api/alerts/consistency-flags/{id}/review.
+  // "settings" intentionally NOT in this list -- moved to a dedicated gear
+  // button beside the officer profile card in the footer (below), freeing
+  // vertical space in the primary workspace nav for case/district/supervisor
+  // items, which is where an officer's attention actually belongs day to day.
   const navItems = [
     { id: "ai_chat" as ScreenId, label: t.navChat, icon: MessageSquare },
     { id: "district_dashboard" as ScreenId, label: t.navDistrictDashboard, icon: Map },
     ...(roleTier === "supervisor"
       ? [{ id: "supervisor" as ScreenId, label: t.navSupervisor, icon: UserCheck }]
       : []),
-    { id: "settings" as ScreenId, label: t.navSettings, icon: Settings },
   ];
 
   return (
@@ -225,27 +228,56 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
               </div>
             )}
 
-            <button
-              onClick={() => setIsProfileOpen((v) => !v)}
-              className={`flex items-center gap-3 rounded-lg transition-colors cursor-pointer ${
-                isExpanded ? "p-1.5 -m-1.5 hover:bg-stone-800/50 w-full" : "mx-auto"
-              }`}
-              aria-label={t.profileLabel}
-            >
-              <div
-                className={`w-8 h-8 rounded-full bg-stone-800 border flex items-center justify-center font-bold text-xs text-[#C79A4E] shrink-0 transition-colors ${
-                  isProfileOpen ? "border-[#C79A4E]" : "border-stone-750"
+            {/* Officer profile trigger + tactical Settings gear, side by side
+                when expanded (Item 5): Settings moved OUT of the primary nav
+                list above into this footer card instead, so the workspace
+                nav stays reserved for case/district/supervisor work. */}
+            <div className={isExpanded ? "flex items-center gap-1.5 w-full" : "flex flex-col items-center gap-2.5"}>
+              <button
+                onClick={() => setIsProfileOpen((v) => !v)}
+                className={`flex items-center gap-3 rounded-lg transition-colors cursor-pointer ${
+                  isExpanded ? "p-1.5 -m-1.5 hover:bg-stone-800/50 flex-1 min-w-0" : ""
+                }`}
+                aria-label={t.profileLabel}
+              >
+                <div
+                  className={`w-8 h-8 rounded-full bg-stone-800 border flex items-center justify-center font-bold text-xs text-[#C79A4E] shrink-0 transition-colors ${
+                    isProfileOpen ? "border-[#C79A4E]" : "border-stone-750"
+                  }`}
+                >
+                  KG
+                </div>
+                {isExpanded && (
+                  <div className="flex-1 min-w-0 text-left">
+                    <p className="text-xs font-semibold text-stone-300 truncate">{t.profileLabel}</p>
+                    <p className="text-[10px] text-stone-500 truncate">{badgeNumber || "KGID: 4003385"}</p>
+                  </div>
+                )}
+              </button>
+
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setCurrentScreen("settings");
+                  setIsProfileOpen(false);
+                }}
+                title={t.navSettings}
+                aria-label={t.navSettings}
+                className={`shrink-0 flex items-center justify-center rounded-lg border transition-all cursor-pointer ${
+                  isExpanded ? "p-1.5" : "w-8 h-8"
+                } ${
+                  currentScreen === "settings"
+                    ? "bg-[#C79A4E]/15 border-[#C79A4E]/40 text-[#C79A4E] shadow-[0_0_10px_rgba(199,154,78,0.2)]"
+                    : "border-stone-800/70 hover:border-stone-700 bg-stone-900/40 hover:bg-stone-800/70 text-stone-400 hover:text-[#C79A4E]"
                 }`}
               >
-                KG
-              </div>
-              {isExpanded && (
-                <div className="flex-1 min-w-0 text-left">
-                  <p className="text-xs font-semibold text-stone-300 truncate">{t.profileLabel}</p>
-                  <p className="text-[10px] text-stone-500 truncate">{badgeNumber || "KGID: 4003385"}</p>
-                </div>
-              )}
-            </button>
+                <Settings
+                  className={`w-4 h-4 transition-transform duration-300 ${
+                    currentScreen === "settings" ? "rotate-45 text-[#C79A4E]" : "hover:rotate-45"
+                  }`}
+                />
+              </button>
+            </div>
 
             <button
               onClick={() => setIsAuthenticated(false)}

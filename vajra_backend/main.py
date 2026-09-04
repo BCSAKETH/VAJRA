@@ -455,6 +455,40 @@ class AuthRequest(BaseModel):
     password: str = Field(..., description="Alphanumeric password")
 
 
+# SECURITY: login had no brute-force protection at all -- unlimited password
+# guesses against any real 7-digit badge number. In-memory, per-badge sliding
+# window (same lightweight pattern as progress_tracker.py/cowork_feed.py --
+# AppSail is a persistent process, so this genuinely persists across
+# requests; the honest limitation is it's per-instance, not global, if the
+# app ever scales to multiple AppSail instances, which is an acceptable
+# trade-off for a first real rate limit versus none at all today).
+_LOGIN_LOCK = _threading.Lock()
+_login_attempts: Dict[str, List[float]] = {}
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_WINDOW_SECONDS = 900  # 15 minutes
+
+
+def _login_rate_limited(badge_no: str) -> Optional[int]:
+    """Returns seconds remaining before retry is allowed, or None if OK."""
+    now = time.time()
+    with _LOGIN_LOCK:
+        attempts = [t for t in _login_attempts.get(badge_no, []) if now - t < _LOGIN_WINDOW_SECONDS]
+        _login_attempts[badge_no] = attempts
+        if len(attempts) >= _LOGIN_MAX_ATTEMPTS:
+            return int(_LOGIN_WINDOW_SECONDS - (now - min(attempts)))
+    return None
+
+
+def _record_login_failure(badge_no: str) -> None:
+    with _LOGIN_LOCK:
+        _login_attempts.setdefault(badge_no, []).append(time.time())
+
+
+def _clear_login_attempts(badge_no: str) -> None:
+    with _LOGIN_LOCK:
+        _login_attempts.pop(badge_no, None)
+
+
 @app.post("/api/auth/login")
 async def login(payload: AuthRequest):
     """
@@ -471,6 +505,13 @@ async def login(payload: AuthRequest):
             detail="Invalid Credentials: Badge Number (KGID) must be exactly 7 digits and strictly numeric."
         )
 
+    retry_after = _login_rate_limited(payload.badge_no)
+    if retry_after is not None:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many failed login attempts for this badge. Try again in {max(1, retry_after // 60)} minute(s)."
+        )
+
     if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
 
@@ -483,11 +524,14 @@ async def login(payload: AuthRequest):
         raise HTTPException(status_code=500, detail=f"Credential lookup failed: {str(e)}")
 
     if not cred_res:
+        _record_login_failure(payload.badge_no)
         raise HTTPException(status_code=401, detail="Invalid Credentials: Badge Number or password incorrect.")
 
     stored_hash = cred_res[0].get("OfficerCredentials", {}).get("PasswordHash")
     if not stored_hash or not bcrypt.checkpw(payload.password.encode("utf-8"), stored_hash.encode("utf-8")):
+        _record_login_failure(payload.badge_no)
         raise HTTPException(status_code=401, detail="Invalid Credentials: Badge Number or password incorrect.")
+    _clear_login_attempts(payload.badge_no)
 
     from vajra_core import issue_session_token, derive_role_tier
     # Previously returned the raw shared Catalyst admin access token as the
@@ -2006,6 +2050,16 @@ class ChatRequest(BaseModel):
     # this id purely to recognize and skip its own echo when the broadcast
     # arrives a second time over the socket, instead of rendering it twice.
     client_msg_id: Optional[str] = None
+    # Conversation branching (edit/retry/variants): editing a past user
+    # message or retrying an assistant reply doesn't overwrite anything --
+    # each creates a NEW version sharing the original turn's variant_group,
+    # so the officer can cycle back to an earlier version. Both are simple
+    # ids stashed in data_json.msg_id on the message being edited/retried
+    # (see _persist_chat_message call sites below) -- no new datastore
+    # columns, no schema migration, same "pack it in data_json" pattern this
+    # table already uses everywhere else.
+    edit_of_msg_id: Optional[str] = None
+    retry_of_msg_id: Optional[str] = None
 
 
 def _bump_chat_session_active(session_id: str):
@@ -2020,6 +2074,49 @@ def _bump_chat_session_active(session_id: str):
             })
     except Exception as e:
         logger.warning(f"Could not update ChatSession.last_active_at: {e}")
+
+
+def _resolve_variant_info(session_id: str, target_msg_id: str, sender: str) -> Dict[str, Any]:
+    """
+    Looks up the variant_group and next version_index for editing a past user
+    message or retrying a past assistant reply, identified by its
+    data_json.msg_id. `sender` scopes the version COUNT to the same side --
+    editing a user prompt and retrying its assistant reply are tracked as
+    two independent variant sequences that happen to share one
+    variant_group, matching how ChatGPT/Claude's own edit-vs-retry model
+    behaves (retrying doesn't touch the user prompt's own version count).
+    Falls back to a fresh variant_group off target_msg_id itself if the
+    target row can't be found -- never blocks the turn from proceeding.
+    """
+    variant_group = target_msg_id
+    next_version = 2
+    if not catalyst_app:
+        return {"variant_group": variant_group, "version_index": next_version}
+    try:
+        rows = catalyst_app.zql().execute_query(
+            f"SELECT sender, data_json FROM ChatMessage WHERE session_id = '{session_id}' ORDER BY sent_at DESC LIMIT 100"
+        )
+        target_group = None
+        for r in rows:
+            m = r.get("ChatMessage", {})
+            d = _safe_json_loads(m.get("data_json"), {})
+            if d.get("msg_id") == target_msg_id:
+                target_group = d.get("variant_group") or target_msg_id
+                break
+        if target_group:
+            variant_group = target_group
+            max_v = 1
+            for r in rows:
+                m = r.get("ChatMessage", {})
+                if m.get("sender") != sender:
+                    continue
+                d = _safe_json_loads(m.get("data_json"), {})
+                if d.get("variant_group") == target_group:
+                    max_v = max(max_v, int(d.get("version_index") or 1))
+            next_version = max_v + 1
+    except Exception as e:
+        logger.warning(f"_resolve_variant_info failed: {e}")
+    return {"variant_group": variant_group, "version_index": next_version}
 
 
 def _fit_json(obj: Any, cap: int) -> str:
@@ -2115,7 +2212,8 @@ def _fit_json(obj: Any, cap: int) -> str:
     # whitelist and silently fell all the way to an empty {}.
     minimal = {k: d.get(k) for k in
                ("case_no", "primary_accused", "_text_en", "news", "scope",
-                "nodes", "edges", "seed", "max_hop_reached", "_zcql_provenance") if d.get(k)}
+                "nodes", "edges", "seed", "max_hop_reached", "_zcql_provenance",
+                "msg_id", "variant_group", "version_index") if d.get(k)}
     s = json.dumps(minimal, ensure_ascii=False, default=str)
     return s if len(s) <= cap else "{}"
 
@@ -2380,6 +2478,18 @@ async def get_session_messages(session_id: str, request: Request, location_conte
     """
     if not session_id:
         return []
+
+    # SECURITY (confirmed live IDOR): this endpoint previously had NO
+    # ownership check at all -- any authenticated officer who knew or
+    # guessed another officer's session_id (predictable "sess-{employee_id}-
+    # {epoch_seconds}" format for solo sessions) could read that officer's
+    # entire chat history, including POCSO-sensitive conversations and
+    # suspect risk profiles. Reuses the SAME _get_cowork_role check already
+    # gating who can POST into a session (chat_endpoint) so read access is
+    # at least as strict as write access, instead of having no gate at all.
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if employee_id and not _get_cowork_role(session_id, employee_id):
+        raise HTTPException(status_code=403, detail="You do not have access to this session.")
 
     # 1. High-speed 15s in-memory TTL cache (sub-millisecond TTFB)
     now = time.time()
@@ -2676,6 +2786,7 @@ async def _run_ai_turn_and_persist(
     officer_name: Optional[str] = None,
     officer_badge: Optional[str] = None,
     answer_mode: str = "standard",
+    variant_data: Optional[Dict[str, Any]] = None,
 ):
     """
     Runs the full GLM turn (case-context injection, translation, the agent
@@ -2919,7 +3030,7 @@ async def _run_ai_turn_and_persist(
     # so a real text_kn column would need a manual console change first.
     # Underscore-prefixed keys avoid colliding with real widget/visualization
     # data fields already living in this same dict.
-    persisted_data = {**(result["data"] or {}), "_text_en": text_en, "_text_kn": text_kn}
+    persisted_data = {**(result["data"] or {}), "_text_en": text_en, "_text_kn": text_kn, **(variant_data or {})}
 
     # Court-admissible provenance (§65B Indian Evidence Act): a verifiable SHA-256
     # integrity hash over the grounded answer + its citations, plus the cited
@@ -3006,7 +3117,15 @@ async def chat_progress_stream(session_id: str, request: Request, location_conte
     actually happening. Self-closes on client disconnect, on the turn being
     marked done, or after a bounded ceiling -- never an indefinitely open
     connection.
+
+    SECURITY: same ownership gate as the session-messages/Cowork-stream
+    endpoints -- only leaks step NAMES ("Searching CCTNS...") not content,
+    but still confirms another officer's session_id is live; closed for
+    defense-in-depth consistency with the higher-severity endpoints.
     """
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if employee_id and not _get_cowork_role(session_id, employee_id):
+        raise HTTPException(status_code=403, detail="You do not have access to this session.")
     progress_tracker.cleanup_stale()
 
     async def _gen():
@@ -3038,7 +3157,15 @@ async def cowork_message_stream(session_id: str, request: Request, location_cont
     for the next poll tick. Self-closes after a bounded ceiling so no
     connection stays open forever; the frontend reconnects immediately,
     same reconnect-loop pattern as the existing progress ticker.
+
+    SECURITY: same ownership gate as GET /api/sessions/{id}/messages -- this
+    endpoint would otherwise let any authenticated officer live-tap another
+    officer's session by guessing/knowing its session_id.
     """
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if employee_id and not _get_cowork_role(session_id, employee_id):
+        raise HTTPException(status_code=403, detail="You do not have access to this session.")
+
     import cowork_feed
     cowork_feed.cleanup_stale()
 
@@ -3118,17 +3245,52 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     # the AI.
     mentions_vajra = bool(VAJRA_MENTION_RE.search(display_text))
 
-    _persist_chat_message(
-        session_id, "user", display_text, "text",
-        {"attachments": payload.attachments} if payload.attachments else None,
-        sender_employee_id=employee_id
-    )
-    await connection_manager.broadcast(session_id, {
-        "type": "message", "sender": "user", "sender_employee_id": employee_id,
-        "sender_name": first_name, "text": display_text, "response_type": "text",
-        "data": {}, "citations": [], "timestamp": datetime.utcnow().isoformat(),
-        "client_msg_id": payload.client_msg_id
-    })
+    # CONVERSATION BRANCHING (edit/retry): editing a past question or
+    # retrying a past answer never overwrites anything -- each creates a new
+    # version sharing the original turn's variant_group (packed into
+    # data_json, no new columns -- see ChatRequest.edit_of_msg_id). A RETRY
+    # reuses the SAME already-asked question (the frontend resends its exact
+    # text) but must NOT persist/broadcast a second copy of that user bubble
+    # -- only a new assistant-side variant is being generated.
+    # Every message (not just an edited/retried one) gets a real
+    # variant_group + version_index=1 from the moment it's created, keyed off
+    # the USER message's own id -- both the question and its answer share
+    # this group. Previously only messages produced BY an edit/retry carried
+    # a variant_group at all, so the very first (never-edited) exchange in a
+    # turn had none -- it could never be matched into a group later and so
+    # never got hidden when the officer edited past it, which is why editing
+    # "hi" -> "hi vajra" left the ORIGINAL answer to "hi" permanently visible
+    # alongside the new one instead of being cycled away with it (confirmed
+    # live). Giving the baseline its own group up front fixes that at the
+    # source, matching how ChatGPT/Claude hide a stale Q&A pair together.
+    _user_msg_id = uuid.uuid4().hex
+    _user_variant_extra: Dict[str, Any] = {"msg_id": _user_msg_id, "variant_group": _user_msg_id, "version_index": 1}
+    _assistant_variant_data: Dict[str, Any] = {"msg_id": uuid.uuid4().hex, "variant_group": _user_msg_id, "version_index": 1}
+    _is_retry = bool(payload.retry_of_msg_id)
+
+    if payload.edit_of_msg_id:
+        vinfo = _resolve_variant_info(session_id, payload.edit_of_msg_id, "user")
+        _user_variant_extra["variant_group"] = vinfo["variant_group"]
+        _user_variant_extra["version_index"] = vinfo["version_index"]
+        _assistant_variant_data["variant_group"] = vinfo["variant_group"]
+        _assistant_variant_data["version_index"] = vinfo["version_index"]
+    elif _is_retry:
+        vinfo = _resolve_variant_info(session_id, payload.retry_of_msg_id, "assistant")
+        _assistant_variant_data["variant_group"] = vinfo["variant_group"]
+        _assistant_variant_data["version_index"] = vinfo["version_index"]
+
+    if not _is_retry:
+        _persist_chat_message(
+            session_id, "user", display_text, "text",
+            {**({"attachments": payload.attachments} if payload.attachments else {}), **_user_variant_extra},
+            sender_employee_id=employee_id
+        )
+        await connection_manager.broadcast(session_id, {
+            "type": "message", "sender": "user", "sender_employee_id": employee_id,
+            "sender_name": first_name, "text": display_text, "response_type": "text",
+            "data": _user_variant_extra, "citations": [], "timestamp": datetime.utcnow().isoformat(),
+            "client_msg_id": payload.client_msg_id
+        })
 
     if is_cowork and not mentions_vajra:
         # Human-to-human message in a shared thread -- no AI call, return fast.
@@ -3260,7 +3422,8 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
         _ai_task = asyncio.create_task(_run_ai_turn_and_persist(
             session_id, message, lang, employee_id, unit_id, payload.client_msg_id,
             officer_name=first_name, officer_badge=request.state.kgid,
-            answer_mode=(payload.answer_mode or "standard")
+            answer_mode=(payload.answer_mode or "standard"),
+            variant_data=_assistant_variant_data
         ))
         _BACKGROUND_AI_TASKS.add(_ai_task)  # strong ref so it isn't GC'd mid-run
         _ai_task.add_done_callback(lambda t: _ai_turn_done(t, session_id))
@@ -4009,7 +4172,7 @@ async def get_alerts_endpoint(request: Request, location_context: str = Depends(
         # Without this filter they leaked into every officer's "System Alerts"
         # list as a raw JSON blob mislabeled under whatever AlertType string
         # the frontend didn't recognize.
-        WORKFLOW_INTERNAL_ALERT_TYPES = {"EXPORT_APPROVAL", "POCSO_ACCESS", "DISTRICT_ACCESS"}
+        WORKFLOW_INTERNAL_ALERT_TYPES = {"EXPORT_APPROVAL", "POCSO_ACCESS", "DISTRICT_ACCESS", "PROFILE_CHANGE"}
 
         alerts = []
         for row in res:
@@ -4286,35 +4449,15 @@ async def review_consistency_flag(flag_id: int, payload: ReviewFlagRequest, requ
         return {"status": "Error", "message": str(e)}
 
 
-class WriteAuditLogRequest(BaseModel):
-    action_type: str
-    target_entity: str
-    query_text: str
-    response_summary: str
-
-
-@app.post("/api/audit-logs/write")
-async def write_audit_log_endpoint(payload: WriteAuditLogRequest, request: Request, location_context: str = Depends(security_firewall)):
-    """
-    Programmatic endpoint for the frontend to write secure client-side audit logs.
-    """
-    if not catalyst_app:
-        return {"status": "Database offline"}
-    try:
-        employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId") or 4003385
-        session_id = f"session-{request.state.kgid}"
-        agent_loop._write_audit_log(
-            employee_id=employee_id,
-            action_type=payload.action_type,
-            target=payload.target_entity,
-            query=payload.query_text,
-            response=payload.response_summary,
-            session_id=session_id
-        )
-        return {"status": "Success"}
-    except Exception as e:
-        logger.error(f"Failed to insert frontend audit log: {e}")
-        return {"status": "Error", "message": str(e)}
+# SECURITY (removed, Item 18): /api/audit-logs/write used to let the
+# authenticated CLIENT freely write arbitrary action_type/target/query/
+# response strings straight into the tamper-evident audit ledger -- fully
+# forgeable content on a ledger whose entire value proposition is being
+# tamper-evident. Confirmed dead code on the frontend (writeAuditLog() in
+# AppContext.tsx had zero call sites), so removing it costs no real feature.
+# Every real audit entry in this system is written by trusted server-side
+# code (_write_audit_log calls inside agent_loop.py's own tool handlers),
+# never by a client-supplied payload.
 
 
 class TTSRequest(BaseModel):
@@ -5603,6 +5746,197 @@ async def export_request_status(request_id: str, request: Request = None,
     m = row["meta"]
     return {"status": m.get("status", "pending"), "reasons": m.get("reasons", []),
             "approver": m.get("approver_badge")}
+
+
+# --- PROFILE IMMUTABILITY: an officer's identity fields (name/station/rank/
+# designation) are read-only in the UI; changing them goes through the same
+# reused ProactiveAlerts approval pattern as EXPORT_APPROVAL above (AlertType=
+# 'PROFILE_CHANGE') rather than a new table this deployment can't create.
+# Only fields that genuinely exist on Employee are changeable -- there is no
+# email/phone column on this schema, so those are not offered.
+PROFILE_EDITABLE_FIELDS = {"FirstName", "UnitID", "RankID", "DesignationID"}
+
+
+def _find_profile_change_row(request_id: str):
+    if not catalyst_app or not request_id:
+        return None
+    rid = str(request_id).replace("'", "''")
+    try:
+        if rid.isdigit():
+            res = catalyst_app.zql().execute_query(
+                "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+                f"WHERE AlertType = 'PROFILE_CHANGE' AND ROWID = {rid} LIMIT 1")
+        else:
+            res = catalyst_app.zql().execute_query(
+                "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+                f"WHERE AlertType = 'PROFILE_CHANGE' AND AlertMessage LIKE '*{rid}*' ORDER BY ROWID DESC LIMIT 1")
+    except Exception as e:
+        logger.warning(f"_find_profile_change_row: {e}")
+        return None
+    if not res:
+        return None
+    a = res[0].get("ProactiveAlerts", {})
+    try:
+        meta = json.loads(a.get("AlertMessage") or "{}")
+    except Exception:
+        meta = {}
+    return {"rowid": a.get("ROWID"), "meta": meta}
+
+
+class ProfileChangeRequestPayload(BaseModel):
+    requested_changes: Dict[str, Any]
+    reason: str = ""
+
+
+@app.post("/api/profile/request-change")
+async def request_profile_change(payload: ProfileChangeRequestPayload, request: Request,
+                                 location_context: str = Depends(security_firewall)):
+    """Any authenticated officer requests a change to their own identity fields.
+    Held for supervisor approval -- never applied directly. One pending request
+    per officer at a time (prevents a queue of stale/duplicate asks)."""
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    badge = request.state.kgid
+    changes = {k: v for k, v in (payload.requested_changes or {}).items() if k in PROFILE_EDITABLE_FIELDS}
+    if not changes:
+        raise HTTPException(status_code=400, detail="No valid profile fields in requested_changes.")
+
+    # Reject if this officer already has a pending request -- surface it instead.
+    try:
+        existing_res = catalyst_app.zql().execute_query(
+            "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+            "WHERE AlertType = 'PROFILE_CHANGE' ORDER BY ROWID DESC LIMIT 100")
+    except Exception as e:
+        logger.warning(f"request_profile_change lookup: {e}")
+        existing_res = []
+    for row in existing_res:
+        a = row.get("ProactiveAlerts", {})
+        try:
+            m = json.loads(a.get("AlertMessage") or "{}")
+        except Exception:
+            continue
+        if str(m.get("requester_badge")) == str(badge) and m.get("status") == "pending":
+            raise HTTPException(status_code=409, detail="You already have a pending profile change request.")
+
+    request_id = uuid.uuid4().hex[:16]
+    profile = getattr(request.state, "user_profile", {}) or {}
+    current_values = {f: profile.get(f) for f in changes.keys()}
+    meta = {
+        "request_id": request_id, "requester_badge": str(badge or ""),
+        "requester_name": profile.get("FirstName") or "Officer",
+        "current_values": current_values, "requested_changes": changes,
+        "reason": (payload.reason or "")[:300], "status": "pending",
+        "approver_badge": None, "decided_at": None,
+        "created_at": datetime.utcnow().isoformat(),
+    }
+    try:
+        zcql_insert_row("ProactiveAlerts", {
+            "AlertType": "PROFILE_CHANGE", "Severity": "Info",
+            "TriggerTime": datetime.utcnow().isoformat(), "IsRead": False,
+            "DistrictID": "0", "AlertMessage": json.dumps(meta),
+        })
+    except Exception as e:
+        logger.warning(f"request_profile_change insert failed: {e}")
+        raise HTTPException(status_code=500, detail="Failed to submit request.")
+    return {"status": "pending", "request_id": request_id}
+
+
+@app.get("/api/profile/my-requests")
+async def my_profile_requests(request: Request, location_context: str = Depends(security_firewall)):
+    """The officer's own profile-change request history (any status)."""
+    badge = request.state.kgid
+    out = []
+    if catalyst_app:
+        try:
+            res = catalyst_app.zql().execute_query(
+                "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+                "WHERE AlertType = 'PROFILE_CHANGE' ORDER BY ROWID DESC LIMIT 100")
+            for r in res:
+                a = r.get("ProactiveAlerts", {})
+                try:
+                    m = json.loads(a.get("AlertMessage") or "{}")
+                except Exception:
+                    continue
+                if str(m.get("requester_badge")) == str(badge):
+                    m["rowid"] = a.get("ROWID")
+                    out.append(m)
+        except Exception as e:
+            logger.warning(f"my_profile_requests: {e}")
+    return {"requests": out[:20]}
+
+
+@app.get("/api/profile/pending-requests")
+async def list_pending_profile_requests(request: Request, location_context: str = Depends(security_firewall)):
+    """Supervisor-only: pending profile-change requests awaiting review."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    out = []
+    if catalyst_app:
+        try:
+            res = catalyst_app.zql().execute_query(
+                "SELECT ROWID, AlertMessage, TriggerTime FROM ProactiveAlerts "
+                "WHERE AlertType = 'PROFILE_CHANGE' ORDER BY ROWID DESC LIMIT 60")
+            for r in res:
+                a = r.get("ProactiveAlerts", {})
+                try:
+                    m = json.loads(a.get("AlertMessage") or "{}")
+                except Exception:
+                    continue
+                if m.get("status") == "pending":
+                    m["rowid"] = a.get("ROWID")
+                    out.append(m)
+        except Exception as e:
+            logger.warning(f"list_pending_profile_requests: {e}")
+    return {"pending": out, "count": len(out)}
+
+
+@app.post("/api/profile/review-request/{request_id}")
+async def review_profile_request(request_id: str, payload: Dict[str, Any] = Body(default={}),
+                                 request: Request = None, location_context: str = Depends(security_firewall)):
+    """Supervisor-only: approve or reject a held profile-change request. On
+    approval, the change is applied to the real Employee row -- non-destructive
+    (only the requested fields are touched); on rejection, nothing is written
+    to Employee, only the request's own status changes."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    row = _find_profile_change_row(request_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Profile change request not found.")
+    meta = row["meta"]
+    if meta.get("status") != "pending":
+        raise HTTPException(status_code=409, detail=f"Request already {meta.get('status')}.")
+    decision = "approved" if payload.get("approve", True) else "rejected"
+
+    if decision == "approved":
+        target_badge = str(meta.get("requester_badge") or "").replace("'", "''")
+        changes = {k: v for k, v in (meta.get("requested_changes") or {}).items() if k in PROFILE_EDITABLE_FIELDS}
+        if not catalyst_app:
+            raise HTTPException(status_code=500, detail="Database client offline.")
+        try:
+            emp_res = catalyst_app.zql().execute_query(
+                f"SELECT ROWID FROM Employee WHERE KGID = '{target_badge}' LIMIT 1")
+        except Exception as e:
+            logger.warning(f"review_profile_request Employee lookup: {e}")
+            emp_res = []
+        if not emp_res:
+            raise HTTPException(status_code=404, detail="Requesting officer's Employee record not found.")
+        emp_rowid = emp_res[0].get("Employee", {}).get("ROWID")
+        if changes:
+            try:
+                zcql_update_row("Employee", {"ROWID": emp_rowid, **changes})
+            except Exception as e:
+                logger.warning(f"review_profile_request Employee update failed: {e}")
+                raise HTTPException(status_code=500, detail="Failed to apply profile change.")
+
+    meta["status"] = decision
+    meta["approver_badge"] = request.state.kgid
+    meta["decided_at"] = datetime.utcnow().isoformat()
+    try:
+        zcql_update_row("ProactiveAlerts", {
+            "ROWID": row["rowid"], "AlertMessage": json.dumps(meta), "IsRead": True})
+    except Exception as e:
+        logger.warning(f"review_profile_request update: {e}")
+    return {"status": decision, "request_id": meta.get("request_id")}
 
 
 @app.post("/api/pocso/request")

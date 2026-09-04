@@ -15,6 +15,7 @@ Features:
 """
 import os
 import re
+import html
 import time
 import logging
 import hashlib
@@ -39,6 +40,15 @@ def _clean_and_format_text(raw_text: str) -> str:
             text = text.encode("utf-8").decode("unicode_escape")
         except Exception:
             pass
+
+    # SECURITY: escape any real HTML in the source text (case facts, aliases,
+    # citation details -- all ultimately CCTNS-derived or officer-typed) BEFORE
+    # building markup below, so a stray "<script>" or "<img onerror=...>" in
+    # the underlying data can never execute inside SmartBrowz's headless
+    # Chromium PDF render -- it appears as inert, literal text instead. Every
+    # <...> tag built by THIS function is added after this escape step, so
+    # real structural markup (<ul>, <strong>, <h4>, etc.) is unaffected.
+    text = html.escape(text, quote=False)
 
     lines = text.split("\n")
     formatted_blocks = []
@@ -392,7 +402,9 @@ def render_dossier_html(
     citations_html = ""
     if citations:
         citations_items = "".join([
-            f"<li><span class='cite-type'>{c.get('type', 'RECORD')}:</span> <strong>{c.get('id', '')}</strong> — {c.get('details', '')}</li>"
+            f"<li><span class='cite-type'>{html.escape(str(c.get('type', 'RECORD')), quote=False)}:</span> "
+            f"<strong>{html.escape(str(c.get('id', '')), quote=False)}</strong> — "
+            f"{html.escape(str(c.get('details', '')), quote=False)}</li>"
             for c in citations
         ])
         citations_html = f"""

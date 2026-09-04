@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { Settings, ShieldCheck, Database, Languages, Clock, User, IdCard, MapPin } from "lucide-react";
+import { Settings, ShieldCheck, Database, Languages, Clock, User, IdCard, MapPin, Lock, Pencil, X, Hourglass } from "lucide-react";
 
 interface OfficerProfile {
   kgid: string;
@@ -22,6 +22,7 @@ export const SettingsScreen: React.FC = () => {
     isDbConnected,
     theme,
     setTheme,
+    addToast,
   } = useApp();
 
   const [profile, setProfile] = useState<OfficerProfile | null>(null);
@@ -33,6 +34,84 @@ export const SettingsScreen: React.FC = () => {
       .then((data) => { if (data) setProfile(data); })
       .catch(() => {});
   }, []);
+
+  // PROFILE IMMUTABILITY: identity fields above are read-only display. A
+  // change goes through supervisor approval (ProactiveAlerts/PROFILE_CHANGE,
+  // same pattern as the export-approval workflow) -- never applied directly.
+  // Only FirstName is offered as a structured, auto-applying request: it's
+  // the one field an officer can safely re-enter themselves (a spelling
+  // correction). Station/rank/designation are real HR actions (transfer,
+  // promotion) that go through official orders, not a self-service text box,
+  // so those stay visible-only here even though the backend's approval
+  // pattern could technically carry them too.
+  const [isRequestOpen, setIsRequestOpen] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const [reasonDraft, setReasonDraft] = useState("");
+  const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
+  const [myRequest, setMyRequest] = useState<any | null>(null);
+
+  const fetchMyRequest = () => {
+    fetch(`${API_BASE}/api/profile/my-requests`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        const latest = (data?.requests || [])[0];
+        setMyRequest(latest || null);
+      })
+      .catch(() => {});
+  };
+  useEffect(() => { fetchMyRequest(); }, []);
+
+  const openRequestModal = () => {
+    setNameDraft(profile?.first_name || "");
+    setReasonDraft("");
+    setIsRequestOpen(true);
+  };
+
+  const submitProfileChange = async () => {
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === profile?.first_name) {
+      addToast(
+        lang === "en" ? "No change to submit" : "ಸಲ್ಲಿಸಲು ಯಾವುದೇ ಬದಲಾವಣೆ ಇಲ್ಲ",
+        lang === "en" ? "Enter a different name than what's on record." : "ದಾಖಲೆಯಲ್ಲಿರುವುದಕ್ಕಿಂತ ಬೇರೆ ಹೆಸರನ್ನು ನಮೂದಿಸಿ.",
+        "Warning"
+      );
+      return;
+    }
+    setIsSubmittingRequest(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/profile/request-change`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({ requested_changes: { FirstName: trimmed }, reason: reasonDraft }),
+      });
+      if (r.ok) {
+        addToast(
+          lang === "en" ? "Request submitted" : "ವಿನಂತಿ ಸಲ್ಲಿಸಲಾಗಿದೆ",
+          lang === "en" ? "Awaiting supervisor approval." : "ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗಾಗಿ ಕಾಯಲಾಗುತ್ತಿದೆ.",
+          "Success"
+        );
+        setIsRequestOpen(false);
+        fetchMyRequest();
+      } else {
+        const err = await r.json().catch(() => ({}));
+        addToast(
+          lang === "en" ? "Could not submit" : "ಸಲ್ಲಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ",
+          err.detail || (lang === "en" ? "Please try again." : "ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ."),
+          "Critical"
+        );
+      }
+    } catch {
+      addToast(
+        lang === "en" ? "Network error" : "ನೆಟ್‌ವರ್ಕ್ ದೋಷ",
+        lang === "en" ? "Could not reach the server." : "ಸರ್ವರ್ ತಲುಪಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+        "Critical"
+      );
+    } finally {
+      setIsSubmittingRequest(false);
+    }
+  };
 
   return (
     <div className="h-full flex flex-col p-6 space-y-6 bg-stone-950/20 overflow-y-auto">
@@ -56,10 +135,38 @@ export const SettingsScreen: React.FC = () => {
               popover uses, surfaced here too as the canonical "who am I,
               what can I see" reference point. */}
           <div className="glass-card p-5 border border-stone-850 space-y-4">
-            <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-2">
-              <IdCard className="w-4 h-4 text-[#C79A4E]" />
-              <span>{lang === "en" ? "Officer Profile" : "ಅಧಿಕಾರಿ ಪ್ರೊಫೈಲ್"}</span>
-            </h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-2">
+                <IdCard className="w-4 h-4 text-[#C79A4E]" />
+                <span>{lang === "en" ? "Officer Profile" : "ಅಧಿಕಾರಿ ಪ್ರೊಫೈಲ್"}</span>
+                <span className="flex items-center gap-1 text-[9px] font-bold text-stone-550 normal-case tracking-normal bg-stone-950/50 border border-stone-900 rounded-full px-2 py-0.5 ml-1">
+                  <Lock className="w-2.5 h-2.5" />
+                  {lang === "en" ? "Read-only" : "ಓದಲು-ಮಾತ್ರ"}
+                </span>
+              </h3>
+              {!myRequest || myRequest.status !== "pending" ? (
+                <button
+                  onClick={openRequestModal}
+                  className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-[#C79A4E] hover:text-[#E4C590] border border-[#C79A4E]/30 hover:border-[#C79A4E]/60 rounded-md px-2 py-1 cursor-pointer transition-colors"
+                >
+                  <Pencil className="w-3 h-3" />
+                  {lang === "en" ? "Request change" : "ಬದಲಾವಣೆ ಕೋರಿ"}
+                </button>
+              ) : (
+                <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-amber-400 border border-amber-500/30 rounded-md px-2 py-1">
+                  <Hourglass className="w-3 h-3" />
+                  {lang === "en" ? "Pending review" : "ಪರಿಶೀಲನೆ ಬಾಕಿ"}
+                </span>
+              )}
+            </div>
+            {myRequest && myRequest.status === "pending" && (
+              <div className="bg-amber-500/[0.06] border border-amber-500/25 rounded-lg px-3 py-2 text-[10.5px] text-amber-300/90 font-mono">
+                {lang === "en" ? "Requested: " : "ಕೋರಿದ್ದು: "}
+                {Object.entries(myRequest.requested_changes || {}).map(([k, v]) => `${k} → ${v}`).join(", ")}
+                {" — "}
+                {lang === "en" ? "awaiting supervisor sign-off." : "ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗಾಗಿ ಕಾಯಲಾಗುತ್ತಿದೆ."}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-2.5 pt-1 font-mono text-[11px]">
               <div className="bg-stone-950/40 p-2.5 rounded-lg border border-stone-900">
                 <div className="text-[9px] text-stone-550 uppercase">{lang === "en" ? "Name" : "ಹೆಸರು"}</div>
@@ -219,6 +326,69 @@ export const SettingsScreen: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Profile Change Request modal -- name-correction only (see comment
+          above the handler); submits to supervisor approval, never applies
+          directly. */}
+      {isRequestOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="glass-card w-full max-w-sm border border-stone-800 p-5 space-y-4 rounded-2xl">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">
+                <Pencil className="w-4 h-4 text-[#C79A4E]" />
+                {lang === "en" ? "Request Profile Modification" : "ಪ್ರೊಫೈಲ್ ಬದಲಾವಣೆ ಕೋರಿ"}
+              </h3>
+              <button onClick={() => setIsRequestOpen(false)} className="text-stone-500 hover:text-stone-200 cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <p className="text-[10.5px] text-stone-550 leading-relaxed">
+              {lang === "en"
+                ? "Only your name can be self-corrected here; a station/rank/designation change is a personnel action handled through your chain of command. This request is held for supervisor sign-off before anything changes."
+                : "ಇಲ್ಲಿ ನಿಮ್ಮ ಹೆಸರನ್ನು ಮಾತ್ರ ಸ್ವಯಂ ಸರಿಪಡಿಸಬಹುದು; ಠಾಣೆ/ಶ್ರೇಣಿ/ಪದನಾಮ ಬದಲಾವಣೆ ನಿಮ್ಮ ಆಜ್ಞಾ ಸರಪಳಿಯ ಮೂಲಕ ನಿರ್ವಹಿಸಲಾಗುತ್ತದೆ. ಈ ವಿನಂತಿಯನ್ನು ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗಾಗಿ ಹಿಡಿದಿಡಲಾಗುತ್ತದೆ."}
+            </p>
+            <div className="space-y-1.5">
+              <label className="text-[10px] uppercase font-bold text-stone-500 tracking-wide">
+                {lang === "en" ? "Current name" : "ಪ್ರಸ್ತುತ ಹೆಸರು"}
+              </label>
+              <div className="text-xs text-stone-500 font-mono px-1">{profile?.first_name || "—"}</div>
+              <label className="text-[10px] uppercase font-bold text-stone-500 tracking-wide">
+                {lang === "en" ? "Correct name" : "ಸರಿಯಾದ ಹೆಸರು"}
+              </label>
+              <input
+                value={nameDraft}
+                onChange={(e) => setNameDraft(e.target.value)}
+                className="w-full bg-stone-950 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-3 py-2 text-stone-200 font-bold text-xs"
+              />
+              <label className="text-[10px] uppercase font-bold text-stone-500 tracking-wide pt-1 block">
+                {lang === "en" ? "Reason (optional)" : "ಕಾರಣ (ಐಚ್ಛಿಕ)"}
+              </label>
+              <textarea
+                value={reasonDraft}
+                onChange={(e) => setReasonDraft(e.target.value)}
+                rows={2}
+                className="w-full bg-stone-950 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-3 py-2 text-stone-300 text-xs resize-none"
+                placeholder={lang === "en" ? "e.g. misspelled at enrollment" : "ಉದಾ. ನೋಂದಣಿಯಲ್ಲಿ ತಪ್ಪಾಗಿ ಬರೆಯಲಾಗಿದೆ"}
+              />
+            </div>
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={() => setIsRequestOpen(false)}
+                className="flex-1 py-2 rounded-lg border border-stone-800 text-stone-400 text-xs font-bold uppercase cursor-pointer hover:border-stone-700"
+              >
+                {lang === "en" ? "Cancel" : "ರದ್ದುಮಾಡಿ"}
+              </button>
+              <button
+                onClick={submitProfileChange}
+                disabled={isSubmittingRequest}
+                className="flex-1 py-2 rounded-lg bg-[#C79A4E] text-stone-950 text-xs font-black uppercase cursor-pointer hover:bg-[#E4C590] disabled:opacity-50"
+              >
+                {isSubmittingRequest ? (lang === "en" ? "Submitting…" : "ಸಲ್ಲಿಸಲಾಗುತ್ತಿದೆ…") : (lang === "en" ? "Submit" : "ಸಲ್ಲಿಸಿ")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
