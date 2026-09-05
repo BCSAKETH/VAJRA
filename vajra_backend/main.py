@@ -60,6 +60,7 @@ from vajra_core import (
     catalyst_app,
     zcql_insert_row,
     zcql_update_row,
+    invalidate_profile_cache,
     find_pocso_row,
     POCSO_GRANT_HOURS,
     create_pocso_request,
@@ -5868,6 +5869,7 @@ async def set_email_once(payload: SetEmailOnceRequest, request: Request,
         zcql_update_row("Employee", {"ROWID": emp_res[0].get("Employee", {}).get("ROWID"), "Email": email})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save email: {e}")
+    invalidate_profile_cache(badge)
     return {"status": "saved", "email": email}
 
 
@@ -6038,6 +6040,7 @@ async def review_profile_request(request_id: str, payload: Dict[str, Any] = Body
         if changes:
             try:
                 zcql_update_row("Employee", {"ROWID": emp_rowid, **changes})
+                invalidate_profile_cache(target_badge)
             except Exception as e:
                 logger.warning(f"review_profile_request Employee update failed: {e}")
                 raise HTTPException(status_code=500, detail="Failed to apply profile change.")

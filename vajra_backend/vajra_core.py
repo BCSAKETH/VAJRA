@@ -845,6 +845,18 @@ _profile_cache: Dict[str, Any] = {}
 PROFILE_CACHE_TTL_SECONDS = 600
 
 
+def invalidate_profile_cache(kgid: str) -> None:
+    """
+    Call this immediately after writing to an officer's own Employee row
+    (set-email-once, an approved profile-change request) so the next
+    request reflects the change right away instead of waiting out the
+    10-minute TTL above -- that staleness window was an acceptable
+    tradeoff for RARE, someone-else-initiated changes (a promotion), but a
+    self-service save the officer just made needs to show up immediately.
+    """
+    _profile_cache.pop(kgid, None)
+
+
 class VajraSecurityFirewall:
     """
     A live security firewall enforcing data access context.
