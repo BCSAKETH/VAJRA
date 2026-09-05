@@ -277,47 +277,60 @@ def zcql_update_row(table_name: str, row: Dict[str, Any]) -> None:
     catalyst_app.zql().execute_query(f"UPDATE {table_name} SET {set_clause} WHERE ROWID = {rowid}")
 
 
-_mail_token_lock = threading.Lock()
-_mail_token_cache: Dict[str, Any] = {"token": None, "fetched_at": 0.0}
+_scoped_token_lock = threading.Lock()
+_scoped_token_caches: Dict[str, Dict[str, Any]] = {}
 
 
-def _get_mail_access_token(force_refresh: bool = False) -> Optional[str]:
+def _get_scoped_access_token(env_var: str, cache_key: str) -> Optional[str]:
     """
-    Separate, dedicated OAuth token for Catalyst Mail ONLY. The app's main
-    refresh token (CATALYST_REFRESH_TOKEN, used by get_cached_access_token
-    for every other Catalyst call) was issued without the Mail scope --
-    confirmed live, send_mail failed with OAUTH_SCOPE_MISMATCH. Rather than
-    re-issuing the main token with a wider scope (real risk of typo'ing a
-    scope string and breaking every other Catalyst call in production), Mail
-    gets its OWN self-client refresh token, scoped to exactly
-    ZohoCatalyst.email.CREATE and nothing else -- so a problem with mail
-    can never take down datastore/QuickML/etc, and vice versa. Cached
-    in-process (not the shared .token_cache file) so it doesn't collide
-    with the main token's cache.
+    Generic dedicated-OAuth-token fetcher, shared by Mail and SmartBrowz (and
+    any future component that needs its own scope). The app's main refresh
+    token (CATALYST_REFRESH_TOKEN, used by get_cached_access_token for every
+    other Catalyst call) was issued with a narrow scope that excludes both
+    Mail and SmartBrowz -- confirmed live, both failed with
+    OAUTH_SCOPE_MISMATCH. Rather than re-issuing the main token with a wider
+    scope (real risk of typo'ing a scope string and breaking every other
+    Catalyst call in production), each of these gets its OWN self-client
+    refresh token, scoped to exactly what it needs and nothing else -- so a
+    problem with one can never take down datastore/QuickML/etc, or each
+    other. Cached in-process per cache_key (not the shared .token_cache
+    file), so none of these collide with each other or the main token.
     """
-    with _mail_token_lock:
-        if not force_refresh and _mail_token_cache["token"] and (time.time() - _mail_token_cache["fetched_at"] < 3000):
-            return _mail_token_cache["token"]
+    with _scoped_token_lock:
+        cache = _scoped_token_caches.setdefault(cache_key, {"token": None, "fetched_at": 0.0})
+        if cache["token"] and (time.time() - cache["fetched_at"] < 3000):
+            return cache["token"]
         client_id = os.getenv("CATALYST_CLIENT_ID")
         client_secret = os.getenv("CATALYST_CLIENT_SECRET")
-        mail_refresh_token = os.getenv("CATALYST_MAIL_REFRESH_TOKEN")
-        if not (client_id and client_secret and mail_refresh_token):
+        scoped_refresh_token = os.getenv(env_var)
+        if not (client_id and client_secret and scoped_refresh_token):
             return None
         try:
             import requests as _requests
             res = _requests.post("https://accounts.zoho.in/oauth/v2/token", data={
                 "client_id": client_id, "client_secret": client_secret,
-                "refresh_token": mail_refresh_token, "grant_type": "refresh_token",
+                "refresh_token": scoped_refresh_token, "grant_type": "refresh_token",
             }, timeout=10)
             data = res.json()
             if "access_token" in data:
-                _mail_token_cache["token"] = data["access_token"]
-                _mail_token_cache["fetched_at"] = time.time()
+                cache["token"] = data["access_token"]
+                cache["fetched_at"] = time.time()
                 return data["access_token"]
-            logger.error(f"Mail token refresh failed: {data}")
+            logger.error(f"{cache_key} token refresh failed: {data}")
         except Exception as e:
-            logger.warning(f"Mail token refresh error: {e}")
+            logger.warning(f"{cache_key} token refresh error: {e}")
         return None
+
+
+def _get_mail_access_token(force_refresh: bool = False) -> Optional[str]:
+    """Dedicated Mail-only token -- see _get_scoped_access_token."""
+    return _get_scoped_access_token("CATALYST_MAIL_REFRESH_TOKEN", "mail")
+
+
+def get_smartbrowz_access_token() -> Optional[str]:
+    """Dedicated SmartBrowz-only token (ZohoCatalyst.pdfshot.execute +
+    ZohoCatalyst.dataverse.execute) -- see _get_scoped_access_token."""
+    return _get_scoped_access_token("CATALYST_SMARTBROWZ_REFRESH_TOKEN", "smartbrowz")
 
 
 def send_investigation_email_internal(to_email: str, subject: str, content: str) -> Dict[str, Any]:
@@ -1091,6 +1104,54 @@ class MOBehavioralProfiler:
         norms = np.linalg.norm(self.mo_matrix, axis=1, keepdims=True)
         norms[norms == 0] = 1e-9
         self.mo_matrix_normalized = self.mo_matrix / norms
+
+    def cluster_mo_signatures(self, min_cluster_size: int = 3) -> List[Dict[str, Any]]:
+        """
+        Unsupervised HDBSCAN clustering over the real 5D MO vectors this
+        profiler already built from live CaseMaster/Accused data -- surfaces
+        groups of cases with genuinely similar modus operandi (same rough
+        location, offence gravity, day-of-week pattern, group size, crime
+        type) WITHOUT anyone having to name a suspect first. This is the
+        "find a serial pattern nobody's flagged yet" capability -- distinct
+        from get_mo_profile, which only compares a NAMED suspect against
+        history. Density-based (not k-means): a cluster only forms where
+        cases are genuinely close together, and it can find any number of
+        clusters instead of a pre-guessed count. Returns only real clusters
+        (HDBSCAN's own noise label -1, i.e. no-pattern-found cases, is
+        excluded); an empty list is an honest "no cluster survived the
+        min_cluster_size threshold," not a hidden failure.
+        """
+        if self.data_source == "mock" or len(self.vectors) < min_cluster_size:
+            return []
+        try:
+            from sklearn.cluster import HDBSCAN
+        except Exception as e:
+            logger.warning(f"cluster_mo_signatures: HDBSCAN unavailable: {e}")
+            return []
+        try:
+            labels = HDBSCAN(min_cluster_size=min_cluster_size, metric="euclidean").fit_predict(self.mo_matrix_normalized)
+        except Exception as e:
+            logger.warning(f"cluster_mo_signatures: HDBSCAN fit failed: {e}")
+            return []
+        clusters: Dict[int, List[int]] = {}
+        for idx, label in enumerate(labels):
+            if label == -1:
+                continue
+            clusters.setdefault(int(label), []).append(idx)
+        out = []
+        for label, indices in sorted(clusters.items(), key=lambda kv: -len(kv[1])):
+            members = [self.metadata[i] for i in indices]
+            # Cluster centroid distance spread -- a tight cluster (low mean
+            # pairwise distance) is a stronger MO match than a loose one.
+            pts = self.mo_matrix_normalized[indices]
+            centroid = pts.mean(axis=0)
+            mean_dist = float(np.mean(np.linalg.norm(pts - centroid, axis=1)))
+            out.append({
+                "cluster_id": label, "size": len(indices),
+                "cohesion": round(1.0 - min(mean_dist, 1.0), 3),  # 1.0 = identical, 0 = loose
+                "members": members,
+            })
+        return out
 
     def _load_from_live_db(self, catalyst_app):
         cases_res = catalyst_app.zql().execute_query(

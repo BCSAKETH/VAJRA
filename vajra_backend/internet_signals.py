@@ -130,61 +130,6 @@ def _scrape_news_rss(query: str, limit: int) -> List[Dict[str, str]]:
     return out
 
 
-def _scrape_duckduckgo(query: str, limit: int) -> List[Dict[str, str]]:
-    """
-    VAJRA's OWN web scraper -- no third-party API. Fetches DuckDuckGo's HTML
-    results page and parses the result links, titles and snippets. Bounded and
-    fail-soft: any block/change returns [] (the caller degrades to an empty
-    lane), never an error. Results are open-source LEADS, never official record.
-    """
-    out: List[Dict[str, str]] = []
-    seen: set = set()
-    # DEPTH: DDG HTML paginates by a 's' offset (~30/page). Walk pages until we
-    # have `limit` distinct results, the page yields nothing new, or a safety cap.
-    for page in range(6):  # up to ~180 candidate results
-        if len(out) >= limit:
-            break
-        try:
-            data = {"q": query}
-            if page:
-                data["s"] = str(page * 30)
-                data["dc"] = str(page * 30 + 1)
-            r = requests.post("https://html.duckduckgo.com/html/",
-                              data=data, headers={"User-Agent": _UA}, timeout=_HTTP_TIMEOUT)
-            if r.status_code != 200:
-                logger.warning(f"DDG scrape p{page} {r.status_code}")
-                break
-            html = r.text
-            blocks = re.findall(r'<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', html, re.DOTALL)
-            snippets = re.findall(r'<a[^>]+class="result__snippet"[^>]*>(.*?)</a>', html, re.DOTALL)
-            if not blocks:
-                break
-            added = 0
-            for i, (href, title) in enumerate(blocks):
-                m = re.search(r"uddg=([^&]+)", href)
-                url = urllib.parse.unquote(m.group(1)) if m else href
-                if url.startswith("//"):
-                    url = "https:" + url
-                if not url or url in seen:
-                    continue
-                seen.add(url)
-                snip = _strip_html(snippets[i]) if i < len(snippets) else ""
-                try:
-                    src = urllib.parse.urlparse(url).netloc or "web"
-                except Exception:
-                    src = "web"
-                out.append(_signal(_strip_html(title), src, "", url, snip))
-                added += 1
-                if len(out) >= limit:
-                    break
-            if added == 0:
-                break
-        except Exception as e:
-            logger.warning(f"DDG scrape error p{page} for {query!r}: {e}")
-            break
-    return out
-
-
 def _signal(title: str, source: str, published: str, url: str, snippet: str = "") -> Dict[str, str]:
     """Uniform open-source-signal shape: always carries provenance."""
     return {
@@ -324,33 +269,38 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
             else:
                 logger.warning(f"SerpAPI {r.status_code}: {r.text[:160]}")
         if len(items) < limit:
-            # Default deep sweep: both key-free scrapers, merged + de-duplicated.
+            # Key-free lane: Google News RSS -- a stable, documented feed
+            # endpoint (not screen-scraping a search engine's results page),
+            # so it isn't subject to the anti-bot walls a raw HTML scrape
+            # hits. DuckDuckGo/Bing HTML scraping was removed entirely
+            # (confirmed live: DDG now serves an anomaly-detection CAPTCHA
+            # to automated requests) -- general web coverage beyond news
+            # now goes through smartbrowz_search_and_extract in
+            # catalyst_smartbrowz.py (a real Catalyst SmartBrowz rendered
+            # screenshot + QuickML Qwen-VL read), which is called directly
+            # from the web_search TOOL in agent_loop.py, not this module.
             merged: List[Dict[str, str]] = list(items)
             seen = {(_norm(i.get("url")) or _norm(i.get("title"))) for i in merged}
-            for scraper in (_scrape_news_rss, _scrape_duckduckgo):
-                try:
-                    for it in scraper(effective_query, limit):
-                        key = _norm(it.get("url")) or _norm(it.get("title"))
-                        if key and key not in seen:
-                            seen.add(key); merged.append(it)
-                            if len(merged) >= limit:
-                                break
-                except Exception as ie:
-                    logger.warning(f"deep web scrape ({scraper.__name__}) error: {ie}")
-                if len(merged) >= limit:
-                    break
+            try:
+                for it in _scrape_news_rss(effective_query, limit):
+                    key = _norm(it.get("url")) or _norm(it.get("title"))
+                    if key and key not in seen:
+                        seen.add(key); merged.append(it)
+                        if len(merged) >= limit:
+                            break
+            except Exception as ie:
+                logger.warning(f"deep web scrape (news RSS) error: {ie}")
             items = merged
-            
+
         # If effective_query returned nothing and differed from raw_query, try raw query as fallback
         if not items and clean_q and clean_q != raw_query:
-            for scraper in (_scrape_news_rss, _scrape_duckduckgo):
-                try:
-                    for it in scraper(raw_query, limit):
-                        items.append(it)
-                        if len(items) >= limit:
-                            break
-                except Exception as ie:
-                    pass
+            try:
+                for it in _scrape_news_rss(raw_query, limit):
+                    items.append(it)
+                    if len(items) >= limit:
+                        break
+            except Exception:
+                pass
     except Exception as e:
         logger.warning(f"Web search error for {effective_query!r}: {e}")
 

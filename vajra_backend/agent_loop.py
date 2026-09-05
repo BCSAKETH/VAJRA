@@ -303,6 +303,20 @@ class VajraAgentLoop(CognitiveBrainMixin):
             }
         },
         {
+            "name": "check_alibi_consistency",
+            "description": "Checks whether a named suspect is recorded in cases at two DIFFERENT police stations on the same or overlapping date -- a genuine, groundable contradiction (either a data-entry duplicate name, or a real logistical impossibility worth an investigator's attention). Only flags real date/station overlaps from CCTNS records, never speculates about intent.",
+            "parameters": {
+                "type": "object",
+                "properties": {"suspect_name": {"type": "string", "description": "The name of the suspect to check."}},
+                "required": ["suspect_name"]
+            }
+        },
+        {
+            "name": "cluster_crime_patterns",
+            "description": "Find groups of cases with a genuinely similar modus operandi (location, offence severity, day-of-week, group size, crime type) WITHOUT naming a suspect first -- surfaces a possible serial-offense pattern nobody has flagged yet. Different from get_mo_profile, which only checks one named suspect against history.",
+            "parameters": {"type": "object", "properties": {}, "required": []}
+        },
+        {
             "name": "get_mo_profile",
             "description": "Retrieve Modus Operandi (MO) behavioral profile matching for a suspect.",
             "parameters": {
@@ -1012,6 +1026,47 @@ class VajraAgentLoop(CognitiveBrainMixin):
             logger.warning(f"Case Q&A synthesis failed, falling back to deterministic briefing: {ex}")
         return ""
 
+    def _answer_from_web_content(self, question: str, source_bundle: str) -> str:
+        """
+        Same pattern as _answer_from_case, for the open-web path: extracts a
+        direct answer to the officer's actual question (a pin code, an
+        address, a phone number, whatever they asked) from REAL fetched page
+        text -- instead of web_search just handing back a list of result
+        titles/snippets and leaving the officer to click through and read
+        them himself (confirmed live: exactly this complaint -- asked for a
+        pin code, got 10 unread links back). Never invents: if the fetched
+        pages don't contain the answer, says so plainly. Explicitly told
+        it's open-source/unverified, not an official record, so it never
+        overstates confidence the source itself doesn't have.
+        """
+        if not question or not question.strip() or not (source_bundle or "").strip():
+            return ""
+        sys_prompt = (
+            "You are VAJRA, a police copilot's open-web research assistant. Answer the "
+            "officer's actual question using ONLY the fetched web page content provided "
+            "below -- never invent facts not present in it. If the pages don't contain "
+            "the answer, say so plainly and suggest what to search next. This is "
+            "open-source web content, not an official CCTNS record -- state the answer "
+            "plainly but note it's from the open web, and name which source it came from. "
+            "Be direct and concise (2-4 sentences), answer the specific question first, "
+            "no headers or bullet templates."
+        )
+        try:
+            res = self.llm.chat(
+                [{"role": "system", "content": sys_prompt},
+                 {"role": "user", "content": f"FETCHED WEB CONTENT:\n{source_bundle.strip()[:5000]}\n\nOFFICER'S QUESTION: {question.strip()}"}],
+                use_agent_system_prompt=False, max_tokens=1600,
+            )
+            if not res.get("error"):
+                content = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+                if "</think>" in content:
+                    answer = content.split("</think>")[-1].strip()
+                    if answer and not answer.startswith("{") and "\\u" not in answer:
+                        return answer
+        except Exception as ex:
+            logger.warning(f"Web-content Q&A synthesis failed, falling back to raw link list: {ex}")
+        return ""
+
     # Kannada script -> DB district name. Kannada analytical queries can't hit the
     # Latin-only keyword router, and the Zia translator garbles domain queries
     # (verified live: "which districts have the most crime" -> "types of vehicles"),
@@ -1471,6 +1526,11 @@ class VajraAgentLoop(CognitiveBrainMixin):
         "detect_financial_ring": ["money laundering", "hawala", "mule account", "financial ring",
                                   "money network", "laundering", "money ring"],
         "query_hotspots": ["hotspot", "cluster map", "crime map", "dbscan", "where are crimes", "concentration"],
+        "cluster_crime_patterns": ["serial offender", "serial pattern", "similar mo cases", "similar modus operandi",
+                                   "unflagged pattern", "hidden pattern", "cluster of cases", "mo cluster",
+                                   "same pattern crimes", "pattern nobody flagged"],
+        "check_alibi_consistency": ["alibi", "same time different station", "conflicting location",
+                                    "two places at once", "alibi check", "alibi consistency"],
         "get_forecast": ["forecast", "predict", "early warning", "next month", "projection", "expected", "future crime"],
         "get_offender_risk": ["risk score", "conviction risk", "recidivism", "re-offend", "reoffend",
                              "risk for", "risk of", "dangerous", "threat level"],
@@ -3125,7 +3185,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # the lookup on a bad name and return an empty graph -- give a clear
         # "not found in the database" answer so the officer knows the person is
         # simply not on record (the requested behaviour).
-        if tool_name in ("query_graph_network", "get_offender_risk", "get_mo_profile", "generate_full_report") and (params.get("suspect_name") or "").strip():
+        if tool_name in ("query_graph_network", "get_offender_risk", "get_mo_profile", "generate_full_report", "check_alibi_consistency") and (params.get("suspect_name") or "").strip():
             _raw_name = str(params.get("suspect_name")).strip()
             # ASK, DON'T GUESS: query_graph_network already had its own separate
             # check for this (a name matching multiple distinct real people used
@@ -4113,6 +4173,105 @@ class VajraAgentLoop(CognitiveBrainMixin):
             self._write_audit_log(employee_id, "Offender Risk Inquest", suspect, f"Risk score of {suspect}", text_result, session_id)
 
         # 10. get_mo_profile
+        elif tool_name == "check_alibi_consistency":
+            # Cross-Station Alibi Consistency: a real, groundable check --
+            # NOT fuzzy text/statement comparison (CCTNS has no structured
+            # "witness statement" field to compare), but a structural one:
+            # does this exact name appear in cases at DIFFERENT stations on
+            # the SAME incident date? That's either a data-entry duplicate
+            # name (two different real people) or a genuine logistical
+            # contradiction worth an investigator's attention -- both are
+            # honest, useful flags. Never asserts which one it is.
+            suspect = params.get("suspect_name", "")  # already canonicalized by the guard above
+            response_type = "text"
+            rows = []
+            if catalyst_app and suspect:
+                try:
+                    esc = self.sanitize_sql_input(suspect)
+                    acc_res = catalyst_app.zql().execute_query(
+                        f"SELECT CaseMasterID FROM Accused WHERE AccusedName = '{esc}' LIMIT 100")
+                    case_ids = sorted({r.get("Accused", {}).get("CaseMasterID") for r in acc_res if r.get("Accused", {}).get("CaseMasterID")})
+                    for cid in case_ids[:50]:
+                        cm_res = catalyst_app.zql().execute_query(
+                            f"SELECT CrimeNo, IncidentFromDate, PoliceStationID FROM CaseMaster WHERE CaseMasterID = {cid} LIMIT 5")
+                        for r in cm_res:
+                            cm = r.get("CaseMaster", {})
+                            if cm.get("IncidentFromDate") and cm.get("PoliceStationID"):
+                                rows.append({"crime_no": cm.get("CrimeNo"), "date": cm.get("IncidentFromDate"), "station_id": cm.get("PoliceStationID")})
+                except Exception as ex:
+                    logger.warning(f"check_alibi_consistency query failed: {ex}")
+
+            by_date: Dict[str, List[Dict[str, Any]]] = {}
+            for r in rows:
+                by_date.setdefault(r["date"], []).append(r)
+            conflicts = {d: recs for d, recs in by_date.items() if len({rec["station_id"] for rec in recs}) > 1}
+
+            if not rows:
+                text_result = f"\"{suspect}\" has no cases on record with both an incident date and a station recorded, so no alibi consistency check could be run."
+                citations.append({"type": "Alibi Consistency Check", "id": suspect, "details": "Insufficient dated/station-tagged records."})
+            elif not conflicts:
+                text_result = f"No cross-station date conflicts found for \"{suspect}\" across {len(rows)} dated case record(s) -- every incident date on record ties to a single station."
+                citations.append({"type": "Alibi Consistency Check", "id": suspect, "details": f"Checked {len(rows)} dated records, no station overlap on any single date."})
+            else:
+                unit_names = {}
+                try:
+                    all_units = catalyst_app.zql().execute_query("SELECT UnitID, UnitName FROM Unit")
+                    unit_names = {str(u.get("Unit", {}).get("UnitID")): u.get("Unit", {}).get("UnitName") for u in all_units}
+                except Exception:
+                    pass
+                lines = [f"\"{suspect}\" has {len(conflicts)} date(s) with case records at MORE THAN ONE police station -- worth verifying whether this is one person or a duplicate-name data entry:"]
+                for date, recs in sorted(conflicts.items())[:10]:
+                    stations = ", ".join(sorted({unit_names.get(str(rec["station_id"]), f"Station {rec['station_id']}") for rec in recs}))
+                    crimes = ", ".join(sorted({str(rec["crime_no"]) for rec in recs if rec.get("crime_no")}))
+                    lines.append(f"- {date}: {stations} (cases: {crimes})")
+                text_result = "\n".join(lines)
+                citations.append({"type": "Alibi Consistency Check", "id": suspect,
+                                   "details": f"{len(conflicts)} date(s) with multi-station case overlap, out of {len(rows)} dated records checked."})
+
+        elif tool_name == "cluster_crime_patterns":
+            # Unsupervised density-based clustering (HDBSCAN) over the real
+            # MO vectors MOBehavioralProfiler already built from live
+            # CaseMaster/Accused data -- see cluster_mo_signatures's own
+            # docstring in vajra_core.py. Honest about data_source: only
+            # surfaces clusters when built from live_db or synthetic_file
+            # vectors, never the random "mock" fallback.
+            response_type = "crime_groups"
+            clusters = self._mo_profiler.cluster_mo_signatures(min_cluster_size=3) if self._mo_profiler else []
+            if not clusters:
+                text_result = (
+                    "No genuinely similar-MO case clusters surfaced above the minimum group size (3) "
+                    "in the current data -- either the cases on record are too varied in location/gravity/"
+                    "timing/crime-type to form a real pattern, or there isn't enough live MO data loaded yet."
+                )
+                data = {"groups": [], "data_source": getattr(self._mo_profiler, "data_source", "unknown")}
+                citations.append({"type": "MO Cluster Analysis", "id": "no clusters",
+                                   "details": "HDBSCAN found no group meeting the min_cluster_size threshold."})
+            else:
+                # Reshaped into the SAME {groups: [{members, hub, shared_case_count,
+                # case_ids}]} contract detect_crime_groups already established,
+                # so this reuses the existing "crime_groups" widget/expanded-view
+                # rendering as-is rather than needing new frontend work. "hub"
+                # doesn't apply here (no co-offense degree concept for an MO
+                # cluster), left unset -- the widget already handles that fine.
+                groups_out = []
+                for c in clusters:
+                    names = sorted({str(m.get("suspect_name") or m.get("fir_id") or "?") for m in c["members"]})
+                    firs = sorted({str(m.get("fir_id")) for m in c["members"] if m.get("fir_id")})
+                    groups_out.append({
+                        "members": names, "hub": None,
+                        "shared_case_count": c["size"], "case_ids": firs[:10],
+                        "cohesion": c["cohesion"],
+                    })
+                text_result = (
+                    f"Found {len(groups_out)} candidate serial-pattern cluster(s) from real case MO signatures "
+                    f"(location, offence severity, day-of-week, group size, crime type). Largest: "
+                    f"{', '.join(groups_out[0]['members'][:5])} ({groups_out[0]['shared_case_count']} cases)."
+                )
+                data = {"groups": groups_out, "data_source": self._mo_profiler.data_source,
+                        "scan_scope": f"{len(self._mo_profiler.vectors)} real MO vectors ({self._mo_profiler.data_source})"}
+                citations.append({"type": "MO Cluster Analysis", "id": f"{len(groups_out)} clusters",
+                                   "details": f"HDBSCAN over {len(self._mo_profiler.vectors)} real MO vectors ({self._mo_profiler.data_source})."})
+
         elif tool_name == "get_mo_profile":
             suspect = self.sanitize_sql_input(params.get("suspect_name", ""))
             
@@ -5448,7 +5607,46 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     logger.warning(f"web_search failed for {q!r}: {e}")
             if items:
                 response_type = "news"
-                text_result = f"Found {len(items)} open-source web signals for '{q}'. Live unverified intelligence leads displayed below."
+                # ANSWER-FIRST, Zoho-native only: don't just hand back a list
+                # of titles the officer has to click through and read
+                # himself (confirmed live complaint: asked for a pin code,
+                # got 10 unread links). No third-party scraping library or
+                # external search API here -- this calls Catalyst SmartBrowz
+                # (a real rendered headless-browser screenshot of a live
+                # search results page) + Catalyst QuickML's Qwen-VL vision
+                # model to read that screenshot and extract a direct,
+                # grounded answer, exactly the same two real Catalyst
+                # services already used elsewhere in this app for
+                # PDF/report rendering and CCTV/evidence-image OCR. The
+                # link list below stays either way, for verification.
+                from catalyst_smartbrowz import smartbrowz_lookup_organization, smartbrowz_search_and_extract
+                extracted = ""
+                # Try the Dataverse organization lookup FIRST -- structured
+                # address/pincode/contact data from Zoho's own enrichment
+                # service, more reliable than reading it off a screenshot
+                # when the question is genuinely about an organization
+                # (a college, a company, an office).
+                lead = smartbrowz_lookup_organization(q)
+                if lead:
+                    hq = (lead.get("headquarters") or [{}])[0] if lead.get("headquarters") else {}
+                    parts = []
+                    if hq.get("pincode"):
+                        parts.append(f"Pin code: {hq['pincode']}")
+                    if hq.get("street") or hq.get("city"):
+                        parts.append(f"Address: {', '.join(filter(None, [hq.get('street'), hq.get('city'), hq.get('state'), hq.get('country')]))}")
+                    if lead.get("website"):
+                        parts.append(f"Website: {lead['website']}")
+                    if lead.get("contact"):
+                        parts.append(f"Contact: {', '.join(lead['contact'][:2])}")
+                    if parts:
+                        extracted = f"{lead.get('organization_name', q)} -- " + "; ".join(parts) + " (Zoho SmartBrowz Dataverse organization lookup.)"
+                if not extracted:
+                    extraction = smartbrowz_search_and_extract(q, raw_q, lang="en")
+                    extracted = (extraction or {}).get("answer") or ""
+                if extracted:
+                    text_result = f"{extracted}\n\n(Found {len(items)} open-source web signals for '{q}' -- sources below.)"
+                else:
+                    text_result = f"Found {len(items)} open-source web signals for '{q}'. Live unverified intelligence leads displayed below."
                 data = {"news": items, "scope": q}
             else:
                 response_type = "text"

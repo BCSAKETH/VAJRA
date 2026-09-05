@@ -4577,6 +4577,55 @@ async def list_voice_personas(location_context: str = Depends(security_firewall)
     return {"personas": [{"id": p, "label": labels.get(p, {"en": p, "kn": p})} for p in VOICE_PERSONAS]}
 
 
+@app.get("/api/_debug/smartbrowz-search")
+async def _debug_smartbrowz_search(query: str, question: str, request: Request = None,
+                                   location_context: str = Depends(security_firewall)):
+    """
+    Supervisor-only diagnostic: exposes each stage of
+    smartbrowz_search_and_extract so a silent failure can be pinpointed
+    live. Kept permanently -- SmartBrowz/Dataverse are external Zoho
+    services whose reliability isn't fully in this app's control (confirmed
+    live: intermittent blank-rendered search screenshots and Dataverse
+    500s/timeouts, not code bugs), so this stays useful for diagnosing a
+    future flare-up without guessing again.
+    """
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    from catalyst_smartbrowz import smartbrowz_search_and_extract
+    debug: Dict[str, Any] = {}
+    result = await run_in_threadpool(smartbrowz_search_and_extract, query, question, "en", debug)
+    return {"result": result, "debug": debug}
+
+
+@app.get("/api/_debug/dataverse-lookup")
+async def _debug_dataverse_lookup(name: str, request: Request = None,
+                                  location_context: str = Depends(security_firewall)):
+    """Supervisor-only diagnostic for smartbrowz_lookup_organization. Kept
+    permanently -- same reasoning as the smartbrowz-search diagnostic above."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    from catalyst_smartbrowz import smartbrowz_lookup_organization
+    debug: Dict[str, Any] = {}
+    result = await run_in_threadpool(smartbrowz_lookup_organization, name, debug)
+    return {"result": result, "debug": debug}
+
+
+@app.get("/api/_debug/smartbrowz-screenshot")
+async def _debug_smartbrowz_screenshot(url: str, request: Request = None,
+                                       location_context: str = Depends(security_firewall)):
+    """Supervisor-only diagnostic: returns the RAW screenshot PNG bytes
+    directly so what SmartBrowz actually rendered can be viewed, not just
+    guessed at from Qwen-VL's own reading of it. Kept permanently -- same
+    reasoning as the smartbrowz-search diagnostic above."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    from catalyst_smartbrowz import smartbrowz_screenshot_bytes
+    shot = await run_in_threadpool(smartbrowz_screenshot_bytes, url)
+    if not shot:
+        raise HTTPException(status_code=502, detail="Screenshot failed.")
+    return Response(content=shot, media_type="image/png")
+
+
 @app.get("/api/voice/_probe-persona")
 async def probe_persona_endpoint(persona: str = "standard", lang: str = "en", speaker: Optional[str] = None,
                                  request: Request = None, location_context: str = Depends(security_firewall)):

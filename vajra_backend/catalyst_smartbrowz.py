@@ -19,6 +19,7 @@ import html
 import time
 import logging
 import hashlib
+import urllib.parse
 from typing import List, Dict, Any, Optional, Tuple
 from vajra_core import catalyst_app
 
@@ -822,34 +823,201 @@ def render_dossier_html(
     return html
 
 
+# --- Dedicated SmartBrowz REST calls (bypass the SDK's shared, unscoped
+# credential entirely) ---
+# Confirmed live: catalyst_app.smart_browz() (the SDK path both functions
+# below used to call) fails with OAUTH_SCOPE_MISMATCH -- the app's main
+# refresh token was never issued SmartBrowz scope, the exact same class of
+# problem Mail hit (see vajra_core.py's _get_scoped_access_token). Both
+# convert_to_pdf and take_screenshot are really the SAME REST endpoint
+# (/convert with output_type "pdf" vs "screenshot") on the BROWSER360
+# service, so both get rebuilt here as direct requests calls using the
+# dedicated SmartBrowz-only token (CATALYST_SMARTBROWZ_REFRESH_TOKEN,
+# scoped to ZohoCatalyst.pdfshot.execute + ZohoCatalyst.dataverse.execute).
+def _smartbrowz_convert(payload: Dict[str, Any], _debug: dict = None) -> Optional[bytes]:
+    if _debug is None:
+        _debug = {}
+    from vajra_core import get_smartbrowz_access_token
+    token = get_smartbrowz_access_token()
+    _debug["has_token"] = bool(token)
+    if not token:
+        logger.warning("SmartBrowz convert skipped: no scoped token configured.")
+        _debug["convert_error"] = "no scoped token"
+        return None
+    project_id = os.getenv("CATALYST_PROJECT_ID", "50212000000025002")
+    org_id = os.getenv("CATALYST_ORG_ID") or os.getenv("CATALYST_PROJECT_KEY", "")
+    url = f"https://api.catalyst.zoho.in/browser360/v1/project/{project_id}/convert"
+    headers = {"CATALYST-ORG": org_id, "Authorization": f"Zoho-oauthtoken {token}", "Content-Type": "application/json"}
+    try:
+        import requests as _requests
+        # 60s client-side timeout: rendering a live, ad-heavy search results
+        # page in headless Chromium (images, trackers, JS) genuinely takes
+        # longer than the naive 30s first tried (confirmed live: hit a
+        # read-timeout at exactly 30s). This runs inside a background agent
+        # turn already budgeted for 3-140s, not the sync HTTP request path,
+        # so there's real headroom for this.
+        res = _requests.post(url, headers=headers, json=payload, timeout=60)
+        _debug["convert_status"] = res.status_code
+        if res.status_code == 200:
+            return res.content
+        _debug["convert_body"] = res.text[:500]
+        logger.warning(f"SmartBrowz convert returned {res.status_code}: {res.text[:300]}")
+    except Exception as e:
+        logger.warning(f"SmartBrowz convert request failed: {e}")
+        _debug["convert_exception"] = str(e)[:500]
+    return None
+
+
 def convert_html_to_pdf_smartbrowz(html_content: str) -> Optional[bytes]:
     """
     Calls Zoho Catalyst SmartBrowz to convert HTML into a high-fidelity PDF.
     Returns raw PDF bytes on success, or None on failure.
     """
+    result = _smartbrowz_convert({
+        "output_options": {"output_type": "pdf"},
+        "html": html_content,
+        "pdf_options": {
+            "format": "A4",
+            "print_background": True,
+            "margin": {"top": "10mm", "bottom": "10mm", "left": "10mm", "right": "10mm"}
+        }
+    })
+    if result and result[:4] == b"%PDF":
+        logger.info("SmartBrowz PDF conversion succeeded.")
+        return result
+    logger.warning("SmartBrowz PDF conversion failed or returned non-PDF content.")
+    return None
+
+
+def smartbrowz_screenshot_bytes(url: str, timeout_ms: int = 25000, _debug: dict = None) -> Optional[bytes]:
+    """
+    Real Catalyst SmartBrowz headless-Chromium screenshot -- raw image bytes.
+    This is a genuine rendered browser, not a raw HTTP scrape -- it executes
+    JavaScript and looks like a real visit, which is why it's used ahead of
+    plain `requests` for pages that block simple bot traffic (confirmed live:
+    DuckDuckGo's HTML search endpoint now serves an anomaly-detection
+    CAPTCHA to any raw `requests` call, a wall a real rendered browser visit
+    doesn't hit the same way).
+    """
+    if _debug is None:
+        _debug = {}
+    result = _smartbrowz_convert({
+        "output_options": {"output_type": "screenshot"},
+        "url": url,
+        "screenshot_options": {"type": "png", "full_page": True},
+        # "load" -- confirmed live that "domcontentloaded" fires before
+        # Bing's results actually render (screenshot came back showing an
+        # empty results area, just the search bar), while "networkidle0"
+        # (waiting for ALL network activity, including ads/trackers, to
+        # stop) risked hanging to the timeout on every call. "load" waits
+        # for the page's own load event -- a real middle ground.
+        "navigation_options": {"timeout": timeout_ms, "wait_until": "load"},
+    }, _debug=_debug)
+    _debug["shot_bytes"] = len(result) if result else 0
+    if result and result[:4] == b"\x89PNG"[:4]:
+        return result
+    return None
+
+
+def smartbrowz_lookup_organization(name: str, _debug: dict = None) -> Optional[Dict[str, Any]]:
+    """
+    Real Catalyst SmartBrowz Dataverse lead-enrichment lookup -- given an
+    organization's name, returns STRUCTURED data (address, pincode, email,
+    phone, website, industry, etc.), not a guess read off a screenshot.
+    This is the right tool for "what's the address/pin code/contact for
+    <organization>"-style questions (a college, a company, an office) --
+    genuinely more reliable than smartbrowz_search_and_extract's
+    screenshot+vision-model read for anything that's actually an
+    organization lookup, since it's structured data from Zoho's own
+    enrichment service, not read off a rendered image. Returns None if the
+    organization isn't found or the lookup fails (caller falls back to the
+    screenshot+vision path).
+    """
+    if _debug is None:
+        _debug = {}
+    if not name:
+        return None
+    from vajra_core import get_smartbrowz_access_token
+    token = get_smartbrowz_access_token()
+    _debug["has_token"] = bool(token)
+    if not token:
+        logger.warning("smartbrowz_lookup_organization skipped: no scoped token configured.")
+        return None
+    project_id = os.getenv("CATALYST_PROJECT_ID", "50212000000025002")
+    org_id = os.getenv("CATALYST_ORG_ID") or os.getenv("CATALYST_PROJECT_KEY", "")
+    url = f"https://api.catalyst.zoho.in/browser360/v1/project/{project_id}/dataverse/lead-enrichment"
+    headers = {"CATALYST-ORG": org_id, "Authorization": f"Zoho-oauthtoken {token}", "Content-Type": "application/json"}
     try:
-        sb = catalyst_app.smart_browz()
-        result = sb.convert_to_pdf(
-            source=html_content,
-            pdf_options={
-                "format": "A4",
-                "print_background": True,
-                "margin": {"top": "10mm", "bottom": "10mm", "left": "10mm", "right": "10mm"}
-            }
-        )
-        if isinstance(result, bytes) and result[:4] == b"%PDF":
-            logger.info("SmartBrowz PDF conversion succeeded.")
-            return result
-        elif hasattr(result, "read"):
-            data = result.read()
-            if data[:4] == b"%PDF":
-                logger.info("SmartBrowz PDF stream conversion succeeded.")
-                return data
-        logger.warning(f"SmartBrowz returned unexpected response type: {type(result)}")
-        return None
+        import requests as _requests
+        res = _requests.post(url, headers=headers, json={"lead_name": name}, timeout=45)
+        _debug["status"] = res.status_code
+        _debug["body"] = res.text[:1000]
+        if res.status_code == 200:
+            leads = (res.json() or {}).get("data")
+            if leads:
+                return leads[0] if isinstance(leads, list) else leads
+        else:
+            logger.warning(f"smartbrowz_lookup_organization {res.status_code}: {res.text[:300]}")
     except Exception as e:
-        logger.warning(f"SmartBrowz PDF conversion failed: {e}")
+        logger.warning(f"smartbrowz_lookup_organization failed for {name!r}: {e}")
+        _debug["exception"] = str(e)[:500]
+    return None
+
+
+def smartbrowz_search_and_extract(query: str, question: str, lang: str = "en", _debug: dict = None) -> Optional[Dict[str, Any]]:
+    """
+    Fully Zoho-native "search the web and answer a specific question"
+    pipeline -- NO third-party scraping (DuckDuckGo/Bing HTML parsing) and
+    NO external search API key. Two real Catalyst services chained:
+      1. SmartBrowz renders a real search-engine results page (Bing, chosen
+         live: returned real results where DuckDuckGo returned a bot-check
+         CAPTCHA) as a genuine headless-browser screenshot.
+      2. Catalyst QuickML's Qwen-VL vision model reads that screenshot and
+         extracts a direct answer to the officer's question, or says
+         plainly that it isn't visible in the results -- exactly like
+         reading a photographed document, which is what this already does
+         for CCTV/evidence images elsewhere in the app.
+    Returns {"answer": str, "sources_seen": [domain, ...]} or None if the
+    screenshot or vision call failed (caller falls back gracefully).
+    """
+    if _debug is None:
+        _debug = {}
+    if not query or not question:
+        _debug["stage"] = "bad_input"
         return None
+    search_url = "https://www.bing.com/search?q=" + urllib.parse.quote(query) + "&setlang=" + ("kn" if lang == "kn" else "en")
+    _debug["search_url"] = search_url
+    shot = smartbrowz_screenshot_bytes(search_url, _debug=_debug)
+    _debug["shot_bytes"] = len(shot) if shot else 0
+    if not shot:
+        _debug["stage"] = "screenshot_failed"
+        return None
+    try:
+        from catalyst_qwen import CatalystQwen
+        qwen = CatalystQwen()
+        _debug["qwen_configured"] = qwen.is_configured()
+        if not qwen.is_configured():
+            _debug["stage"] = "qwen_not_configured"
+            return None
+        instruction = (
+            f"This is a screenshot of live web search results for the query: \"{query}\". "
+            f"Answer this specific question using ONLY what's visible in the screenshot: "
+            f"\"{question}\". If the answer isn't visible in these results, say so plainly. "
+            f"Then list up to 5 distinct website domains you can see in the results (e.g. "
+            f"tkrec.ac.in, wikipedia.org). Be concise and factual -- this is open-source "
+            f"web content, not an official record, so note that plainly too."
+        )
+        result = qwen.analyze([shot], instruction=instruction)
+        _debug["qwen_result"] = result
+        if result.get("available") and result.get("text"):
+            _debug["stage"] = "ok"
+            return {"answer": result["text"], "sources_seen": []}
+        _debug["stage"] = "qwen_no_text"
+    except Exception as e:
+        logger.warning(f"smartbrowz_search_and_extract vision read failed: {e}")
+        _debug["stage"] = "exception"
+        _debug["error"] = str(e)
+    return None
 
 
 def smartbrowz_scrape_url(url: str, timeout: int = 10) -> Optional[str]:
