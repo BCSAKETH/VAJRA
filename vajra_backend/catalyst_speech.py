@@ -249,7 +249,7 @@ def synthesize_speech(text: str, lang: str = "en", persona: str = "standard") ->
     return (result[0], result[1]) if result and result[0] else None
 
 
-def _call_zia_tts(text: str, lang: str, persona: str) -> Optional[Tuple[Optional[bytes], str, int, str]]:
+def _call_zia_tts(text: str, lang: str, persona: str, speaker_override: Optional[str] = None) -> Optional[Tuple[Optional[bytes], str, int, str]]:
     """
     Shared Zia call used by both synthesize_speech (production contract) and
     the debug persona-probe endpoint (which needs the raw status/body to tell
@@ -264,7 +264,7 @@ def _call_zia_tts(text: str, lang: str, persona: str) -> Optional[Tuple[Optional
     if not cleaned:
         return None
     cleaned = cleaned[:_MAX_TTS_CHARS]
-    speaker = _SPEAKER_BY_LANG.get(lang, "Anna")
+    speaker = speaker_override or _SPEAKER_BY_LANG.get(lang, "Anna")
     params = VOICE_PERSONAS.get(persona) or VOICE_PERSONAS[_DEFAULT_PERSONA]
     key = _cache_key(lang, speaker, f"{persona}:{cleaned}")
     cached = _cache_get(key)
@@ -324,16 +324,18 @@ def get_tts_cache_status(text: str, lang: str = "en", persona: str = "standard")
     return "HIT" if _cache_get(key) is not None else "MISS"
 
 
-def probe_persona(persona: str, lang: str = "en") -> Dict[str, Any]:
+def probe_persona(persona: str, lang: str = "en", speaker: Optional[str] = None) -> Dict[str, Any]:
     """
     Debug helper (see the supervisor-only /api/voice/_probe-persona endpoint)
     to empirically confirm whether Zia accepts a pitch/speed/emotion
-    combination before adding it to VOICE_PERSONAS, rather than guessing and
-    shipping a persona that silently 502s for every officer who picks it.
-    Kept permanently -- useful again whenever a new persona is proposed.
+    combination -- or, with `speaker`, a specific named voice -- before
+    adding it to VOICE_PERSONAS / _SPEAKER_BY_LANG, rather than guessing and
+    shipping something that silently 502s for every officer who picks it.
+    Kept permanently -- useful again whenever a new persona or voice name
+    is proposed.
     """
     text = "Testing voice persona." if lang != "kn" else "ಧ್ವನಿ ಪರೀಕ್ಷೆ."
-    result = _call_zia_tts(text, lang, persona)
+    result = _call_zia_tts(text, lang, persona, speaker_override=speaker)
     if result is None:
         return {"ok": False, "reason": "no_token_or_empty_text"}
     audio, _media, status, body = result

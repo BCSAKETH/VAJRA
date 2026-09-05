@@ -714,7 +714,12 @@ export const SupervisorDashboardScreen: React.FC = () => {
                     {lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ"} {p.requester_badge} ({p.requester_name || ""})
                   </div>
                   <div className="text-[10px] text-stone-500 truncate">
-                    {Object.entries(p.requested_changes || {}).map(([k, v]) => `${k}: ${(p.current_values || {})[k] ?? "—"} → ${v}`).join(" · ")}
+                    {/* requested_changes_display/current_values_display resolve
+                        RankID/DesignationID/UnitID to real names server-side
+                        (see list_pending_profile_requests) -- falls back to the
+                        raw fields if an older cached request lacks them. */}
+                    {Object.entries(p.requested_changes_display || p.requested_changes || {}).map(([k, v]) =>
+                      `${k}: ${(p.current_values_display || p.current_values || {})[k] ?? "—"} → ${v}`).join(" · ")}
                   </div>
                   {p.reason && <div className="text-[10px] text-stone-600 truncate italic">"{p.reason}"</div>}
                 </div>

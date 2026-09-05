@@ -11,7 +11,12 @@ interface OfficerProfile {
   rank: string | null;
   designation: string | null;
   role_tier: string | null;
+  rank_id: number | string | null;
+  designation_id: number | string | null;
+  unit_id: number | string | null;
 }
+
+interface RefOption { id: number | string; name: string }
 
 export const SettingsScreen: React.FC = () => {
   const {
@@ -59,18 +64,20 @@ export const SettingsScreen: React.FC = () => {
   // PROFILE IMMUTABILITY: identity fields above are read-only display. A
   // change goes through supervisor approval (ProactiveAlerts/PROFILE_CHANGE,
   // same pattern as the export-approval workflow) -- never applied directly.
-  // FirstName and Email are offered as structured, auto-applying-on-approval
-  // requests (safe self-corrections); station/rank/designation are real HR
-  // actions (transfer, promotion) that go through official orders, so those
-  // stay visible-only even though the backend's approval pattern could
-  // technically carry them too. `requestField` makes the one modal below
-  // handle either target field.
+  // One modal covers every editable field at once, side-by-side (current vs
+  // proposed), with a MANDATORY statutory justification -- matching the
+  // real KSP transfer-order/promotion-order workflow this stands in for,
+  // not a casual self-edit box.
   const [isRequestOpen, setIsRequestOpen] = useState(false);
-  const [requestField, setRequestField] = useState<"FirstName" | "Email">("FirstName");
-  const [fieldDraft, setFieldDraft] = useState("");
   const [reasonDraft, setReasonDraft] = useState("");
   const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
   const [myRequest, setMyRequest] = useState<any | null>(null);
+  const [refData, setRefData] = useState<{ ranks: RefOption[]; designations: RefOption[]; units: RefOption[] }>({
+    ranks: [], designations: [], units: [],
+  });
+  // Draft values as strings (controlled <select>/<input> need strings; IDs
+  // get Number()'d back before submitting). Empty string = "no change".
+  const [draft, setDraft] = useState({ FirstName: "", RankID: "", DesignationID: "", UnitID: "", Email: "" });
 
   const fetchMyRequest = () => {
     fetch(`${API_BASE}/api/profile/my-requests`, {
@@ -85,9 +92,21 @@ export const SettingsScreen: React.FC = () => {
   };
   useEffect(() => { fetchMyRequest(); }, []);
 
-  const openRequestModal = (field: "FirstName" | "Email") => {
-    setRequestField(field);
-    setFieldDraft(field === "FirstName" ? (profile?.first_name || "") : (profile?.email || ""));
+  useEffect(() => {
+    fetch(`${API_BASE}/api/profile/reference-data`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => { if (data) setRefData(data); })
+      .catch(() => {});
+  }, []);
+
+  // Blank by default (LH-style partial-fill: only fill what needs to
+  // change) -- current values shown alongside for reference, not
+  // pre-filled into the proposed side, so a no-op field can't accidentally
+  // get resubmitted as its own current value.
+  const openRequestModal = () => {
+    setDraft({ FirstName: "", RankID: "", DesignationID: "", UnitID: "", Email: "" });
     setReasonDraft("");
     setIsRequestOpen(true);
   };
@@ -144,12 +163,37 @@ export const SettingsScreen: React.FC = () => {
   };
 
   const submitProfileChange = async () => {
-    const trimmed = fieldDraft.trim();
-    const currentValue = requestField === "FirstName" ? profile?.first_name : profile?.email;
-    if (!trimmed || trimmed === currentValue) {
+    const trimmedReason = reasonDraft.trim();
+    if (!trimmedReason) {
+      addToast(
+        lang === "en" ? "Justification required" : "ಸಮರ್ಥನೆ ಅಗತ್ಯವಿದೆ",
+        lang === "en"
+          ? "State the transfer/promotion order reference or reason for this change."
+          : "ಈ ಬದಲಾವಣೆಗೆ ವರ್ಗಾವಣೆ/ಬಡ್ತಿ ಆದೇಶ ಉಲ್ಲೇಖ ಅಥವಾ ಕಾರಣವನ್ನು ನಮೂದಿಸಿ.",
+        "Warning"
+      );
+      return;
+    }
+    const changes: Record<string, string> = {};
+    if (draft.FirstName.trim() && draft.FirstName.trim() !== profile?.first_name) {
+      changes.FirstName = draft.FirstName.trim();
+    }
+    if (draft.Email.trim() && draft.Email.trim() !== profile?.email) {
+      if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(draft.Email.trim())) {
+        addToast(lang === "en" ? "Invalid email" : "ಅಮಾನ್ಯ ಇಮೇಲ್",
+          lang === "en" ? "Enter a valid email address." : "ಮಾನ್ಯ ಇಮೇಲ್ ವಿಳಾಸವನ್ನು ನಮೂದಿಸಿ.", "Warning");
+        return;
+      }
+      changes.Email = draft.Email.trim();
+    }
+    if (draft.RankID && String(draft.RankID) !== String(profile?.rank_id ?? "")) changes.RankID = draft.RankID;
+    if (draft.DesignationID && String(draft.DesignationID) !== String(profile?.designation_id ?? "")) changes.DesignationID = draft.DesignationID;
+    if (draft.UnitID && String(draft.UnitID) !== String(profile?.unit_id ?? "")) changes.UnitID = draft.UnitID;
+
+    if (Object.keys(changes).length === 0) {
       addToast(
         lang === "en" ? "No change to submit" : "ಸಲ್ಲಿಸಲು ಯಾವುದೇ ಬದಲಾವಣೆ ಇಲ್ಲ",
-        lang === "en" ? "Enter a different value than what's on record." : "ದಾಖಲೆಯಲ್ಲಿರುವುದಕ್ಕಿಂತ ಬೇರೆ ಮೌಲ್ಯವನ್ನು ನಮೂದಿಸಿ.",
+        lang === "en" ? "Fill in at least one field that differs from your current record." : "ನಿಮ್ಮ ಪ್ರಸ್ತುತ ದಾಖಲೆಗಿಂತ ಭಿನ್ನವಾಗಿರುವ ಕನಿಷ್ಠ ಒಂದು ಕ್ಷೇತ್ರವನ್ನು ಭರ್ತಿ ಮಾಡಿ.",
         "Warning"
       );
       return;
@@ -159,7 +203,7 @@ export const SettingsScreen: React.FC = () => {
       const r = await fetch(`${API_BASE}/api/profile/request-change`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-        body: JSON.stringify({ requested_changes: { [requestField]: trimmed }, reason: reasonDraft }),
+        body: JSON.stringify({ requested_changes: changes, reason: trimmedReason }),
       });
       if (r.ok) {
         addToast(
@@ -221,11 +265,11 @@ export const SettingsScreen: React.FC = () => {
               </h3>
               {!myRequest || myRequest.status !== "pending" ? (
                 <button
-                  onClick={() => openRequestModal("FirstName")}
+                  onClick={openRequestModal}
                   className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-[#C79A4E] hover:text-[#E4C590] border border-[#C79A4E]/30 hover:border-[#C79A4E]/60 rounded-md px-2 py-1 cursor-pointer transition-colors"
                 >
                   <Pencil className="w-3 h-3" />
-                  {lang === "en" ? "Request change" : "ಬದಲಾವಣೆ ಕೋರಿ"}
+                  {lang === "en" ? "Request Profile Modification" : "ಪ್ರೊಫೈಲ್ ಬದಲಾವಣೆ ಕೋರಿ"}
                 </button>
               ) : (
                 <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-amber-400 border border-amber-500/30 rounded-md px-2 py-1">
@@ -237,7 +281,16 @@ export const SettingsScreen: React.FC = () => {
             {myRequest && myRequest.status === "pending" && (
               <div className="bg-amber-500/[0.06] border border-amber-500/25 rounded-lg px-3 py-2 text-[10.5px] text-amber-300/90 font-mono">
                 {lang === "en" ? "Requested: " : "ಕೋರಿದ್ದು: "}
-                {Object.entries(myRequest.requested_changes || {}).map(([k, v]) => `${k} → ${v}`).join(", ")}
+                {Object.entries(myRequest.requested_changes || {}).map(([k, v]) => {
+                  // Resolve an ID-based field (RankID, DesignationID, UnitID)
+                  // to its real name for a readable label, instead of the
+                  // raw numeric ID -- falls back to the raw value if the
+                  // reference list hasn't loaded or the ID isn't found.
+                  const lookup: Record<string, RefOption[]> = { RankID: refData.ranks, DesignationID: refData.designations, UnitID: refData.units };
+                  const fieldLabel: Record<string, string> = { FirstName: lang === "en" ? "Name" : "ಹೆಸರು", RankID: lang === "en" ? "Rank" : "ಶ್ರೇಣಿ", DesignationID: lang === "en" ? "Designation" : "ಪದನಾಮ", UnitID: lang === "en" ? "Station" : "ಠಾಣೆ", Email: "Email" };
+                  const resolved = lookup[k]?.find((o) => String(o.id) === String(v))?.name || v;
+                  return `${fieldLabel[k] || k} → ${resolved}`;
+                }).join(", ")}
                 {" — "}
                 {lang === "en" ? "awaiting supervisor sign-off." : "ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗಾಗಿ ಕಾಯಲಾಗುತ್ತಿದೆ."}
               </div>
@@ -274,14 +327,6 @@ export const SettingsScreen: React.FC = () => {
                     <Mail className="w-3 h-3" />
                     {lang === "en" ? "Email (for VAJRA's mail feature)" : "ಇಮೇಲ್ (VAJRA ಮೇಲ್ ವೈಶಿಷ್ಟ್ಯಕ್ಕಾಗಿ)"}
                   </div>
-                  {profile?.email && (!myRequest || myRequest.status !== "pending") && (
-                    <button
-                      onClick={() => openRequestModal("Email")}
-                      className="text-[9px] font-bold uppercase text-[#C79A4E] hover:text-[#E4C590] cursor-pointer"
-                    >
-                      {lang === "en" ? "Change" : "ಬದಲಾಯಿಸಿ"}
-                    </button>
-                  )}
                 </div>
                 {profile?.email ? (
                   <div className="font-bold text-stone-200 truncate">{profile.email}</div>
@@ -461,16 +506,17 @@ export const SettingsScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Profile Change Request modal -- Name or Email correction (see
-          comment above the handler); submits to supervisor approval, never
-          applies directly. */}
+      {/* Profile Change Request modal -- two-pane split (current official
+          record vs proposed modifications), every editable field at once,
+          MANDATORY statutory justification. Submits to supervisor approval,
+          never applies directly (see comment above the handler). */}
       {isRequestOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
-          <div className="glass-card w-full max-w-sm border border-stone-800 p-5 space-y-4 rounded-2xl">
-            <div className="flex items-center justify-between">
+          <div className="glass-card w-full max-w-2xl border border-stone-800 p-5 space-y-4 rounded-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-stone-850 pb-3">
               <h3 className="text-xs font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">
                 <Pencil className="w-4 h-4 text-[#C79A4E]" />
-                {lang === "en" ? "Request Profile Modification" : "ಪ್ರೊಫೈಲ್ ಬದಲಾವಣೆ ಕೋರಿ"}
+                {lang === "en" ? "Request Officer Profile Modification" : "ಅಧಿಕಾರಿ ಪ್ರೊಫೈಲ್ ತಿದ್ದುಪಡಿ ವಿನಂತಿ"}
               </h3>
               <button onClick={() => setIsRequestOpen(false)} className="text-stone-500 hover:text-stone-200 cursor-pointer">
                 <X className="w-4 h-4" />
@@ -478,39 +524,99 @@ export const SettingsScreen: React.FC = () => {
             </div>
             <p className="text-[10.5px] text-stone-550 leading-relaxed">
               {lang === "en"
-                ? "This request is held for supervisor sign-off before anything changes -- a station/rank/designation change is a separate personnel action handled through your chain of command."
-                : "ಈ ವಿನಂತಿಯನ್ನು ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗಾಗಿ ಹಿಡಿದಿಡಲಾಗುತ್ತದೆ -- ಠಾಣೆ/ಶ್ರೇಣಿ/ಪದನಾಮ ಬದಲಾವಣೆ ನಿಮ್ಮ ಆಜ್ಞಾ ಸರಪಳಿಯ ಮೂಲಕ ಪ್ರತ್ಯೇಕವಾಗಿ ನಿರ್ವಹಿಸಲಾಗುತ್ತದೆ."}
+                ? "Under KSP service regulations, profile updates require supervisor sanction. Leave any field blank to keep it unchanged."
+                : "KSP ಸೇವಾ ನಿಯಮಗಳ ಅಡಿಯಲ್ಲಿ, ಪ್ರೊಫೈಲ್ ನವೀಕರಣಗಳಿಗೆ ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆ ಅಗತ್ಯವಿದೆ. ಬದಲಾಗದಂತೆ ಇರಿಸಲು ಯಾವುದೇ ಕ್ಷೇತ್ರವನ್ನು ಖಾಲಿ ಬಿಡಿ."}
             </p>
-            <div className="space-y-1.5">
-              <label className="text-[10px] uppercase font-bold text-stone-500 tracking-wide">
-                {requestField === "FirstName"
-                  ? (lang === "en" ? "Current name" : "ಪ್ರಸ್ತುತ ಹೆಸರು")
-                  : (lang === "en" ? "Current email" : "ಪ್ರಸ್ತುತ ಇಮೇಲ್")}
-              </label>
-              <div className="text-xs text-stone-500 font-mono px-1">
-                {(requestField === "FirstName" ? profile?.first_name : profile?.email) || "—"}
+
+            {/* Two-pane grid: header row, then one row per field. */}
+            <div className="grid grid-cols-[1fr_1fr] gap-x-4 gap-y-3 text-xs">
+              <div className="text-[9px] font-bold uppercase text-stone-500 tracking-wide flex items-center gap-1">
+                <Lock className="w-2.5 h-2.5" /> {lang === "en" ? "Current Official Record" : "ಪ್ರಸ್ತುತ ದಾಖಲೆ"}
               </div>
-              <label className="text-[10px] uppercase font-bold text-stone-500 tracking-wide">
-                {requestField === "FirstName"
-                  ? (lang === "en" ? "Correct name" : "ಸರಿಯಾದ ಹೆಸರು")
-                  : (lang === "en" ? "New email" : "ಹೊಸ ಇಮೇಲ್")}
-              </label>
+              <div className="text-[9px] font-bold uppercase text-[#C79A4E] tracking-wide flex items-center gap-1">
+                <Pencil className="w-2.5 h-2.5" /> {lang === "en" ? "Proposed Modification" : "ಪ್ರಸ್ತಾವಿತ ಬದಲಾವಣೆ"}
+              </div>
+
+              {/* Name */}
+              <div className="bg-stone-950/40 border border-stone-900 rounded-lg px-3 py-2 text-stone-400 font-mono truncate self-center">
+                {profile?.first_name || "—"}
+              </div>
               <input
-                value={fieldDraft}
-                onChange={(e) => setFieldDraft(e.target.value)}
-                className="w-full bg-stone-950 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-3 py-2 text-stone-200 font-bold text-xs"
+                value={draft.FirstName}
+                onChange={(e) => setDraft((d) => ({ ...d, FirstName: e.target.value }))}
+                placeholder={lang === "en" ? "New full name" : "ಹೊಸ ಪೂರ್ಣ ಹೆಸರು"}
+                className="bg-stone-950 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-3 py-2 text-stone-200 font-bold"
               />
-              <label className="text-[10px] uppercase font-bold text-stone-500 tracking-wide pt-1 block">
-                {lang === "en" ? "Reason (optional)" : "ಕಾರಣ (ಐಚ್ಛಿಕ)"}
+
+              {/* Rank */}
+              <div className="bg-stone-950/40 border border-stone-900 rounded-lg px-3 py-2 text-stone-400 font-mono truncate self-center">
+                {profile?.rank || "—"}
+              </div>
+              <select
+                value={draft.RankID}
+                onChange={(e) => setDraft((d) => ({ ...d, RankID: e.target.value }))}
+                className="bg-stone-950 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-3 py-2 text-stone-200 font-bold"
+              >
+                <option value="">{lang === "en" ? "— No change —" : "— ಬದಲಾವಣೆ ಇಲ್ಲ —"}</option>
+                {refData.ranks.map((r) => (<option key={r.id} value={r.id}>{r.name}</option>))}
+              </select>
+
+              {/* Designation */}
+              <div className="bg-stone-950/40 border border-stone-900 rounded-lg px-3 py-2 text-stone-400 font-mono truncate self-center">
+                {profile?.designation || "—"}
+              </div>
+              <select
+                value={draft.DesignationID}
+                onChange={(e) => setDraft((d) => ({ ...d, DesignationID: e.target.value }))}
+                className="bg-stone-950 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-3 py-2 text-stone-200 font-bold"
+              >
+                <option value="">{lang === "en" ? "— No change —" : "— ಬದಲಾವಣೆ ಇಲ್ಲ —"}</option>
+                {refData.designations.map((d) => (<option key={d.id} value={d.id}>{d.name}</option>))}
+              </select>
+
+              {/* Station / Unit */}
+              <div className="bg-stone-950/40 border border-stone-900 rounded-lg px-3 py-2 text-stone-400 font-mono truncate self-center">
+                {profile?.station || "—"}
+              </div>
+              <select
+                value={draft.UnitID}
+                onChange={(e) => setDraft((d) => ({ ...d, UnitID: e.target.value }))}
+                className="bg-stone-950 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-3 py-2 text-stone-200 font-bold"
+              >
+                <option value="">{lang === "en" ? "— No change —" : "— ಬದಲಾವಣೆ ಇಲ್ಲ —"}</option>
+                {refData.units.map((u) => (<option key={u.id} value={u.id}>{u.name}</option>))}
+              </select>
+
+              {/* Email */}
+              <div className="bg-stone-950/40 border border-stone-900 rounded-lg px-3 py-2 text-stone-400 font-mono truncate self-center">
+                {profile?.email || "—"}
+              </div>
+              <input
+                value={draft.Email}
+                onChange={(e) => setDraft((d) => ({ ...d, Email: e.target.value }))}
+                placeholder={lang === "en" ? "New email" : "ಹೊಸ ಇಮೇಲ್"}
+                className="bg-stone-950 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-3 py-2 text-stone-200 font-bold"
+              />
+            </div>
+
+            {/* Mandatory statutory justification -- matches the plan's
+                "Transfer Order No. / Reason: *" requirement; this is the
+                one field that's never optional, unlike the individual
+                profile fields above (any subset of which may be blank). */}
+            <div className="space-y-1.5 border-t border-stone-850 pt-3">
+              <label className="text-[10px] uppercase font-bold text-amber-400 tracking-wide">
+                {lang === "en" ? "Justification / Transfer Order Reference *" : "ಸಮರ್ಥನೆ / ವರ್ಗಾವಣೆ ಆದೇಶ ಉಲ್ಲೇಖ *"}
               </label>
               <textarea
                 value={reasonDraft}
                 onChange={(e) => setReasonDraft(e.target.value)}
                 rows={2}
-                className="w-full bg-stone-950 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-3 py-2 text-stone-300 text-xs resize-none"
-                placeholder={lang === "en" ? "e.g. misspelled at enrollment" : "ಉದಾ. ನೋಂದಣಿಯಲ್ಲಿ ತಪ್ಪಾಗಿ ಬರೆಯಲಾಗಿದೆ"}
+                required
+                className="w-full bg-stone-950 border border-amber-500/30 focus:border-amber-500/60 rounded-lg px-3 py-2 text-stone-300 text-xs resize-none"
+                placeholder={lang === "en" ? "e.g. KSP/DGO/TR-2026/894 — Promotion order dated 01-09-2026" : "ಉದಾ. KSP/DGO/TR-2026/894 — ಬಡ್ತಿ ಆದೇಶ"}
               />
             </div>
+
             <div className="flex gap-2 pt-1">
               <button
                 onClick={() => setIsRequestOpen(false)}
@@ -523,7 +629,7 @@ export const SettingsScreen: React.FC = () => {
                 disabled={isSubmittingRequest}
                 className="flex-1 py-2 rounded-lg bg-[#C79A4E] text-stone-950 text-xs font-black uppercase cursor-pointer hover:bg-[#E4C590] disabled:opacity-50"
               >
-                {isSubmittingRequest ? (lang === "en" ? "Submitting…" : "ಸಲ್ಲಿಸಲಾಗುತ್ತಿದೆ…") : (lang === "en" ? "Submit" : "ಸಲ್ಲಿಸಿ")}
+                {isSubmittingRequest ? (lang === "en" ? "Submitting…" : "ಸಲ್ಲಿಸಲಾಗುತ್ತಿದೆ…") : (lang === "en" ? "Submit Request to Supervisor" : "ಸಲ್ಲಿಸಿ")}
               </button>
             </div>
           </div>

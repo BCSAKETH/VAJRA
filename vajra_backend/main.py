@@ -591,7 +591,13 @@ async def get_current_officer(
         "station": request.state.authorized_station,
         "rank": request.state.rank_name,
         "designation": request.state.designation_name,
-        "role_tier": request.state.role_tier
+        "role_tier": request.state.role_tier,
+        # Raw IDs alongside the display names above -- needed so a profile
+        # change request's dropdowns can pre-select the officer's CURRENT
+        # rank/designation/station rather than just showing text.
+        "rank_id": profile.get("RankID"),
+        "designation_id": profile.get("DesignationID"),
+        "unit_id": profile.get("UnitID"),
     }
 
 
@@ -4543,19 +4549,20 @@ async def list_voice_personas(location_context: str = Depends(security_firewall)
 
 
 @app.get("/api/voice/_probe-persona")
-async def probe_persona_endpoint(persona: str, lang: str = "en", request: Request = None,
-                                 location_context: str = Depends(security_firewall)):
+async def probe_persona_endpoint(persona: str = "standard", lang: str = "en", speaker: Optional[str] = None,
+                                 request: Request = None, location_context: str = Depends(security_firewall)):
     """
     Supervisor-only diagnostic: makes ONE real (uncached) Zia TTS call with
-    the given persona's pitch/speed/emotion and returns Zia's raw
-    status/response, so a new persona preset can be confirmed to actually
-    work before it's ever offered to officers -- rather than discovering a
-    bad enum value from a silent 502 in the field.
+    the given persona's pitch/speed/emotion (and, if given, an override
+    speaker name) and returns Zia's raw status/response -- so a new persona
+    OR a new named voice can be confirmed to actually work before it's ever
+    offered to officers, rather than discovering a bad enum value from a
+    silent 502 in the field.
     """
     if getattr(request.state, "role_tier", "officer") != "supervisor":
         raise HTTPException(status_code=403, detail="Supervisor access only.")
     from catalyst_speech import probe_persona
-    result = await run_in_threadpool(probe_persona, persona, lang)
+    result = await run_in_threadpool(probe_persona, persona, lang, speaker)
     return result
 
 
@@ -5826,8 +5833,32 @@ async def export_request_status(request_id: str, request: Request = None,
 # reused ProactiveAlerts approval pattern as EXPORT_APPROVAL above (AlertType=
 # 'PROFILE_CHANGE') rather than a new table this deployment can't create.
 # Only fields that genuinely exist on Employee are changeable -- there is no
-# email/phone column on this schema, so those are not offered.
+# phone column on this schema, so that isn't offered (Email was added
+# specifically for this feature; see set-email-once below).
 PROFILE_EDITABLE_FIELDS = {"FirstName", "UnitID", "RankID", "DesignationID", "Email"}
+
+
+@app.get("/api/profile/reference-data")
+async def profile_reference_data(location_context: str = Depends(security_firewall)):
+    """
+    Real {id, name} option lists for Rank/Designation/Unit, so a profile
+    change request modal offers proper dropdowns instead of letting an
+    officer type an arbitrary, unvalidated rank/station name as free text
+    (which the approval endpoint would then blindly apply to Employee).
+    """
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    try:
+        ranks = catalyst_app.zql().execute_query("SELECT RankID, RankName FROM Rank")
+        designations = catalyst_app.zql().execute_query("SELECT DesignationID, DesignationName FROM Designation")
+        units = catalyst_app.zql().execute_query("SELECT UnitID, UnitName FROM Unit LIMIT 300")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reference data lookup failed: {e}")
+    return {
+        "ranks": [{"id": r.get("Rank", {}).get("RankID"), "name": r.get("Rank", {}).get("RankName")} for r in ranks],
+        "designations": [{"id": d.get("Designation", {}).get("DesignationID"), "name": d.get("Designation", {}).get("DesignationName")} for d in designations],
+        "units": [{"id": u.get("Unit", {}).get("UnitID"), "name": u.get("Unit", {}).get("UnitName")} for u in units],
+    }
 
 
 class SetEmailOnceRequest(BaseModel):
@@ -6003,6 +6034,29 @@ async def list_pending_profile_requests(request: Request, location_context: str 
                     out.append(m)
         except Exception as e:
             logger.warning(f"list_pending_profile_requests: {e}")
+    # Resolve RankID/DesignationID/UnitID to real names for display, so the
+    # supervisor reviews "Police Inspector" not a bare "RankID: 5" -- only
+    # bother with the lookup queries if a pending request actually contains
+    # one of these ID fields.
+    id_fields = {"RankID": ("Rank", "RankName"), "DesignationID": ("Designation", "DesignationName"), "UnitID": ("Unit", "UnitName")}
+    if out and catalyst_app and any(f in (m.get("requested_changes") or {}) for m in out for f in id_fields):
+        lookups: Dict[str, Dict[str, str]] = {}
+        for field, (table, name_col) in id_fields.items():
+            try:
+                rows = catalyst_app.zql().execute_query(f"SELECT {field}, {name_col} FROM {table}")
+                lookups[field] = {str(row.get(table, {}).get(field)): row.get(table, {}).get(name_col) for row in rows}
+            except Exception as e:
+                logger.warning(f"list_pending_profile_requests {table} lookup: {e}")
+                lookups[field] = {}
+        for m in out:
+            display = {}
+            for k, v in (m.get("requested_changes") or {}).items():
+                display[k] = lookups.get(k, {}).get(str(v), v) if k in id_fields else v
+            m["requested_changes_display"] = display
+            cur_display = {}
+            for k, v in (m.get("current_values") or {}).items():
+                cur_display[k] = lookups.get(k, {}).get(str(v), v) if k in id_fields else v
+            m["current_values_display"] = cur_display
     return {"pending": out, "count": len(out)}
 
 
