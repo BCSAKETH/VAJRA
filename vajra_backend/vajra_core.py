@@ -277,6 +277,89 @@ def zcql_update_row(table_name: str, row: Dict[str, Any]) -> None:
     catalyst_app.zql().execute_query(f"UPDATE {table_name} SET {set_clause} WHERE ROWID = {rowid}")
 
 
+_mail_token_lock = threading.Lock()
+_mail_token_cache: Dict[str, Any] = {"token": None, "fetched_at": 0.0}
+
+
+def _get_mail_access_token(force_refresh: bool = False) -> Optional[str]:
+    """
+    Separate, dedicated OAuth token for Catalyst Mail ONLY. The app's main
+    refresh token (CATALYST_REFRESH_TOKEN, used by get_cached_access_token
+    for every other Catalyst call) was issued without the Mail scope --
+    confirmed live, send_mail failed with OAUTH_SCOPE_MISMATCH. Rather than
+    re-issuing the main token with a wider scope (real risk of typo'ing a
+    scope string and breaking every other Catalyst call in production), Mail
+    gets its OWN self-client refresh token, scoped to exactly
+    ZohoCatalyst.email.CREATE and nothing else -- so a problem with mail
+    can never take down datastore/QuickML/etc, and vice versa. Cached
+    in-process (not the shared .token_cache file) so it doesn't collide
+    with the main token's cache.
+    """
+    with _mail_token_lock:
+        if not force_refresh and _mail_token_cache["token"] and (time.time() - _mail_token_cache["fetched_at"] < 3000):
+            return _mail_token_cache["token"]
+        client_id = os.getenv("CATALYST_CLIENT_ID")
+        client_secret = os.getenv("CATALYST_CLIENT_SECRET")
+        mail_refresh_token = os.getenv("CATALYST_MAIL_REFRESH_TOKEN")
+        if not (client_id and client_secret and mail_refresh_token):
+            return None
+        try:
+            import requests as _requests
+            res = _requests.post("https://accounts.zoho.in/oauth/v2/token", data={
+                "client_id": client_id, "client_secret": client_secret,
+                "refresh_token": mail_refresh_token, "grant_type": "refresh_token",
+            }, timeout=10)
+            data = res.json()
+            if "access_token" in data:
+                _mail_token_cache["token"] = data["access_token"]
+                _mail_token_cache["fetched_at"] = time.time()
+                return data["access_token"]
+            logger.error(f"Mail token refresh failed: {data}")
+        except Exception as e:
+            logger.warning(f"Mail token refresh error: {e}")
+        return None
+
+
+def send_investigation_email_internal(to_email: str, subject: str, content: str) -> Dict[str, Any]:
+    """
+    Shared Catalyst Mail sender used by both the direct HTTP endpoint
+    (main.py's /api/investigation/send-email) and the conversational
+    send_investigation_email agent tool (agent_loop.py). Calls Catalyst's
+    Mail REST API directly (bypassing the SDK's Email component, which
+    would use the shared, non-Mail-scoped credential) with the dedicated
+    mail-only token above. Raises on any failure (no sender/token
+    configured, Catalyst rejecting it, network error); callers decide how
+    to surface that (HTTP 503/502 vs a chat message).
+    """
+    from_email = os.getenv("CATALYST_MAIL_FROM_EMAIL")
+    if not from_email:
+        raise RuntimeError(
+            "Email dispatch is not configured -- no verified sender address "
+            "(CATALYST_MAIL_FROM_EMAIL) set for this deployment."
+        )
+    token = _get_mail_access_token()
+    if not token:
+        raise RuntimeError(
+            "Email dispatch is not configured -- no Mail-scoped OAuth token "
+            "(CATALYST_MAIL_REFRESH_TOKEN) set for this deployment."
+        )
+    project_id = os.getenv("CATALYST_PROJECT_ID", "50212000000025002")
+    org_id = os.getenv("CATALYST_ORG_ID") or os.getenv("CATALYST_PROJECT_KEY", "")
+    url = f"https://api.catalyst.zoho.in/baas/v1/project/{project_id}/email/send"
+    to_list = [to_email] if isinstance(to_email, str) else to_email
+    fields = {
+        "from_email": from_email, "to_email": ",".join(to_list),
+        "subject": subject, "content": content, "display_name": "VAJRA AI Copilot",
+    }
+    files = {k: (None, v) for k, v in fields.items()}
+    headers = {"CATALYST-ORG": org_id, "Authorization": f"Zoho-oauthtoken {token}"}
+    import requests as _requests
+    res = _requests.post(url, headers=headers, files=files, timeout=15)
+    if res.status_code not in (200, 201):
+        raise RuntimeError(f"Catalyst Mail returned {res.status_code}: {res.text[:300]}")
+    return res.json()
+
+
 def _cache_base_url() -> str:
     project_id = os.getenv("CATALYST_PROJECT_ID")
     domain = "in" if os.getenv("CATALYST_REGION") == "IN" else "com"
@@ -820,12 +903,28 @@ class VajraSecurityFirewall:
                 role_tier = cached["role_tier"]
                 home_district_id = cached.get("home_district_id")
             else:
-                zql_query = f"""
-                    SELECT EmployeeID, UnitID, KGID, FirstName, RankID, DesignationID
-                    FROM Employee
-                    WHERE KGID = '{kgid}'
-                """
-                profile_res = catalyst_app.zql().execute_query(zql_query)
+                # Email is a NEW column (added for the officer-registers-own-
+                # email feature) that may not exist yet on every deployment's
+                # Employee table -- ZCQL raises "Unknown column" for a column
+                # that isn't there, which would break login for EVERY officer
+                # if this ran unguarded (this query is on the auth hot path).
+                # Try with Email first; fall back to the original column set
+                # the moment that fails, so this never depends on deploy
+                # order versus the console schema change.
+                try:
+                    zql_query = f"""
+                        SELECT EmployeeID, UnitID, KGID, FirstName, RankID, DesignationID, Email
+                        FROM Employee
+                        WHERE KGID = '{kgid}'
+                    """
+                    profile_res = catalyst_app.zql().execute_query(zql_query)
+                except Exception:
+                    zql_query = f"""
+                        SELECT EmployeeID, UnitID, KGID, FirstName, RankID, DesignationID
+                        FROM Employee
+                        WHERE KGID = '{kgid}'
+                    """
+                    profile_res = catalyst_app.zql().execute_query(zql_query)
 
                 if not profile_res:
                     # Previously fell back to an arbitrary Employee row ("LIMIT 1") when the

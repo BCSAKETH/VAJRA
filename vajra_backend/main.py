@@ -586,6 +586,7 @@ async def get_current_officer(
     return {
         "kgid": request.state.kgid,
         "first_name": profile.get("FirstName"),
+        "email": profile.get("Email"),
         "station": request.state.authorized_station,
         "rank": request.state.rank_name,
         "designation": request.state.designation_name,
@@ -4512,28 +4513,16 @@ async def send_investigation_email(payload: SendInvestigationEmailRequest, reque
     then it fails with a clear, honest 503 rather than silently no-op'ing
     or claiming success on a mail that never left Zoho's servers.
     """
-    if not catalyst_app:
-        raise HTTPException(status_code=500, detail="Database client offline.")
-    from_email = os.getenv("CATALYST_MAIL_FROM_EMAIL")
-    if not from_email:
-        raise HTTPException(
-            status_code=503,
-            detail="Email dispatch is not configured. Verify a sending domain in the Catalyst "
-                   "console (Mail component) and set CATALYST_MAIL_FROM_EMAIL to the verified "
-                   "sender address before this can send real mail."
-        )
     if not payload.to_email or not payload.subject or not payload.content:
         raise HTTPException(status_code=400, detail="to_email, subject, and content are required.")
+    from vajra_core import send_investigation_email_internal
     try:
-        resp = catalyst_app.email().send_mail({
-            "from_email": from_email,
-            "to_email": payload.to_email,
-            "subject": payload.subject,
-            "content": payload.content,
-            "display_name": "VAJRA AI Copilot",
-        })
+        resp = send_investigation_email_internal(payload.to_email, payload.subject, payload.content)
         logger.info(f"Investigation email sent to {payload.to_email} (case {payload.case_no or 'n/a'})")
         return {"status": "sent", "detail": resp}
+    except RuntimeError as e:
+        # Not-configured / offline -- the caller can fix this without redeploying code.
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error(f"send_investigation_email failed: {e}")
         raise HTTPException(status_code=502, detail=f"Email dispatch failed: {e}")
@@ -5837,7 +5826,49 @@ async def export_request_status(request_id: str, request: Request = None,
 # 'PROFILE_CHANGE') rather than a new table this deployment can't create.
 # Only fields that genuinely exist on Employee are changeable -- there is no
 # email/phone column on this schema, so those are not offered.
-PROFILE_EDITABLE_FIELDS = {"FirstName", "UnitID", "RankID", "DesignationID"}
+PROFILE_EDITABLE_FIELDS = {"FirstName", "UnitID", "RankID", "DesignationID", "Email"}
+
+
+class SetEmailOnceRequest(BaseModel):
+    email: str
+
+
+@app.post("/api/profile/set-email-once")
+async def set_email_once(payload: SetEmailOnceRequest, request: Request,
+                         location_context: str = Depends(security_firewall)):
+    """
+    First-time-only, no-approval email registration. Unlike every other
+    profile field (which already has a real value from Employee's seeded
+    data, so ANY change is a correction needing sign-off), Email starts
+    genuinely empty for everyone -- there's nothing to protect by requiring
+    approval to set it the first time. Once set, it's immutable like the
+    rest: any further change must go through /api/profile/request-change.
+    This is also the ONLY email address the conversational "email me X"
+    agent tool will ever send to -- it never accepts an address typed into
+    chat, precisely so this one-time-then-locked field is the sole source
+    of truth for where an officer's own mail goes.
+    """
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    email = (payload.email or "").strip()
+    if not re.match(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", email):
+        raise HTTPException(status_code=400, detail="That doesn't look like a valid email address.")
+    badge = request.state.kgid
+    try:
+        emp_res = catalyst_app.zql().execute_query(
+            f"SELECT ROWID, Email FROM Employee WHERE KGID = '{badge}' LIMIT 1")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Employee lookup failed: {e}")
+    if not emp_res:
+        raise HTTPException(status_code=404, detail="Employee record not found.")
+    existing = emp_res[0].get("Employee", {}).get("Email")
+    if existing:
+        raise HTTPException(status_code=409, detail="An email is already registered. Use Request Profile Modification to change it.")
+    try:
+        zcql_update_row("Employee", {"ROWID": emp_res[0].get("Employee", {}).get("ROWID"), "Email": email})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save email: {e}")
+    return {"status": "saved", "email": email}
 
 
 def _find_profile_change_row(request_id: str):

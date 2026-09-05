@@ -1,11 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { Settings, ShieldCheck, Database, Languages, Clock, User, IdCard, MapPin, Lock, Pencil, X, Hourglass, Mic2 } from "lucide-react";
+import { Settings, ShieldCheck, Database, Languages, Clock, User, IdCard, MapPin, Lock, Pencil, X, Hourglass, Mic2, Mail } from "lucide-react";
 
 interface OfficerProfile {
   kgid: string;
   first_name: string | null;
+  email: string | null;
   station: string | null;
   rank: string | null;
   designation: string | null;
@@ -58,14 +59,15 @@ export const SettingsScreen: React.FC = () => {
   // PROFILE IMMUTABILITY: identity fields above are read-only display. A
   // change goes through supervisor approval (ProactiveAlerts/PROFILE_CHANGE,
   // same pattern as the export-approval workflow) -- never applied directly.
-  // Only FirstName is offered as a structured, auto-applying request: it's
-  // the one field an officer can safely re-enter themselves (a spelling
-  // correction). Station/rank/designation are real HR actions (transfer,
-  // promotion) that go through official orders, not a self-service text box,
-  // so those stay visible-only here even though the backend's approval
-  // pattern could technically carry them too.
+  // FirstName and Email are offered as structured, auto-applying-on-approval
+  // requests (safe self-corrections); station/rank/designation are real HR
+  // actions (transfer, promotion) that go through official orders, so those
+  // stay visible-only even though the backend's approval pattern could
+  // technically carry them too. `requestField` makes the one modal below
+  // handle either target field.
   const [isRequestOpen, setIsRequestOpen] = useState(false);
-  const [nameDraft, setNameDraft] = useState("");
+  const [requestField, setRequestField] = useState<"FirstName" | "Email">("FirstName");
+  const [fieldDraft, setFieldDraft] = useState("");
   const [reasonDraft, setReasonDraft] = useState("");
   const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
   const [myRequest, setMyRequest] = useState<any | null>(null);
@@ -83,18 +85,71 @@ export const SettingsScreen: React.FC = () => {
   };
   useEffect(() => { fetchMyRequest(); }, []);
 
-  const openRequestModal = () => {
-    setNameDraft(profile?.first_name || "");
+  const openRequestModal = (field: "FirstName" | "Email") => {
+    setRequestField(field);
+    setFieldDraft(field === "FirstName" ? (profile?.first_name || "") : (profile?.email || ""));
     setReasonDraft("");
     setIsRequestOpen(true);
   };
 
+  // First-time-only email registration -- no approval needed since there's
+  // nothing on record yet to protect (see set-email-once's own docstring).
+  // Once saved, this field locks and any further change goes through the
+  // same request-and-approve modal as the name field.
+  const [emailDraft, setEmailDraft] = useState("");
+  const [isSavingEmail, setIsSavingEmail] = useState(false);
+  const submitEmailOnce = async () => {
+    const trimmed = emailDraft.trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(trimmed)) {
+      addToast(
+        lang === "en" ? "Invalid email" : "ಅಮಾನ್ಯ ಇಮೇಲ್",
+        lang === "en" ? "Enter a valid email address." : "ಮಾನ್ಯ ಇಮೇಲ್ ವಿಳಾಸವನ್ನು ನಮೂದಿಸಿ.",
+        "Warning"
+      );
+      return;
+    }
+    setIsSavingEmail(true);
+    try {
+      const r = await fetch(`${API_BASE}/api/profile/set-email-once`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({ email: trimmed }),
+      });
+      if (r.ok) {
+        setProfile((p) => (p ? { ...p, email: trimmed } : p));
+        addToast(
+          lang === "en" ? "Email registered" : "ಇಮೇಲ್ ನೋಂದಾಯಿಸಲಾಗಿದೆ",
+          lang === "en"
+            ? "VAJRA will send anything you ask it to email here from now on."
+            : "ಇನ್ನು ಮುಂದೆ ನೀವು ಕೇಳುವ ಎಲ್ಲವನ್ನೂ VAJRA ಇಲ್ಲಿಗೆ ಇಮೇಲ್ ಮಾಡುತ್ತದೆ.",
+          "Success"
+        );
+      } else {
+        const err = await r.json().catch(() => ({}));
+        addToast(
+          lang === "en" ? "Could not save" : "ಉಳಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ",
+          err.detail || (lang === "en" ? "Please try again." : "ದಯವಿಟ್ಟು ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ."),
+          "Critical"
+        );
+      }
+    } catch {
+      addToast(
+        lang === "en" ? "Network error" : "ನೆಟ್‌ವರ್ಕ್ ದೋಷ",
+        lang === "en" ? "Could not reach the server." : "ಸರ್ವರ್ ತಲುಪಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+        "Critical"
+      );
+    } finally {
+      setIsSavingEmail(false);
+    }
+  };
+
   const submitProfileChange = async () => {
-    const trimmed = nameDraft.trim();
-    if (!trimmed || trimmed === profile?.first_name) {
+    const trimmed = fieldDraft.trim();
+    const currentValue = requestField === "FirstName" ? profile?.first_name : profile?.email;
+    if (!trimmed || trimmed === currentValue) {
       addToast(
         lang === "en" ? "No change to submit" : "ಸಲ್ಲಿಸಲು ಯಾವುದೇ ಬದಲಾವಣೆ ಇಲ್ಲ",
-        lang === "en" ? "Enter a different name than what's on record." : "ದಾಖಲೆಯಲ್ಲಿರುವುದಕ್ಕಿಂತ ಬೇರೆ ಹೆಸರನ್ನು ನಮೂದಿಸಿ.",
+        lang === "en" ? "Enter a different value than what's on record." : "ದಾಖಲೆಯಲ್ಲಿರುವುದಕ್ಕಿಂತ ಬೇರೆ ಮೌಲ್ಯವನ್ನು ನಮೂದಿಸಿ.",
         "Warning"
       );
       return;
@@ -104,7 +159,7 @@ export const SettingsScreen: React.FC = () => {
       const r = await fetch(`${API_BASE}/api/profile/request-change`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-        body: JSON.stringify({ requested_changes: { FirstName: trimmed }, reason: reasonDraft }),
+        body: JSON.stringify({ requested_changes: { [requestField]: trimmed }, reason: reasonDraft }),
       });
       if (r.ok) {
         addToast(
@@ -166,7 +221,7 @@ export const SettingsScreen: React.FC = () => {
               </h3>
               {!myRequest || myRequest.status !== "pending" ? (
                 <button
-                  onClick={openRequestModal}
+                  onClick={() => openRequestModal("FirstName")}
                   className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-[#C79A4E] hover:text-[#E4C590] border border-[#C79A4E]/30 hover:border-[#C79A4E]/60 rounded-md px-2 py-1 cursor-pointer transition-colors"
                 >
                   <Pencil className="w-3 h-3" />
@@ -207,6 +262,46 @@ export const SettingsScreen: React.FC = () => {
               <div className="bg-stone-950/40 p-2.5 rounded-lg border border-stone-900 col-span-2">
                 <div className="text-[9px] text-stone-550 uppercase">{lang === "en" ? "Home Station" : "ಠಾಣೆ"}</div>
                 <div className="font-bold text-stone-200 truncate">{profile?.station || "—"}</div>
+              </div>
+              {/* Email: the ONLY address VAJRA's "email me X" chat feature
+                  ever sends to. Genuinely empty for everyone at first, so
+                  setting it once needs no approval; once set it locks like
+                  every other field above and needs the same request-change
+                  flow (see set-email-once's backend docstring). */}
+              <div className="bg-stone-950/40 p-2.5 rounded-lg border border-stone-900 col-span-2 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <div className="text-[9px] text-stone-550 uppercase flex items-center gap-1">
+                    <Mail className="w-3 h-3" />
+                    {lang === "en" ? "Email (for VAJRA's mail feature)" : "ಇಮೇಲ್ (VAJRA ಮೇಲ್ ವೈಶಿಷ್ಟ್ಯಕ್ಕಾಗಿ)"}
+                  </div>
+                  {profile?.email && (!myRequest || myRequest.status !== "pending") && (
+                    <button
+                      onClick={() => openRequestModal("Email")}
+                      className="text-[9px] font-bold uppercase text-[#C79A4E] hover:text-[#E4C590] cursor-pointer"
+                    >
+                      {lang === "en" ? "Change" : "ಬದಲಾಯಿಸಿ"}
+                    </button>
+                  )}
+                </div>
+                {profile?.email ? (
+                  <div className="font-bold text-stone-200 truncate">{profile.email}</div>
+                ) : (
+                  <div className="flex gap-1.5">
+                    <input
+                      value={emailDraft}
+                      onChange={(e) => setEmailDraft(e.target.value)}
+                      placeholder={lang === "en" ? "you@ksp.gov.in" : "you@ksp.gov.in"}
+                      className="flex-1 bg-stone-950 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-2.5 py-1.5 text-stone-200 font-bold text-[11px]"
+                    />
+                    <button
+                      onClick={submitEmailOnce}
+                      disabled={isSavingEmail}
+                      className="px-3 py-1.5 rounded-lg bg-[#C79A4E] text-stone-950 text-[10px] font-black uppercase cursor-pointer hover:bg-[#E4C590] disabled:opacity-50 shrink-0"
+                    >
+                      {isSavingEmail ? "…" : (lang === "en" ? "Save" : "ಉಳಿಸಿ")}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -366,9 +461,9 @@ export const SettingsScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Profile Change Request modal -- name-correction only (see comment
-          above the handler); submits to supervisor approval, never applies
-          directly. */}
+      {/* Profile Change Request modal -- Name or Email correction (see
+          comment above the handler); submits to supervisor approval, never
+          applies directly. */}
       {isRequestOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="glass-card w-full max-w-sm border border-stone-800 p-5 space-y-4 rounded-2xl">
@@ -383,20 +478,26 @@ export const SettingsScreen: React.FC = () => {
             </div>
             <p className="text-[10.5px] text-stone-550 leading-relaxed">
               {lang === "en"
-                ? "Only your name can be self-corrected here; a station/rank/designation change is a personnel action handled through your chain of command. This request is held for supervisor sign-off before anything changes."
-                : "ಇಲ್ಲಿ ನಿಮ್ಮ ಹೆಸರನ್ನು ಮಾತ್ರ ಸ್ವಯಂ ಸರಿಪಡಿಸಬಹುದು; ಠಾಣೆ/ಶ್ರೇಣಿ/ಪದನಾಮ ಬದಲಾವಣೆ ನಿಮ್ಮ ಆಜ್ಞಾ ಸರಪಳಿಯ ಮೂಲಕ ನಿರ್ವಹಿಸಲಾಗುತ್ತದೆ. ಈ ವಿನಂತಿಯನ್ನು ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗಾಗಿ ಹಿಡಿದಿಡಲಾಗುತ್ತದೆ."}
+                ? "This request is held for supervisor sign-off before anything changes -- a station/rank/designation change is a separate personnel action handled through your chain of command."
+                : "ಈ ವಿನಂತಿಯನ್ನು ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗಾಗಿ ಹಿಡಿದಿಡಲಾಗುತ್ತದೆ -- ಠಾಣೆ/ಶ್ರೇಣಿ/ಪದನಾಮ ಬದಲಾವಣೆ ನಿಮ್ಮ ಆಜ್ಞಾ ಸರಪಳಿಯ ಮೂಲಕ ಪ್ರತ್ಯೇಕವಾಗಿ ನಿರ್ವಹಿಸಲಾಗುತ್ತದೆ."}
             </p>
             <div className="space-y-1.5">
               <label className="text-[10px] uppercase font-bold text-stone-500 tracking-wide">
-                {lang === "en" ? "Current name" : "ಪ್ರಸ್ತುತ ಹೆಸರು"}
+                {requestField === "FirstName"
+                  ? (lang === "en" ? "Current name" : "ಪ್ರಸ್ತುತ ಹೆಸರು")
+                  : (lang === "en" ? "Current email" : "ಪ್ರಸ್ತುತ ಇಮೇಲ್")}
               </label>
-              <div className="text-xs text-stone-500 font-mono px-1">{profile?.first_name || "—"}</div>
+              <div className="text-xs text-stone-500 font-mono px-1">
+                {(requestField === "FirstName" ? profile?.first_name : profile?.email) || "—"}
+              </div>
               <label className="text-[10px] uppercase font-bold text-stone-500 tracking-wide">
-                {lang === "en" ? "Correct name" : "ಸರಿಯಾದ ಹೆಸರು"}
+                {requestField === "FirstName"
+                  ? (lang === "en" ? "Correct name" : "ಸರಿಯಾದ ಹೆಸರು")
+                  : (lang === "en" ? "New email" : "ಹೊಸ ಇಮೇಲ್")}
               </label>
               <input
-                value={nameDraft}
-                onChange={(e) => setNameDraft(e.target.value)}
+                value={fieldDraft}
+                onChange={(e) => setFieldDraft(e.target.value)}
                 className="w-full bg-stone-950 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-3 py-2 text-stone-200 font-bold text-xs"
               />
               <label className="text-[10px] uppercase font-bold text-stone-500 tracking-wide pt-1 block">

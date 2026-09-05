@@ -290,6 +290,19 @@ class VajraAgentLoop(CognitiveBrainMixin):
             }
         },
         {
+            "name": "send_investigation_email",
+            "description": "Email the officer's OWN registered address (never a chat-typed address -- always their own on-file email) with either a specific case's summary (give case_no) or a specific earlier part of THIS conversation (give topic_hint, e.g. 'the network graph', 'the risk score'). If neither is given, sends the most recent VAJRA answer in this chat.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "case_no": {"type": "string", "description": "Optional case/FIR number if the officer wants a specific case's summary emailed."},
+                    "topic_hint": {"type": "string", "description": "Optional short description of WHICH earlier answer in this conversation to email (e.g. 'the syndicate network', 'the SHAP risk breakdown', 'the hotspot map'), when the officer references something other than the very last answer."},
+                    "note": {"type": "string", "description": "Optional short personal note from the officer to include in the email, in their own words."}
+                },
+                "required": []
+            }
+        },
+        {
             "name": "get_mo_profile",
             "description": "Retrieve Modus Operandi (MO) behavioral profile matching for a suspect.",
             "parameters": {
@@ -6169,6 +6182,83 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 citations = agg_citations
                 citations.append({"type": "Full Case Dossier", "id": case_no, "details": f"{len(panels)} panels composed from real case records"})
                 self._write_audit_log(employee_id, "Full Case Dossier", case_no, f"Dossier assembled for {case_no}", text_result, session_id)
+
+        elif tool_name == "send_investigation_email":
+            # Conversational email dispatch. SECURITY: the recipient is NEVER
+            # taken from chat text -- always the officer's OWN registered
+            # email (Employee.Email, set once via Settings, then immutable
+            # like every other profile field -- see set-email-once in
+            # main.py). This closes off using the AI as a mail relay to
+            # arbitrary third-party addresses via a crafted prompt. The body
+            # is NEVER LLM-authored either -- a real case summary
+            # (summarize_case, the same grounded path the dossier tool uses),
+            # or a specific earlier answer in THIS session matched by
+            # topic_hint, or (default) the most recent answer -- always
+            # something already grounded and shown to the officer.
+            response_type = "text"
+            final_answer = True
+            case_no = str(params.get("case_no") or "").strip()
+            topic_hint = str(params.get("topic_hint") or "").strip()
+            note = str(params.get("note") or "").strip()
+            recipient = ""
+            try:
+                _emp = catalyst_app.zql().execute_query(
+                    f"SELECT Email FROM Employee WHERE KGID = '{self.officer_badge}' LIMIT 1") if catalyst_app else []
+                recipient = (_emp[0].get("Employee", {}).get("Email") or "") if _emp else ""
+            except Exception as ex:
+                logger.warning(f"send_investigation_email: could not fetch officer email: {ex}")
+            if not recipient:
+                text_result = "You don't have an email registered yet -- add one in Settings (Officer Profile card) and I'll be able to email you things after that."
+                citations.append({"type": "Email Dispatch", "id": "(no email on file)", "details": "Officer has no registered email -- not sent."})
+            else:
+                subject = f"VAJRA Investigation Update: {case_no}" if case_no else "VAJRA Investigation Update"
+                body = ""
+                if case_no:
+                    _resolved = self._resolve_case_rowid(case_no)
+                    if _resolved:
+                        body = self.summarize_case(_resolved["case_id"], _resolved["rowid"], _resolved["collisions"])
+                    if not body:
+                        text_result = f"Case {case_no} was not found, so no email was sent."
+                        citations.append({"type": "Email Dispatch", "id": case_no, "details": "Case not found -- not sent."})
+                else:
+                    try:
+                        _rows = catalyst_app.zql().execute_query(
+                            f"SELECT text FROM ChatMessage WHERE session_id = '{self.sanitize_sql_input(session_id)}' "
+                            "AND sender = 'assistant' ORDER BY sent_at DESC LIMIT 50"
+                        ) if catalyst_app else []
+                        _texts = [r.get("ChatMessage", {}).get("text") or "" for r in _rows]
+                        if topic_hint and _texts:
+                            # Score each candidate by keyword overlap with the hint
+                            # (skip short/common words); most recent among the
+                            # highest-scoring wins. Falls back to the latest
+                            # answer if nothing actually matches the hint.
+                            _kw = [w.lower() for w in re.findall(r"[A-Za-z]{4,}", topic_hint)]
+                            best_idx, best_score = None, 0
+                            for i, txt in enumerate(_texts):
+                                low = txt.lower()
+                                score = sum(1 for w in _kw if w in low)
+                                if score > best_score:
+                                    best_score, best_idx = score, i
+                            body = _texts[best_idx] if best_idx is not None else (_texts[0] if _texts else "")
+                        else:
+                            body = _texts[0] if _texts else ""
+                    except Exception as ex:
+                        logger.warning(f"send_investigation_email: could not fetch session answer: {ex}")
+                    if not body:
+                        text_result = "There's no earlier answer in this conversation to email yet -- ask me something first, or give me a case number to email."
+                        citations.append({"type": "Email Dispatch", "id": "(session)", "details": "No prior grounded answer available -- not sent."})
+                if body and not text_result:
+                    full_content = body + (f"\n\n---\nNote from {self.officer_name or 'the officer'}: {note}" if note else "")
+                    full_content += f"\n\n---\nSent via VAJRA AI Copilot on behalf of KGID {self.officer_badge}."
+                    try:
+                        from vajra_core import send_investigation_email_internal
+                        send_investigation_email_internal(recipient, subject, full_content)
+                        text_result = f"Email sent to {recipient}" + (f" with the summary for case {case_no}." if case_no else " with the requested part of this conversation.")
+                        citations.append({"type": "Email Dispatch", "id": recipient, "details": f"Subject: {subject}"})
+                        self._write_audit_log(employee_id, "Email Dispatch", case_no or "(session answer)", f"Emailed to {recipient}", text_result, session_id)
+                    except Exception as ex:
+                        text_result = f"Could not send the email: {ex}"
+                        citations.append({"type": "Email Dispatch", "id": recipient, "details": f"Send failed: {ex}"})
 
         return {
             "text_result": text_result,
