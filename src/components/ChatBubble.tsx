@@ -94,17 +94,45 @@ const cleanTextForSpeech = (rawText: string): string => {
 // to trigger either failure mode, and chaining continues until every chunk
 // has genuinely finished -- never a fixed time/length gate.
 const _SPEECH_CHUNK_CHARS = 280;
+// Police/legal abbreviations whose internal periods would otherwise be
+// mistaken for sentence ends by the naive splitter below -- confirmed this
+// actually happens: "U/S 420 I.P.C. was applied" splits into "I", "P", "C."
+// as three separate malformed "sentences", each mispronounced or merged
+// wrong. Periods inside these get masked before splitting, restored after.
+const _TTS_PROTECTED_ABBREV = [
+  "F.I.R.", "I.P.C.", "B.N.S.S.", "B.N.S.", "Cr.P.C.", "C.R.P.C.", "C.C.T.N.S.",
+  "Dr.", "Mr.", "Mrs.", "Shri.", "Smt.", "Rs.", "No.", "vs.",
+];
+
+const _protectAbbreviations = (text: string): { masked: string; restore: (s: string) => string } => {
+  let masked = text;
+  const placeholder = ""; // control char (SOH) that never appears in real chat text
+  // Protect known abbreviations (longest first so "B.N.S.S." isn't partially
+  // eaten by a shorter overlapping pattern).
+  [..._TTS_PROTECTED_ABBREV].sort((a, b) => b.length - a.length).forEach((abbr) => {
+    const withPlaceholder = abbr.replace(/\./g, placeholder);
+    masked = masked.split(abbr).join(withPlaceholder);
+  });
+  // Protect decimal numbers (Rs. 50,000.50) -- a period between two digits
+  // is never a sentence end.
+  masked = masked.replace(/(\d)\.(\d)/g, `$1${placeholder}$2`);
+  return { masked, restore: (s: string) => s.split(placeholder).join(".") };
+};
+
 const splitIntoSpeechChunks = (text: string): string[] => {
   const clean = (text || "").trim();
   if (!clean) return [];
   // Split on sentence-ending punctuation (., !, ?, Kannada ।), keeping the
   // punctuation with its sentence, then re-merge short neighbors so a chunk
   // stays close to _SPEECH_CHUNK_CHARS instead of being one clause each.
-  const sentences = clean.match(/[^.!?।]+[.!?।]*/g) || [clean];
+  // Abbreviation periods are masked first so they can't be mistaken for a
+  // sentence boundary (see _protectAbbreviations above).
+  const { masked, restore } = _protectAbbreviations(clean);
+  const sentences = masked.match(/[^.!?।]+[.!?।]*/g) || [masked];
   const chunks: string[] = [];
   let current = "";
   for (const s of sentences) {
-    const piece = s.trim();
+    const piece = restore(s.trim());
     if (!piece) continue;
     if (current && (current.length + piece.length + 1) > _SPEECH_CHUNK_CHARS) {
       chunks.push(current);

@@ -177,8 +177,17 @@ def normalize_text_for_tts(text: str, lang: str = "en") -> str:
     """
     if not text:
         return ""
-    # Strip markdown: bold, headers, inline code, links, bullets
     s = text
+    # POCSO redaction placeholder (redact_pocso_name in vajra_core.py) would
+    # otherwise be spoken literally -- brackets, "§" and all -- since it
+    # doesn't match any other rule below. Replace with a clean spoken phrase
+    # BEFORE the generic bracket/symbol handling touches it. Doesn't leak
+    # anything (this text is already the masked placeholder, never the real
+    # name), just avoids an awkward, garbled readout of the raw marker.
+    s = re.sub(r"\[REDACTED UNDER POCSO ACT §?\s*74[^\]]*\]",
+               "Identity Protected under Section 74 Juvenile Justice Act" if lang != "kn"
+               else "ಸೆಕ್ಷನ್ ೭೪ ಬಾಲ ನ್ಯಾಯ ಕಾಯ್ದೆಯಡಿ ಗುರುತು ರಕ್ಷಿಸಲಾಗಿದೆ", s)
+    # Strip markdown: bold, headers, inline code, links, bullets
     s = re.sub(r"\*\*([^*]+)\*\*", r"\1", s)  # **bold**
     s = re.sub(r"#+\s*", "", s)                 # ### headers
     s = re.sub(r"`([^`]+)`", r"\1", s)           # `code`
@@ -186,6 +195,21 @@ def normalize_text_for_tts(text: str, lang: str = "en") -> str:
     s = re.sub(r"[-*•]\s+", "", s)               # bullet points
     # Strip citation markers like [1], [2,3]
     s = re.sub(r"\[\d+(?:,\s*\d+)*\]", "", s)
+    # Quotation marks: Zia otherwise utters "quote"/"quotation mark" aloud
+    # when a briefing quotes a witness statement.
+    s = re.sub(r'["“”]', "", s)
+    # Crime-number slash notation ("CR No. 104/2026", "CR-2024-81977" already
+    # reads fine since it has no bare slash) -- a bare "104/2026" pattern
+    # would otherwise be read as a division. Spell it out instead.
+    _crime_no_word = "ಅಪರಾಧ ಸಂಖ್ಯೆ" if lang == "kn" else "Crime Number"
+    _of_word = "," if lang == "kn" else " of"
+    # Swallow any existing "CR No." / "Cr.No." / "Crime No." label so it
+    # doesn't get spoken twice ("CR No. Crime Number 104 of 2026").
+    s = re.sub(r"(?:\bCR\.?\s*No\.?\s*|\bCrime\s*No\.?\s*)?\b(\d{1,5})/(\d{4})\b",
+               rf"{_crime_no_word} \1{_of_word} \2", s, flags=re.IGNORECASE)
+    # "§" (section mark): read literally otherwise. "§420 IPC" -> "Section
+    # 420 IPC", which the abbreviation dict below then expands to "I.P.C."
+    s = s.replace("§", "Section " if lang != "kn" else "ಸೆಕ್ಷನ್ ")
     # Number normalization: Zia mispronounced numbers with a thousands-separator
     # comma ("7,099" read digit-by-digit instead of "seven thousand ninety-nine")
     # and skipped/garbled a bare "%" sign. Applies to EN and KN alike since the
