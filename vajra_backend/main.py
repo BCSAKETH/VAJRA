@@ -3282,10 +3282,39 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
         _user_variant_extra["version_index"] = vinfo["version_index"]
         _assistant_variant_data["variant_group"] = vinfo["variant_group"]
         _assistant_variant_data["version_index"] = vinfo["version_index"]
+        # Tamper-evident record of the edit itself, written into the SAME
+        # SHA-256 hash-chained ledger every other audit entry uses (see
+        # agent_loop._write_audit_log) -- the plan doc asked for a bespoke
+        # parallel Merkle chain (H2=SHA256(H1+text)) just for message edits;
+        # that would be a second, unverified crypto system nobody would
+        # ever actually check, duplicating the tamper-evidence the real
+        # ledger already provides. Logging the edit event into the existing,
+        # already-verified ledger gets the same real property (proof an
+        # edit happened, when, by whom, immutably) without inventing new
+        # machinery -- an edit is provably not a silent post-hoc rewrite,
+        # because it's the same non-repudiable log every other action uses.
+        try:
+            agent_loop._write_audit_log(
+                employee_id, "PROMPT_REVISION", payload.edit_of_msg_id,
+                f"Officer edited a prior question (turn {vinfo['variant_group'][:12]}, "
+                f"version {vinfo['version_index']}).",
+                display_text[:200], session_id
+            )
+        except Exception as e:
+            logger.warning(f"PROMPT_REVISION audit log failed: {e}")
     elif _is_retry:
         vinfo = _resolve_variant_info(session_id, payload.retry_of_msg_id, "assistant")
         _assistant_variant_data["variant_group"] = vinfo["variant_group"]
         _assistant_variant_data["version_index"] = vinfo["version_index"]
+        try:
+            agent_loop._write_audit_log(
+                employee_id, "ANSWER_REGENERATION", payload.retry_of_msg_id,
+                f"Officer requested a new answer variant (turn {vinfo['variant_group'][:12]}, "
+                f"version {vinfo['version_index']}).",
+                "(regenerating)", session_id
+            )
+        except Exception as e:
+            logger.warning(f"ANSWER_REGENERATION audit log failed: {e}")
 
     if not _is_retry:
         _persist_chat_message(
