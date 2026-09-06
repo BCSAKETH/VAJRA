@@ -1912,8 +1912,45 @@ class GLMTranslator:
     # (we translate the CONTENT, keep the marker): ordered "1." / "2)", bullets
     # "-" "*" "•", markdown headings "#".
     _LINE_MARKER_RE = re.compile(r"^(\s*(?:\d+[.)]|[-*•▪◦‣·]|#{1,6})\s+)(.*)$")
-    # A line that is entirely a bold heading, e.g. "**Criminal intimidation**".
-    _FULL_BOLD_RE = re.compile(r"^\*\*(.+?)\*\*[\s:.]*$")
+    # Inline markup spans WITHIN a line's content -- **bold**, `code`,
+    # *italic*/_italic_. Confirmed live gap this closes: the old code only
+    # ever special-cased a line that was bold END TO END (e.g. a standalone
+    # "**Criminal intimidation**" heading) -- a bold span used mid-sentence
+    # ("Suspect **John Doe** was seen...") fell through untouched, so its
+    # "**" survived all the way to _sanitize_for_fast_translate, which
+    # strips "*"/"_"/"`" as unsafe characters for Zia. The bold silently
+    # vanished on every Kannada answer with partial-line emphasis. Splitting
+    # each line into (text, marker_type) segments and translating/re-
+    # wrapping each independently (same concurrent-translation pattern
+    # already used per-line below) fixes this for bold AND for the inline
+    # code/italic spans the chat renderer now also supports -- without
+    # depending on any sentinel character surviving Zia's allowlist. A
+    # whole-line bold heading is just the trivial case of one segment
+    # spanning the entire line, so no separate special-case is needed.
+    _INLINE_MARKER_RE = re.compile(r"(\*\*[^*\n]+\*\*|`[^`\n]+`|\*[^*\n]+\*|_[^_\n]+_)")
+
+    @classmethod
+    def _split_inline_markers(cls, content: str):
+        """Splits `content` into (text, marker_type) segments, marker_type
+        one of "bold"/"code"/"italic"/None (plain text). Code spans are
+        exact IDs/hashes quoted verbatim -- never sent to translation,
+        always restored unchanged."""
+        segments = []
+        pos = 0
+        for m in cls._INLINE_MARKER_RE.finditer(content):
+            if m.start() > pos:
+                segments.append((content[pos:m.start()], None))
+            span = m.group(0)
+            if span.startswith("**"):
+                segments.append((span[2:-2], "bold"))
+            elif span.startswith("`"):
+                segments.append((span[1:-1], "code"))
+            else:
+                segments.append((span[1:-1], "italic"))
+            pos = m.end()
+        if pos < len(content):
+            segments.append((content[pos:], None))
+        return segments or [(content, None)]
 
     def translate(self, text: str, source_lang: str, target_lang: str) -> str:
         if source_lang == target_lang:
@@ -1934,7 +1971,15 @@ class GLMTranslator:
         # while English kept its numbered/bulleted structure. So translate each
         # line's CONTENT on its own and rejoin with the ORIGINAL newlines + list
         # markers, so Kannada renders with the exact same structure as English.
-        if "\n" in text.strip():
+        # Route through the marker-protecting structured path whenever there's
+        # either real line structure OR inline markup to protect -- confirmed
+        # live just now: a single-LINE sentence with inline "**bold**" (no
+        # newline at all, e.g. "Suspect **John Doe** was seen...") was falling
+        # through to the plain _translate_line() below, which has NO marker
+        # protection, so the exact bug this fix targets was still reproducing
+        # on the single-line case even after _translate_structured itself was
+        # fixed -- the dispatch condition, not the fix, was the remaining gap.
+        if "\n" in text.strip() or self._INLINE_MARKER_RE.search(text):
             result = self._translate_structured(text, source_lang, target_lang)
         else:
             result = self._translate_line(text, source_lang, target_lang)
@@ -1962,24 +2007,28 @@ class GLMTranslator:
             return self._translate_line(
                 " ".join(l.strip() for l in lines if l.strip()), source_lang, target_lang
             )
-        # Parse each line into (prefix, inner-text, is_bold); collect the inner
-        # texts that actually need translating so they can all be sent to Zia
-        # CONCURRENTLY -- N sequential ~0.3s calls would blow the turn's 18s
-        # budget, but fired in parallel they cost ~one call. Blank and
-        # marker-only lines are kept verbatim to preserve paragraph structure.
-        parsed = []  # (prefix, inner, is_bold, needs_translation)
+        # Parse each line into a leading marker (kept verbatim) plus a list of
+        # inline (text, marker_type) segments from _split_inline_markers, so
+        # BOTH a whole-line bold heading and an inline mid-sentence bold span
+        # get their delimiters protected through translation -- not just the
+        # former. Collect every segment that needs translating across ALL
+        # lines so they can be sent to Zia CONCURRENTLY -- N sequential
+        # ~0.3s calls would blow the turn's 18s budget, but fired in
+        # parallel they cost ~one call. Blank lines and code spans are kept
+        # verbatim to preserve structure and exact IDs respectively.
+        parsed = []  # {"kind": "blank"} | {"kind": "verbatim", "text": ...} | {"kind": "line", "prefix": ..., "segs": [(text, marker_type), ...]}
         for ln in lines:
             if not ln.strip():
-                parsed.append(("", "", False, False)); continue
+                parsed.append({"kind": "blank"}); continue
             m = self._LINE_MARKER_RE.match(ln)
             prefix, content = (m.group(1), m.group(2)) if m else ("", ln)
-            bold = self._FULL_BOLD_RE.match(content.strip())
-            inner = bold.group(1) if bold else content
-            if not inner.strip():
-                parsed.append((ln, "", False, False))  # keep marker-only line as-is
-            else:
-                parsed.append((prefix, inner, bool(bold), True))
-        to_translate = [p[1] for p in parsed if p[3]]
+            if not content.strip():
+                parsed.append({"kind": "verbatim", "text": ln}); continue
+            parsed.append({"kind": "line", "prefix": prefix, "segs": self._split_inline_markers(content)})
+        to_translate = [
+            seg_text for p in parsed if p["kind"] == "line"
+            for seg_text, seg_type in p["segs"] if seg_type != "code" and seg_text.strip()
+        ]
         if not to_translate:
             return text
         with ThreadPoolExecutor(max_workers=min(8, len(to_translate))) as ex:
@@ -1987,12 +2036,32 @@ class GLMTranslator:
                 lambda s: self._translate_line(s, source_lang, target_lang), to_translate
             ))
         out, ri = [], 0
-        for prefix, inner, is_bold, needs in parsed:
-            if not needs:
-                out.append("" if (prefix == "" and inner == "") else prefix)
-                continue
-            tr = results[ri]; ri += 1
-            out.append(f"{prefix}**{tr}**" if is_bold else f"{prefix}{tr}")
+        for p in parsed:
+            if p["kind"] == "blank":
+                out.append(""); continue
+            if p["kind"] == "verbatim":
+                out.append(p["text"]); continue
+            parts = [p["prefix"]]
+            for seg_text, seg_type in p["segs"]:
+                if seg_type == "code":
+                    parts.append(f"`{seg_text}`")  # never translated, restored verbatim
+                elif not seg_text.strip():
+                    parts.append(seg_text)  # incidental whitespace between segments
+                else:
+                    tr = results[ri]; ri += 1
+                    # Confirmed live: _sanitize_for_fast_translate .strip()s
+                    # each segment before sending it to Zia, so a plain-text
+                    # segment like "Suspect " (trailing space, adjacent to a
+                    # following bold span) comes back with that space gone --
+                    # the reassembled sentence read "ಶಂಕಿತ.**ಜಾನ್ ಡೋ**..." with
+                    # no space at the segment boundary. Re-pad the SAME side(s)
+                    # the original segment had whitespace on, independent of
+                    # whatever Zia returned.
+                    lead = " " if seg_text[:1].isspace() else ""
+                    trail = " " if seg_text[-1:].isspace() else ""
+                    wrapped = f"**{tr}**" if seg_type == "bold" else f"*{tr}*" if seg_type == "italic" else tr
+                    parts.append(f"{lead}{wrapped}{trail}")
+            out.append("".join(parts))
         return "\n".join(out)
 
     def _translate_line(self, text: str, source_lang: str, target_lang: str) -> str:

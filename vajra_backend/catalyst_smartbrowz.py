@@ -71,9 +71,16 @@ def _clean_and_format_text(raw_text: str) -> str:
         # Format inline bold **text**
         line_str = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", line_str)
 
-        # Highlight entity IDs (e.g. PhonePe-78450991, ICICI-80928374, CR/142/2026)
+        # Highlight entity IDs (e.g. PhonePe-78450991, ICICI-80928374, CR-2024-81977).
+        # Confirmed live (found while porting this exact mechanic to the chat UI):
+        # the real case-number format used everywhere in this app is dash-separated
+        # "CR-YYYY-NNNNN" (e.g. "CR-2024-81977") -- the old "CR/\w+/\w+/\w+" slash
+        # pattern never matched any real case number in this dataset, so case
+        # numbers have never actually been entity-tagged in an exported PDF. Kept
+        # the slash form too in case any other document format uses it.
+        # KEEP IN SYNC WITH src/components/ChatBubble.tsx's ENTITY_RE.
         line_str = re.sub(
-            r"\b(PhonePe-\w+|ICICI-\w+|Paytm-\w+|GPay-\w+|BTC-\w+|CR/\w+/\w+/\w+)\b",
+            r"\b(PhonePe-\w+|ICICI-\w+|Paytm-\w+|GPay-\w+|BTC-\w+|CR-\d{4}-\d+|CR/\w+/\w+/\w+)\b",
             r"<span class='entity-tag'>\1</span>",
             line_str
         )
