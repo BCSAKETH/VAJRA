@@ -73,6 +73,9 @@ from vajra_core import (
     mark_district_access_reviewed,
     is_supervisor_badge,
     escape_zcql_literal,
+    is_pocso_sensitive,
+    redact_pocso_name,
+    redact_phone_numbers,
 )
 from agent_loop import VajraAgentLoop
 from catalyst_llm import CatalystLLM
@@ -2219,6 +2222,40 @@ def _fit_json(obj: Any, cap: int) -> str:
                     return s
                 _arr = _arr[: max(1, len(_arr) - 5)]
             d[_key] = _arr
+    # generate_full_report's composite "risk" payload (see agent_loop.py's
+    # generate_full_report -- risk gauge/SHAP as the base dict, with
+    # mo_profile/network/repeat_offender_context folded in as "additive
+    # extra keys" for future widget richness): a real suspect's network graph
+    # + MO profile + repeat-offender roster routinely pushes this well past
+    # the cap. None of those key names ("suspect", "risk_score", "network",
+    # ...) matched any trim rule above OR the old final whitelist below, so
+    # this fell straight through to the last-resort minimal{} -- which came
+    # back completely empty, wiping the risk gauge/SHAP chart to nothing even
+    # though they're the SMALL, core part of the payload. Confirmed live:
+    # this is exactly why a real dossier ("24.2% conviction risk" in the
+    # text) rendered its inline widget as "0% / Suspect: Unknown" with an
+    # empty SHAP waterfall once persisted and re-read from data_json -- the
+    # text field (stored separately, own cap) survived; the widget's data
+    # didn't. Fix: drop the heaviest ADDITIVE keys first (network graph, then
+    # repeat-offender roster, then MO profile), keeping the small core risk/
+    # SHAP fields intact -- same "trim what's dispensable" pattern as the
+    # financial_transactions/edges/news handling above.
+    if "risk_score" in d:
+        for _key in ("network", "repeat_offender_context", "mo_profile"):
+            if d.get(_key):
+                d = dict(d)
+                d.pop(_key, None)
+                s = json.dumps(d, ensure_ascii=False, default=str)
+                if len(s) <= cap:
+                    return s
+        # Core risk/SHAP fields only -- still small even with a full
+        # shap_factors + aggravating/mitigating breakdown.
+        core = {k: d.get(k) for k in
+                ("suspect", "age", "risk_score", "shap_factors", "aggravating",
+                 "mitigating", "remand_status") if d.get(k) is not None}
+        s = json.dumps(core, ensure_ascii=False, default=str)
+        if len(s) <= cap:
+            return s
     panels = d.get("panels")
     if isinstance(panels, list):
         d["panels"] = [dict(p) if isinstance(p, dict) else p for p in panels]
@@ -2234,12 +2271,30 @@ def _fit_json(obj: Any, cap: int) -> str:
     if len(s) <= cap:
         return s
     if isinstance(panels, list):
-        for p in panels:
-            if isinstance(p, dict) and (p.get("text") or "").strip():
-                p.pop("data", None)  # keep the text panel; drop its heavy raw data
-        s = json.dumps(d, ensure_ascii=False, default=str)
-        if len(s) <= cap:
-            return s
+        # CONFIRMED LIVE (this is the actual bug behind a real dossier's
+        # "risk" panel rendering 0%/Unknown/empty-SHAP despite its own text
+        # correctly saying "24.2% conviction risk"): this used to pop
+        # `data` from EVERY panel that has text, all at once, the instant
+        # ANY single heavy panel (a network graph's real nodes/edges, an MO
+        # profile) pushed the WHOLE multi-panel payload over the cap --
+        # wiping a small, essential panel's data (a risk panel's
+        # risk_score/suspect/shap_factors, a few hundred bytes) right along
+        # with the one panel that actually needed trimming. Drop panel data
+        # ONE PANEL AT A TIME instead, heaviest/least-essential-to-the-
+        # widget type first, re-checking the cap after each pop, so a small
+        # panel's data survives unless the payload is still over cap even
+        # after every heavier panel has already given up its data.
+        _DROP_PRIORITY = ("network", "mo_match", "similar_cases", "case_summary",
+                          "timeline", "case_sections", "trend", "map")
+        def _panel_drop_rank(p):
+            t = p.get("type") if isinstance(p, dict) else None
+            return _DROP_PRIORITY.index(t) if t in _DROP_PRIORITY else len(_DROP_PRIORITY)
+        for p in sorted((pp for pp in panels if isinstance(pp, dict)), key=_panel_drop_rank):
+            if p.get("data") and (p.get("text") or "").strip():
+                p.pop("data", None)
+                s = json.dumps(d, ensure_ascii=False, default=str)
+                if len(s) <= cap:
+                    return s
     # Last resort: keep identity + English narrative + news signals + the
     # graph itself (nodes/edges already trimmed above, if present) so the
     # message is never blank/corrupt -- a network-graph response with no
@@ -2248,7 +2303,9 @@ def _fit_json(obj: Any, cap: int) -> str:
     minimal = {k: d.get(k) for k in
                ("case_no", "primary_accused", "_text_en", "news", "scope",
                 "nodes", "edges", "seed", "max_hop_reached", "_zcql_provenance",
-                "msg_id", "variant_group", "version_index") if d.get(k)}
+                "msg_id", "variant_group", "version_index",
+                "suspect", "age", "risk_score", "shap_factors", "aggravating",
+                "mitigating", "remand_status") if d.get(k) is not None}
     s = json.dumps(minimal, ensure_ascii=False, default=str)
     return s if len(s) <= cap else "{}"
 
@@ -2839,6 +2896,50 @@ def _ai_turn_done(task: "asyncio.Task", session_id: str) -> None:
         logger.error(f"Failed to persist AI-turn failure notice for {session_id}: {_pe}")
 
 
+# Byte-for-byte port of ChatBubble.tsx's _TTS_PROTECTED_ABBREV /
+# _protectAbbreviations / splitIntoSpeechChunks -- see the eager-pregen
+# fix below (CLAUDE_CODE_DIRECTIVE.md Task 2) for why these two
+# implementations must agree exactly: the server TTS cache key is a hash
+# of the precise chunk text, so a single differing character (a different
+# sentence-boundary decision, say) makes pre-gen a wasted no-op again.
+_TTS_PROTECTED_ABBREV = [
+    "F.I.R.", "I.P.C.", "B.N.S.S.", "B.N.S.", "Cr.P.C.", "C.R.P.C.", "C.C.T.N.S.",
+    "Dr.", "Mr.", "Mrs.", "Shri.", "Smt.", "Rs.", "No.", "vs.",
+]
+_TTS_PLACEHOLDER = "\x01"  # a control char that never appears in real chat text
+
+
+def _protect_abbreviations(text: str) -> str:
+    masked = text
+    for abbr in sorted(_TTS_PROTECTED_ABBREV, key=len, reverse=True):
+        masked = masked.replace(abbr, abbr.replace(".", _TTS_PLACEHOLDER))
+    # A period between two digits (Rs. 50,000.50) is never a sentence end.
+    masked = re.sub(r"(\d)\.(\d)", rf"\1{_TTS_PLACEHOLDER}\2", masked)
+    return masked
+
+
+def _split_into_speech_chunks(text: str, max_chars: int = 280) -> List[str]:
+    clean = (text or "").strip()
+    if not clean:
+        return []
+    masked = _protect_abbreviations(clean)
+    sentences = re.findall(r"[^.!?।]+[.!?।]*", masked) or [masked]
+    chunks: List[str] = []
+    current = ""
+    for s in sentences:
+        piece = s.strip().replace(_TTS_PLACEHOLDER, ".")
+        if not piece:
+            continue
+        if current and (len(current) + len(piece) + 1) > max_chars:
+            chunks.append(current)
+            current = piece
+        else:
+            current = f"{current} {piece}" if current else piece
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 async def _run_ai_turn_and_persist(
     session_id: str,
     message: str,
@@ -3135,33 +3236,37 @@ async def _run_ai_turn_and_persist(
     })
 
     # --- Eager TTS Pre-Synthesis ---
-    # Fire-and-forget: pre-synthesize the FULL response (bounded only by Zia's
-    # own model cap) in both languages and store in the TTS cache. By the time
-    # the officer reads the message and reaches for the speaker button, the
+    # Fire-and-forget: pre-synthesize the response and store it in the TTS
+    # cache. By the time the officer reaches for the speaker button, the
     # audio is already cached server-side -- a cache HIT returns in ~50ms
-    # instead of a fresh synthesis wait. MUST match the frontend's MAX_SPEAK
-    # (ChatBubble.tsx getSpeakText) exactly, or the click always misses this
-    # cache: officers reported playback stopping mid-message when this and the
-    # frontend disagreed on how much text to speak (was capped at 140 chars).
+    # instead of a fresh synthesis wait.
+    #
+    # CLAUDE_CODE_DIRECTIVE.md Task 2 (confirmed live, real bug): this used
+    # to synthesize the ENTIRE response as ONE cache entry, but
+    # ChatBubble.tsx's playback requests audio in ~280-char CHUNKS
+    # (splitIntoSpeechChunks) via separate /api/voice/tts calls -- and the
+    # server cache key is a SHA-256 hash of the exact text synthesized
+    # (catalyst_speech._cache_key). A whole-response hash can never equal
+    # any individual chunk's hash, so this pre-gen produced a 100% cache
+    # miss rate for real playback -- officers got the full un-cached ~5-18s
+    # Zia wait on every single chunk regardless of this "optimization"
+    # having already run. Fixed by chunking with the EXACT same algorithm
+    # as the frontend (_split_into_speech_chunks below is a byte-for-byte
+    # port of ChatBubble.tsx's splitIntoSpeechChunks/_protectAbbreviations)
+    # and pre-synthesizing each chunk under the identical text, so the
+    # hashes actually match and playback hits a real cache.
     if not result.get("is_simulated") and text_en and text_en.strip():
         async def _eager_tts_pregen():
             try:
                 from catalyst_speech import synthesize_speech
-                _MAX_PREGEN = 4500
+                _PREGEN_MAX_CHUNKS = 8  # bounds background work on a very long answer
                 for _lang, _src in [("en", text_en), ("kn", text_kn)]:
-                    if not _src or not _src.strip() or _src == text_en and _lang == "kn":
-                        # Skip KN if it's just a copy of EN (no real translation)
-                        import re as _re
-                        if _lang == "kn" and not _re.search(r"[ಀ-೿]", _src or ""):
-                            continue
-                    snippet = _src.strip()[:_MAX_PREGEN]
-                    # Try to cut at a sentence boundary for natural speech
-                    for sep in [". ", "? ", "! ", "। ", "\n"]:
-                        pos = snippet.rfind(sep)
-                        if pos > 60:
-                            snippet = snippet[:pos + 1]
-                            break
-                    await run_in_threadpool(synthesize_speech, snippet.strip(), _lang)
+                    if not _src or not _src.strip():
+                        continue
+                    if _lang == "kn" and not re.search(r"[ಀ-೿]", _src):
+                        continue  # skip KN if it's just a copy of EN (no real translation)
+                    for chunk in _split_into_speech_chunks(_src)[:_PREGEN_MAX_CHUNKS]:
+                        await run_in_threadpool(synthesize_speech, chunk, _lang)
             except Exception as _e:
                 logger.debug(f"Eager TTS pre-gen failed (non-fatal): {_e}")
         asyncio.create_task(_eager_tts_pregen())
@@ -4291,8 +4396,66 @@ async def get_alerts_endpoint(request: Request, location_context: str = Depends(
 
 # --- Rebuilt Audit, Voice & PDF Endpoints ---
 
+def _resolve_badge_identifiers(raw_badge: str) -> Tuple[list, Optional[Dict[str, Any]]]:
+    """
+    "Ledger Search" (CLAUDE_CODE_DIRECTIVE.md Task 1 / "Ledge search.md"
+    LS-2): resolves whatever an officer types into the audit-ledger search
+    box -- "KSP-2", "2", or the full KGID "2346836" -- to every real
+    identifier that could appear in AuditLog.employee_id for that officer,
+    so the search works regardless of which form the supervisor happens to
+    type. Real DB lookup (not a guess): if the cleaned input is numeric,
+    cross-checks it against a real Employee row by EmployeeID OR KGID and
+    adds whichever of those two fields it finds, so "2" (an EmployeeID)
+    also matches logs stored under that officer's KGID and vice versa.
+
+    Also returns the matched Employee row (or None) so the caller can
+    surface real officer identity (name/rank/unit) in the response -- LS-8's
+    "ambiguous empty state" fix needs to tell "officer exists, 0 logs" apart
+    from "no such officer" apart from a genuine server error, which requires
+    knowing whether an Employee record was actually found, not just whether
+    any AuditLog rows came back.
+    """
+    cleaned = re.sub(r"(?i)^ksp-?", "", raw_badge.strip())
+    if not cleaned:
+        return [], None
+    target_ids: list = [cleaned]
+    employee: Optional[Dict[str, Any]] = None
+    if cleaned.isdigit():
+        target_ids.append(int(cleaned))
+        if catalyst_app:
+            try:
+                safe = escape_zcql_literal(cleaned)
+                # Confirmed live: "LastName" is NOT a real Employee column
+                # (every other query in this codebase selects only
+                # FirstName) -- selecting it 400'd the whole query, which
+                # the try/except below swallowed, silently leaving
+                # `employee` as None and misreporting a REAL officer with
+                # 224 real audit-log rows as "officer_found: false".
+                er = catalyst_app.zql().execute_query(
+                    f"SELECT EmployeeID, KGID, FirstName, RankID, UnitID FROM Employee "
+                    f"WHERE EmployeeID = {int(cleaned)} OR KGID = '{safe}' LIMIT 1"
+                )
+                if er:
+                    ed = er[0].get("Employee", {})
+                    employee = ed
+                    for k in ("EmployeeID", "KGID"):
+                        v = ed.get(k)
+                        if v is not None:
+                            target_ids.extend([v, str(v)])
+            except Exception:
+                pass
+    # de-dupe while preserving both the raw and stringified forms IN
+    return list({str(t): t for t in target_ids}.values()), employee
+
+
 @app.get("/api/audit-logs")
-async def get_audit_logs(request: Request, location_context: str = Depends(security_firewall)):
+async def get_audit_logs(
+    request: Request,
+    badge: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+    location_context: str = Depends(security_firewall),
+):
     """
     Retrieves dynamic access logs directly from the AuditLog datastore table.
     Supervisor-tier+ only -- the audit ledger records every officer's own
@@ -4303,6 +4466,30 @@ async def get_audit_logs(request: Request, location_context: str = Depends(secur
     authenticated officer could load the full dashboard by calling the API
     directly -- confirmed live, this is exactly why regular officers could
     see it.
+
+    "Ledger Search" (CLAUDE_CODE_DIRECTIVE.md Task 1, hardened against
+    "Ledge search.md"'s LS-1..LS-12 loophole review): optional `badge` param
+    filters the ledger to one officer's own activity, resolved against real
+    Employee identifiers via _resolve_badge_identifiers so "KSP-2", "2", and
+    a full KGID all work. `limit`/`offset` support pagination beyond the
+    first page. Response shape is now {logs, total, has_more, officer,
+    officer_found} rather than a bare list:
+      - LS-4: `total`/`has_more` so the frontend knows when a "Load More"
+        is worth showing, instead of silently cutting off history beyond
+        one page with no signal that more exists.
+      - LS-8: `officer`/`officer_found` distinguish "officer exists, 0
+        logs" from "no such badge" from a genuine fetch error, so a
+        supervisor never misreads "no results" as "this officer never did
+        anything" when the badge was simply mistyped.
+      - LS-9: `queryParam` is redacted for POCSO-sensitive entries unless
+        the viewer holds the platform's blanket rank-based unmask
+        (is_supervisor_badge) -- a normal PI/CI-tier supervisor viewing the
+        ledger does NOT get to read a masked minor victim's name back out
+        of the audit trail just because they can see the ledger at all.
+      - LS-12: a badge-filtered search is itself written back into the
+        ledger as a SUPERVISOR_AUDIT_INSPECTION entry (reciprocal
+        accountability -- the watchers are watched too), reusing the real
+        hash-chained writer agent_loop already exposes.
     """
     if request.state.role_tier != "supervisor":
         raise HTTPException(
@@ -4310,29 +4497,82 @@ async def get_audit_logs(request: Request, location_context: str = Depends(secur
             detail="Security Access Violation: Viewing the audit ledger requires Supervisor-tier clearance (PI and above)."
         )
     if not catalyst_app:
-        return []
+        return {"logs": [], "total": 0, "has_more": False, "officer": None, "officer_found": None}
     try:
+        limit = max(1, min(int(limit), 300))
+        offset = max(0, int(offset))
+        officer_profile = None
+        officer_found = None
         # Confirmed live (2026-07-14): real columns are snake_case
         # (logged_at, employee_id, action_type, query_text); row_hash
         # doesn't exist yet (see _write_audit_log in agent_loop.py) so it
         # degrades to null here rather than erroring the whole endpoint.
-        query = "SELECT * FROM AuditLog ORDER BY logged_at DESC LIMIT 100"
+        if badge and badge.strip():
+            target_ids, employee = _resolve_badge_identifiers(badge)
+            officer_found = employee is not None
+            if employee:
+                officer_profile = {
+                    "name": f"{employee.get('FirstName', '')} {employee.get('LastName', '')}".strip() or None,
+                    "kgid": employee.get("KGID"),
+                    "employeeId": employee.get("EmployeeID"),
+                }
+            if not target_ids:
+                return {"logs": [], "total": 0, "has_more": False, "officer": officer_profile, "officer_found": officer_found}
+            id_clause = ", ".join(
+                f"'{escape_zcql_literal(tid)}'" if isinstance(tid, str) else str(tid)
+                for tid in target_ids
+            )
+            where_clause = f"WHERE employee_id IN ({id_clause})"
+        else:
+            id_clause = None
+            where_clause = ""
+        query = f"SELECT * FROM AuditLog {where_clause} ORDER BY logged_at DESC LIMIT {limit} OFFSET {offset}".strip()
         res = catalyst_app.zql().execute_query(query)
+        # Real total match count (LS-4) -- a second, cheap COUNT query rather
+        # than trusting len(page) to imply "that's everything".
+        total = None
+        try:
+            cnt_res = catalyst_app.zql().execute_query(f"SELECT COUNT(ROWID) FROM AuditLog {where_clause}".strip())
+            if cnt_res:
+                total = int(cnt_res[0].get("AuditLog", {}).get("COUNT(ROWID)") or 0)
+        except Exception:
+            pass
+        viewer_kgid = getattr(request.state, "kgid", None)
+        viewer_has_full_unmask = is_supervisor_badge(viewer_kgid)
         logs = []
         for r in res:
             log_data = r.get("AuditLog", {})
+            query_text = log_data.get("query_text")
+            if query_text and not viewer_has_full_unmask and is_pocso_sensitive(query_text):
+                query_text = redact_pocso_name(query_text)
+            elif query_text:
+                query_text = redact_phone_numbers(query_text)
             logs.append({
                 "timestamp": log_data.get("logged_at"),
                 "badgeId": f"KSP-{log_data.get('employee_id')}",
                 "action": log_data.get("action_type"),
-                "queryParam": log_data.get("query_text"),
+                "queryParam": query_text,
                 "recordsAccessed": 1,
                 "hash": log_data.get("row_hash")
             })
-        return logs
+        if badge and badge.strip():
+            # LS-12: reciprocal accountability -- this search is itself an
+            # auditable action, written into the SAME ledger being searched.
+            try:
+                agent_loop._write_audit_log(
+                    int(viewer_kgid) if viewer_kgid and str(viewer_kgid).isdigit() else 0,
+                    "SUPERVISOR_AUDIT_INSPECTION", f"Officer {badge}",
+                    f"Inspected audit trail of officer '{badge}'",
+                    f"Retrieved {len(logs)} of {total if total is not None else '?'} matching record(s)",
+                    "supervisor-audit-search"
+                )
+            except Exception as e:
+                logger.warning(f"SUPERVISOR_AUDIT_INSPECTION log failed: {e}")
+        has_more = total is not None and (offset + len(logs)) < total
+        return {"logs": logs, "total": total, "has_more": has_more, "officer": officer_profile, "officer_found": officer_found}
     except Exception as e:
         logger.error(f"Error querying AuditLog table: {e}")
-        return []
+        return {"logs": [], "total": 0, "has_more": False, "officer": None, "officer_found": None}
 
 
 @app.get("/api/audit-logs/verify")
@@ -6358,6 +6598,22 @@ async def set_email_once(payload: SetEmailOnceRequest, request: Request,
         emp_res = catalyst_app.zql().execute_query(
             f"SELECT ROWID, Email FROM Employee WHERE KGID = '{escape_zcql_literal(badge)}' LIMIT 1")
     except Exception as e:
+        # Confirmed live: this table's Email column is a per-environment
+        # schema addition (added once via the Catalyst Console's Datastore
+        # UI, not something this app can create via ZCQL/API), so a fresh
+        # or differently-provisioned environment can genuinely be missing
+        # it. Surface that plainly instead of a raw ZCQL error blob -- an
+        # officer seeing "Unkown Column Email in SELECT" has no way to act
+        # on it, but "ask your admin to add this column" is at least
+        # actionable, and a supervisor reading logs can tell instantly
+        # what's actually wrong instead of re-diagnosing from a stack trace.
+        if "unkown column" in str(e).lower() or "unknown column" in str(e).lower():
+            raise HTTPException(
+                status_code=503,
+                detail="Email registration isn't set up on this environment yet -- the Employee table needs an "
+                       "'Email' column added in the Zoho Catalyst Console (Datastore > Employee > Add Column). "
+                       "Ask a supervisor/admin to add it, then try again.",
+            )
         raise HTTPException(status_code=500, detail=f"Employee lookup failed: {e}")
     if not emp_res:
         raise HTTPException(status_code=404, detail="Employee record not found.")

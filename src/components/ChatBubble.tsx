@@ -560,7 +560,13 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
       const ctrl = new AbortController();
       // Extended timeouts: Kannada 35s (server needs up to 30s for synthesis),
       // English 12s (fast with speed="fast" + typically cached).
-      const to = setTimeout(() => ctrl.abort(), vlang === "kn" ? 35000 : 12000);
+      // CLAUDE_CODE_DIRECTIVE.md Task 2: empirical Zia benchmark showed a
+        // 308-char English chunk taking 17.83s, well past this 12s abort --
+        // every long English chunk was falsely triggering the local-voice
+        // fallback (engineLockRef then locking the REST of the readout to
+        // it too) even when Zia would have succeeded a few seconds later.
+        // 25s covers a full ~280-char chunk with real margin.
+        const to = setTimeout(() => ctrl.abort(), vlang === "kn" ? 35000 : 25000);
       try {
         const r = await fetch(`${API_BASE}/api/voice/tts`, {
           method: "POST",
@@ -623,7 +629,13 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     } else {
       try {
         const ctrl = new AbortController();
-        const to = setTimeout(() => ctrl.abort(), vlang === "kn" ? 35000 : 12000);
+        // CLAUDE_CODE_DIRECTIVE.md Task 2: empirical Zia benchmark showed a
+        // 308-char English chunk taking 17.83s, well past this 12s abort --
+        // every long English chunk was falsely triggering the local-voice
+        // fallback (engineLockRef then locking the REST of the readout to
+        // it too) even when Zia would have succeeded a few seconds later.
+        // 25s covers a full ~280-char chunk with real margin.
+        const to = setTimeout(() => ctrl.abort(), vlang === "kn" ? 35000 : 25000);
         let res: Response;
         try {
           res = await fetch(`${API_BASE}/api/voice/tts`, {

@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { MapContainer, TileLayer, CircleMarker, Popup, Circle } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Popup, Circle, useMap } from "react-leaflet";
+import L from "leaflet";
+import "leaflet.heat";
 import { WatermarkOverlay } from "../components/WatermarkOverlay";
-import { MapPin, Sliders, AlertTriangle } from "lucide-react";
+import { MapPin, Sliders, AlertTriangle, Flame } from "lucide-react";
 
 interface HotspotPoint {
   lat: number;
@@ -11,6 +13,66 @@ interface HotspotPoint {
   label: string;
   weight?: number;
 }
+
+// BUILD_BACKLOG.md item #9 ("Tactical Geospatial Thermal Density 'Gas-Spray'
+// Map"): a 4-tier green->yellow->orange->red density gradient over the real
+// DBSCAN points, intensity-normalized against the densest point in THIS
+// result set (not a fixed scale, which would make a quiet district always
+// look "cold" and a busy one always look "hot" regardless of its own real
+// spread). Point weight defaults to 1 when the backend doesn't supply one
+// (pure spatial density then does the work); a real per-point weight, if
+// ever added server-side, is honored automatically.
+const HEAT_GRADIENT: Record<number, string> = {
+  0.0: "#2f8f4e",   // green -- low density
+  0.35: "#d9c441",  // yellow
+  0.65: "#e08a2e",  // orange
+  1.0: "#d9403a",   // red -- highest density in this view
+};
+
+const HeatLayer: React.FC<{ points: HotspotPoint[] }> = ({ points }) => {
+  const map = useMap();
+  useEffect(() => {
+    if (!points.length) return;
+    const maxWeight = Math.max(...points.map((p) => p.weight || 1), 1);
+    const heatPoints: [number, number, number][] = points.map((p) => [
+      p.lat, p.lng, (p.weight || 1) / maxWeight,
+    ]);
+    // `leaflet.heat` patches the global Leaflet namespace rather than
+    // exporting its own module -- heatLayer only exists on `L` once the
+    // side-effect import above has run.
+    const heat = (L as any).heatLayer(heatPoints, {
+      radius: 32,
+      blur: 24,
+      maxZoom: 16,
+      minOpacity: 0.32,
+      gradient: HEAT_GRADIENT,
+    }).addTo(map);
+    return () => { map.removeLayer(heat); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, points]);
+  return null;
+};
+
+// Auto-fitBounds: frame the map to the REAL hotspot coordinates every time
+// the result set changes, instead of a fixed generic view -- so a district
+// with a tight cluster and one with a wide spread both land correctly
+// framed rather than one being zoomed too far in/out.
+const AutoFitBounds: React.FC<{ points: HotspotPoint[] }> = ({ points }) => {
+  const map = useMap();
+  useEffect(() => {
+    if (points.length === 0) return;
+    if (points.length === 1) {
+      map.setView([points[0].lat, points[0].lng], 14);
+      return;
+    }
+    map.fitBounds(L.latLngBounds(points.map((p) => [p.lat, p.lng] as [number, number])), {
+      padding: [40, 40],
+      maxZoom: 15,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, points]);
+  return null;
+};
 
 export const SpatialScreen: React.FC = () => {
   const { addToast, lang, setIsAuthenticated } = useApp();
@@ -138,6 +200,21 @@ export const SpatialScreen: React.FC = () => {
             <span className="text-[#C79A4E] font-bold">DBSCAN 1.2</span>
           </div>
         </div>
+
+        {/* Thermal density legend -- the 4-tier gradient the heat layer
+            actually draws, so an officer can read the map instead of
+            guessing what the colors mean. */}
+        <div className="border-t border-stone-850 pt-4 space-y-2">
+          <div className="flex items-center gap-1.5 text-[10px] font-mono font-bold text-stone-400 uppercase tracking-wider">
+            <Flame className="w-3 h-3 text-[#C79A4E]" />
+            <span>{lang === "en" ? "Density Spray" : "ಸಾಂದ್ರತಾ ಗ್ರೇಡಿಯಂಟ್"}</span>
+          </div>
+          <div className="h-2 w-full rounded-full" style={{ background: "linear-gradient(90deg, #2f8f4e, #d9c441, #e08a2e, #d9403a)" }} />
+          <div className="flex justify-between text-[9px] font-mono text-stone-500">
+            <span>{lang === "en" ? "Low" : "ಕಡಿಮೆ"}</span>
+            <span>{lang === "en" ? "High" : "ಹೆಚ್ಚು"}</span>
+          </div>
+        </div>
       </div>
 
       {/* Main Map Content Pane */}
@@ -172,6 +249,8 @@ export const SpatialScreen: React.FC = () => {
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
                 subdomains="abcd"
               />
+              <HeatLayer points={points} />
+              <AutoFitBounds points={points} />
               {points.map((point, index) => (
                 <React.Fragment key={index}>
                   <Circle

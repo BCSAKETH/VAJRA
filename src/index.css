@@ -22,6 +22,48 @@
   --color-stone-850: oklch(24.2% 0.0065 45.2);
 }
 
+/* LIGHT THEME FIX (confirmed live: light mode rendered as barely-legible
+   grey-on-beige everywhere except the few components using .glass-panel/
+   .glass-card/var(--color-*) directly). Root cause: virtually every screen
+   in this app is styled with literal `bg-stone-950`, `text-stone-100`,
+   `border-stone-850`-style Tailwind utilities -- ONE single dark-tuned
+   neutral scale, hardcoded, used consistently as the app's only neutral
+   palette (confirmed: no gray/zinc/neutral/slate utility exists anywhere
+   in the codebase). Toggling the `.light` class never touched any of that,
+   because Tailwind v4 compiles `bg-stone-950` as
+   `background-color: var(--color-stone-950)` -- a real, single, overridable
+   CSS variable per stop, not an inlined value. That's the leverage point:
+   redefining the stone-* variables under html.light makes EVERY existing
+   `stone-*` utility across the ENTIRE app respond correctly, with zero
+   changes to any component file.
+
+   Each stop below is the DARK-mode value of its mirror stop (100<->950,
+   200<->900, 300<->850, ... 550<->600) -- a straight reflection of this
+   app's own already-tuned warm oklch scale, not new colors invented from
+   scratch. This preserves the exact same contrast steps and warm hue the
+   dark theme already has, just with light and dark swapped, so a
+   `bg-stone-950 text-stone-100` card (dark bg + light text) automatically
+   becomes a correctly light bg + dark text card, and every other existing
+   `stone-*` pairing in the app inverts consistently along with it. */
+html.light {
+  --color-stone-100: oklch(14.7% 0.004 49.25);
+  --color-stone-200: oklch(21.6% 0.006 56.043);
+  --color-stone-300: oklch(24.2% 0.0065 45.2);
+  --color-stone-350: oklch(26.8% 0.007 34.298);
+  --color-stone-400: oklch(32.1% 0.0085 50.9);
+  --color-stone-450: oklch(37.4% 0.01 67.558);
+  --color-stone-500: oklch(40.9% 0.0105 70.6);
+  --color-stone-550: oklch(44.4% 0.011 73.639);
+  --color-stone-600: oklch(49.9% 0.012 65.9);
+  --color-stone-650: oklch(55.3% 0.013 58.071);
+  --color-stone-700: oklch(63.1% 0.0115 57.2);
+  --color-stone-750: oklch(70.9% 0.01 56.259);
+  --color-stone-800: oklch(78.9% 0.0075 56.3);
+  --color-stone-850: oklch(86.9% 0.005 56.366);
+  --color-stone-900: oklch(92.3% 0.003 48.717);
+  --color-stone-950: oklch(97% 0.001 106.424);
+}
+
 @layer base {
   /* VAJRA warm-charcoal + gold identity.
      --color-teal is kept as the token *name* app-wide but now resolves to the

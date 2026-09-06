@@ -455,7 +455,16 @@ export const AIChatScreen: React.FC = () => {
   // persisted optimistic messages with the real server count.
   const pollForPendingReply = useCallback(async (turnSessionId: string | null, baselineCount: number) => {
     if (!turnSessionId) return;
-    const maxAttempts = 40; // ~2 minutes at 3s apiece
+    // Confirmed live: a real "full report on <suspect>" (generate_full_report
+    // -- 4 chained sub-tool calls: risk+SHAP, MO profile, network graph,
+    // repeat-offender roster) can legitimately run past 120s, well inside
+    // the documented 15-140s+ GLM/composite-tool latency range. The old
+    // 40-attempt (~120s) budget gave up and showed "AI TEMPORARILY
+    // UNAVAILABLE" on a query that was still genuinely working -- the SAME
+    // query then completed correctly moments later, proving the backend
+    // never actually failed, only the frontend's patience ran out first.
+    // 70 attempts (~210s) puts real margin above the documented worst case.
+    const maxAttempts = 70;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 3000));
       try {
@@ -476,8 +485,13 @@ export const AIChatScreen: React.FC = () => {
         // Transient -- next tick tries again.
       }
     }
-    // Gave up -- tell the officer plainly rather than leaving the composer
-    // stuck on "Thinking..." forever with no explanation.
+    // Budget exhausted -- tell the officer plainly rather than leaving the
+    // composer stuck on "Thinking..." forever with no explanation. But the
+    // background turn on the server has no such deadline and may still be
+    // mid-flight (e.g. a slow sub-tool under load), so keep polling quietly
+    // in the background instead of abandoning it outright -- if the real
+    // reply does land, it still appends automatically instead of requiring
+    // the officer to manually refresh/re-check to ever see it.
     appendMessageForTurn({
       id: `msg-${Date.now()}-timeout`,
       sender: "assistant",
@@ -488,6 +502,26 @@ export const AIChatScreen: React.FC = () => {
       isSimulated: true,
       simulatedReason: lang === "en" ? "response_delayed" : "ಪ್ರತಿಕ್ರಿಯೆ_ವಿಳಂಬವಾಗಿದೆ",
     }, turnSessionId);
+    for (let extra = 0; extra < 30; extra++) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      try {
+        const res = await fetch(`${API_BASE}/api/sessions/${turnSessionId}/messages`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        });
+        if (!res.ok) continue;
+        const raw = await res.json();
+        if (raw.length > baselineCount) {
+          const loaded = mapSessionMessages(turnSessionId, raw);
+          sessionMessagesCacheRef.current.set(turnSessionId, loaded);
+          if (activeSessionIdRef.current === turnSessionId) {
+            setChatMessages(loaded);
+          }
+          return;
+        }
+      } catch {
+        // Transient -- next tick tries again.
+      }
+    }
   }, [lang, appendMessageForTurn]);
 
   // CONVERSATION BRANCHING (edit/retry/variants): messages sharing a

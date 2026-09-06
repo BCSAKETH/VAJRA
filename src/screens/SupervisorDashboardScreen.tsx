@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import { TwoPersonApprovalModal } from "../components/TwoPersonApprovalModal";
 import { WatermarkOverlay } from "../components/WatermarkOverlay";
-import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard } from "lucide-react";
+import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2 } from "lucide-react";
 
 interface ConsistencyFlag {
   ROWID: number;
@@ -44,6 +44,25 @@ export const SupervisorDashboardScreen: React.FC = () => {
   const { lang, t, addToast, setIsAuthenticated } = useApp();
   const [flags, setFlags] = useState<ConsistencyFlag[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogRecord[]>([]);
+  // "Ledger Search" (hardened per "Ledge search.md" LS-1..LS-12):
+  // search-box text drives a debounced live search (LS-7); the applied
+  // filter is tracked separately so Enter/Filter/a quick-select chip can
+  // apply immediately without waiting for the debounce timer.
+  const [searchBadge, setSearchBadge] = useState("");
+  const [activeBadgeFilter, setActiveBadgeFilter] = useState<string | null>(null);
+  // LS-8: tell "officer exists, 0 logs" apart from "no such badge" apart
+  // from "genuinely nothing to show" -- a bare empty array can't do that.
+  const [officerProfile, setOfficerProfile] = useState<{ name: string | null; kgid: string | null; employeeId: number | null } | null>(null);
+  const [officerFound, setOfficerFound] = useState<boolean | null>(null);
+  // LS-4: the real total match count and whether more pages exist beyond
+  // the current page, so "Load More" only ever appears when it's true.
+  const [totalMatches, setTotalMatches] = useState<number | null>(null);
+  const [hasMoreLogs, setHasMoreLogs] = useState(false);
+  const [auditOffset, setAuditOffset] = useState(0);
+  const [isLoadingMoreAudit, setIsLoadingMoreAudit] = useState(false);
+  const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchAbortRef = useRef<AbortController | null>(null);
+  const searchSeqRef = useRef(0);
   const [isLoadingFlags, setIsLoadingFlags] = useState(true);
   const [isLoadingAudit, setIsLoadingAudit] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -304,16 +323,36 @@ export const SupervisorDashboardScreen: React.FC = () => {
     }
   };
 
-  // Fetch audit logs
-  const fetchAuditLogs = async () => {
+  // Fetch audit logs. "Ledger Search" (CLAUDE_CODE_DIRECTIVE.md Task 1,
+  // hardened per "Ledge search.md"'s LS-1..LS-12 review): an optional badge
+  // filter narrows the ledger to one officer's own activity -- passing
+  // undefined keeps the previous no-args call sites (initial load, the
+  // refresh button) working exactly as before. Response shape is now
+  // {logs, total, has_more, officer, officer_found}, not a bare array.
+  const fetchAuditLogs = async (badgeOverride?: string | null) => {
+    const badgeToUse = badgeOverride !== undefined ? badgeOverride : activeBadgeFilter;
+    // LS-7: cancel any still-in-flight search and tag this one with a
+    // sequence number. Typing fast (or a debounce tick racing a manual
+    // Enter/Filter click) can fire several overlapping requests; without
+    // this, an OLDER response arriving after a NEWER one would silently
+    // overwrite the ledger with the wrong officer's logs.
+    searchAbortRef.current?.abort();
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+    const mySeq = ++searchSeqRef.current;
+    setAuditOffset(0);
     try {
       setIsLoadingAudit(true);
-      const response = await fetch(`${API_BASE}/api/audit-logs`, {
+      const url = badgeToUse
+        ? `${API_BASE}/api/audit-logs?badge=${encodeURIComponent(badgeToUse)}`
+        : `${API_BASE}/api/audit-logs`;
+      const response = await fetch(url, {
         headers: {
           "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
         },
+        signal: controller.signal,
       });
-      
+
       if (response.status === 401) {
         addToast(
           lang === "en" ? "Session Expired" : "ಅಧಿವೇಶನ ಅವಧಿ ಮುಗಿದಿದೆ",
@@ -326,14 +365,72 @@ export const SupervisorDashboardScreen: React.FC = () => {
 
       if (response.ok) {
         const data = await response.json();
-        setAuditLogs(data || []);
+        if (mySeq !== searchSeqRef.current) return; // superseded by a newer search
+        setAuditLogs(data.logs || []);
+        setTotalMatches(typeof data.total === "number" ? data.total : null);
+        setHasMoreLogs(!!data.has_more);
+        setOfficerProfile(data.officer || null);
+        setOfficerFound(data.officer_found === undefined ? null : data.officer_found);
+      }
+    } catch (err: any) {
+      if (err?.name !== "AbortError") console.error(err);
+    } finally {
+      if (mySeq === searchSeqRef.current) setIsLoadingAudit(false);
+    }
+  };
+
+  // LS-4: page past the first 100/300 rows instead of silently cutting off
+  // an officer's older history -- appends rather than replacing.
+  const loadMoreAuditLogs = async () => {
+    const nextOffset = auditOffset + 100;
+    setIsLoadingMoreAudit(true);
+    try {
+      const url = activeBadgeFilter
+        ? `${API_BASE}/api/audit-logs?badge=${encodeURIComponent(activeBadgeFilter)}&offset=${nextOffset}`
+        : `${API_BASE}/api/audit-logs?offset=${nextOffset}`;
+      const response = await fetch(url, {
+        headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setAuditLogs((prev) => [...prev, ...(data.logs || [])]);
+        setHasMoreLogs(!!data.has_more);
+        setAuditOffset(nextOffset);
       }
     } catch (err) {
       console.error(err);
     } finally {
-      setIsLoadingAudit(false);
+      setIsLoadingMoreAudit(false);
     }
   };
+
+  // Explicit filter actions (Enter, the Filter button, Clear, a quick-select
+  // chip) apply immediately, cancelling any pending live-typing debounce so
+  // they never race against it.
+  const applyBadgeFilter = (value: string | null) => {
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+      searchDebounceRef.current = null;
+    }
+    setActiveBadgeFilter(value);
+    fetchAuditLogs(value);
+  };
+
+  // LS-7: live-typing debounce -- 300ms after the officer stops typing, the
+  // filter is applied automatically (ChatGPT/Google-style instant search)
+  // without needing to press Enter or the Filter button every time.
+  useEffect(() => {
+    const trimmed = searchBadge.trim();
+    if (trimmed === (activeBadgeFilter || "")) return; // nothing actually changed
+    if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    searchDebounceRef.current = setTimeout(() => {
+      applyBadgeFilter(trimmed || null);
+    }, 300);
+    return () => {
+      if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchBadge]);
 
   // Fetch feedback (model-improvement review board)
   const fetchFeedback = async () => {
@@ -1083,10 +1180,78 @@ export const SupervisorDashboardScreen: React.FC = () => {
               <FileSpreadsheet className="w-4 h-4 text-[#C79A4E]" />
               <span>{t.supervisorAuditLedgerTitle}</span>
             </h3>
-            <button onClick={fetchAuditLogs} className="text-stone-500 hover:text-[#C79A4E] transition-colors cursor-pointer">
+            <button onClick={() => fetchAuditLogs()} className="text-stone-500 hover:text-[#C79A4E] transition-colors cursor-pointer">
               <RefreshCw className="w-3.5 h-3.5" />
             </button>
           </div>
+
+          {/* Ledger Search: filter the audit trail to one officer's own
+              activity by badge/KGID -- accepts "KSP-2", "2", or a full
+              KGID, resolved server-side against the real Employee table. */}
+          <div className="flex gap-2 items-center bg-stone-900/60 border border-stone-800 rounded px-2.5 py-1.5 focus-within:border-[#C79A4E]/60 transition-colors">
+            <Search className="w-3.5 h-3.5 text-stone-500 shrink-0" />
+            <input
+              type="text"
+              value={searchBadge}
+              onChange={(e) => setSearchBadge(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") applyBadgeFilter(searchBadge.trim() || null);
+              }}
+              placeholder={lang === "en" ? "Search badge ID (e.g. KSP-2, 2346836)..." : "ಬ್ಯಾಡ್ಜ್ ಐಡಿ ಹುಡುಕಿ (ಉದಾ. KSP-2, 2346836)..."}
+              className="bg-transparent border-none outline-none text-xs text-stone-200 placeholder-stone-600 font-mono flex-1 min-w-0"
+            />
+            {isLoadingAudit && searchBadge && (
+              <Loader2 className="w-3.5 h-3.5 text-[#C79A4E] animate-spin shrink-0" />
+            )}
+            {searchBadge && (
+              <button
+                onClick={() => { setSearchBadge(""); applyBadgeFilter(null); }}
+                className="text-stone-500 hover:text-stone-300 p-0.5 cursor-pointer"
+                title={lang === "en" ? "Clear" : "ತೆರವುಗೊಳಿಸಿ"}
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+            <button
+              onClick={() => applyBadgeFilter(searchBadge.trim() || null)}
+              className="text-[10px] uppercase font-mono font-bold bg-[#C79A4E]/20 text-[#C79A4E] border border-[#C79A4E]/30 px-2 py-0.5 rounded hover:bg-[#C79A4E]/30 transition-colors cursor-pointer shrink-0"
+            >
+              {lang === "en" ? "Filter" : "ಫಿಲ್ಟರ್"}
+            </button>
+          </div>
+
+          {/* Quick-select chips: the most active officers (Access Oversight
+              already tracks query_count per officer), one click filters. */}
+          {!activeBadgeFilter && officers.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {[...officers].sort((a, b) => b.query_count - a.query_count).slice(0, 5).map((o) => (
+                <button
+                  key={o.kgid}
+                  onClick={() => { setSearchBadge(o.kgid); applyBadgeFilter(o.kgid); }}
+                  className="text-[10px] font-mono text-stone-400 bg-stone-900/60 border border-stone-800 px-2 py-0.5 rounded hover:border-[#C79A4E]/50 hover:text-[#C79A4E] transition-colors cursor-pointer"
+                  title={o.name}
+                >
+                  KSP-{o.kgid}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {activeBadgeFilter && (
+            <div className="flex items-center justify-between text-[10px] font-mono text-[#C79A4E]/80 bg-[#C79A4E]/5 border border-[#C79A4E]/15 rounded px-2 py-1">
+              <span>
+                {lang === "en"
+                  ? `${officerProfile?.name ? `${officerProfile.name} (${activeBadgeFilter})` : `Officer ${activeBadgeFilter}`} · ${totalMatches ?? auditLogs.length} found`
+                  : `${officerProfile?.name ? `${officerProfile.name} (${activeBadgeFilter})` : `ಅಧಿಕಾರಿ ${activeBadgeFilter}`} · ${totalMatches ?? auditLogs.length} ಕಂಡುಬಂದಿದೆ`}
+              </span>
+              <button
+                onClick={() => { setSearchBadge(""); applyBadgeFilter(null); }}
+                className="text-[#C79A4E] hover:text-[#E4C590] cursor-pointer font-bold"
+              >
+                {lang === "en" ? "Clear" : "ತೆರವು"}
+              </button>
+            </div>
+          )}
 
           {isLoadingAudit ? (
             <div className="space-y-2.5">
@@ -1098,7 +1263,20 @@ export const SupervisorDashboardScreen: React.FC = () => {
               ))}
             </div>
           ) : auditLogs.length === 0 ? (
-            <div className="py-10 text-center text-xs font-mono text-stone-550">{t.supervisorNoAuditLogs}</div>
+            // LS-8: never let a bare empty state read as "this officer never
+            // did anything" when the real reason is a mistyped badge or a
+            // genuinely-empty ledger -- each has a distinct, honest message.
+            <div className="py-10 text-center text-xs font-mono text-stone-550 px-4">
+              {activeBadgeFilter && officerFound === false
+                ? (lang === "en"
+                    ? `No officer found matching badge or KGID "${activeBadgeFilter}". Check the identifier and try again.`
+                    : `ಬ್ಯಾಡ್ಜ್ ಅಥವಾ KGID "${activeBadgeFilter}" ಗೆ ಹೊಂದಿಕೆಯಾಗುವ ಅಧಿಕಾರಿ ಕಂಡುಬಂದಿಲ್ಲ. ಗುರುತನ್ನು ಪರಿಶೀಲಿಸಿ ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.`)
+                : activeBadgeFilter && officerFound === true
+                ? (lang === "en"
+                    ? `${officerProfile?.name || "This officer"} (${activeBadgeFilter}) is registered but has 0 recorded actions in the audit ledger.`
+                    : `${officerProfile?.name || "ಈ ಅಧಿಕಾರಿ"} (${activeBadgeFilter}) ನೋಂದಾಯಿಸಲಾಗಿದೆ, ಆದರೆ ಆಡಿಟ್ ಲೆಡ್ಜರ್‌ನಲ್ಲಿ 0 ದಾಖಲಾದ ಕ್ರಿಯೆಗಳಿವೆ.`)
+                : t.supervisorNoAuditLogs}
+            </div>
           ) : (
             <div className="space-y-2.5 max-h-[350px] overflow-y-auto pr-1 font-mono text-[10.5px]">
               {auditLogs.map((log, i) => (
@@ -1111,6 +1289,17 @@ export const SupervisorDashboardScreen: React.FC = () => {
                   <div className="text-[9px] text-[#C79A4E] truncate">{t.supervisorHashLabel} {log.hash}</div>
                 </div>
               ))}
+              {hasMoreLogs && (
+                <button
+                  onClick={loadMoreAuditLogs}
+                  disabled={isLoadingMoreAudit}
+                  className="w-full text-[10px] uppercase font-mono font-bold text-stone-400 hover:text-[#C79A4E] py-2 cursor-pointer disabled:opacity-50 transition-colors"
+                >
+                  {isLoadingMoreAudit
+                    ? (lang === "en" ? "Loading..." : "ಲೋಡ್ ಆಗುತ್ತಿದೆ...")
+                    : (lang === "en" ? `Load More (${(totalMatches ?? 0) - auditLogs.length} remaining)` : `ಇನ್ನಷ್ಟು ಲೋಡ್ ಮಾಡಿ`)}
+                </button>
+              )}
             </div>
           )}
         </div>

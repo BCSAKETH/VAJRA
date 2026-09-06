@@ -3721,15 +3721,39 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     for hop in range(MAX_HOPS):
                         if not frontier or len(visited) >= MAX_VISITED:
                             break
-                        next_frontier = []
-                        for node in frontier:
-                            if node in visited or len(visited) >= MAX_VISITED:
-                                continue
-                            visited.add(node)
-                            deepest_hop_reached = max(deepest_hop_reached, hop_of.get(node, hop))
+                        # Nodes within the SAME hop are independent reads (no
+                        # node's query depends on another's result), so they
+                        # were needlessly serialized one ZCQL round-trip at a
+                        # time -- confirmed live this is exactly why a real
+                        # ring (up to MAX_VISITED=40 nodes) ran past 250s and
+                        # climbing: 40 sequential network round-trips, not a
+                        # hang or an infinite loop. Firing each hop's node
+                        # queries concurrently (same ThreadPoolExecutor
+                        # pattern already used for parallel sub-tool calls
+                        # elsewhere in this file) cuts wall-clock time by
+                        # roughly the batch's concurrency factor with zero
+                        # change to what's traced or how hops are bounded.
+                        hop_nodes = [n for n in frontier if n not in visited and len(visited) < MAX_VISITED]
+                        for n in hop_nodes:
+                            visited.add(n)
+                        if not hop_nodes:
+                            frontier = []
+                            continue
+
+                        def _query_node(node: str):
                             q = (f"SELECT sender_ref, receiver_ref, amount, txn_time FROM FinancialTransaction "
                                  f"WHERE sender_ref = '{self.sanitize_sql_input(node)}' OR receiver_ref = '{self.sanitize_sql_input(node)}' LIMIT 40")
-                            tx_res = catalyst_app.zql().execute_query(q)
+                            try:
+                                return node, catalyst_app.zql().execute_query(q)
+                            except Exception as qex:
+                                logger.warning(f"Financial ring: query for node {node!r} failed: {qex}")
+                                return node, []
+
+                        next_frontier = []
+                        with ThreadPoolExecutor(max_workers=min(8, len(hop_nodes))) as _fex:
+                            results = list(_fex.map(_query_node, hop_nodes))
+                        for node, tx_res in results:
+                            deepest_hop_reached = max(deepest_hop_reached, hop_of.get(node, hop))
                             for r in tx_res:
                                 t = r.get("FinancialTransaction", {})
                                 s, rc = t.get("sender_ref"), t.get("receiver_ref")
