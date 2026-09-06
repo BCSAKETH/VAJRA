@@ -365,11 +365,13 @@ const _ttsPut = (key: string, url: string) => {
   if (_ttsCache.has(key)) { try { URL.revokeObjectURL(url); } catch { /* noop */ } return; }
   _ttsCache.set(key, url);
   _ttsOrder.push(key);
-  while (_ttsOrder.length > 8) {
+  while (_ttsOrder.length > 50) {
     const old = _ttsOrder.shift();
     if (old) { const u = _ttsCache.get(old); if (u) { try { URL.revokeObjectURL(u); } catch { /* noop */ } } _ttsCache.delete(old); }
   }
 };
+
+let _activeAudioStop: (() => void) | null = null;
 
 type SpeakResult = "started" | "unsupported" | "no_kannada_voice";
 
@@ -567,7 +569,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   // 12-35s server timeout on every remaining chunk too.
   const engineLockRef = useRef<"zia" | "local" | null>(null);
   const fallbackNotifiedRef = useRef(false);
-  const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
+  const ttsSupported = typeof window !== "undefined" && (typeof Audio !== "undefined" || "speechSynthesis" in window);
 
   // Per-message ⇄ Translate (independent of the app-wide language toggle up top).
   // It translates THIS message LIVE on demand rather than flipping a pre-stored
@@ -590,8 +592,9 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   const effectiveLang: "en" | "kn" = !showTranslated ? lang : (lang === "en" ? "kn" : "en");
 
   // Fetch a live Kannada translation of the English source once, cached in liveKn.
-  const fetchKn = React.useCallback(async () => {
-    if (liveKn || translating || !canTranslate) return;
+  const fetchKn = React.useCallback(async (): Promise<string | null> => {
+    if (liveKn) return liveKn;
+    if (translating || !canTranslate) return null;
     setTranslating(true);
     try {
       const res = await fetch(`${API_BASE}/api/translate`, {
@@ -599,8 +602,14 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
         headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`, "Content-Type": "application/json" },
         body: JSON.stringify({ text: englishSource, source_lang: "en", target_lang: "kn" }),
       });
-      if (res.ok) { const d = await res.json(); setLiveKn(d.text || englishSource); }
+      if (res.ok) {
+        const d = await res.json();
+        const translated = d.text || englishSource;
+        setLiveKn(translated);
+        return translated;
+      }
     } catch { /* silent -- officer still has the original */ } finally { setTranslating(false); }
+    return null;
   }, [liveKn, translating, canTranslate, englishSource]);
 
   // WHOLE-APP language switch: when the top-right toggle is on Kannada (or the ⇄
@@ -645,11 +654,18 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   const stopPlayback = () => {
     speakCancelRef.current = true;
     if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.src = "";
+      try {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+      } catch { /* noop */ }
       audioRef.current = null;
     }
-    if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    if ("speechSynthesis" in window) {
+      try { window.speechSynthesis.cancel(); } catch { /* noop */ }
+    }
+    if (_activeAudioStop === stopPlayback) {
+      _activeAudioStop = null;
+    }
     setIsSpeaking(false);
   };
 
@@ -679,93 +695,121 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     return (lastStop > 60 ? slice.slice(0, lastStop + 1) : slice).trim();
   }, [displayText]);
 
-  const playUrl = async (url: string, revokeOnEnd: boolean): Promise<boolean> => {
-    try {
-      const audio = new Audio(url);
-      audioRef.current = audio;
-      const done = () => { if (revokeOnEnd) { try { URL.revokeObjectURL(url); } catch { /* noop */ } } audioRef.current = null; setIsSpeaking(false); };
-      audio.onended = done;
-      audio.onerror = done;
-      await audio.play();
-      return true;
-    } catch { return false; }
+  const playUrl = (url: string, revokeOnEnd: boolean): Promise<boolean> => {
+    return new Promise((resolve) => {
+      try {
+        const audio = new Audio(url);
+        audioRef.current = audio;
+
+        let finished = false;
+        const finish = (ok: boolean) => {
+          if (finished) return;
+          finished = true;
+          audio.onended = null;
+          audio.onerror = null;
+          audio.onpause = null;
+          if (audioRef.current === audio) {
+            audioRef.current = null;
+          }
+          if (revokeOnEnd) {
+            try { URL.revokeObjectURL(url); } catch { /* noop */ }
+          }
+          resolve(ok);
+        };
+
+        audio.onended = () => finish(true);
+        audio.onerror = (e) => {
+          console.warn("TTS audio playback error:", e);
+          finish(false);
+        };
+        audio.onpause = () => {
+          if (speakCancelRef.current) {
+            finish(false);
+          }
+        };
+
+        const playPromise = audio.play();
+        if (playPromise !== undefined) {
+          playPromise.catch((err) => {
+            console.warn("TTS audio.play() rejected:", err);
+            finish(false);
+          });
+        }
+      } catch (err) {
+        console.warn("TTS playUrl exception:", err);
+        resolve(false);
+      }
+    });
+  };
+
+  const fetchChunkAudio = (text: string, vlang: "en" | "kn", key: string): Promise<string | null> => {
+    const cached = _ttsCache.get(key);
+    if (cached) return Promise.resolve(cached);
+
+    const pending = _ttsPending.get(key);
+    if (pending) return pending;
+
+    const p: Promise<string | null> = (async () => {
+      const ctrl = new AbortController();
+      const timeoutMs = vlang === "kn" ? 35000 : 25000;
+      const to = setTimeout(() => ctrl.abort(), timeoutMs);
+      try {
+        const token = localStorage.getItem("vajra_token") || "";
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (token) headers["Authorization"] = `Bearer ${token}`;
+
+        const r = await fetch(`${API_BASE}/api/voice/tts`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            text,
+            lang: vlang,
+            persona: voicePersona || "standard",
+          }),
+          signal: ctrl.signal,
+        });
+
+        if (!r.ok) return null;
+        const blob = await r.blob();
+        if (!blob || blob.size === 0) return null;
+
+        const url = URL.createObjectURL(blob);
+        try {
+          const preAudio = new Audio(url);
+          preAudio.preload = "auto";
+        } catch { /* noop */ }
+
+        _ttsPut(key, url);
+        return url;
+      } catch (e) {
+        console.warn("TTS fetchChunkAudio error:", e);
+        return null;
+      } finally {
+        clearTimeout(to);
+        _ttsPending.delete(key);
+      }
+    })();
+
+    _ttsPending.set(key, p);
+    return p;
   };
 
   // Pre-generate the LATEST AI answer's audio in the background so "speak" plays
-  // INSTANTLY from cache instead of waiting ~5s for synthesis -- and the flaky-
-  // Zia retry runs here, off the click path, which is also what makes Kannada
-  // voice reliable. Best-effort: any failure just means the click falls back to
-  // synthesizing on demand.
+  // INSTANTLY from cache instead of waiting for synthesis.
   React.useEffect(() => {
     if (!isLast || !isAI || message.isSimulated) return;
-    // Voice language = the language actually being DISPLAYED (effectiveLang), not
-    // the app toggle: after the ⇄ button translates this message the shown text
-    // is in the other language, and the TTS voice must match it or Zia speaks the
-    // wrong language (the reported "Kannada speaking not working").
     const vlang = effectiveLang;
     const toSpeak = getSpeakText();
     if (!toSpeak) return;
-    // Only the FIRST chunk is pre-generated -- see splitIntoSpeechChunks and
-    // playChunk: playback is now sequential per-chunk, so pre-warming just
-    // chunk 0 is what removes the wait before ANY audio starts; the rest
-    // synthesize just-in-time during playback (a small, acceptable gap
-    // between chunks, never a cutoff of the whole message).
     const firstChunk = splitIntoSpeechChunks(toSpeak)[0];
     if (!firstChunk) return;
     const key = `${message.id}:${vlang}:${voicePersona || "standard"}:0`;
     if (_ttsCache.has(key) || _ttsPending.has(key)) return;
-    // RACE CONDITION FIX: when effectiveLang is "kn" but the text is still in
-    // English (translation hasn't arrived yet), DON'T send English text to the
-    // Kannada "Anu" voice model — it causes Zia to hang or produce garbled audio.
-    // Wait for the next re-render when liveKn or hasRealKannada updates.
     if (vlang === "kn" && !/[\u0C80-\u0CFF]/.test(firstChunk)) return;
-    // Start the synthesis and REGISTER the in-flight promise, so a click during
-    // synthesis awaits this same request instead of firing a second one.
-    const p: Promise<string | null> = (async () => {
-      const ctrl = new AbortController();
-      // Extended timeouts: Kannada 35s (server needs up to 30s for synthesis),
-      // English 12s (fast with speed="fast" + typically cached).
-      // CLAUDE_CODE_DIRECTIVE.md Task 2: empirical Zia benchmark showed a
-        // 308-char English chunk taking 17.83s, well past this 12s abort --
-        // every long English chunk was falsely triggering the local-voice
-        // fallback (engineLockRef then locking the REST of the readout to
-        // it too) even when Zia would have succeeded a few seconds later.
-        // 25s covers a full ~280-char chunk with real margin.
-        const to = setTimeout(() => ctrl.abort(), vlang === "kn" ? 35000 : 25000);
-      try {
-        const r = await fetch(`${API_BASE}/api/voice/tts`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-          body: JSON.stringify({ text: firstChunk, lang: vlang, persona: voicePersona || "standard" }),
-          signal: ctrl.signal,
-        });
-        if (!r.ok) return null;
-        const blob = await r.blob();
-        const url = URL.createObjectURL(blob);
-        // Pre-instantiate Audio object so browser pre-decodes the WAV.
-        // On click, playback starts INSTANTLY — no decoding lag.
-        try {
-          const preAudio = new Audio(url);
-          preAudio.preload = "auto";
-        } catch { /* non-critical: browser may not support preload */ }
-        _ttsPut(key, url);
-        return url;
-      } catch { return null; }
-      finally { clearTimeout(to); _ttsPending.delete(key); }
-    })();
-    _ttsPending.set(key, p);
+
+    fetchChunkAudio(firstChunk, vlang, key);
   }, [isLast, isAI, message.id, message.isSimulated, effectiveLang, getSpeakText, voicePersona]);
 
-  // Plays ONE chunk to completion and resolves only once that chunk has
-  // genuinely finished -- never a fixed timer. Returns false only when BOTH
-  // engines failed for this chunk, so the caller can still continue to the
-  // next chunk instead of the whole readout dying on one bad segment.
-  //
-  // LH-1/L1 engine lock: once engineLockRef has downgraded to "local" for
-  // this readout (set below, the first time any chunk's server attempt
-  // fails), every later chunk skips the server attempt entirely instead of
-  // re-trying and potentially flipping back and forth -- one consistent
-  // voice for the whole message, and no wasted 12-35s timeout per chunk.
   const notifyFallback = () => {
     if (fallbackNotifiedRef.current) return;
     fallbackNotifiedRef.current = true;
@@ -777,7 +821,10 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
       "Info"
     );
   };
+
   const playChunk = async (text: string, vlang: "en" | "kn", key: string): Promise<boolean> => {
+    if (speakCancelRef.current) return false;
+
     if (engineLockRef.current === "local") {
       notifyFallback();
       return await new Promise<boolean>((resolve) => {
@@ -785,50 +832,24 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
         if (result !== "started") resolve(false);
       });
     }
-    let cachedUrl = _ttsCache.get(key);
-    if (!cachedUrl && _ttsPending.has(key)) {
-      cachedUrl = (await _ttsPending.get(key)!) || undefined;
-    }
-    if (cachedUrl) {
-      if (await playUrl(cachedUrl, false)) { engineLockRef.current = "zia"; return true; }
-    } else {
-      try {
-        const ctrl = new AbortController();
-        // CLAUDE_CODE_DIRECTIVE.md Task 2: empirical Zia benchmark showed a
-        // 308-char English chunk taking 17.83s, well past this 12s abort --
-        // every long English chunk was falsely triggering the local-voice
-        // fallback (engineLockRef then locking the REST of the readout to
-        // it too) even when Zia would have succeeded a few seconds later.
-        // 25s covers a full ~280-char chunk with real margin.
-        const to = setTimeout(() => ctrl.abort(), vlang === "kn" ? 35000 : 25000);
-        let res: Response;
-        try {
-          res = await fetch(`${API_BASE}/api/voice/tts`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
-            },
-            body: JSON.stringify({ text, lang: vlang, persona: voicePersona || "standard" }),
-            signal: ctrl.signal,
-          });
-        } finally {
-          clearTimeout(to);
+
+    try {
+      const url = await fetchChunkAudio(text, vlang, key);
+      if (speakCancelRef.current) return false;
+      if (url) {
+        const played = await playUrl(url, false);
+        if (played) {
+          engineLockRef.current = "zia";
+          return true;
         }
-        if (res.ok) {
-          const blob = await res.blob();
-          const url = URL.createObjectURL(blob);
-          _ttsPut(key, url);
-          if (await playUrl(url, false)) { engineLockRef.current = "zia"; return true; }
-        }
-      } catch {
-        // fall through to browser TTS for this chunk
       }
+    } catch (e) {
+      console.warn("TTS playChunk server playback error:", e);
     }
-    // Server path failed for this chunk -- lock the REST of this readout to
-    // the local voice too (LH-1/L1: no flip-flopping between engines across
-    // chunks) and let the officer know once, then fall back for this chunk,
-    // awaited via its own onEnd rather than a timer.
+
+    if (speakCancelRef.current) return false;
+
+    // Server path failed for this chunk -- fall back to local voice if supported
     engineLockRef.current = "local";
     notifyFallback();
     return await new Promise<boolean>((resolve) => {
@@ -842,29 +863,80 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
       stopPlayback();
       return;
     }
-    const toSpeak = getSpeakText();
-    if (!toSpeak) return;
-    // Split into short, sentence-sized chunks and play them back-to-back --
-    // see splitIntoSpeechChunks: this is what removes the "stopped after 2
-    // lines" cutoff, since no single request/utterance is ever long enough
-    // to trigger the truncation this was tracked down to.
+
+    // Stop any other active chat bubble that might be playing audio
+    if (_activeAudioStop && _activeAudioStop !== stopPlayback) {
+      try { _activeAudioStop(); } catch { /* noop */ }
+    }
+    _activeAudioStop = stopPlayback;
+
+    const vlang = effectiveLang;
+
+    // If Kannada is selected but translation is not yet ready, fetch it first
+    let speakSource = displayText;
+    if (vlang === "kn" && !hasRealKannada && !liveKn && canTranslate) {
+      const translated = await fetchKn();
+      if (translated) {
+        speakSource = decodeDisplayText(translated).replace(/^\n+/, "");
+      }
+    }
+
+    const cleaned = cleanTextForSpeech(speakSource);
+    if (!cleaned) return;
+
+    const MAX_SPEAK = 4500;
+    let toSpeak = cleaned;
+    if (cleaned.length > MAX_SPEAK) {
+      const slice = cleaned.slice(0, MAX_SPEAK);
+      const lastStop = Math.max(
+        slice.lastIndexOf(". "), slice.lastIndexOf("? "), slice.lastIndexOf("! "),
+        slice.lastIndexOf("। "), slice.lastIndexOf("\n")
+      );
+      toSpeak = (lastStop > 60 ? slice.slice(0, lastStop + 1) : slice).trim();
+    }
+
     const chunks = splitIntoSpeechChunks(toSpeak);
     if (chunks.length === 0) return;
+
     speakCancelRef.current = false;
-    engineLockRef.current = null;       // fresh engine lock for this readout
-    fallbackNotifiedRef.current = false; // allow one fresh fallback notice per readout
+    engineLockRef.current = null;
+    fallbackNotifiedRef.current = false;
     setIsSpeaking(true);
-    const vlang = effectiveLang;  // voice must match the DISPLAYED language, not the app toggle
+
+    const persona = voicePersona || "standard";
+
+    // Pipelined prefetching:
+    // Prefetch chunk 0 and chunk 1 immediately so speech begins promptly
+    const key0 = `${message.id}:${vlang}:${persona}:0`;
+    fetchChunkAudio(chunks[0], vlang, key0);
+    if (chunks.length > 1) {
+      const key1 = `${message.id}:${vlang}:${persona}:1`;
+      fetchChunkAudio(chunks[1], vlang, key1);
+    }
+
     let anyPlayed = false;
     for (let i = 0; i < chunks.length; i++) {
       if (speakCancelRef.current) break;
-      const key = `${message.id}:${vlang}:${voicePersona || "standard"}:${i}`;
+
+      // Pipeline prefetch chunk i + 1 in background while chunk i is playing
+      if (i + 1 < chunks.length) {
+        const nextKey = `${message.id}:${vlang}:${persona}:${i + 1}`;
+        fetchChunkAudio(chunks[i + 1], vlang, nextKey);
+      }
+
+      const key = `${message.id}:${vlang}:${persona}:${i}`;
       const ok = await playChunk(chunks[i], vlang, key);
       anyPlayed = anyPlayed || ok;
+
       if (speakCancelRef.current) break;
     }
+
+    if (_activeAudioStop === stopPlayback) {
+      _activeAudioStop = null;
+    }
     setIsSpeaking(false);
-    if (!anyPlayed && vlang === "kn") {
+
+    if (!anyPlayed && !speakCancelRef.current && vlang === "kn") {
       addToast?.(
         lang === "en" ? "Voice Playback Unavailable" : "ಧ್ವನಿ ಪ್ಲೇಬ್ಯಾಕ್ ಲಭ್ಯವಿಲ್ಲ",
         lang === "en"
