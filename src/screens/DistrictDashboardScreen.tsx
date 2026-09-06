@@ -236,12 +236,27 @@ export const DistrictDashboardScreen: React.FC = () => {
         : "ತುರ್ತು ಪ್ರವೇಶವನ್ನು ದಾಖಲಿಸಲಾಗುತ್ತದೆ ಮತ್ತು ನಂತರ ಮೇಲ್ವಿಚಾರಕರು ಪರಿಶೀಲಿಸುತ್ತಾರೆ. ಇದು ಅನುಮೋದನೆಗಾಗಿ ಏಕೆ ಕಾಯಲು ಸಾಧ್ಯವಿಲ್ಲ ಎಂಬುದನ್ನು ತಿಳಿಸಿ:"
     );
     if (!reason || !reason.trim()) return;
+    const trimmedReason = reason.trim();
+    // Section 185 BNSS spec: a real, specific statutory justification, not
+    // a placeholder like "urgent" -- the server enforces this too, but
+    // catching it here means the officer sees why immediately instead of
+    // discovering it only after the request round-trip fails.
+    if (trimmedReason.length < 30) {
+      addToast(
+        lang === "en" ? "Justification Too Short" : "ಕಾರಣ ಚಿಕ್ಕದಾಗಿದೆ",
+        lang === "en"
+          ? "State a specific reason (at least 30 characters) for why this cannot wait for supervisor approval."
+          : "ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗಾಗಿ ಏಕೆ ಕಾಯಲು ಸಾಧ್ಯವಿಲ್ಲ ಎಂಬುದಕ್ಕೆ ನಿರ್ದಿಷ್ಟ ಕಾರಣವನ್ನು (ಕನಿಷ್ಠ 30 ಅಕ್ಷರಗಳು) ತಿಳಿಸಿ.",
+        "Warning"
+      );
+      return;
+    }
     setIsEmergencyRequesting(true);
     try {
       const res = await fetch(`${API_BASE}/api/district-access/emergency`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-        body: JSON.stringify({ district_id: gatedInfo.districtId, reason: reason.trim() }),
+        body: JSON.stringify({ district_id: gatedInfo.districtId, reason: trimmedReason }),
       });
       if (!res.ok) throw new Error("emergency request failed");
       setGatedInfo(null);

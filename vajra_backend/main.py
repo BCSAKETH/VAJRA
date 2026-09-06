@@ -6743,8 +6743,14 @@ async def emergency_district_access(payload: Dict[str, Any] = Body(default={}),
     reason = (payload.get("reason") or "").strip()
     if target_district_id is None:
         raise HTTPException(status_code=400, detail="district_id is required.")
-    if not reason:
-        raise HTTPException(status_code=400, detail="A justification is required to use emergency access.")
+    # Section 185 BNSS break-glass spec (Vajra Plan 04-09-26 §12): the
+    # statutory justification must be a real, specific account of the
+    # exigent circumstance, not a placeholder like "urgent" or "need
+    # access now" -- a plain non-empty check let either through. 30
+    # characters is the plan's own explicit bar.
+    if len(reason) < 30:
+        raise HTTPException(status_code=400,
+                            detail="A specific statutory justification (at least 30 characters) is required to use emergency access.")
     target_district_name = ""
     if catalyst_app:
         try:
