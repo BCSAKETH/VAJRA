@@ -230,7 +230,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
       {!inline && <WatermarkOverlay />}
 
       {/* Modal Container (inline: a bounded in-flow card, no fixed sizing) */}
-      <div className={inline ? "w-full flex flex-col relative h-[460px]" : "w-full max-w-5xl h-[85vh] glass-panel border border-stone-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden relative"}>
+      <div className={inline ? "w-full flex flex-col relative h-[520px]" : "w-full max-w-5xl h-[85vh] glass-panel border border-stone-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden relative"}>
         {/* Top Header (hidden inline -- the chat card renders its own header) */}
         {!inline && (
         <div className="p-4 border-b border-stone-800 flex items-center justify-between shrink-0 bg-stone-900/40">
@@ -473,9 +473,9 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
               : { text: lang === "en" ? "HIGH RECIDIVISM RISK" : "ಹೆಚ್ಚಿನ ಪುನರಾವರ್ತಿತ ಅಪಾಯ", cls: "bg-rose-500/15 text-rose-400 border-rose-500/30" };
 
             return (
-              <div className="h-full flex flex-col gap-5">
+              <div className="w-full flex flex-col gap-5 pb-4">
                 {/* Risk Gauge Header */}
-                <div className="bg-stone-900/40 border border-stone-800 p-4 rounded-xl flex flex-col gap-3">
+                <div className="bg-stone-900/40 border border-stone-800 p-4 rounded-xl flex flex-col gap-3 shrink-0">
                   <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
@@ -543,8 +543,8 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                 </div>
 
                 {/* Horizontal Evidentiary Diverging Bar Chart */}
-                <div className="flex-1 min-h-[320px] bg-stone-900/20 border border-stone-850/80 rounded-xl p-4">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                <div className="w-full bg-stone-900/30 border border-stone-800/80 rounded-xl p-4 shrink-0 flex flex-col">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
                     <div>
                       <h5 className="font-bold text-stone-200 text-xs font-mono tracking-wider flex items-center gap-2">
                         <Scale className="w-3.5 h-3.5 text-[#C79A4E]" />
@@ -560,7 +560,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                     </div>
 
                     {/* Intuitive Color Legend */}
-                    <div className="flex items-center gap-3 shrink-0 bg-stone-900/80 border border-stone-800 px-3 py-1.5 rounded-lg">
+                    <div className="flex items-center gap-3 shrink-0 bg-stone-950/80 border border-stone-800/90 px-3 py-1.5 rounded-lg">
                       <div className="flex items-center gap-1.5">
                         <span className="w-2.5 h-2.5 rounded-sm shrink-0 bg-emerald-500 shadow-sm shadow-emerald-500/50" />
                         <span className="text-[10px] font-mono text-stone-300 font-medium">
@@ -576,111 +576,152 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                     </div>
                   </div>
 
-                  <ResponsiveContainer width="100%" height={Math.max(290, shapData.length * 32)}>
-                    <BarChart
-                      data={shapData}
-                      layout="vertical"
-                      margin={{ top: 5, right: 30, left: 165, bottom: 15 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" horizontal={false} />
-                      <XAxis
-                        type="number"
-                        stroke="#64748B"
-                        fontSize={10}
-                        tickFormatter={(v) => `${v > 0 ? "+" : ""}${v}`}
-                      />
-                      <YAxis
-                        dataKey="name"
-                        type="category"
-                        stroke="#CBD5E1"
-                        fontSize={10}
-                        tickLine={false}
-                        axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
-                      />
-                      {/* Anchor baseline at zero */}
-                      <ReferenceLine
-                        x={0}
-                        stroke="rgba(255, 255, 255, 0.3)"
-                        strokeWidth={1.5}
-                        strokeDasharray="3 3"
-                      />
-                      {/* Tooltip with non-blinding dark cursor */}
-                      <Tooltip
-                        cursor={{ fill: "rgba(255, 255, 255, 0.04)", radius: 4 }}
-                        content={({ active, payload }: any) => {
-                          if (!active || !payload || !payload.length) return null;
-                          const item = payload[0].payload;
-                          const isPos = item.contribution === "positive";
-                          const absVal = Math.abs(item.value);
-                          const pctEffect = (absVal * 100).toFixed(1);
-                          return (
-                            <div className="bg-stone-900/95 backdrop-blur-md border border-stone-700/80 rounded-lg p-3 shadow-2xl min-w-[230px] max-w-[320px] pointer-events-none z-50">
-                              <div className="flex items-center justify-between border-b border-stone-800 pb-1.5 mb-2">
-                                <span className="text-xs font-bold text-stone-100">{item.name}</span>
-                                <span
-                                  className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
-                                    isPos
-                                      ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
-                                      : "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
-                                  }`}
+                  <div className="w-full">
+                    <ResponsiveContainer width="100%" height={Math.max(340, shapData.length * 48)}>
+                      <BarChart
+                        data={shapData}
+                        layout="vertical"
+                        margin={{ top: 10, right: 30, left: 10, bottom: 10 }}
+                      >
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" horizontal={false} />
+                        <XAxis
+                          type="number"
+                          stroke="#64748B"
+                          fontSize={10}
+                          tickLine={{ stroke: "rgba(255,255,255,0.1)" }}
+                          tickFormatter={(v) => `${v > 0 ? "+" : ""}${v}`}
+                        />
+                        <YAxis
+                          dataKey="name"
+                          type="category"
+                          width={185}
+                          stroke="#CBD5E1"
+                          fontSize={11}
+                          tickLine={false}
+                          axisLine={{ stroke: "rgba(255,255,255,0.15)" }}
+                          interval={0}
+                          tick={({ x, y, payload }: any) => {
+                            const text = payload.value || "";
+                            const words = text.split(" ");
+                            if (text.length <= 24 || words.length === 1) {
+                              return (
+                                <text
+                                  x={x - 8}
+                                  y={y + 4}
+                                  textAnchor="end"
+                                  fill="#CBD5E1"
+                                  fontSize={11}
+                                  fontWeight={500}
                                 >
-                                  {isPos
-                                    ? (lang === "en" ? "▲ Aggravating" : "▲ ತೀವ್ರಗೊಳಿಸುವಿಕೆ")
-                                    : (lang === "en" ? "▼ Mitigating" : "▼ ಶಮನಕಾರಿ")}
-                                </span>
-                              </div>
-                              <div className="text-[11px] font-mono text-stone-300 space-y-1.5">
-                                <div className="flex justify-between items-center">
-                                  <span className="text-stone-400">
-                                    {lang === "en" ? "Conviction Impact:" : "ಅಪರಾಧ ಸಾಧ್ಯತೆ ಮೇಲಿನ ಪರಿಣಾಮ:"}
-                                  </span>
-                                  <span className={`font-bold ${isPos ? "text-amber-400" : "text-emerald-400"}`}>
-                                    {isPos ? `+${pctEffect}%` : `-${pctEffect}%`}
+                                  {text}
+                                </text>
+                              );
+                            }
+                            const mid = Math.ceil(words.length / 2);
+                            const line1 = words.slice(0, mid).join(" ");
+                            const line2 = words.slice(mid).join(" ");
+                            return (
+                              <text
+                                x={x - 8}
+                                y={y - 2}
+                                textAnchor="end"
+                                fill="#CBD5E1"
+                                fontSize={10.5}
+                                fontWeight={500}
+                              >
+                                <tspan x={x - 8} dy="0">{line1}</tspan>
+                                <tspan x={x - 8} dy="13">{line2}</tspan>
+                              </text>
+                            );
+                          }}
+                        />
+                        {/* Anchor baseline at zero */}
+                        <ReferenceLine
+                          x={0}
+                          stroke="rgba(255, 255, 255, 0.4)"
+                          strokeWidth={1.5}
+                          strokeDasharray="3 3"
+                        />
+                        {/* Tooltip with non-blinding dark cursor */}
+                        <Tooltip
+                          cursor={{ fill: "rgba(255, 255, 255, 0.04)", radius: 4 }}
+                          content={({ active, payload }: any) => {
+                            if (!active || !payload || !payload.length) return null;
+                            const item = payload[0].payload;
+                            const isPos = item.contribution === "positive";
+                            const absVal = Math.abs(item.value);
+                            const pctEffect = (absVal * 100).toFixed(1);
+                            return (
+                              <div className="bg-stone-900/95 backdrop-blur-md border border-stone-700/80 rounded-lg p-3 shadow-2xl min-w-[230px] max-w-[320px] pointer-events-none z-50">
+                                <div className="flex items-center justify-between border-b border-stone-800 pb-1.5 mb-2">
+                                  <span className="text-xs font-bold text-stone-100">{item.name}</span>
+                                  <span
+                                    className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+                                      isPos
+                                        ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
+                                        : "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                                    }`}
+                                  >
+                                    {isPos
+                                      ? (lang === "en" ? "▲ Aggravating" : "▲ ತೀವ್ರಗೊಳಿಸುವಿಕೆ")
+                                      : (lang === "en" ? "▼ Mitigating" : "▼ ಶಮನಕಾರಿ")}
                                   </span>
                                 </div>
-                                <div className="flex justify-between items-center text-[10px] text-stone-500">
-                                  <span>{lang === "en" ? "SHAP Log-Odds Weight:" : "ಮಾದರಿ ತೂಕ (SHAP):"}</span>
-                                  <span className="font-mono">{item.value > 0 ? `+${item.value}` : item.value}</span>
-                                </div>
-                                {item.desc && (
-                                  <div className="pt-1 border-t border-stone-800 text-[10px] text-stone-400 font-sans leading-relaxed">
-                                    {item.desc}
+                                <div className="text-[11px] font-mono text-stone-300 space-y-1.5">
+                                  <div className="flex justify-between items-center">
+                                    <span className="text-stone-400">
+                                      {lang === "en" ? "Conviction Impact:" : "ಅಪರಾಧ ಸಾಧ್ಯತೆ ಮೇಲಿನ ಪರಿಣಾಮ:"}
+                                    </span>
+                                    <span className={`font-bold ${isPos ? "text-amber-400" : "text-emerald-400"}`}>
+                                      {isPos ? `+${pctEffect}%` : `-${pctEffect}%`}
+                                    </span>
                                   </div>
-                                )}
+                                  <div className="flex justify-between items-center text-[10px] text-stone-500">
+                                    <span>{lang === "en" ? "SHAP Log-Odds Weight:" : "ಮಾದರಿ ತೂಕ (SHAP):"}</span>
+                                    <span className="font-mono">{item.value > 0 ? `+${item.value}` : item.value}</span>
+                                  </div>
+                                  {item.desc && (
+                                    <div className="pt-1 border-t border-stone-800 text-[10px] text-stone-400 font-sans leading-relaxed">
+                                      {item.desc}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                          );
-                        }}
-                      />
-                      <Bar dataKey="value" name="Evidentiary Weight" radius={[4, 4, 4, 4]}>
-                        {shapData.map((entry: any, index: number) => {
-                          const isPos = entry.contribution === "positive";
-                          return (
-                            <Cell
-                              key={`cell-${index}`}
-                              fill={isPos ? "#F59E0B" : "#10B981"}
-                              fillOpacity={0.9}
-                            />
-                          );
-                        })}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
+                            );
+                          }}
+                        />
+                        <Bar dataKey="value" name="Evidentiary Weight" radius={[4, 4, 4, 4]} barSize={18}>
+                          {shapData.map((entry: any, index: number) => {
+                            const isPos = entry.contribution === "positive";
+                            return (
+                              <Cell
+                                key={`cell-${index}`}
+                                fill={isPos ? "#F59E0B" : "#10B981"}
+                                fillOpacity={0.9}
+                              />
+                            );
+                          })}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
 
                   {/* Axis direction guide */}
-                  <div className="flex justify-between items-center text-[9.5px] font-mono text-stone-500 px-4 -mt-1 mb-1 border-t border-stone-800/40 pt-2">
-                    <span className="text-emerald-400/90 flex items-center gap-1 font-medium">
-                      ◀ {lang === "en" ? "Reduces Conviction Risk (Mitigating Evidence)" : "ಅಪರಾಧ ಸಾಧ್ಯತೆ ಕಡಿಮೆಗೊಳಿಸುವ ಪುರಾವೆಗಳು"}
+                  <div className="mt-3 pt-2.5 border-t border-stone-800/60 flex items-center justify-between text-[9.5px] font-mono text-stone-400 px-3 py-2 bg-stone-950/60 rounded-lg border border-stone-850">
+                    <span className="text-emerald-400/90 flex items-center gap-1.5 font-medium">
+                      <span className="text-xs">◀</span>
+                      <span>{lang === "en" ? "Reduces Conviction Risk (Mitigating Evidence)" : "ಅಪರಾಧ ಸಾಧ್ಯತೆ ಕಡಿಮೆಗೊಳಿಸುವ ಪುರಾವೆಗಳು"}</span>
                     </span>
-                    <span className="text-stone-600">|</span>
-                    <span className="text-amber-400/90 flex items-center gap-1 font-medium">
-                      {lang === "en" ? "Increases Conviction Risk (Aggravating Evidence)" : "ಅಪರಾಧ ಸಾಧ್ಯತೆ ಹೆಚ್ಚಿಸುವ ಪುರಾವೆಗಳು"} ▶
+                    <span className="text-stone-700 font-bold">|</span>
+                    <span className="text-amber-400/90 flex items-center gap-1.5 font-medium">
+                      <span>{lang === "en" ? "Increases Conviction Risk (Aggravating Evidence)" : "ಅಪರಾಧ ಸಾಧ್ಯತೆ ಹೆಚ್ಚಿಸುವ ಪುರಾವೆಗಳು"}</span>
+                      <span className="text-xs">▶</span>
                     </span>
                   </div>
                 </div>
 
                 {/* 2-Column Evidentiary Breakdown Panels */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 shrink-0">
                   {/* Mitigating Evidence Panel */}
                   <div className="bg-stone-900/35 border border-emerald-500/20 rounded-xl p-3.5 flex flex-col justify-between">
                     <div>
@@ -749,7 +790,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                 </div>
 
                 {/* Investigator Tactical Action Directives */}
-                <div className="bg-stone-900/40 border border-stone-800 rounded-xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="bg-stone-900/40 border border-stone-800 rounded-xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shrink-0">
                   <div className="flex items-start gap-2.5">
                     <div className="p-2 rounded-lg bg-stone-850 text-[#C79A4E] shrink-0 mt-0.5">
                       <Scale className="w-4 h-4" />

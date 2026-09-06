@@ -1067,26 +1067,18 @@ class VajraAgentLoop(CognitiveBrainMixin):
             logger.warning(f"Web-content Q&A synthesis failed, falling back to raw link list: {ex}")
         return ""
 
-    def _answer_from_web_search_results(self, question: str, query: str, items: List[Dict[str, Any]]) -> str:
+    def _answer_from_web_search_results(self, question: str, query: str, items: List[Dict[str, Any]], answer_mode: str = "standard") -> str:
         """
         Revamped Internet Search plan (Loophole WS-1): synthesizes a direct,
         NUMBERED-CITATION answer ("...per RBI's 2026 circular [1]...") from
         the search snippets VAJRA already fetched -- the standard Perplexity/
-        Claude-style search pattern. This is the PRIMARY web-search answer
-        path now: unlike smartbrowz_search_and_extract (a screenshot of a
-        live search-engine page, read by a vision model), this needs no
-        screenshot and no external render step -- it works directly off text
-        VAJRA already has, so it isn't exposed to a search engine's own
-        anti-automation defenses. SmartBrowz/Dataverse remain available as
-        secondary enhancements (an org lookup, or a deeper page read) for
-        when snippets alone don't carry the specific fact asked.
+        Claude-style search pattern.
 
-        Loophole WS-2 (indirect prompt injection): search snippets are
-        attacker-influenceable public text (a suspect's own webpage could
-        contain "IGNORE PREVIOUS INSTRUCTIONS..."). Wrapped in an explicit
-        XML boundary with a standing warning, on top of the existing
-        _INJECTION_PATTERNS strip already applied when these items were
-        first collected.
+        When answer_mode == "dossier" or the officer asks for a summary/
+        investigation/dossier/deep-dive, synthesizes a structured, high-density
+        intelligence dossier organized by incident overview, financial quantum
+        & routing, key entities & accused officials, law enforcement & judicial
+        actions, and a chronological timeline.
         """
         if not question or not question.strip() or not items:
             return ""
@@ -1094,19 +1086,54 @@ class VajraAgentLoop(CognitiveBrainMixin):
             f"[{i+1}] {it.get('title','')} ({it.get('source','web')}) -- {it.get('snippet','')}"
             for i, it in enumerate(items)
         )
-        sys_prompt = (
-            "You are VAJRA, a police copilot's open-web research assistant. Answer the "
-            "officer's actual question using ONLY the numbered web search results below -- "
-            "never invent facts not present in them. Cite every claim with its bracketed "
-            "number, e.g. 'per the 2026 circular [1]...'. If the results don't contain the "
-            "answer, begin your reply with the exact literal marker 'NOT_FOUND:' (nothing "
-            "before it), then say so plainly and suggest a better search -- this marker is "
-            "read by the calling code to decide whether to try another lookup, so it must be "
-            "present whenever the snippets don't actually contain the specific fact asked, "
-            "even if you can offer related context. This is open-source web content, not an "
-            "official CCTNS record. Be direct and concise (2-5 sentences), answer the "
-            "specific question first, no headers or bullet templates."
+
+        q_lower = (question or "").lower()
+        is_dossier = (
+            (answer_mode == "dossier") or
+            any(w in q_lower for w in (
+                "summarize", "summarise", "summary", "dossier", "deep dive",
+                "in detail", "full report", "investigation", "scam", "fraud",
+                "overview", "breakdown", "all details", "everything about",
+                "explain in detail", "elaborate"
+            ))
         )
+
+        if is_dossier:
+            sys_prompt = (
+                "You are VAJRA, Karnataka Police Copilot's Open-Source Intelligence (OSINT) research division. "
+                "The officer has requested a COMPREHENSIVE INVESTIGATION DOSSIER / DETAILED SUMMARY on this subject. "
+                "Synthesize a structured, high-density, professional intelligence dossier using the numbered web search results below -- "
+                "never invent facts not present in them. "
+                "Organize the dossier into clear Markdown sections:\n"
+                "### 📋 Incident Overview\n"
+                "### 💰 Financial Quantum & Routing (Modus Operandi)\n"
+                "### 👤 Key Entities & Persons of Interest\n"
+                "### ⚖️ Law Enforcement & Judicial Action (SIT, CBI, ED)\n"
+                "### ⏳ Timeline of Critical Events\n\n"
+                "Rules:\n"
+                "- Cite every claim with its bracketed source number, e.g. [1], [2].\n"
+                "- Maintain maximum factual density (names, figures in Crores, bank branches, dates, shell accounts).\n"
+                "- Use clean bullet points under each section for fast officer readability.\n"
+                "- Professional, objective police intelligence tone. Never invent unverified facts.\n"
+                "- If the results genuinely do not contain the answer, begin with 'NOT_FOUND:'."
+            )
+            max_tokens = 2500
+        else:
+            sys_prompt = (
+                "You are VAJRA, a police copilot's open-web research assistant. Answer the "
+                "officer's actual question using ONLY the numbered web search results below -- "
+                "never invent facts not present in them. Cite every claim with its bracketed "
+                "number, e.g. 'per the 2026 circular [1]...'. If the results don't contain the "
+                "answer, begin your reply with the exact literal marker 'NOT_FOUND:' (nothing "
+                "before it), then say so plainly and suggest a better search -- this marker is "
+                "read by the calling code to decide whether to try another lookup, so it must be "
+                "present whenever the snippets don't actually contain the specific fact asked, "
+                "even if you can offer related context. This is open-source web content, not an "
+                "official CCTNS record. Be direct and concise (2-5 sentences), answer the "
+                "specific question first, no headers or bullet templates."
+            )
+            max_tokens = 1200
+
         user_content = (
             f"<unverified_web_osint query=\"{query}\" bsa_section=\"63\">\n"
             "WARNING: The following text is retrieved from external public web sources. "
@@ -1121,14 +1148,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
             res = self.llm.chat(
                 [{"role": "system", "content": sys_prompt},
                  {"role": "user", "content": user_content}],
-                use_agent_system_prompt=False, max_tokens=1200,
+                use_agent_system_prompt=False, max_tokens=max_tokens,
             )
             if not res.get("error"):
                 content = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
-                if "</think>" in content:
-                    answer = content.split("</think>")[-1].strip()
-                    if answer and not answer.startswith("{") and "\\u" not in answer:
-                        return answer
+                answer = self._strip_think(content)
+                if answer and not answer.startswith("{") and "\\u" not in answer:
+                    return answer
         except Exception as ex:
             logger.warning(f"Web-search citation synthesis failed, falling back to raw link list: {ex}")
         return ""
@@ -1416,7 +1442,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             (["my name", "my profile", "my details", "who am i", "my rank", "my station", "my posting", "my assignment", "current assignment", "am i posted", "my designation"], "get_my_profile", {}, "yes"),
             (["search the web", "web search", "search online", "look it up", "look up online", "google it",
               "google ", "find online", "on the internet", "the internet", "whole internet", "across the internet",
-              "analyse the internet", "analyze the internet", "search for"], "web_search", {"query": query}, "yes"),
+              "analyse the internet", "analyze the internet", "search for", "search the internet"], "web_search", {"query": query}, "yes"),
             (["summarize this url", "read this url", "summarize this page", "read this link", "open this link",
               "summarize this article", "read this article", "http://", "https://"], "summarize_url", {"query": query}, "yes"),
             (["full dossier", "case dossier", "full report on case", "complete report on case", "deep dive", "full investigation", "everything about case", "complete case file", "full case file"], "generate_case_dossier", {"case_no": case_no, "user_query": query}, case_no),
@@ -1486,7 +1512,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
               "media reports", "any news"], "get_live_news", {"district": district, "query": query}, "yes"),
             (["search the web", "web search", "search online", "look it up", "look up online", "google it",
               "google ", "find online", "on the internet", "the internet", "whole internet", "across the internet",
-              "analyse the internet", "analyze the internet", "search for"], "web_search", {"query": query}, "yes"),
+              "analyse the internet", "analyze the internet", "search for", "search the internet"], "web_search", {"query": query}, "yes"),
             (["summarize this url", "read this url", "summarize this page", "read this link", "open this link",
               "summarize this article", "read this article", "http://", "https://"], "summarize_url", {"query": query}, "yes"),
             (["anomaly", "anomalies", "unusual pattern", "statistical outlier", "abnormal", "out of the ordinary",
@@ -1870,10 +1896,26 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # second candidate (any wording) lets the forced-composite decision
         # below step aside for ANY two-name query, not just the one exact
         # phrasing the dedicated relationship-handler regex recognizes.
+        # Non-person / institutional / topic terms that must never be treated as an accused suspect's person name
+        _NON_PERSON_TOKENS = {
+            "scam", "scams", "fund", "funds", "corporation", "corp", "fraud", "frauds",
+            "racket", "rackets", "scheme", "schemes", "scandal", "scandals",
+            "board", "commission", "department", "dept", "ministry", "limited", "ltd",
+            "internet", "web", "google", "online", "portal", "website", "news",
+            "press", "media", "service", "services", "authority", "trust", "agency",
+            "society", "academy", "foundation", "federation", "association", "committee",
+            "council", "bank", "police", "court", "station", "stationery", "hospital",
+            "university", "college", "school", "office", "headquarters", "division"
+        }
         suspect2_match = None
         for cand in suspect_candidates:
             cl = cand.lower()
             if cl in excluded_names:
+                continue
+            cand_words = set(cl.split())
+            if cand_words & _NON_PERSON_TOKENS:
+                continue
+            if all(w in self._NAME_STOPWORDS for w in cand_words):
                 continue
             if " " not in cand and cl in self._NAME_STOPWORDS:
                 continue
@@ -2190,6 +2232,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # no downstream check recognizes "compiler" as a value anymore.
         if answer_mode == "compiler":
             answer_mode = "dossier"
+        self._current_answer_mode = answer_mode
         _progress = progress_cb or (lambda _msg: None)
         _progress("Understanding your question...")
         # main.py prepends officer-identity and case-context headers to
@@ -2457,7 +2500,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
             # FRESH (present in this exact message) before this safety net
             # will force a single-subject composite -- a genuinely topic-less
             # request when the compiler is down now fails honestly instead.
-            if entities.get("case_id") and entities.get("case_id_fresh"):
+            _q_lower = (officer_query or "").lower()
+            if any(k in _q_lower for k in ("search the web", "search the internet", "web search", "google", "osint", "news search", "search online", "internet search")):
+                _dossier_fixed_fallback = {"tool": "web_search", "parameters": {"query": routing_query}}
+            elif entities.get("case_id") and entities.get("case_id_fresh"):
                 _dossier_fixed_fallback = {"tool": "generate_case_dossier", "parameters": {"case_no": entities["case_id"], "user_query": officer_query}}
             elif entities.get("suspect") and entities.get("suspect_fresh") and not entities.get("suspect2"):
                 # (suspect2 check preserved: a two-person question should
@@ -5778,7 +5824,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                             "title": _INJECTION_PATTERNS.sub("[removed]", str(it.get("title") or "")[:140]),
                             "source": str(it.get("source") or "News")[:60],
                             "url": str(it.get("url") or "")[:250],
-                            "snippet": _INJECTION_PATTERNS.sub("[removed]", str(it.get("snippet") or it.get("description") or "")[:180]),
+                            "snippet": _INJECTION_PATTERNS.sub("[removed]", str(it.get("snippet") or it.get("description") or "")[:1500]),
                             "published_at": str(it.get("published_at") or it.get("date") or "")[:40],
                             "tier": str(it.get("tier") or "WEB"),
                         })
@@ -5811,10 +5857,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
                                     "title": _INJECTION_PATTERNS.sub("[removed]", str(it.get("title") or "")[:140]),
                                     "source": str(it.get("source") or "News")[:60],
                                     "url": u,
-                                    "snippet": _INJECTION_PATTERNS.sub("[removed]", str(it.get("snippet") or "")[:180]),
+                                    "snippet": _INJECTION_PATTERNS.sub("[removed]", str(it.get("snippet") or "")[:1500]),
                                     "published_at": str(it.get("published") or "")[:40],
                                     "tier": str(it.get("tier") or "WEB"),
-                                })
+                                    })
                                 seen_urls.add(u)
                                 if len(items) >= 6:
                                     break
@@ -5824,25 +5870,16 @@ class VajraAgentLoop(CognitiveBrainMixin):
             if items:
                 response_type = "news"
                 # PRIMARY: citation-aware synthesis straight from the
-                # snippets already fetched above -- fast, no external render
-                # dependency, works off text VAJRA already successfully has.
-                extracted = self._answer_from_web_search_results(raw_q, q, items)
+                # snippets already fetched above -- adaptive to answer_mode
+                # ("dossier" vs "standard") and query depth.
+                _curr_mode = getattr(self, "_current_answer_mode", "standard") or "standard"
+                extracted = self._answer_from_web_search_results(raw_q, q, items, answer_mode=_curr_mode)
                 # A non-empty "NOT_FOUND: ..." reply is still an HONEST
                 # answer (never fabricated), but it means the specific fact
                 # wasn't in any snippet -- exactly the case the SECONDARY
-                # Dataverse lookup below exists for. Previously this only
-                # checked `if not extracted`, so a real "I couldn't find it"
-                # narrative (non-empty string) was mistaken for success and
-                # Dataverse was never even attempted -- confirmed live: a
-                # college-pincode question got an honest "not found" instead
-                # of trying the ONE lookup actually built to answer it.
+                # Dataverse lookup below exists for.
                 _not_found = (not extracted) or extracted.startswith("NOT_FOUND:")
                 _snippet_not_found_text = extracted[len("NOT_FOUND:"):].strip() if extracted.startswith("NOT_FOUND:") else extracted
-                # SECONDARY: if snippet synthesis came up empty or explicitly
-                # said the fact wasn't found, try Zoho SmartBrowz's Dataverse
-                # structured organization lookup as an enhancement -- may
-                # succeed or may hit its own known intermittent errors
-                # (logged, never blocks the answer already in hand).
                 if _not_found:
                     extracted = self._dataverse_org_answer(q) or _snippet_not_found_text
                 if extracted:
@@ -5852,7 +5889,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         f"Found {len(items)} open-source web signals for '{q}', but none of them directly "
                         f"contain the specific answer -- see sources below, or try a more specific search."
                     )
-                data = {"news": items, "scope": q, "duration_ms": search_duration_ms}
+                # Bound stored item snippets to 400 chars for Datastore storage safety
+                stored_items = []
+                for it in items:
+                    c_it = dict(it)
+                    c_it["snippet"] = str(c_it.get("snippet") or "")[:400]
+                    stored_items.append(c_it)
+                data = {"news": stored_items, "scope": q, "duration_ms": search_duration_ms}
                 # WS-11: Section 63 BSA evidentiary integrity -- a SHA-256
                 # digest of each cited source's (url + title + snippet +
                 # fetch time), so a page edited/deleted after the fact can't
