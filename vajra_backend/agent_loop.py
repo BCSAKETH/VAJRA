@@ -1133,6 +1133,56 @@ class VajraAgentLoop(CognitiveBrainMixin):
             logger.warning(f"Web-search citation synthesis failed, falling back to raw link list: {ex}")
         return ""
 
+    def _dataverse_org_answer(self, search_query: str) -> str:
+        """
+        SECONDARY web-search path: Zoho SmartBrowz's Dataverse structured
+        organization lookup (headquarters/pincode/website/contact) -- built
+        for exactly the fact-lookup questions Google News RSS snippets often
+        don't carry (a college's pincode is not news). Shared by both the
+        "found some results but the fact wasn't in them" case and the "found
+        zero results at all" case (confirmed live: a narrow "<org> pincode"
+        query can return literally 0 News RSS hits since a news index
+        penalizes a bare fact-type word like "pincode" -- Dataverse resolves
+        organizations directly, not via a news search, so it's still worth
+        trying). Fail-soft: returns "" on any error, no lead, or an empty
+        lead -- callers must already have their own honest fallback text.
+        """
+        if not search_query:
+            return ""
+        try:
+            from catalyst_smartbrowz import smartbrowz_lookup_organization
+            # Dataverse resolves an ORGANIZATION NAME, not a full search
+            # phrase -- confirmed live: passing "TKREC college pincode"
+            # verbatim (the search query, not the entity) as the org name
+            # made the lookup fail. Strip the fact-type word the officer is
+            # actually asking for so what's left is the entity itself, e.g.
+            # "TKREC college pincode" -> "TKREC college".
+            org_name = re.sub(
+                r"\b(pin\s*-?code|postal\s*code|zip\s*code|address|phone(?:\s*number)?|"
+                r"contact(?:\s*(?:number|details))?|email|website|location)\b",
+                " ", search_query, flags=re.IGNORECASE,
+            )
+            org_name = re.sub(r"\s+", " ", org_name).strip() or search_query
+            lead = smartbrowz_lookup_organization(org_name)
+            if not lead:
+                return ""
+            hq = (lead.get("headquarters") or [{}])[0] if lead.get("headquarters") else {}
+            parts = []
+            if hq.get("pincode"):
+                parts.append(f"Pin code: {hq['pincode']}")
+            if hq.get("street") or hq.get("city"):
+                parts.append(f"Address: {', '.join(filter(None, [hq.get('street'), hq.get('city'), hq.get('state'), hq.get('country')]))}")
+            if lead.get("website"):
+                parts.append(f"Website: {lead['website']}")
+            if lead.get("contact"):
+                parts.append(f"Contact: {', '.join(lead['contact'][:2])}")
+            if not parts:
+                return ""
+            return f"{lead.get('organization_name', search_query)} -- " + "; ".join(parts) + " (Zoho SmartBrowz Dataverse organization lookup.)"
+        except Exception as ex:
+            logger.debug(f"Dataverse organization lookup skipped for {search_query!r}: {ex}")
+            return ""
+
     # Kannada script -> DB district name. Kannada analytical queries can't hit the
     # Latin-only keyword router, and the Zia translator garbles domain queries
     # (verified live: "which districts have the most crime" -> "types of vehicles"),
@@ -5757,43 +5807,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 # succeed or may hit its own known intermittent errors
                 # (logged, never blocks the answer already in hand).
                 if _not_found:
-                    try:
-                        from catalyst_smartbrowz import smartbrowz_lookup_organization
-                        # Dataverse resolves an ORGANIZATION NAME, not a full
-                        # search phrase -- confirmed live: passing "TKREC
-                        # college pincode" verbatim (the search query, not the
-                        # entity) as the org name made Dataverse fail to
-                        # match anything. Strip the fact-type word the
-                        # officer is actually asking for so what's left is
-                        # the entity itself, e.g. "TKREC college pincode" ->
-                        # "TKREC college".
-                        _org_name = re.sub(
-                            r"\b(pin\s*-?code|postal\s*code|zip\s*code|address|phone(?:\s*number)?|"
-                            r"contact(?:\s*(?:number|details))?|email|website|location)\b",
-                            " ", q, flags=re.IGNORECASE,
-                        )
-                        _org_name = re.sub(r"\s+", " ", _org_name).strip() or q
-                        lead = smartbrowz_lookup_organization(_org_name)
-                        if lead:
-                            hq = (lead.get("headquarters") or [{}])[0] if lead.get("headquarters") else {}
-                            parts = []
-                            if hq.get("pincode"):
-                                parts.append(f"Pin code: {hq['pincode']}")
-                            if hq.get("street") or hq.get("city"):
-                                parts.append(f"Address: {', '.join(filter(None, [hq.get('street'), hq.get('city'), hq.get('state'), hq.get('country')]))}")
-                            if lead.get("website"):
-                                parts.append(f"Website: {lead['website']}")
-                            if lead.get("contact"):
-                                parts.append(f"Contact: {', '.join(lead['contact'][:2])}")
-                            if parts:
-                                extracted = f"{lead.get('organization_name', q)} -- " + "; ".join(parts) + " (Zoho SmartBrowz Dataverse organization lookup.)"
-                            else:
-                                extracted = _snippet_not_found_text
-                        else:
-                            extracted = _snippet_not_found_text
-                    except Exception as ex:
-                        logger.debug(f"web_search Dataverse enhancement skipped: {ex}")
-                        extracted = _snippet_not_found_text
+                    extracted = self._dataverse_org_answer(q) or _snippet_not_found_text
                 if extracted:
                     text_result = f"{extracted}\n\n[ ⚠️ §63 BSA Notice: Web signals are unverified OSINT leads • Not certified CCTNS record ]"
                 else:
@@ -5817,6 +5831,15 @@ class VajraAgentLoop(CognitiveBrainMixin):
             else:
                 response_type = "text"
                 text_result = f"No web results found for '{q}'." if q else "Please say what to search the web for."
+                # Even a ZERO-HIT news search is still worth trying Dataverse
+                # for -- confirmed live: a narrow "<org> pincode"-style query
+                # can return 0 News RSS matches (a news index has no reason
+                # to index a fact like a pincode), which previously dead-
+                # ended here even though Dataverse resolves organizations
+                # directly, not via a news search at all.
+                dataverse_answer = self._dataverse_org_answer(q)
+                if dataverse_answer:
+                    text_result = f"{dataverse_answer}\n\n[ ⚠️ §63 BSA Notice: Web signals are unverified OSINT leads • Not certified CCTNS record ]"
                 self._write_audit_log(employee_id, "Web Search (OSINT)", q, f"Web search: {q} -- no results", text_result, session_id)
             citations.append({"type": "Open-Source Web Search", "id": q or "search",
                               "details": "Live public web search -- unverified leads, not official record. §63 BSA: requires independent corroboration."})
