@@ -2569,6 +2569,19 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 session_memory.update_session_context(session_id, context)
                 return case_ans
 
+        # THINKING-LANE: plain existence question ("is there a suspect named
+        # X", "any accused called X") gets a direct yes/no answer first,
+        # instead of GLM either demanding the officer pick a facet before
+        # confirming the person exists, or failing outright -- both
+        # confirmed live for this exact phrasing. See the handler's own
+        # docstring.
+        existence_ans = self._handle_suspect_existence_question(routing_query)
+        if existence_ans is not None:
+            history.append({"role": "assistant", "content": existence_ans["text"]})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            return existence_ans
+
         # THINKING-LANE: contextual re-presentation -- "make this a pie chart",
         # "show this as a bar chart", "visualize this". Resolves "this" to the
         # PREVIOUS answer's real data and re-charts THAT, instead of the router
@@ -7297,6 +7310,82 @@ class VajraAgentLoop(CognitiveBrainMixin):
             ],
             "final": True,
         }
+
+    def _handle_suspect_existence_question(self, query: str) -> Optional[Dict[str, Any]]:
+        """
+        THINKING-LANE fast-path: a plain existence question -- "is there a
+        suspect named X", "any accused called X", "is X a suspect", "does
+        suspect X exist" -- deserves a direct yes/no answer FIRST, not a
+        menu. Confirmed live this class of question was falling through to
+        GLM's full tool-selection reasoning, which sometimes asked the
+        officer to pick between network/risk/similar-cases BEFORE ever
+        confirming the person exists at all (answering a question nobody
+        asked instead of the one that was), and sometimes failed outright
+        with a generic parse error -- both are real, observed failure
+        modes for this exact phrasing, not hypothetical.
+
+        This runs a real, grounded existence check first (fuzzy-matched
+        against the actual Accused table, same matcher every suspect-facet
+        tool already uses) and answers that plainly, then OFFERS -- never
+        forces -- the deeper facets as a next step. Returns None (falls
+        through to the normal pipeline) unless the query clearly reads as
+        an existence check AND a candidate name could be extracted -- a
+        wrongly-triggered fast-path is worse than none.
+        """
+        q = (query or "").lower().strip()
+        existence_cues = (
+            "is there a suspect", "is there any suspect", "any suspect named",
+            "any suspect called", "does suspect", "is there a person named",
+            "do we have a suspect", "do we have any suspect", "any accused named",
+            "any accused called", "is there an accused", "is there any accused",
+        )
+        # "is X a suspect" / "is X an accused" -- the name comes BEFORE the cue.
+        m_reversed = re.search(r"^is\s+([a-z][a-z\s]{1,40}?)\s+(?:a|an)\s+(?:suspect|accused)\b", q)
+        if not m_reversed and not any(c in q for c in existence_cues):
+            return None
+
+        name = ""
+        if m_reversed:
+            name = m_reversed.group(1).strip()
+        else:
+            m = re.search(r"(?:named|called)\s+([a-zA-Z][a-zA-Z.\s]{1,40}?)(?:[?.!]|$)", query, re.IGNORECASE)
+            if m:
+                name = m.group(1).strip()
+            else:
+                m2 = re.search(r"(?:suspect|accused)\s+([A-Za-z]+(?:\s+[A-Za-z]+)*)\b", query, re.IGNORECASE)
+                if m2 and m2.group(1).lower() not in self._NAME_STOPWORDS:
+                    name = m2.group(1).strip()
+        if not name or name.lower() in self._NAME_STOPWORDS or len(name) < 2:
+            return None
+
+        canonical = self._fuzzy_accused_match(name)
+        citations = [{"type": "Accused Roster Lookup", "id": name,
+                      "details": "Direct existence check against the Accused table."}]
+        if canonical:
+            n = 0
+            try:
+                if catalyst_app:
+                    safe = self.sanitize_sql_input(canonical)
+                    cnt_res = catalyst_app.zql().execute_query(
+                        f"SELECT COUNT(ROWID) FROM Accused WHERE AccusedName = '{safe}'")
+                    # ZCQL ignores column aliases on aggregates and returns
+                    # the literal expression text as the key -- confirmed
+                    # elsewhere in this file (e.g. _resolve_case_rowid,
+                    # _compute_priority_concerns), not "c" as aliased above.
+                    if cnt_res:
+                        n = int(cnt_res[0].get("Accused", {}).get("COUNT(ROWID)") or 0)
+            except Exception as e:
+                logger.warning(f"suspect existence count failed for {canonical!r}: {e}")
+            note = f' (you searched "{name}")' if canonical.lower() != name.lower() else ""
+            case_word = "case record" if n == 1 else "case records"
+            text_result = (
+                f"Yes -- {canonical} is on record as a suspect/accused{note}, linked to {n} {case_word}. "
+                f"Want their risk profile, network connections, or similar-case matches? Just ask."
+            )
+        else:
+            text_result = f'No suspect or accused named "{name}" was found on record.'
+        return {"text": text_result, "response_type": "text", "data": {}, "citations": citations,
+                "is_simulated": False, "simulated_reason": ""}
 
     def _handle_district_comparison(self, query: str, employee_id: int, session_id: str,
                                     user_unit_id: Optional[int]) -> Optional[Dict[str, Any]]:
