@@ -47,6 +47,17 @@ const momArrow = (g: number) => (g > 3 ? "▲" : g < -3 ? "▼" : "▬");
 // Open-source news / web-search results as a scannable feed of source-cited
 // cards -- deliberately framed as UNVERIFIED leads (gold "open-source" boundary),
 // separate from official CCTNS records.
+// Source-credibility triage badge (Revamped Internet Search plan, WS-9) --
+// mirrors the backend's classify_domain() tiers so an officer sees at a
+// glance whether a result is an official gazette, a legal database,
+// verified press, or the open web. Every tier remains an unverified lead.
+const TIER_BADGE: Record<string, { label: string; emoji: string; cls: string }> = {
+  GOV: { label: "Official Gov", emoji: "🏛️", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
+  LEGAL: { label: "Judicial / Law", emoji: "⚖️", cls: "bg-purple-500/15 text-purple-300 border-purple-500/30" },
+  PRESS: { label: "Verified Press", emoji: "📰", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
+  WEB: { label: "Open Web", emoji: "🌐", cls: "bg-stone-700/40 text-stone-400 border-stone-700" },
+};
+
 const NewsView: React.FC<{ data: any; lang: "en" | "kn" }> = ({ data, lang }) => {
   const items: any[] = Array.isArray(data?.news) ? data.news : (Array.isArray(data?.results) ? data.results : []);
   const scope: string = data?.scope || data?.query || "";
@@ -99,7 +110,15 @@ const NewsView: React.FC<{ data: any; lang: "en" | "kn" }> = ({ data, lang }) =>
                     {url && <ExternalLink className="w-3 h-3 mt-0.5 shrink-0 text-stone-500 group-hover:text-[#C79A4E]" />}
                   </div>
                   {snip && <p className="text-[10.5px] text-stone-400 leading-snug mt-1 line-clamp-2">{snip}</p>}
-                  <div className="flex items-center gap-2 mt-1.5">
+                  <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                    {(() => {
+                      const tier = TIER_BADGE[it.tier as string] || TIER_BADGE.WEB;
+                      return (
+                        <span className={`text-[9px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded border ${tier.cls}`} title={tier.label}>
+                          {tier.emoji} {tier.label}
+                        </span>
+                      );
+                    })()}
                     <span className="text-[9px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded bg-[#C79A4E]/12 text-[#E4C590] truncate max-w-[160px]">{src}</span>
                     {relDate(it.published || it.date) && <span className="text-[9px] font-mono text-stone-500">{relDate(it.published || it.date)}</span>}
                   </div>
@@ -114,9 +133,14 @@ const NewsView: React.FC<{ data: any; lang: "en" | "kn" }> = ({ data, lang }) =>
           );
         })}
       </div>
-      <div className="flex items-center gap-1.5 text-[9px] font-mono text-[#C79A4E]/70 pt-0.5">
+      {/* Section 63 BSA evidentiary boundary (Revamped Internet Search plan,
+          WS-5): amber-gold demarcation so these results can never be
+          mistaken for certified CCTNS records in a charge sheet. */}
+      <div className="flex items-center gap-1.5 text-[9px] font-mono text-amber-400/90 pt-0.5 border-t border-amber-500/15 mt-1">
         <Radio className="w-3 h-3" />
-        {lang === "en" ? "Open-source leads to verify independently — not official CCTNS records." : "ಸ್ವತಂತ್ರವಾಗಿ ಪರಿಶೀಲಿಸಬೇಕಾದ ಮುಕ್ತ-ಮೂಲ ಸುಳಿವುಗಳು — ಅಧಿಕೃತ ದಾಖಲೆ ಅಲ್ಲ."}
+        {lang === "en"
+          ? "⚠️ §63 BSA Notice: Web signals are unverified OSINT leads • Not certified CCTNS record"
+          : "⚠️ §63 BSA ಸೂಚನೆ: ಪರಿಶೀಲಿಸದ ಮುಕ್ತ-ಮೂಲ ಸುಳಿವುಗಳು • ಅಧಿಕೃತ CCTNS ದಾಖಲೆ ಅಲ್ಲ"}
       </div>
     </div>
   );

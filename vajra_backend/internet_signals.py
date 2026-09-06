@@ -24,6 +24,7 @@ NEWSAPI_KEY) in .env activates live news with zero code change.
 import os
 import re
 import time
+import hashlib
 import logging
 import threading
 import urllib.parse
@@ -140,7 +141,64 @@ def _signal(title: str, source: str, published: str, url: str, snippet: str = ""
         "snippet": (snippet or "").strip()[:240],
         "kind": "open_source_signal",          # marks the trust lane, never official
         "disclaimer": "Open-source signal — unverified lead, not an official record.",
+        "tier": classify_domain(url).get("tier", "WEB"),
     }
+
+
+# Source-credibility triage (Revamped Internet Search plan, Loophole WS-9):
+# lets the officer see at a glance whether a result is an official
+# government gazette, a judicial/legal database, verified press, or the
+# open web -- so time isn't spent clicking SEO-farm results ahead of an
+# authoritative source. Purely a display/trust signal; every tier is still
+# an unverified open-source lead, never official CCTNS record.
+_GOV_SUFFIXES = (".gov.in", ".nic.in", ".judiciary.gov.in", ".kar.nic.in")
+_LEGAL_DOMAINS = ("sci.gov.in", "indiankanoon.org", "livelaw.in", "barandbench.com")
+_PRESS_DOMAINS = (
+    "thehindu.com", "deccanherald.com", "indianexpress.com", "timesofindia.indiatimes.com",
+    "hindustantimes.com", "ndtv.com", "prajavani.net", "kannadaprabha.com", "vijayavani.net",
+    "reuters.com", "aljazeera.com", "bbc.com", "livemint.com",
+)
+_TIER_LABELS = {
+    "GOV": {"label": "Official Gov", "emoji": "\U0001F3DB️", "color": "emerald"},
+    "LEGAL": {"label": "Judicial / Law", "emoji": "⚖️", "color": "purple"},
+    "PRESS": {"label": "Verified Press", "emoji": "\U0001F4F0", "color": "amber"},
+    "WEB": {"label": "Open Web", "emoji": "\U0001F310", "color": "stone"},
+}
+
+
+def compute_evidence_hash(url: str, title: str, snippet: str, fetch_timestamp: str) -> str:
+    """
+    Section 63 BSA evidentiary integrity (Revamped Internet Search plan,
+    Loophole WS-11): a web page can be edited or deleted after an officer
+    cites it ("link rot"), leaving no proof of what it said at the time of
+    the search. This computes a SHA-256 digest of
+    (url + title + snippet + fetch_timestamp) at the moment VAJRA saw it --
+    stored in the audit ledger alongside the query and officer KGID, so a
+    later court challenge can be met with "this exact digest was logged at
+    this exact time," even if the source page has since changed.
+    """
+    raw = f"{url}|{title}|{snippet}|{fetch_timestamp}"
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def classify_domain(url: str) -> Dict[str, str]:
+    """Categorizes a result's domain into GOV / LEGAL / PRESS / WEB for the
+    officer-facing credibility badge. Never affects trust in the DATA itself
+    (every tier remains an unverified open-source lead) -- purely a triage
+    signal for where to look first."""
+    try:
+        domain = (urllib.parse.urlparse(url).hostname or "").lower()
+    except Exception:
+        domain = ""
+    tier = "WEB"
+    if domain:
+        if any(domain.endswith(s) for s in _GOV_SUFFIXES):
+            tier = "GOV"
+        elif any(d in domain for d in _LEGAL_DOMAINS):
+            tier = "LEGAL"
+        elif any(d in domain for d in _PRESS_DOMAINS):
+            tier = "PRESS"
+    return {"tier": tier, **_TIER_LABELS[tier]}
 
 
 def get_district_news(district: str, limit: int = 5) -> Dict[str, Any]:
