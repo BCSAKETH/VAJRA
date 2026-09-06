@@ -72,6 +72,7 @@ from vajra_core import (
     create_emergency_district_access,
     mark_district_access_reviewed,
     is_supervisor_badge,
+    escape_zcql_literal,
 )
 from agent_loop import VajraAgentLoop
 from catalyst_llm import CatalystLLM
@@ -215,7 +216,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str, token: str = Que
     employee_id = None
     if catalyst_app:
         try:
-            emp_res = catalyst_app.zql().execute_query(f"SELECT EmployeeID FROM Employee WHERE KGID = '{kgid}'")
+            emp_res = catalyst_app.zql().execute_query(f"SELECT EmployeeID FROM Employee WHERE KGID = '{escape_zcql_literal(kgid)}'")
             if emp_res:
                 employee_id = emp_res[0].get("Employee", {}).get("EmployeeID")
         except Exception as e:
@@ -545,7 +546,7 @@ async def login(payload: AuthRequest):
     import bcrypt
     try:
         cred_res = catalyst_app.zql().execute_query(
-            f"SELECT KGID, PasswordHash FROM OfficerCredentials WHERE KGID = '{payload.badge_no}'"
+            f"SELECT KGID, PasswordHash FROM OfficerCredentials WHERE KGID = '{escape_zcql_literal(payload.badge_no)}'"
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Credential lookup failed: {str(e)}")
@@ -580,7 +581,7 @@ async def login(payload: AuthRequest):
     role_tier = "officer"
     try:
         emp_res = catalyst_app.zql().execute_query(
-            f"SELECT RankID FROM Employee WHERE KGID = '{payload.badge_no}'"
+            f"SELECT RankID FROM Employee WHERE KGID = '{escape_zcql_literal(payload.badge_no)}'"
         )
         if emp_res:
             role_tier = derive_role_tier(emp_res[0].get("Employee", {}).get("RankID"), payload.badge_no)
@@ -641,7 +642,7 @@ async def get_crime_trends(
     try:
         q = "SELECT major_crime_head, crime_head_and_section, minor_crime_head, commits, crime_month FROM CrimeData"
         if major_head:
-            q += f" WHERE major_crime_head LIKE '*{major_head}*'"
+            q += f" WHERE major_crime_head LIKE '*{escape_zcql_literal(major_head)}*'"
         q += f" LIMIT {limit}"
         res = catalyst_app.zql().execute_query(q)
         return [r.get("CrimeData", {}) for r in res]
@@ -2100,7 +2101,7 @@ def _bump_chat_session_active(session_id: str):
     if not catalyst_app:
         return
     try:
-        existing = catalyst_app.zql().execute_query(f"SELECT ROWID FROM ChatSession WHERE session_id = '{session_id}' LIMIT 1")
+        existing = catalyst_app.zql().execute_query(f"SELECT ROWID FROM ChatSession WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 1")
         if existing:
             zcql_update_row("ChatSession", {
                 "ROWID": existing[0].get("ChatSession", {}).get("ROWID"),
@@ -2128,7 +2129,7 @@ def _resolve_variant_info(session_id: str, target_msg_id: str, sender: str) -> D
         return {"variant_group": variant_group, "version_index": next_version}
     try:
         rows = catalyst_app.zql().execute_query(
-            f"SELECT sender, data_json FROM ChatMessage WHERE session_id = '{session_id}' ORDER BY sent_at DESC LIMIT 100"
+            f"SELECT sender, data_json FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}' ORDER BY sent_at DESC LIMIT 100"
         )
         target_group = None
         for r in rows:
@@ -2415,7 +2416,7 @@ async def list_sessions(request: Request, location_context: str = Depends(securi
                 continue
             sess_res = catalyst_app.zql().execute_query(
                 f"SELECT session_id, title, last_active_at FROM ChatSession "
-                f"WHERE session_id = '{sid}' AND (description IS NULL OR description = '') LIMIT 1"
+                f"WHERE session_id = '{escape_zcql_literal(sid)}' AND (description IS NULL OR description = '') LIMIT 1"
             )
             if sess_res:
                 seen_session_ids.add(sid)
@@ -2428,7 +2429,7 @@ async def list_sessions(request: Request, location_context: str = Depends(securi
         owned_ids = [s["session_id"] for s in sessions if s["session_id"] not in invited_ids]
         shared_owned_ids = set()
         if owned_ids:
-            id_list = ",".join(f"'{sid}'" for sid in owned_ids)
+            id_list = ",".join(f"'{escape_zcql_literal(sid)}'" for sid in owned_ids)
             part_check = catalyst_app.zql().execute_query(
                 f"SELECT DISTINCT session_id FROM CoworkParticipant WHERE session_id IN ({id_list})"
             )
@@ -2484,7 +2485,7 @@ def _get_cowork_role(session_id: str, employee_id: int, kgid: Optional[str] = No
     try:
         # 1. Check ChatSession table ownership
         sess_res = catalyst_app.zql().execute_query(
-            f"SELECT employee_id FROM ChatSession WHERE session_id = '{session_id}' LIMIT 1"
+            f"SELECT employee_id FROM ChatSession WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 1"
         )
         if sess_res:
             owner_emp_id = sess_res[0].get("ChatSession", {}).get("employee_id")
@@ -2493,7 +2494,7 @@ def _get_cowork_role(session_id: str, employee_id: int, kgid: Optional[str] = No
 
         # 2. Check CoworkParticipant table
         part_res = catalyst_app.zql().execute_query(
-            f"SELECT role FROM CoworkParticipant WHERE session_id = '{session_id}' AND employee_id = {employee_id} LIMIT 1"
+            f"SELECT role FROM CoworkParticipant WHERE session_id = '{escape_zcql_literal(session_id)}' AND employee_id = {employee_id} LIMIT 1"
         )
         if part_res:
             return part_res[0].get("CoworkParticipant", {}).get("role") or "collaborator"
@@ -2567,7 +2568,7 @@ async def get_session_messages(session_id: str, request: Request, location_conte
         # Omit ZCQL ORDER BY to prevent 23s unindexed full table sort.
         # Python memory sorting takes < 0.1ms.
         res = catalyst_app.zql().execute_query(
-            f"SELECT sender, sender_employee_id, text, response_type, data_json, citations_json, sent_at FROM ChatMessage WHERE session_id = '{session_id}' LIMIT 300"
+            f"SELECT sender, sender_employee_id, text, response_type, data_json, citations_json, sent_at FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 300"
         )
         res.sort(key=lambda r: r.get("ChatMessage", {}).get("sent_at") or "")
 
@@ -2666,7 +2667,7 @@ async def delete_session(session_id: str, request: Request, location_context: st
     if role != "owner":
         try:
             catalyst_app.zql().execute_query(
-                f"DELETE FROM CoworkParticipant WHERE session_id = '{session_id}' AND employee_id = {employee_id}"
+                f"DELETE FROM CoworkParticipant WHERE session_id = '{escape_zcql_literal(session_id)}' AND employee_id = {employee_id}"
             )
             return {"deleted": True, "session_id": session_id, "action": "left"}
         except Exception as e:
@@ -2674,9 +2675,9 @@ async def delete_session(session_id: str, request: Request, location_context: st
     if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
     try:
-        catalyst_app.zql().execute_query(f"DELETE FROM ChatMessage WHERE session_id = '{session_id}'")
-        catalyst_app.zql().execute_query(f"DELETE FROM CoworkParticipant WHERE session_id = '{session_id}'")
-        catalyst_app.zql().execute_query(f"DELETE FROM ChatSession WHERE session_id = '{session_id}'")
+        catalyst_app.zql().execute_query(f"DELETE FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}'")
+        catalyst_app.zql().execute_query(f"DELETE FROM CoworkParticipant WHERE session_id = '{escape_zcql_literal(session_id)}'")
+        catalyst_app.zql().execute_query(f"DELETE FROM ChatSession WHERE session_id = '{escape_zcql_literal(session_id)}'")
         return {"deleted": True, "session_id": session_id}
     except Exception as e:
         logger.warning(f"Failed to delete session {session_id}: {e}")
@@ -2700,12 +2701,12 @@ async def bulk_delete_sessions(payload: BulkDeletePayload, request: Request, loc
         try:
             role = _get_cowork_role(sid, employee_id, request.state.kgid)
             if role == "owner":
-                catalyst_app.zql().execute_query(f"DELETE FROM ChatMessage WHERE session_id = '{sid}'")
-                catalyst_app.zql().execute_query(f"DELETE FROM CoworkParticipant WHERE session_id = '{sid}'")
-                catalyst_app.zql().execute_query(f"DELETE FROM ChatSession WHERE session_id = '{sid}'")
+                catalyst_app.zql().execute_query(f"DELETE FROM ChatMessage WHERE session_id = '{escape_zcql_literal(sid)}'")
+                catalyst_app.zql().execute_query(f"DELETE FROM CoworkParticipant WHERE session_id = '{escape_zcql_literal(sid)}'")
+                catalyst_app.zql().execute_query(f"DELETE FROM ChatSession WHERE session_id = '{escape_zcql_literal(sid)}'")
                 deleted_ids.append(sid)
             elif role in ("collaborator", "viewer"):
-                catalyst_app.zql().execute_query(f"DELETE FROM CoworkParticipant WHERE session_id = '{sid}' AND employee_id = {employee_id}")
+                catalyst_app.zql().execute_query(f"DELETE FROM CoworkParticipant WHERE session_id = '{escape_zcql_literal(sid)}' AND employee_id = {employee_id}")
                 deleted_ids.append(sid)
         except Exception as e:
             logger.warning(f"Bulk delete error for session {sid}: {e}")
@@ -2803,7 +2804,7 @@ def _is_cowork_session(session_id: str) -> bool:
         return False
     try:
         res = catalyst_app.zql().execute_query(
-            f"SELECT session_id FROM CoworkParticipant WHERE session_id = '{session_id}' LIMIT 1"
+            f"SELECT session_id FROM CoworkParticipant WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 1"
         )
         return bool(res)
     except Exception:
@@ -2912,14 +2913,14 @@ async def _run_ai_turn_and_persist(
     # case's real context so the officer doesn't have to keep re-explaining
     # "this is about case CR-2026-XXXXX" every single message.
     try:
-        sess_res = catalyst_app.zql().execute_query(f"SELECT case_no FROM ChatSession WHERE session_id = '{session_id}' LIMIT 1")
+        sess_res = catalyst_app.zql().execute_query(f"SELECT case_no FROM ChatSession WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 1")
         case_no = sess_res[0].get("ChatSession", {}).get("case_no") if sess_res else None
         if case_no:
             # CaseMasterID (not CrimeNo) is what summarize_case/other
             # case_id-based tools actually take as a parameter -- omitting it
             # here meant the model had a case number to talk about but no
             # way to actually invoke any tool that operates on the case.
-            case_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID, CrimeNo, BriefFacts FROM CaseMaster WHERE CrimeNo = '{case_no}' LIMIT 1")
+            case_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID, CrimeNo, BriefFacts FROM CaseMaster WHERE CrimeNo = '{escape_zcql_literal(case_no)}' LIMIT 1")
             if case_res:
                 cm = case_res[0].get("CaseMaster", {})
                 query_for_agent = (
@@ -3403,7 +3404,7 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     if is_direct_fir_lookup and not any(k in message.lower() for k in ["trace", "mule", "ring", "syndicate", "dossier", "predict", "risk"]) and not is_cowork:
         fir_no = fir_match.group(1).upper()
         try:
-            fir_rows = catalyst_app.zql().execute_query(f"SELECT * FROM CaseMaster WHERE FIRNo = '{fir_no}' LIMIT 1")
+            fir_rows = catalyst_app.zql().execute_query(f"SELECT * FROM CaseMaster WHERE FIRNo = '{escape_zcql_literal(fir_no)}' LIMIT 1")
             if fir_rows:
                 cm = fir_rows[0].get("CaseMaster", {})
                 fast_text_en = (
@@ -3558,27 +3559,27 @@ async def invite_to_cowork(payload: CoworkInviteRequest, request: Request, locat
     if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
 
-    emp_res = catalyst_app.zql().execute_query(f"SELECT EmployeeID FROM Employee WHERE KGID = '{payload.invitee_badge}'")
+    emp_res = catalyst_app.zql().execute_query(f"SELECT EmployeeID FROM Employee WHERE KGID = '{escape_zcql_literal(payload.invitee_badge)}'")
     if not emp_res:
         raise HTTPException(status_code=404, detail="No officer found with that badge number.")
     invitee_employee_id = emp_res[0].get("Employee", {}).get("EmployeeID")
 
     existing = catalyst_app.zql().execute_query(
-        f"SELECT invitation_id FROM CoworkInvitation WHERE session_id = '{payload.session_id}' "
+        f"SELECT invitation_id FROM CoworkInvitation WHERE session_id = '{escape_zcql_literal(payload.session_id)}' "
         f"AND invitee_badge = '{payload.invitee_badge}' AND status = 'pending' LIMIT 1"
     )
     if existing:
         raise HTTPException(status_code=409, detail="An invitation is already pending for this officer.")
 
     already_in = catalyst_app.zql().execute_query(
-        f"SELECT session_id FROM CoworkParticipant WHERE session_id = '{payload.session_id}' AND employee_id = {invitee_employee_id} LIMIT 1"
+        f"SELECT session_id FROM CoworkParticipant WHERE session_id = '{escape_zcql_literal(payload.session_id)}' AND employee_id = {invitee_employee_id} LIMIT 1"
     )
     if already_in:
         raise HTTPException(status_code=409, detail="That officer is already part of this session.")
 
     case_no = None
     try:
-        session_res = catalyst_app.zql().execute_query(f"SELECT case_no FROM ChatSession WHERE session_id = '{payload.session_id}' LIMIT 1")
+        session_res = catalyst_app.zql().execute_query(f"SELECT case_no FROM ChatSession WHERE session_id = '{escape_zcql_literal(payload.session_id)}' LIMIT 1")
         if session_res:
             case_no = session_res[0].get("ChatSession", {}).get("case_no")
     except Exception:
@@ -3606,7 +3607,7 @@ async def list_cowork_invitations(request: Request, location_context: str = Depe
     try:
         res = catalyst_app.zql().execute_query(
             f"SELECT invitation_id, ROWID, session_id, case_no, inviter_employee_id, created_at FROM CoworkInvitation "
-            f"WHERE invitee_badge = '{kgid}' AND status = 'pending' ORDER BY created_at DESC LIMIT 50"
+            f"WHERE invitee_badge = '{escape_zcql_literal(kgid)}' AND status = 'pending' ORDER BY created_at DESC LIMIT 50"
         )
         invitations = []
         for r in res:
@@ -3689,7 +3690,7 @@ async def list_cowork_sessions(request: Request, location_context: str = Depends
             sid = p.get("session_id")
             title = "Shared Conversation"
             try:
-                sess_res = catalyst_app.zql().execute_query(f"SELECT title, last_active_at FROM ChatSession WHERE session_id = '{sid}' LIMIT 1")
+                sess_res = catalyst_app.zql().execute_query(f"SELECT title, last_active_at FROM ChatSession WHERE session_id = '{escape_zcql_literal(sid)}' LIMIT 1")
                 if sess_res:
                     s = sess_res[0].get("ChatSession", {})
                     title = s.get("title") or title
@@ -3715,7 +3716,7 @@ async def search_cases_for_investigation(q: str = "", location_context: str = De
         return []
     try:
         res = catalyst_app.zql().execute_query(
-            f"SELECT CaseMasterID, CrimeNo, BriefFacts FROM CaseMaster WHERE CrimeNo LIKE '*{q}*' LIMIT 10"
+            f"SELECT CaseMasterID, CrimeNo, BriefFacts FROM CaseMaster WHERE CrimeNo LIKE '*{escape_zcql_literal(q)}*' LIMIT 10"
         )
         return [{
             "case_no": r.get("CaseMaster", {}).get("CrimeNo"),
@@ -3760,7 +3761,7 @@ async def create_investigation(payload: CreateInvestigationRequest, request: Req
             # Victim tables keyed by CaseMasterID -- not selected here.
             case_check = catalyst_app.zql().execute_query(
                 f"SELECT CaseMasterID, CrimeNo, CrimeRegisteredDate, BriefFacts "
-                f"FROM CaseMaster WHERE CrimeNo = '{payload.case_no}' LIMIT 1"
+                f"FROM CaseMaster WHERE CrimeNo = '{escape_zcql_literal(payload.case_no)}' LIMIT 1"
             )
             if not case_check:
                 raise HTTPException(status_code=404, detail="That case number doesn't match any real case.")
@@ -3870,7 +3871,7 @@ async def list_investigations(request: Request, location_context: str = Depends(
             if not sid or sid in seen_session_ids:
                 continue
             sess_res = catalyst_app.zql().execute_query(
-                f"SELECT title, description, case_no, last_active_at FROM ChatSession WHERE session_id = '{sid}' AND description != '' LIMIT 1"
+                f"SELECT title, description, case_no, last_active_at FROM ChatSession WHERE session_id = '{escape_zcql_literal(sid)}' AND description != '' LIMIT 1"
             )
             if sess_res:
                 seen_session_ids.add(sid)
@@ -3887,7 +3888,7 @@ async def list_investigations(request: Request, location_context: str = Depends(
         # at all (only invited guests did, via role != "owner").
         owner_ids = [inv["session_id"] for inv in investigations if inv["role"] == "owner"]
         if owner_ids:
-            id_list = ",".join(f"'{sid}'" for sid in owner_ids)
+            id_list = ",".join(f"'{escape_zcql_literal(sid)}'" for sid in owner_ids)
             part_check = catalyst_app.zql().execute_query(
                 f"SELECT DISTINCT session_id FROM CoworkParticipant WHERE session_id IN ({id_list})"
             )
@@ -5626,7 +5627,7 @@ def _verify_supervisor_approver(badge: str, password: str) -> bool:
         return False
     try:
         cred = catalyst_app.zql().execute_query(
-            f"SELECT PasswordHash FROM OfficerCredentials WHERE KGID = '{badge}'")
+            f"SELECT PasswordHash FROM OfficerCredentials WHERE KGID = '{escape_zcql_literal(badge)}'")
         if not cred:
             return False
         stored = cred[0].get("OfficerCredentials", {}).get("PasswordHash")
@@ -6355,7 +6356,7 @@ async def set_email_once(payload: SetEmailOnceRequest, request: Request,
     badge = request.state.kgid
     try:
         emp_res = catalyst_app.zql().execute_query(
-            f"SELECT ROWID, Email FROM Employee WHERE KGID = '{badge}' LIMIT 1")
+            f"SELECT ROWID, Email FROM Employee WHERE KGID = '{escape_zcql_literal(badge)}' LIMIT 1")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Employee lookup failed: {e}")
     if not emp_res:

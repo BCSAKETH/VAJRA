@@ -14,7 +14,7 @@ import pandas as pd
 from vajra_core import catalyst_app, VajraGraphRAG, VajraSemanticMemory, MOBehavioralProfiler, zcql_insert_row, \
     is_pocso_sensitive, redact_pocso_name, redact_phone_numbers, is_supervisor_badge, \
     has_active_pocso_grant, create_pocso_request, find_active_pocso_request, _compute_mo_vector, \
-    start_zql_log, get_zql_log
+    start_zql_log, get_zql_log, escape_zcql_literal
 from session_memory import VajraSessionMemory
 from catalyst_llm import CatalystLLM
 from catalyst_qwen import CatalystQwen
@@ -3395,7 +3395,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 try:
                     if getattr(self, "officer_badge", None):
                         emp_res = catalyst_app.zql().execute_query(
-                            f"SELECT EmployeeID, KGID, FirstName, UnitID, RankID, DesignationID FROM Employee WHERE KGID = '{self.officer_badge}' LIMIT 1"
+                            f"SELECT EmployeeID, KGID, FirstName, UnitID, RankID, DesignationID FROM Employee WHERE KGID = '{escape_zcql_literal(self.officer_badge)}' LIMIT 1"
                         )
                     else:
                         emp_res = catalyst_app.zql().execute_query(
@@ -6603,7 +6603,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             recipient = ""
             try:
                 _emp = catalyst_app.zql().execute_query(
-                    f"SELECT Email FROM Employee WHERE KGID = '{self.officer_badge}' LIMIT 1") if catalyst_app else []
+                    f"SELECT Email FROM Employee WHERE KGID = '{escape_zcql_literal(self.officer_badge)}' LIMIT 1") if catalyst_app else []
                 recipient = (_emp[0].get("Employee", {}).get("Email") or "") if _emp else ""
             except Exception as ex:
                 logger.warning(f"send_investigation_email: could not fetch officer email: {ex}")

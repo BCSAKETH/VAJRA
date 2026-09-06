@@ -239,6 +239,34 @@ def _zcql_escape_value(v) -> str:
     return f"'{s}'"
 
 
+def escape_zcql_literal(v: Any) -> str:
+    """
+    Escapes a value for safe interpolation INSIDE a ZCQL string literal the
+    caller has already wrapped in single quotes -- e.g.
+    f"WHERE session_id = '{escape_zcql_literal(session_id)}'" (Vajra Plan
+    04-09-26, pentest V7: ZCQL Query Injection Risk).
+
+    Distinct from _zcql_escape_value above (which wraps a value for an
+    INSERT/UPDATE VALUES list, quotes included, with type-specific NULL/
+    bool/number handling) -- this one is for the far more common pattern in
+    this codebase: a raw f-string building a WHERE clause. Doubles embedded
+    single quotes (ZCQL's own escape convention, same as standard SQL) and
+    strips CR/LF to block line-injection into the query string.
+
+    Path/body parameters like `session_id` flow into dozens of these
+    f-strings unescaped elsewhere in this codebase -- most call sites are
+    low-risk in practice (an ownership check gates access before the value
+    is ever used, or the value is JWT-derived/regex-validated upstream),
+    but "probably fine because something else usually blocks it" is exactly
+    the reasoning V7 flags as a real gap. Apply this wherever a
+    caller-controllable string reaches a WHERE clause, even when another
+    layer likely already covers it.
+    """
+    if v is None:
+        return ""
+    return str(v).replace("'", "''").replace("\r", "").replace("\n", " ")
+
+
 def zcql_insert_row(table_name: str, row: Dict[str, Any]) -> None:
     """
     Replaces catalyst_app.datastore().table(X).insert_row(row) everywhere in
