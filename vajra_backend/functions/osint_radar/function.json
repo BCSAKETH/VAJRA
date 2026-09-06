@@ -1,0 +1,5 @@
+{
+  "name": "osint_radar",
+  "runtime": "python3.12",
+  "entry_point": "index.handler"
+}

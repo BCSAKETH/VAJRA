@@ -17,7 +17,8 @@
   "functions": {
     "targets": [
       "proactive_alerts",
-      "ai_turn_worker"
+      "ai_turn_worker",
+      "osint_radar"
     ],
     "source": "vajra_backend/functions"
   }

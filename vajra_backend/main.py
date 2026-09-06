@@ -4936,6 +4936,103 @@ async def get_model_calibration_status(job_id: str, request: Request, location_c
     return _calibration_jobs.get(job_id, {"status": "unknown"})
 
 
+# --- Item 28 (Vajra Plan 04-09-26): Autonomous Viral OSINT Radar ---
+# The real, always-scheduled version of this is the standalone Catalyst Job
+# function at vajra_backend/functions/osint_radar/ (deployed separately,
+# needs a one-time Catalyst Console cron schedule -- see that function's
+# own docstring for why the schedule itself can't be created from a repo
+# file). This endpoint runs the EXACT SAME sweep logic inline, reusing the
+# app's own already-authenticated `internet_signals` module instead of a
+# separate raw REST/token dance, so a supervisor can verify the mechanism
+# works live right now instead of waiting on a 6-hourly cron to fire.
+_OSINT_THREAT_CATEGORIES = [
+    ("CYBER_FRAUD", "Karnataka cyber fraud OR cyber crime arrest"),
+    ("NARCOTICS", "Karnataka drugs OR narcotics seizure"),
+    ("ORGANIZED_CRIME", "Karnataka gang OR organized crime bust"),
+    ("TERROR_THREAT", "Karnataka terror OR terrorist threat alert"),
+    ("COMMUNAL_UNREST", "Karnataka riot OR communal violence"),
+    ("TRAFFICKING", "Karnataka human trafficking OR child trafficking"),
+]
+
+
+def _run_osint_radar_sweep() -> Dict[str, Any]:
+    """Synchronous -- always called via run_in_threadpool. Mirrors
+    functions/osint_radar/index.py's logic exactly (see that file for why
+    each design choice was made: category-level not per-district sweeps,
+    Google News RSS not SmartBrowz, Warning-capped severity, URL-based
+    dedup against this job's own alert history)."""
+    import internet_signals as _isig
+    if not catalyst_app:
+        return {"error": "Datastore unavailable."}
+
+    d_res = catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")
+    districts = {r.get("District", {}).get("DistrictName"): int(r["District"]["DistrictID"])
+                 for r in d_res if r.get("District", {}).get("DistrictID") and r.get("District", {}).get("DistrictName")}
+    fallback_district_id = districts.get("Bengaluru Urban") or (next(iter(districts.values())) if districts else 1)
+
+    hist = catalyst_app.zql().execute_query(
+        "SELECT AlertMessage FROM ProactiveAlerts WHERE AlertType = 'OSINT_THREAT' ORDER BY ROWID DESC LIMIT 60"
+    ) or []
+    seen_urls = set()
+    for r in hist:
+        msg = r.get("ProactiveAlerts", {}).get("AlertMessage", "") or ""
+        m = re.search(r"\((https?://\S+)\)", msg)
+        if m:
+            seen_urls.add(m.group(1))
+
+    checked, inserted, alerts_out = 0, 0, []
+    for category, query in _OSINT_THREAT_CATEGORIES:
+        checked += 1
+        try:
+            items = (_isig._scrape_news_rss(query, 1) or [])
+        except Exception as e:
+            logger.warning(f"OSINT radar: RSS fetch failed for {category}: {e}")
+            continue
+        if not items:
+            continue
+        item = items[0]
+        url = item.get("url") or ""
+        title = item.get("title") or ""
+        if not (url and title) or url in seen_urls:
+            continue
+        district_id = fallback_district_id
+        for name, did in districts.items():
+            if name and name.split()[0].lower() in title.lower():
+                district_id = did
+                break
+        message = (
+            f"OSINT Radar [{category}]: {title} -- {item.get('source', 'web')} ({url}). "
+            f"Unverified open-source lead, requires independent corroboration before any "
+            f"operational action (Section 63 BSA)."
+        )
+        try:
+            zcql_insert_row("ProactiveAlerts", {
+                "AlertType": "OSINT_THREAT", "DistrictID": district_id, "AlertMessage": message,
+                "TriggerTime": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                "Severity": "Warning", "IsRead": False,
+            })
+            inserted += 1
+            seen_urls.add(url)
+            alerts_out.append({"category": category, "title": title, "url": url, "district_id": district_id})
+        except Exception as e:
+            logger.warning(f"OSINT radar: could not insert alert for {category}: {e}")
+
+    return {"categories_checked": checked, "new_alerts_inserted": inserted, "alerts": alerts_out,
+            "computed_at_utc": datetime.utcnow().isoformat()}
+
+
+@app.post("/api/admin/osint-radar/run")
+async def run_osint_radar(request: Request, location_context: str = Depends(security_firewall)):
+    """Supervisor-only, on-demand trigger for the OSINT threat radar sweep
+    (Item 28). Synchronous is fine here -- 6 Google News RSS calls complete
+    in a few seconds, comfortably inside AppSail's request window, unlike
+    the model-calibration job's full-dataset pull."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    result = await run_in_threadpool(_run_osint_radar_sweep)
+    return result
+
+
 class TranslateRequest(BaseModel):
     text: str
     source_lang: str = "en"
