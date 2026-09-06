@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from "react";
 import { useApp } from "../AppContext";
-import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2, PieChart as PieChartIcon } from "lucide-react";
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, CartesianGrid, PieChart, Pie } from "recharts";
+import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2, PieChart as PieChartIcon, ShieldCheck, Scale, CheckCircle2 } from "lucide-react";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, CartesianGrid, PieChart, Pie, ReferenceLine } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { WatermarkOverlay } from "./WatermarkOverlay";
@@ -21,6 +21,84 @@ const CHART_COLORS = [
   "#2563EB", "#65A30D", "#9333EA", "#0891B2", "#B45309",
   "#4F46E5", "#E11D48", "#0D9488", "#A855F7",
 ];
+
+// Police-centric mapping for XGBoost/SHAP feature variables:
+// Translates technical data science variables into court-admissible,
+// operational law-enforcement terms in both English and Kannada.
+const POLICE_EVIDENTIARY_FACTORS: Record<string, { en: string; kn: string; descEn: string; descKn: string }> = {
+  "Weekday pattern": {
+    en: "Incident Timing / Shift Pattern",
+    kn: "ಘಟನೆಯ ಸಮಯ / ಪಾಳಿ ಮಾದರಿ",
+    descEn: "Temporal distribution aligns with normal routine; non-predatory shift",
+    descKn: "ಸಾಮಾನ್ಯ ದಿನಚರಿಯೊಂದಿಗೆ ಹೊಂದಾಣಿಕೆ; ಪೂರ್ವಯೋಜಿತವಲ್ಲದ ಸಮಯ",
+  },
+  "Month pattern": {
+    en: "Seasonal Crime Trend",
+    kn: "ಋತುಮಾನದ ಅಪರಾಧ ಪ್ರವೃತ್ತಿ",
+    descEn: "Temporal distribution aligns with broader seasonal/commercial cycles",
+    descKn: "ಸಮಯದ ಹಂಚಿಕೆಯು ಋತುಮಾನದ/ವಾಣಿಜ್ಯ ಚಕ್ರಗಳೊಂದಿಗೆ ಹೊಂದಾಣಿಕೆಯಾಗುತ್ತದೆ",
+  },
+  "Police station": {
+    en: "Station Incident Density",
+    kn: "ಠಾಣಾ ವ್ಯಾಪ್ತಿಯ ಅಪರಾಧ ಸಾಂದ್ರತೆ",
+    descEn: "Historical jurisdictional incident density for reporting station",
+    descKn: "ವರದಿ ಮಾಡಿದ ಪೊಲೀಸ್ ಠಾಣೆಯ ವ್ಯಾಪ್ತಿಯ ಐತಿಹಾಸಿಕ ಸಾಂದ್ರತೆ",
+  },
+  "Case type": {
+    en: "Offense Classification",
+    kn: "ಪ್ರಕರಣದ ಕಾನೂನು ವರ್ಗೀಕರಣ",
+    descEn: "Specific statutory section classification under BNS / IPC",
+    descKn: "BNS / IPC ಅಡಿಯಲ್ಲಿ ನಿರ್ದಿಷ್ಟ ಕಾನೂನು ವಿಭಾಗದ ವರ್ಗೀಕರಣ",
+  },
+  "Day of week": {
+    en: "Day-of-Week Recurrence",
+    kn: "ವಾರದ ದಿನದ ಪುನರಾವರ್ತನೆ",
+    descEn: "Recurrence pattern across specific days of the operational week",
+    descKn: "ಕಾರ್ಯಾಚರಣೆಯ ವಾರದ ನಿರ್ದಿಷ್ಟ ದಿನಗಳಲ್ಲಿ ಪುನರಾವರ್ತನೆಯ ಸಂಬಂಧ",
+  },
+  "Number of co-accused": {
+    en: "Syndicate / Co-Accused Size",
+    kn: "ಸಹ-ಆರೋಪಿಗಳ ಜಾಲ / ಸಿಂಡಿಕೇಟ್",
+    descEn: "Number of conspirators indicating organized syndicate operations",
+    descKn: "ಸಂಘಟಿತ ಸಿಂಡಿಕೇಟ್ ಕಾರ್ಯಾಚರಣೆಯನ್ನು ಸೂಚಿಸುವ ಸಹಚರರ ಸಂಖ್ಯೆ",
+  },
+  "Crime category": {
+    en: "Modus & Offense Severity",
+    kn: "ಅಪರಾಧ ವಿಧಾನ ಮತ್ತು ತೀವ್ರತೆ",
+    descEn: "Gravity of criminal charge and execution modus operandi",
+    descKn: "ಅಪರಾಧದ ಆರೋಪದ ತೀವ್ರತೆ ಮತ್ತು ಜಾರಿ ವಿಧಾನ",
+  },
+  "District": {
+    en: "Inter-District Mobility",
+    kn: "ಅಂತರ್-ಜಿಲ್ಲಾ ಚಲನಶೀಲತೆ",
+    descEn: "Cross-border jurisdictional movement and multi-district footprint",
+    descKn: "ಗಡಿ ಮೀರಿದ ನ್ಯಾಯವ್ಯಾಪ್ತಿಯ ಚಲನೆ ಮತ್ತು ಬಹು-ಜಿಲ್ಲಾ ಹೆಜ್ಜೆಗುರುತು",
+  },
+  "Victim-to-accused ratio": {
+    en: "Victim Impact Ratio",
+    kn: "ಸಂತ್ರಸ್ತ-ಆರೋಪಿ ಅನುಪಾತ",
+    descEn: "Ratio of impacted victims indicating target profiling scale",
+    descKn: "ಗುರಿಪಡಿಸಿದ ಪ್ರಮಾಣವನ್ನು ಸೂಚಿಸುವ ಸಂತ್ರಸ್ತರ ಅನುಪಾತ",
+  },
+  "Year of offence": {
+    en: "Offense Recency Window",
+    kn: "ಅಪರಾಧದ ಇತ್ತೀಚಿನತೆ",
+    descEn: "Temporal recency of offense registration",
+    descKn: "ಅಪರಾಧ ದಾಖಲಾತಿಯ ಸಮಯದ ಅಂತರ",
+  },
+  "Season of year": {
+    en: "Quarterly Cycle Trend",
+    kn: "ತ್ರೈಮಾಸಿಕ ಚಕ್ರದ ಪ್ರವೃತ್ತಿ",
+    descEn: "Quarterly pattern correlation with offender activity",
+    descKn: "ಅಪರಾಧಿಯ ಚಟುವಟಿಕೆಯೊಂದಿಗೆ ತ್ರೈಮಾಸಿಕ ಮಾದರಿ ಸಂಬಂಧ",
+  },
+  "Number of victims": {
+    en: "Impacted Victim Count",
+    kn: "ಬಾಧಿತ ಸಂತ್ರಸ್ತರ ಸಂಖ್ಯೆ",
+    descEn: "Total direct complainants and victims listed in chargesheet",
+    descKn: "ಆರೋಪಪಟ್ಟಿಯಲ್ಲಿ ಪಟ್ಟಿಮಾಡಲಾದ ಒಟ್ಟು ಸಂತ್ರಸ್ತರ ಸಂಖ್ಯೆ",
+  },
+};
 
 // Leaflet measures its container's size at mount time. Inside a modal that
 // animates/expands in, the flex layout hasn't settled to its final size yet
@@ -119,12 +197,19 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
     downloadJson(data, `vajra_${type}_${stamp}.json`);
   };
 
-  // Formulate SHAP factor data for recharts
-  const shapData = (data.shap_factors || []).map((f: any) => ({
-    name: f.name,
-    value: parseFloat(f.value),
-    contribution: f.contribution,
-  }));
+  // Formulate SHAP factor data for recharts with police-friendly translations
+  const shapData = (data.shap_factors || []).map((f: any) => {
+    const cfg = POLICE_EVIDENTIARY_FACTORS[f.name];
+    const displayName = cfg ? (lang === "en" ? cfg.en : cfg.kn) : f.name;
+    const desc = cfg ? (lang === "en" ? cfg.descEn : cfg.descKn) : "";
+    return {
+      rawName: f.name,
+      name: displayName,
+      value: parseFloat(f.value),
+      contribution: f.contribution,
+      desc,
+    };
+  });
 
   // Formulate forecast data for recharts
   const forecastData = (data.forecast || []).map((f: any, idx: number) => ({
@@ -374,86 +459,327 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
             </div>
           )}
 
-          {type === "risk" && (
-            <div className="h-full flex flex-col gap-6">
-              {/* Risk Gauge Header */}
-              <div className="flex flex-col sm:flex-row items-center justify-between bg-stone-900/25 border border-stone-850 p-4 rounded-xl gap-4">
-                <div>
-                  <h4 className="font-black text-stone-100 text-lg">{lang === "en" ? "Calibrated Conviction Probability:" : "ಪರಿಷ್ಕೃತ ಅಪರಾಧ ಸಾಧ್ಯತೆ:"} {data.risk_score || 0}%</h4>
-                  <p className="text-xs text-stone-450 mt-1">
-                    {lang === "en" ? "Computed via calibrated XGBoost risk estimator. SHAP factors indicate localized contributions to final model log-odds." : "ಪರಿಷ್ಕೃತ XGBoost ಅಪಾಯ ಅಂದಾಜುದಾರ ಮೂಲಕ ಲೆಕ್ಕಹಾಕಲಾಗಿದೆ. SHAP ಅಂಶಗಳು ಅಂತಿಮ ಮಾದರಿ ಫಲಿತಾಂಶಕ್ಕೆ ಸ್ಥಳೀಯ ಕೊಡುಗೆಗಳನ್ನು ಸೂಚಿಸುತ್ತವೆ."}
-                  </p>
-                </div>
-                <div className="flex flex-col items-end gap-2 shrink-0">
-                  <div className="px-4 py-2 rounded-xl bg-stone-900 border border-stone-800 text-[#C79A4E] font-mono font-bold text-sm tracking-wide">
-                    {lang === "en" ? "Suspect:" : "ಶಂಕಿತ:"} {data.suspect || (lang === "en" ? "Unknown" : "ಅಜ್ಞಾತ")}
-                  </div>
-                  {/* Serial-MO chip: an explicit >=threshold flag on the cosine
-                      match the MO profiler already computes -- field officers'
-                      #1 ask was a plain yes/no signal instead of having to read
-                      a percentage themselves. Backend gates this to real
-                      matches against live-DB vectors only (never on the
-                      synthetic/mock fallback), so this chip never appears
-                      unless it reflects an actual grounded pattern. */}
-                  {data.mo_profile?.is_probable_serial_pattern && (
-                    <div
-                      className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/15 border border-rose-500/40 text-rose-300 font-mono text-[10px] font-bold uppercase tracking-wide cursor-help"
-                      title={lang === "en" ? "Investigative lead, not identification" : "ತನಿಖಾ ಸುಳಿವು, ಗುರುತಿಸುವಿಕೆ ಅಲ್ಲ"}
-                    >
-                      <Fingerprint className="w-3 h-3" />
-                      {lang === "en"
-                        ? `Serial MO match — ${data.mo_profile.match_rate}% (lead, not ID)`
-                        : `ಪುನರಾವರ್ತಿತ MO ಹೊಂದಾಣಿಕೆ — ${data.mo_profile.match_rate}% (ಸುಳಿವು)`}
-                    </div>
-                  )}
-                </div>
-              </div>
+          {type === "risk" && (() => {
+            const riskScore = typeof data.risk_score === "number" ? data.risk_score : parseFloat(data.risk_score || "0") || 0;
+            const isLowRisk = riskScore < 35;
+            const isModerateRisk = riskScore >= 35 && riskScore < 65;
+            const mitigatingFactors = shapData.filter((f: any) => f.contribution === "negative");
+            const aggravatingFactors = shapData.filter((f: any) => f.contribution === "positive");
 
-              {/* Horizontal SHAP Explainer Chart */}
-              <div className="flex-1 min-h-[300px]">
-                <div className="flex items-center justify-between mb-3">
-                  <h5 className="font-extrabold text-stone-300 text-xs font-mono">{lang === "en" ? "SHAP Contribution Waterfall (Descending Impact)" : "SHAP ಕೊಡುಗೆ ಜಲಪಾತ (ಇಳಿಕೆ ಪರಿಣಾಮ)"}</h5>
-                  {/* Legend -- two-color diverging encoding (raises vs lowers
-                      risk) needs its meaning stated explicitly; color alone
-                      doesn't say which direction is "worse". */}
-                  <div className="flex items-center gap-3">
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: "#F59E0B" }} />
-                      <span className="text-[9.5px] font-mono text-stone-400">{lang === "en" ? "Increases risk" : "ಅಪಾಯ ಹೆಚ್ಚಿಸುತ್ತದೆ"}</span>
+            const riskTierBadge = isLowRisk
+              ? { text: lang === "en" ? "LOW-TO-MODERATE RISK" : "ಕಡಿಮೆ-ಮಧ್ಯಮ ಮಟ್ಟದ ಅಪಾಯ", cls: "bg-emerald-500/15 text-emerald-400 border-emerald-500/30" }
+              : isModerateRisk
+              ? { text: lang === "en" ? "MODERATE RISK" : "ಮಧ್ಯಮ ಮಟ್ಟದ ಅಪಾಯ", cls: "bg-amber-500/15 text-amber-400 border-amber-500/30" }
+              : { text: lang === "en" ? "HIGH RECIDIVISM RISK" : "ಹೆಚ್ಚಿನ ಪುನರಾವರ್ತಿತ ಅಪಾಯ", cls: "bg-rose-500/15 text-rose-400 border-rose-500/30" };
+
+            return (
+              <div className="h-full flex flex-col gap-5">
+                {/* Risk Gauge Header */}
+                <div className="bg-stone-900/40 border border-stone-800 p-4 rounded-xl flex flex-col gap-3">
+                  <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <h4 className="font-black text-stone-100 text-lg sm:text-xl font-mono">
+                          {lang === "en" ? "Calibrated Conviction Probability:" : "ಪರಿಷ್ಕೃತ ಅಪರಾಧ ಸಾಧ್ಯತೆ:"}{" "}
+                          <span className={isLowRisk ? "text-emerald-400" : isModerateRisk ? "text-amber-400" : "text-rose-400"}>
+                            {riskScore}%
+                          </span>
+                        </h4>
+                        <span className={`text-[10px] font-mono px-2.5 py-0.5 rounded-full font-bold border ${riskTierBadge.cls}`}>
+                          {riskTierBadge.text}
+                        </span>
+                      </div>
+                      <p className="text-xs text-stone-450 mt-1 leading-relaxed">
+                        {lang === "en"
+                          ? "Calibrated CCTNS evidentiary risk assessment based on 12 jurisdictional factors. Outlines prosecution strength and mitigating defense elements."
+                          : "12 ನ್ಯಾಯವ್ಯಾಪ್ತಿಯ ಅಂಶಗಳ ಆಧಾರದ ಮೇಲೆ CCTNS ಸಾಕ್ಷ್ಯ ಮೌಲ್ಯಮಾಪನ. ಪ್ರಾಸಿಕ್ಯೂಷನ್ ಬಲ ಮತ್ತು ಶಮನಕಾರಿ ಅಂಶಗಳನ್ನು ತಿಳಿಸುತ್ತದೆ."}
+                      </p>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      <span className="w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: "#C79A4E" }} />
-                      <span className="text-[9.5px] font-mono text-stone-400">{lang === "en" ? "Decreases risk" : "ಅಪಾಯ ಕಡಿಮೆಗೊಳಿಸುತ್ತದೆ"}</span>
+                    <div className="flex flex-col items-start sm:items-end gap-1.5 shrink-0">
+                      <div className="px-3.5 py-1.5 rounded-xl bg-stone-900 border border-stone-800 text-[#C79A4E] font-mono font-bold text-xs tracking-wide">
+                        {lang === "en" ? "Suspect:" : "ಶಂಕಿತ:"} {data.suspect || (lang === "en" ? "Unknown" : "ಅಜ್ಞಾತ")}
+                      </div>
+                      {data.mo_profile?.is_probable_serial_pattern && (
+                        <div
+                          className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/15 border border-rose-500/40 text-rose-300 font-mono text-[10px] font-bold uppercase tracking-wide cursor-help"
+                          title={lang === "en" ? "Investigative lead, not identification" : "ತನಿಖಾ ಸುಳಿವು, ಗುರುತಿಸುವಿಕೆ ಅಲ್ಲ"}
+                        >
+                          <Fingerprint className="w-3 h-3" />
+                          {lang === "en"
+                            ? `Serial MO match — ${data.mo_profile.match_rate}% (lead, not ID)`
+                            : `ಪುನರಾವರ್ತಿತ MO ಹೊಂದಾಣಿಕೆ — ${data.mo_profile.match_rate}% (ಸುಳಿವು)`}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Horizontal Risk Progress Bar Visualizer */}
+                  <div className="space-y-1 pt-1">
+                    <div className="w-full bg-stone-950 rounded-full h-2 overflow-hidden border border-stone-800/80 p-0.5">
+                      <div
+                        className="h-full rounded-full transition-all duration-700"
+                        style={{
+                          width: `${Math.min(100, Math.max(4, riskScore))}%`,
+                          background: isLowRisk
+                            ? "linear-gradient(90deg, #10B981, #34D399)"
+                            : isModerateRisk
+                            ? "linear-gradient(90deg, #F59E0B, #FBBF24)"
+                            : "linear-gradient(90deg, #EF4444, #F43F5E)",
+                        }}
+                      />
+                    </div>
+                    <div className="flex justify-between text-[9.5px] font-mono text-stone-500 px-0.5">
+                      <span className={isLowRisk ? "text-emerald-400 font-bold" : ""}>
+                        0% {lang === "en" ? "Low (<35%)" : "ಕಡಿಮೆ (<35%)"}
+                      </span>
+                      <span className={isModerateRisk ? "text-amber-400 font-bold" : ""}>
+                        {lang === "en" ? "Moderate (35-65%)" : "ಮಧ್ಯಮ (35-65%)"}
+                      </span>
+                      <span className={!isLowRisk && !isModerateRisk ? "text-rose-400 font-bold" : ""}>
+                        100% {lang === "en" ? "High (>65%)" : "ಹೆಚ್ಚು (>65%)"}
+                      </span>
                     </div>
                   </div>
                 </div>
-                <ResponsiveContainer width="100%" height={260}>
-                  <BarChart
-                    data={shapData}
-                    layout="vertical"
-                    margin={{ top: 5, right: 30, left: 120, bottom: 5 }}
-                  >
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
-                    <XAxis type="number" stroke="#475569" fontSize={10} />
-                    <YAxis dataKey="name" type="category" stroke="#94A3B8" fontSize={9.5} />
-                    <Tooltip
-                      contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }}
-                      formatter={(value: number, _name, item: any) => [
-                        `${value} (${item?.payload?.contribution === "positive" ? (lang === "en" ? "increases risk" : "ಅಪಾಯ ಹೆಚ್ಚಿಸುತ್ತದೆ") : (lang === "en" ? "decreases risk" : "ಅಪಾಯ ಕಡಿಮೆಗೊಳಿಸುತ್ತದೆ")})`,
-                        lang === "en" ? "SHAP Contribution" : "SHAP ಕೊಡುಗೆ",
-                      ]}
-                    />
-                    <Bar dataKey="value" name="SHAP Contribution" radius={[0, 4, 4, 0]}>
-                      {shapData.map((entry: any, index: number) => {
-                        const isPos = entry.contribution === "positive";
-                        return <Cell key={`cell-${index}`} fill={isPos ? "#F59E0B" : "#C79A4E"} />;
-                      })}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
+
+                {/* Horizontal Evidentiary Diverging Bar Chart */}
+                <div className="flex-1 min-h-[320px] bg-stone-900/20 border border-stone-850/80 rounded-xl p-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                    <div>
+                      <h5 className="font-bold text-stone-200 text-xs font-mono tracking-wider flex items-center gap-2">
+                        <Scale className="w-3.5 h-3.5 text-[#C79A4E]" />
+                        {lang === "en"
+                          ? "EVIDENTIARY FACTORS DRIVING RECIDIVISM RISK (AGENTS & DEFENSE FACTORS)"
+                          : "ಅಪರಾಧ ಪುನರಾವರ್ತನೆಯ ಅಪಾಯವನ್ನು ನಿರ್ಧರಿಸುವ ಸಾಕ್ಷ್ಯ ಅಂಶಗಳು"}
+                      </h5>
+                      <p className="text-[10px] text-stone-450 mt-0.5">
+                        {lang === "en"
+                          ? "Impact on prosecution log-odds. Mitigating factors reduce conviction likelihood; aggravating factors increase it."
+                          : "ಪ್ರಾಸಿಕ್ಯೂಷನ್ ಲಾಗ್-ಆಡ್ಸ್ ಮೇಲಿನ ಪರಿಣಾಮ. ಶಮನಕಾರಿ ಅಂಶಗಳು ಅಪರಾಧ ಸಾಧ್ಯತೆಯನ್ನು ಕಡಿಮೆ ಮಾಡುತ್ತವೆ; ತೀವ್ರಗೊಳಿಸುವ ಅಂಶಗಳು ಹೆಚ್ಚಿಸುತ್ತವೆ."}
+                      </p>
+                    </div>
+
+                    {/* Intuitive Color Legend */}
+                    <div className="flex items-center gap-3 shrink-0 bg-stone-900/80 border border-stone-800 px-3 py-1.5 rounded-lg">
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2.5 h-2.5 rounded-sm shrink-0 bg-emerald-500 shadow-sm shadow-emerald-500/50" />
+                        <span className="text-[10px] font-mono text-stone-300 font-medium">
+                          {lang === "en" ? "Mitigating (Reduces Risk)" : "ಶಮನಕಾರಿ (ಅಪಾಯ ಕಡಿಮೆ)"}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2.5 h-2.5 rounded-sm shrink-0 bg-amber-500 shadow-sm shadow-amber-500/50" />
+                        <span className="text-[10px] font-mono text-stone-300 font-medium">
+                          {lang === "en" ? "Aggravating (Increases Risk)" : "ತೀವ್ರಗೊಳಿಸುವಿಕೆ (ಅಪಾಯ ಹೆಚ್ಚಳ)"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <ResponsiveContainer width="100%" height={Math.max(290, shapData.length * 32)}>
+                    <BarChart
+                      data={shapData}
+                      layout="vertical"
+                      margin={{ top: 5, right: 30, left: 165, bottom: 15 }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" horizontal={false} />
+                      <XAxis
+                        type="number"
+                        stroke="#64748B"
+                        fontSize={10}
+                        tickFormatter={(v) => `${v > 0 ? "+" : ""}${v}`}
+                      />
+                      <YAxis
+                        dataKey="name"
+                        type="category"
+                        stroke="#CBD5E1"
+                        fontSize={10}
+                        tickLine={false}
+                        axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+                      />
+                      {/* Anchor baseline at zero */}
+                      <ReferenceLine
+                        x={0}
+                        stroke="rgba(255, 255, 255, 0.3)"
+                        strokeWidth={1.5}
+                        strokeDasharray="3 3"
+                      />
+                      {/* Tooltip with non-blinding dark cursor */}
+                      <Tooltip
+                        cursor={{ fill: "rgba(255, 255, 255, 0.04)", radius: 4 }}
+                        content={({ active, payload }: any) => {
+                          if (!active || !payload || !payload.length) return null;
+                          const item = payload[0].payload;
+                          const isPos = item.contribution === "positive";
+                          const absVal = Math.abs(item.value);
+                          const pctEffect = (absVal * 100).toFixed(1);
+                          return (
+                            <div className="bg-stone-900/95 backdrop-blur-md border border-stone-700/80 rounded-lg p-3 shadow-2xl min-w-[230px] max-w-[320px] pointer-events-none z-50">
+                              <div className="flex items-center justify-between border-b border-stone-800 pb-1.5 mb-2">
+                                <span className="text-xs font-bold text-stone-100">{item.name}</span>
+                                <span
+                                  className={`text-[9px] font-mono px-1.5 py-0.5 rounded font-bold uppercase tracking-wider ${
+                                    isPos
+                                      ? "bg-amber-500/15 text-amber-400 border border-amber-500/30"
+                                      : "bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"
+                                  }`}
+                                >
+                                  {isPos
+                                    ? (lang === "en" ? "▲ Aggravating" : "▲ ತೀವ್ರಗೊಳಿಸುವಿಕೆ")
+                                    : (lang === "en" ? "▼ Mitigating" : "▼ ಶಮನಕಾರಿ")}
+                                </span>
+                              </div>
+                              <div className="text-[11px] font-mono text-stone-300 space-y-1.5">
+                                <div className="flex justify-between items-center">
+                                  <span className="text-stone-400">
+                                    {lang === "en" ? "Conviction Impact:" : "ಅಪರಾಧ ಸಾಧ್ಯತೆ ಮೇಲಿನ ಪರಿಣಾಮ:"}
+                                  </span>
+                                  <span className={`font-bold ${isPos ? "text-amber-400" : "text-emerald-400"}`}>
+                                    {isPos ? `+${pctEffect}%` : `-${pctEffect}%`}
+                                  </span>
+                                </div>
+                                <div className="flex justify-between items-center text-[10px] text-stone-500">
+                                  <span>{lang === "en" ? "SHAP Log-Odds Weight:" : "ಮಾದರಿ ತೂಕ (SHAP):"}</span>
+                                  <span className="font-mono">{item.value > 0 ? `+${item.value}` : item.value}</span>
+                                </div>
+                                {item.desc && (
+                                  <div className="pt-1 border-t border-stone-800 text-[10px] text-stone-400 font-sans leading-relaxed">
+                                    {item.desc}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        }}
+                      />
+                      <Bar dataKey="value" name="Evidentiary Weight" radius={[4, 4, 4, 4]}>
+                        {shapData.map((entry: any, index: number) => {
+                          const isPos = entry.contribution === "positive";
+                          return (
+                            <Cell
+                              key={`cell-${index}`}
+                              fill={isPos ? "#F59E0B" : "#10B981"}
+                              fillOpacity={0.9}
+                            />
+                          );
+                        })}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+
+                  {/* Axis direction guide */}
+                  <div className="flex justify-between items-center text-[9.5px] font-mono text-stone-500 px-4 -mt-1 mb-1 border-t border-stone-800/40 pt-2">
+                    <span className="text-emerald-400/90 flex items-center gap-1 font-medium">
+                      ◀ {lang === "en" ? "Reduces Conviction Risk (Mitigating Evidence)" : "ಅಪರಾಧ ಸಾಧ್ಯತೆ ಕಡಿಮೆಗೊಳಿಸುವ ಪುರಾವೆಗಳು"}
+                    </span>
+                    <span className="text-stone-600">|</span>
+                    <span className="text-amber-400/90 flex items-center gap-1 font-medium">
+                      {lang === "en" ? "Increases Conviction Risk (Aggravating Evidence)" : "ಅಪರಾಧ ಸಾಧ್ಯತೆ ಹೆಚ್ಚಿಸುವ ಪುರಾವೆಗಳು"} ▶
+                    </span>
+                  </div>
+                </div>
+
+                {/* 2-Column Evidentiary Breakdown Panels */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  {/* Mitigating Evidence Panel */}
+                  <div className="bg-stone-900/35 border border-emerald-500/20 rounded-xl p-3.5 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-400 font-mono">
+                          <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
+                          <span>{lang === "en" ? "PRIMARY MITIGATING EVIDENCE" : "ಪ್ರಮುಖ ಶಮನಕಾರಿ ಪುರಾವೆಗಳು"}</span>
+                        </div>
+                        <span className="text-[9.5px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                          {mitigatingFactors.length} {lang === "en" ? "factors" : "ಅಂಶಗಳು"}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-stone-400 leading-relaxed mb-3">
+                        {lang === "en"
+                          ? "Circumstances weakening prosecution conviction likelihood or indicating routine, non-predatory patterns:"
+                          : "ಪ್ರಾಸಿಕ್ಯೂಷನ್ ಅಪರಾಧ ಸಾಧ್ಯತೆಯನ್ನು ಕಡಿಮೆ ಮಾಡುವ ಅಥವಾ ಪ್ರತ್ಯೇಕ ಘಟನೆಯನ್ನು ಸೂಚಿಸುವ ಸಂದರ್ಭಗಳು:"}
+                      </p>
+                      <ul className="space-y-1.5">
+                        {mitigatingFactors.slice(0, 3).map((f: any, idx: number) => (
+                          <li key={idx} className="flex items-start justify-between text-xs text-stone-300 bg-stone-950/50 px-2.5 py-1.5 rounded-lg border border-stone-850">
+                            <span className="font-medium text-stone-200">{f.name}</span>
+                            <span className="font-mono text-emerald-400 font-bold shrink-0 ml-2">
+                              {f.value}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div className="mt-3 pt-2.5 border-t border-emerald-500/15 text-[10.5px] text-emerald-300/80 font-mono">
+                      ✓ {lang === "en" ? "Defense Angle: Emphasize routine timing & localized footprint during bail hearings." : "ರಕ್ಷಣಾ ವಾದ: ಜಾಮೀನು ವಿಚಾರಣೆಯಲ್ಲಿ ಸಾಮಾನ್ಯ ಸಮಯ ಮತ್ತು ಸ್ಥಳೀಯ ನೆಲೆಯನ್ನು ಪ್ರತಿಪಾದಿಸಿ."}
+                    </div>
+                  </div>
+
+                  {/* Aggravating Evidence Panel */}
+                  <div className="bg-stone-900/35 border border-amber-500/20 rounded-xl p-3.5 flex flex-col justify-between">
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-1.5 text-xs font-bold text-amber-400 font-mono">
+                          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+                          <span>{lang === "en" ? "PRIMARY AGGRAVATING EVIDENCE" : "ಪ್ರಮುಖ ತೀವ್ರಗೊಳಿಸುವ ಪುರಾವೆಗಳು"}</span>
+                        </div>
+                        <span className="text-[9.5px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                          {aggravatingFactors.length} {lang === "en" ? "factors" : "ಅಂಶಗಳು"}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-stone-400 leading-relaxed mb-3">
+                        {lang === "en"
+                          ? "Statutory offense factors strengthening prosecution conviction likelihood and recidivism risk:"
+                          : "ಪ್ರಾಸಿಕ್ಯೂಷನ್ ಅಪರಾಧ ಸಾಧ್ಯತೆ ಮತ್ತು ಪುನರಾವರ್ತಿತ ಅಪಾಯವನ್ನು ಹೆಚ್ಚಿಸುವ ಶಾಸನಬದ್ಧ ಅಂಶಗಳು:"}
+                      </p>
+                      <ul className="space-y-1.5">
+                        {aggravatingFactors.slice(0, 3).map((f: any, idx: number) => (
+                          <li key={idx} className="flex items-start justify-between text-xs text-stone-300 bg-stone-950/50 px-2.5 py-1.5 rounded-lg border border-stone-850">
+                            <span className="font-medium text-stone-200">{f.name}</span>
+                            <span className="font-mono text-amber-400 font-bold shrink-0 ml-2">
+                              +{f.value}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                    <div className="mt-3 pt-2.5 border-t border-amber-500/15 text-[10.5px] text-amber-300/80 font-mono">
+                      ⚠ {lang === "en" ? "Prosecution Angle: Scrutinize co-accused disclosures & section statutory thresholds." : "ಪ್ರಾಸಿಕ್ಯೂಷನ್ ಕೋನ: ಸಹ-ಆರೋಪಿಗಳ ಹೇಳಿಕೆಗಳು ಮತ್ತು ಶಾಸನಬದ್ಧ ಮಿತಿಗಳನ್ನು ಪರಿಶೀಲಿಸಿ."}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Investigator Tactical Action Directives */}
+                <div className="bg-stone-900/40 border border-stone-800 rounded-xl p-3.5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div className="flex items-start gap-2.5">
+                    <div className="p-2 rounded-lg bg-stone-850 text-[#C79A4E] shrink-0 mt-0.5">
+                      <Scale className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="text-xs font-bold text-stone-200 font-mono">
+                        {lang === "en" ? "Investigator Tactical Action Directives" : "ತನಿಖಾಧಿಕಾರಿಯ ಕಾರ್ಯಾಚರಣಾ ನಿರ್ದೇಶನಗಳು"}
+                      </div>
+                      <div className="text-[11px] text-stone-400 mt-0.5 leading-relaxed">
+                        {data.remand_status ? (
+                          lang === "en"
+                            ? `Section 187(3) BNSS Statutory Remand: ${data.remand_status.days_remaining} days remaining to submit chargesheet before mandatory default bail (Arrested ${data.remand_status.arrest_date}).`
+                            : `ಸೆಕ್ಷನ್ 187(3) BNSS ಶಾಸನಬದ್ಧ ರಿಮಾಂಡ್: ಕಡ್ಡಾಯ ಡೀಫಾಲ್ಟ್ ಜಾಮೀನು ಅನ್ವಯವಾಗುವ ಮುನ್ನ ಆರೋಪಪಟ್ಟಿ ಸಲ್ಲಿಸಲು ${data.remand_status.days_remaining} ದಿನಗಳು ಬಾಕಿ ಇವೆ.`
+                        ) : (
+                          lang === "en"
+                            ? "File Section 106 BNSS financial tracing notice; verify co-accused CDR dumps and inter-district travel logs before filing bail objections."
+                            : "ಸೆಕ್ಷನ್ 106 BNSS ಅಡಿಯಲ್ಲಿ ಹಣಕಾಸು ಪರಿಶೀಲನಾ ನೋಟಿಸ್ ಜಾರಿ ಮಾಡಿ; ಜಾಮೀನು ಆಕ್ಷೇಪಣೆ ಸಲ್ಲಿಸುವ ಮುನ್ನ ಸಿಡಿಆರ್ ಡಂಪ್ ಪರಿಶೀಲಿಸಿ."
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0 self-end sm:self-center">
+                    <span className="text-[10px] font-mono px-2.5 py-1 rounded-md bg-stone-800/90 text-stone-300 border border-stone-700">
+                      {lang === "en" ? "CCTNS Grounded" : "CCTNS ಆಧಾರಿತ"}
+                    </span>
+                  </div>
+                </div>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {type === "forecast" && (
             <div className="h-full flex flex-col gap-6">
