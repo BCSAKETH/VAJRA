@@ -194,11 +194,37 @@ async def websocket_chat(websocket: WebSocket, session_id: str, token: str = Que
     instead of the usual Authorization header -- verified with the same
     verify_session_token used everywhere else, so an invalid/expired token
     is rejected exactly like any other endpoint.
+
+    Pentest V2 (WebSocket Stream Hijacking) fix: verifying the TOKEN alone
+    is not enough -- that only proves the caller is SOME authenticated
+    officer, not that they're allowed to see THIS session_id's live traffic.
+    Every other session-scoped endpoint (get_session_messages, the progress
+    ticker, the Cowork SSE stream) already gates on _get_cowork_role; this
+    socket was the one place that didn't, letting any officer who could
+    guess/observe a session_id eavesdrop on another investigation's live
+    push feed. Resolves the token's KGID to an EmployeeID (same lookup
+    auth's HTTP path uses) and applies the identical ownership/invite check
+    before accepting the connection.
     """
     from vajra_core import verify_session_token
     kgid = verify_session_token(token)
     if not kgid:
         await websocket.close(code=4001)
+        return
+
+    employee_id = None
+    if catalyst_app:
+        try:
+            emp_res = catalyst_app.zql().execute_query(f"SELECT EmployeeID FROM Employee WHERE KGID = '{kgid}'")
+            if emp_res:
+                employee_id = emp_res[0].get("Employee", {}).get("EmployeeID")
+        except Exception as e:
+            logger.warning(f"WebSocket auth: could not resolve EmployeeID for KGID {kgid}: {e}")
+    # Fail CLOSED if EmployeeID couldn't be resolved -- a lookup failure
+    # must never silently skip the ownership check (see _get_cowork_role's
+    # docstring for the broader fail-open bug this fix is part of).
+    if not employee_id or not _get_cowork_role(session_id, employee_id, kgid):
+        await websocket.close(code=4003)
         return
 
     await connection_manager.connect(session_id, websocket)
@@ -2417,18 +2443,44 @@ async def list_sessions(request: Request, location_context: str = Depends(securi
         return []
 
 
-def _get_cowork_role(session_id: str, employee_id: int) -> Optional[str]:
+def _get_cowork_role(session_id: str, employee_id: int, kgid: Optional[str] = None) -> Optional[str]:
     """
-    Returns 'owner' if the session belongs to the officer (via session_id prefix or ChatSession row),
-    their CoworkParticipant.role ('viewer' or 'collaborator') if invited, or 'owner' as fallback
-    for existing sessions so past conversations load cleanly.
+    Returns 'owner' if the session belongs to the officer (via session_id
+    prefix, the legacy `session-{kgid}` ephemeral-fallback pattern, or a
+    ChatSession row it owns), their CoworkParticipant.role ('viewer' or
+    'collaborator') if invited, or None if none of the above hold.
+
+    SECURITY FIX (pentest V1 root cause, confirmed live): every path through
+    this function used to end in `return "owner"` -- including "a
+    ChatSession row exists but belongs to a DIFFERENT officer and the
+    caller isn't a Cowork participant" and "no ChatSession row exists at
+    all for this session_id." That silently made every endpoint gating on
+    this function (get_session_messages, delete/bulk-delete, the progress
+    ticker, the Cowork SSE stream, the WebSocket push, and chat_endpoint's
+    own `if not role: raise 403`) a no-op: any authenticated officer who
+    could guess or observe another officer's session_id got full read/
+    write/delete access to it, including POCSO-sensitive conversations and
+    suspect risk profiles. The original intent (per the removed comment,
+    "fallback for existing sessions so past conversations load cleanly")
+    was to keep OWNERS of legacy sessions from being locked out -- not to
+    grant everyone access to everyone's sessions. That legacy case is
+    handled correctly below via the `session-{kgid}` pattern instead;
+    everything else now denies by default (fails CLOSED, not open).
     """
     if not session_id:
         return None
     if session_id.startswith(f"sess-{employee_id}-"):
         return "owner"
-    if not catalyst_app:
+    # Legacy ephemeral fallback ID (used when auto-creating a real
+    # ChatSession row failed) is `session-{kgid}`, not `sess-{employee_id}-`
+    # -- still recognized as the caller's own, since kgid uniquely
+    # identifies them, just like employee_id does.
+    if kgid and session_id == f"session-{kgid}":
         return "owner"
+    if not catalyst_app:
+        # No datastore to check ownership against -- fail closed rather
+        # than granting blanket access.
+        return None
     try:
         # 1. Check ChatSession table ownership
         sess_res = catalyst_app.zql().execute_query(
@@ -2446,13 +2498,15 @@ def _get_cowork_role(session_id: str, employee_id: int) -> Optional[str]:
         if part_res:
             return part_res[0].get("CoworkParticipant", {}).get("role") or "collaborator"
 
-        # 3. If session exists in ChatSession, permit access
-        if sess_res:
-            return "owner"
+        # Session exists but belongs to someone else and this caller isn't
+        # an invited participant -- or the session doesn't exist at all.
+        # Either way: deny.
+        return None
     except Exception as e:
         logger.warning(f"Could not check Cowork role for session {session_id}: {e}")
-        return "owner"
-    return "owner"
+        # Fail CLOSED on a lookup error -- a transient ZCQL error must never
+        # silently grant access to another officer's session.
+        return None
 
 
 def _safe_json_loads(raw: Optional[str], default_val: Any = None) -> Any:
@@ -2496,7 +2550,7 @@ async def get_session_messages(session_id: str, request: Request, location_conte
     # gating who can POST into a session (chat_endpoint) so read access is
     # at least as strict as write access, instead of having no gate at all.
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
-    if employee_id and not _get_cowork_role(session_id, employee_id):
+    if employee_id and not _get_cowork_role(session_id, employee_id, request.state.kgid):
         raise HTTPException(status_code=403, detail="You do not have access to this session.")
 
     # 1. High-speed 15s in-memory TTL cache (sub-millisecond TTFB)
@@ -2604,7 +2658,7 @@ async def delete_session(session_id: str, request: Request, location_context: st
     impossible to remove from your own sidebar.
     """
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
-    role = _get_cowork_role(session_id, employee_id)
+    role = _get_cowork_role(session_id, employee_id, request.state.kgid)
     if role not in ("owner", "collaborator", "viewer"):
         raise HTTPException(status_code=403, detail="You do not have access to this session.")
     # Non-owners (Cowork participants) just remove themselves from the shared
@@ -2644,7 +2698,7 @@ async def bulk_delete_sessions(payload: BulkDeletePayload, request: Request, loc
     deleted_ids = []
     for sid in payload.session_ids:
         try:
-            role = _get_cowork_role(sid, employee_id)
+            role = _get_cowork_role(sid, employee_id, request.state.kgid)
             if role == "owner":
                 catalyst_app.zql().execute_query(f"DELETE FROM ChatMessage WHERE session_id = '{sid}'")
                 catalyst_app.zql().execute_query(f"DELETE FROM CoworkParticipant WHERE session_id = '{sid}'")
@@ -3132,7 +3186,7 @@ async def chat_progress_stream(session_id: str, request: Request, location_conte
     defense-in-depth consistency with the higher-severity endpoints.
     """
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
-    if employee_id and not _get_cowork_role(session_id, employee_id):
+    if employee_id and not _get_cowork_role(session_id, employee_id, request.state.kgid):
         raise HTTPException(status_code=403, detail="You do not have access to this session.")
     progress_tracker.cleanup_stale()
 
@@ -3171,7 +3225,7 @@ async def cowork_message_stream(session_id: str, request: Request, location_cont
     officer's session by guessing/knowing its session_id.
     """
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
-    if employee_id and not _get_cowork_role(session_id, employee_id):
+    if employee_id and not _get_cowork_role(session_id, employee_id, request.state.kgid):
         raise HTTPException(status_code=403, detail="You do not have access to this session.")
 
     import cowork_feed
@@ -3240,7 +3294,7 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
             logger.warning(f"Could not auto-create ChatSession, falling back to ephemeral session id: {e}")
             session_id = f"session-{request.state.kgid}"
     else:
-        role = _get_cowork_role(session_id, employee_id)
+        role = _get_cowork_role(session_id, employee_id, request.state.kgid)
         if not role:
             raise HTTPException(status_code=403, detail="You do not have access to this session.")
         if role == "viewer":
@@ -4642,6 +4696,244 @@ async def probe_persona_endpoint(persona: str = "standard", lang: str = "en", sp
     from catalyst_speech import probe_persona
     result = await run_in_threadpool(probe_persona, persona, lang, speaker)
     return result
+
+
+# --- Item 27 (Vajra Plan 04-09-26): Automated Model Drift & Brier Score
+# Calibration -- a live, on-demand version of the standalone
+# calibrate_risk_model.py dev script, runnable from inside the deployed app
+# so a supervisor can check whether the XGBoost recidivism-risk model is
+# still well-calibrated against real CCTNS outcomes, without SSH/local
+# script access. Same method: score every real case with the DEPLOYED
+# model + encoders (+ isotonic calibrator if loaded), compare against the
+# real ground truth (CaseStatusID == 3 CONVICTED), report Brier score,
+# Expected Calibration Error, and a 10-bin reliability curve.
+_calibration_jobs: Dict[str, Dict[str, Any]] = {}
+
+
+def _compute_model_calibration() -> Dict[str, Any]:
+    """Synchronous, CPU/IO-bound work -- always called via run_in_threadpool
+    from inside the background job below, never awaited directly (pulling
+    the full CaseMaster/Accused/Victim dataset across ~21k+ real records
+    comfortably exceeds AppSail's ~30-36s synchronous request kill, which is
+    exactly why this is a background job with a polling status endpoint,
+    not a plain GET like the other _debug/* diagnostics above)."""
+    if not (xgboost_risk_model and label_encoders):
+        return {"error": "Risk model not loaded on this server."}
+    if not catalyst_app:
+        return {"error": "Datastore unavailable."}
+
+    def _fetch_all(select_clause: str, table: str, key_col: str, max_pages: int = 400) -> List[Dict[str, Any]]:
+        """Keyset pagination on ROWID -- offset pagination is unreliable on
+        this ZCQL deployment (confirmed in calibrate_risk_model.py)."""
+        rows: List[Dict[str, Any]] = []
+        last = None
+        seen: set = set()
+        for _ in range(max_pages):
+            where = f"WHERE {key_col} > {last} " if last is not None else ""
+            q = f"SELECT {select_clause} FROM {table} {where}ORDER BY {key_col} ASC LIMIT 300"
+            try:
+                page = catalyst_app.zql().execute_query(q)
+            except Exception as e:
+                logger.warning(f"Model calibration: {table} pagination stopped early: {e}")
+                break
+            if not page:
+                break
+            max_key = last
+            for r in page:
+                kv = r.get(table, {}).get(key_col)
+                if kv is None:
+                    continue
+                kv = int(kv)
+                if kv in seen:
+                    continue
+                seen.add(kv)
+                rows.append(r)
+                if max_key is None or kv > max_key:
+                    max_key = kv
+            if max_key == last or len(page) < 300:
+                break
+            last = max_key
+        return rows
+
+    districts = {int(d["District"]["DistrictID"]): d["District"]["DistrictName"]
+                 for d in _fetch_all("DistrictID, DistrictName", "District", "DistrictID") if d.get("District", {}).get("DistrictID")}
+    units = {int(u["Unit"]["UnitID"]): (u["Unit"].get("UnitName"), u["Unit"].get("DistrictID"))
+             for u in _fetch_all("UnitID, UnitName, DistrictID", "Unit", "UnitID") if u.get("Unit", {}).get("UnitID")}
+    heads = {int(h["CrimeHead"]["CrimeHeadID"]): h["CrimeHead"].get("CrimeGroupName")
+             for h in _fetch_all("CrimeHeadID, CrimeGroupName", "CrimeHead", "CrimeHeadID") if h.get("CrimeHead", {}).get("CrimeHeadID")}
+    cats = {int(c["CaseCategory"]["CaseCategoryID"]): c["CaseCategory"].get("LookupValue")
+            for c in _fetch_all("CaseCategoryID, LookupValue", "CaseCategory", "CaseCategoryID") if c.get("CaseCategory", {}).get("CaseCategoryID")}
+
+    acc_count: Dict[int, int] = {}
+    for r in _fetch_all("ROWID, CaseMasterID", "Accused", "ROWID"):
+        cid = r.get("Accused", {}).get("CaseMasterID")
+        if cid is not None:
+            acc_count[int(cid)] = acc_count.get(int(cid), 0) + 1
+    vic_count: Dict[int, int] = {}
+    for r in _fetch_all("ROWID, CaseMasterID", "Victim", "ROWID"):
+        cid = r.get("Victim", {}).get("CaseMasterID")
+        if cid is not None:
+            vic_count[int(cid)] = vic_count.get(int(cid), 0) + 1
+
+    cases = _fetch_all(
+        "ROWID, CaseMasterID, PoliceStationID, CrimeMajorHeadID, CaseCategoryID, CrimeRegisteredDate, CaseStatusID",
+        "CaseMaster", "ROWID",
+    )
+    if not cases:
+        return {"error": "No case data available to score."}
+
+    def enc(col: str, val: Any) -> int:
+        """Matches real inference exactly (see /api/case-analysis above):
+        transform via the deployed encoder, default 0 on any unseen value."""
+        le = label_encoders.get(col)
+        if le is None:
+            return 0
+        try:
+            return int(le.transform([str(val)])[0])
+        except Exception:
+            return 0
+
+    rows = []
+    for c in cases:
+        cm = c.get("CaseMaster", {})
+        raw_cid = cm.get("CaseMasterID")
+        cid = int(raw_cid) if raw_cid is not None else -1
+        status = cm.get("CaseStatusID")
+        ps = cm.get("PoliceStationID")
+        unit_name, dist_id = (units.get(int(ps), (None, None)) if ps else (None, None))
+        dist_name = districts.get(int(dist_id)) if dist_id else None
+        group_name = heads.get(int(cm["CrimeMajorHeadID"])) if cm.get("CrimeMajorHeadID") else None
+        fir_type = cats.get(int(cm["CaseCategoryID"])) if cm.get("CaseCategoryID") else None
+        raw_date = (cm.get("CrimeRegisteredDate") or "2026-01-01 00:00:00").split()[0]
+        try:
+            _y, mth, day = [int(x) for x in raw_date.split("-")[:3]]
+        except Exception:
+            mth, day = 1, 1
+        vc = vic_count.get(cid, 1)
+        ac = acc_count.get(cid, 1)
+        rows.append({
+            "District_Name_encoded": enc("District_Name", dist_name or "Unknown"),
+            "UnitName_encoded": enc("UnitName", unit_name or "Unknown"),
+            "CrimeGroup_Name_encoded": enc("CrimeGroup_Name", group_name or "Unknown"),
+            "FIR_Type_encoded": enc("FIR_Type", fir_type or "Non Heinous"),
+            "FIR_YEAR": 2026,
+            "month_sin": np.sin(2 * np.pi * mth / 12.0), "month_cos": np.cos(2 * np.pi * mth / 12.0),
+            "day_sin": np.sin(2 * np.pi * day / 31.0), "day_cos": np.cos(2 * np.pi * day / 31.0),
+            "VICTIM COUNT": vc, "Accused Count": ac, "victim_to_accused_ratio": vc / (ac + 1.0),
+            "label": 1 if (status is not None and int(status) == 3) else 0,
+        })
+
+    df = pd.DataFrame(rows)
+    X = df[["District_Name_encoded", "UnitName_encoded", "CrimeGroup_Name_encoded", "FIR_Type_encoded",
+            "FIR_YEAR", "month_sin", "month_cos", "day_sin", "day_cos",
+            "VICTIM COUNT", "Accused Count", "victim_to_accused_ratio"]]
+    y = df["label"].values
+    p = xgboost_risk_model.predict_proba(X)[:, 1]
+    calibrated = False
+    if risk_calibrator is not None:
+        try:
+            p = risk_calibrator.predict(p)
+            calibrated = True
+        except Exception:
+            pass
+
+    brier = float(np.mean((p - y) ** 2))
+    base_rate = float(y.mean())
+
+    edges = np.linspace(0, 1, 11)
+    bins = []
+    ece = 0.0
+    for i in range(10):
+        lo, hi = float(edges[i]), float(edges[i + 1])
+        m = (p >= lo) & (p < hi if i < 9 else p <= hi)
+        n = int(m.sum())
+        if n == 0:
+            continue
+        mean_pred = float(p[m].mean())
+        obs_rate = float(y[m].mean())
+        gap = mean_pred - obs_rate
+        ece += (n / len(df)) * abs(gap)
+        bins.append({
+            "range": f"{lo:.1f}-{hi:.1f}", "n": n,
+            "mean_predicted_pct": round(mean_pred * 100, 1),
+            "observed_rate_pct": round(obs_rate * 100, 1),
+            "gap_pct": round(gap * 100, 1),
+        })
+
+    # NOTE: reliability (ECE, the per-bin ordering match) and Brier score
+    # (an overall accuracy score combining calibration AND sharpness/
+    # resolution) are DIFFERENT properties -- a model can have a near-
+    # perfect reliability curve while still failing a strict Brier bar, if
+    # its predictions are correct on average per bin but not sharp/decisive
+    # enough. Reporting one "verdict" derived only from ECE while a separate
+    # brier_pass boolean silently disagreed would be exactly the kind of
+    # quiet, misleading inconsistency this project's honesty bar exists to
+    # prevent -- so this returns BOTH signals distinctly labelled, plus one
+    # combined overall_verdict that is honest about a Brier-threshold miss
+    # even when the reliability curve looks excellent.
+    calibration_curve_verdict = "WELL_CALIBRATED" if ece < 0.05 else ("REASONABLE" if ece < 0.10 else "POORLY_CALIBRATED")
+    brier_pass = bool(brier <= 0.08)
+    if brier_pass and calibration_curve_verdict == "WELL_CALIBRATED":
+        overall_verdict = "PASS"
+    elif brier_pass:
+        overall_verdict = "PASS_WITH_CALIBRATION_DRIFT"
+    else:
+        overall_verdict = "NEEDS_ATTENTION_BRIER_ABOVE_THRESHOLD"
+    return {
+        "cases_scored": len(df),
+        "base_conviction_rate_pct": round(base_rate * 100, 1),
+        "calibrator_applied": calibrated,
+        "brier_score": round(brier, 4),
+        "brier_threshold": 0.08,
+        "brier_pass": brier_pass,
+        "expected_calibration_error_pct": round(ece * 100, 2),
+        "calibration_curve_verdict": calibration_curve_verdict,
+        "overall_verdict": overall_verdict,
+        "reliability_bins": bins,
+        "methodology_caveat": (
+            "Scored against the SAME full case set the isotonic calibrator "
+            "was originally fit on (no held-out split exists in this "
+            "dataset) -- a near-0% ECE here largely reflects that fit, not "
+            "proof of accuracy on genuinely new/future cases. The Brier "
+            "score is the more honest signal of real predictive sharpness."
+        ),
+        "computed_at_utc": datetime.utcnow().isoformat(),
+    }
+
+
+async def _run_calibration_job(job_id: str) -> None:
+    _calibration_jobs[job_id] = {"status": "running", "started_at": time.time()}
+    try:
+        result = await run_in_threadpool(_compute_model_calibration)
+        _calibration_jobs[job_id] = {"status": "done", "result": result, "finished_at": time.time()}
+    except Exception as e:
+        logger.exception(f"Model calibration job {job_id} failed")
+        _calibration_jobs[job_id] = {"status": "error", "error": str(e), "finished_at": time.time()}
+
+
+@app.post("/api/admin/model-calibration/run")
+async def start_model_calibration(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Item 27 (Vajra Plan 04-09-26): kicks off a live model-calibration check
+    as a background task (the full-dataset pull comfortably exceeds
+    AppSail's synchronous request kill) and returns a job_id immediately.
+    Supervisor-only -- this scores every real case in CCTNS, not something
+    an ordinary officer needs.
+    """
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    job_id = f"calib-{uuid.uuid4().hex[:12]}"
+    task = asyncio.create_task(_run_calibration_job(job_id))
+    _BACKGROUND_AI_TASKS.add(task)
+    task.add_done_callback(lambda t: _BACKGROUND_AI_TASKS.discard(t))
+    return {"job_id": job_id, "status": "started"}
+
+
+@app.get("/api/admin/model-calibration/status/{job_id}")
+async def get_model_calibration_status(job_id: str, request: Request, location_context: str = Depends(security_firewall)):
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    return _calibration_jobs.get(job_id, {"status": "unknown"})
 
 
 class TranslateRequest(BaseModel):
