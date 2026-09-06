@@ -8,10 +8,26 @@ import logging
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-PROJECT_ID = os.getenv("CATALYST_PROJECT_ID", "50212000000025002")
-CLIENT_ID = os.getenv("CATALYST_CLIENT_ID", "1000.C7P6NV7VABS62L20K4PU2FPKHR4XXC")
-CLIENT_SECRET = os.getenv("CATALYST_CLIENT_SECRET", "0578e8267e011fafc60ef0d93bd769d283b7c5b803")
-REFRESH_TOKEN = os.getenv("CATALYST_REFRESH_TOKEN", "1000.9e78850ec0e125a9822664a0de2472fa.072a393efae4ff953cd72be4c89e6f7c")
+# Item 16 / pentest V3 (Vajra Plan 04-09-26): this file previously had real,
+# live OAuth credentials hardcoded as os.getenv(..., "<value>") fallback
+# defaults -- meaning even with the env vars properly set elsewhere, a
+# missing/misconfigured environment would silently fall back to using
+# (and further exposing, since this file is committed to a public repo)
+# those specific live secrets. This function is confirmed NOT currently
+# deployed/wired to real traffic (a stale prototype -- see project memory),
+# so removing the fallback breaks nothing live. No default: an unset
+# credential now stays None and get_oauth_token() fails loudly (logged)
+# instead of silently authenticating with a hardcoded value.
+PROJECT_ID = os.getenv("CATALYST_PROJECT_ID", "50212000000025002")  # not a secret, just an id
+CLIENT_ID = os.getenv("CATALYST_CLIENT_ID")
+CLIENT_SECRET = os.getenv("CATALYST_CLIENT_SECRET")
+REFRESH_TOKEN = os.getenv("CATALYST_REFRESH_TOKEN")
+if not (CLIENT_ID and CLIENT_SECRET and REFRESH_TOKEN):
+    logger.warning(
+        "CATALYST_CLIENT_ID/CLIENT_SECRET/REFRESH_TOKEN not set in this function's "
+        "environment -- get_oauth_token() will fail until they're configured in the "
+        "Catalyst Console (Functions > ai_turn_worker > Environment Variables)."
+    )
 LLM_ENDPOINT = os.getenv("CATALYST_LLM_ENDPOINT", f"https://api.catalyst.zoho.in/quickml/v1/project/{PROJECT_ID}/glm/chat")
 
 ZCQL_URL = f"https://api.catalyst.zoho.in/baas/v1/project/{PROJECT_ID}/query"
