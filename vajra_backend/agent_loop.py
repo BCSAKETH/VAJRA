@@ -2849,8 +2849,22 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         params["user_query"] = officer_query
                     logger.info(f"Invoking tool (Iteration {current_iteration}): {tool_name} with params {params}")
 
+                    # WS-8 (Revamped Internet Search plan, "in-flight execution
+                    # state"): surface a live "searching the web" step on the
+                    # existing progress ticker right as the call starts, so the
+                    # frontend's ticker consumer shows real in-flight status
+                    # instead of a blind wait -- reuses progress_tracker end to
+                    # end, no new SSE plumbing needed.
+                    if tool_name == "web_search":
+                        _q_preview = str(params.get("query") or "").strip()[:60]
+                        _progress(f"Searching the web for \"{_q_preview}\"..." if _q_preview else "Searching the web...")
+
                     # Execute specific tool based on function calling
                     tool_output = self._execute_tool(tool_name, params, employee_id, session_id, user_unit_id)
+
+                    if tool_name == "web_search":
+                        _n_found = len((tool_output.get("data") or {}).get("news") or [])
+                        _progress(f"Found {_n_found} web sources, reading them..." if _n_found else "Web search finished, no sources found.")
 
                     # Accumulate citations, response types, and data payloads
                     if tool_output.get("citations"):
