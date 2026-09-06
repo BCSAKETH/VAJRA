@@ -265,7 +265,7 @@ class CognitiveBrainMixin:
         {"name": "find_similar_cases", "does": "semantic search for cases matching a description", "params": {"query": "the search text"}},
         {"name": "analyze_online_abuse", "does": "triage an online-abuse/cybercrime complaint into offences + evidence steps", "params": {"content": "the complaint text"}},
         {"name": "get_live_news", "does": "live open-source news headlines for a district/topic (unverified public leads, not official records)", "params": {"district": "district or topic, optional", "query": "the raw request, optional"}},
-        {"name": "web_search", "does": "live open-source web search for any external topic (unverified public results, not official records)", "params": {"query": "what to search for"}},
+        {"name": "web_search", "does": "live open-source web search for any external topic, public scam, or news story -- returns cited sources and synthesizes a structured intelligence summary/dossier. Self-contained; do NOT chain summarize_url after it unless the officer provided a specific URL to scrape", "params": {"query": "what to search for"}},
         {"name": "shared_attribute_links", "does": "find OTHER accused who share a named suspect's phone or vehicle (hidden syndicate links)", "params": {"suspect_name": "required"}},
         {"name": "community_detection", "does": "detect syndicate clusters of accused bound by a shared phone/vehicle", "params": {"top_n": "optional integer 1-30, defaults to 8 -- pass the exact number the officer asked for"}},
         {"name": "centrality_ranking", "does": "rank accused by how connected they are over the shared-attribute graph (likely hubs/kingpins)", "params": {"top_n": "optional integer 1-30, defaults to 10 -- pass the exact number the officer asked for"}},
@@ -380,6 +380,7 @@ class CognitiveBrainMixin:
         with the clarifying answer instead of planning against a bare
         district/name in isolation.
         """
+        self._current_answer_mode = "dossier" if deep else "standard"
         self._last_compiler_failure_reason = None  # cleared each attempt; the
         # caller reads this ONLY when this call returns None, to surface a
         # real diagnostic reason on the fallback citation instead of a bare
@@ -431,6 +432,7 @@ class CognitiveBrainMixin:
             "them, not one person's profile): do NOT force a single-person sweep -- plan steps that actually "
             "answer the two-person question (e.g. query_graph_network or shared_attribute_links for each name), "
             "and put the direct relationship finding in `intent`.\n"
+            "  * If an external topic, public entity, scam, news story, or internet search is requested: use web_search. web_search already searches multiple open-source feeds and synthesizes a comprehensive intelligence dossier with numbered citations -- do not follow it with summarize_url or internal CCTNS suspect lookups.\n"
             "  * If a district is the subject: include get_crime_trends, get_case_types_distribution, and "
             "query_hotspots at minimum.\n"
             "  Use MORE steps than you think necessary rather than fewer -- an incomplete dossier is a worse "

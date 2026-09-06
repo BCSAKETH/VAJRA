@@ -1152,10 +1152,9 @@ class VajraAgentLoop(CognitiveBrainMixin):
             )
             if not res.get("error"):
                 content = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
-                if "</think>" in content:
-                    answer = content.split("</think>")[-1].strip()
-                    if answer and not answer.startswith("{") and "\\u" not in answer:
-                        return answer
+                answer = self._strip_think(content)
+                if answer and not answer.startswith("{") and "\\u" not in answer:
+                    return answer
         except Exception as ex:
             logger.warning(f"Web-search citation synthesis failed, falling back to raw link list: {ex}")
         return ""
@@ -1443,7 +1442,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             (["my name", "my profile", "my details", "who am i", "my rank", "my station", "my posting", "my assignment", "current assignment", "am i posted", "my designation"], "get_my_profile", {}, "yes"),
             (["search the web", "web search", "search online", "look it up", "look up online", "google it",
               "google ", "find online", "on the internet", "the internet", "whole internet", "across the internet",
-              "analyse the internet", "analyze the internet", "search for"], "web_search", {"query": query}, "yes"),
+              "analyse the internet", "analyze the internet", "search for", "search the internet"], "web_search", {"query": query}, "yes"),
             (["summarize this url", "read this url", "summarize this page", "read this link", "open this link",
               "summarize this article", "read this article", "http://", "https://"], "summarize_url", {"query": query}, "yes"),
             (["full dossier", "case dossier", "full report on case", "complete report on case", "deep dive", "full investigation", "everything about case", "complete case file", "full case file"], "generate_case_dossier", {"case_no": case_no, "user_query": query}, case_no),
@@ -1513,7 +1512,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
               "media reports", "any news"], "get_live_news", {"district": district, "query": query}, "yes"),
             (["search the web", "web search", "search online", "look it up", "look up online", "google it",
               "google ", "find online", "on the internet", "the internet", "whole internet", "across the internet",
-              "analyse the internet", "analyze the internet", "search for"], "web_search", {"query": query}, "yes"),
+              "analyse the internet", "analyze the internet", "search for", "search the internet"], "web_search", {"query": query}, "yes"),
             (["summarize this url", "read this url", "summarize this page", "read this link", "open this link",
               "summarize this article", "read this article", "http://", "https://"], "summarize_url", {"query": query}, "yes"),
             (["anomaly", "anomalies", "unusual pattern", "statistical outlier", "abnormal", "out of the ordinary",
@@ -1897,10 +1896,26 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # second candidate (any wording) lets the forced-composite decision
         # below step aside for ANY two-name query, not just the one exact
         # phrasing the dedicated relationship-handler regex recognizes.
+        # Non-person / institutional / topic terms that must never be treated as an accused suspect's person name
+        _NON_PERSON_TOKENS = {
+            "scam", "scams", "fund", "funds", "corporation", "corp", "fraud", "frauds",
+            "racket", "rackets", "scheme", "schemes", "scandal", "scandals",
+            "board", "commission", "department", "dept", "ministry", "limited", "ltd",
+            "internet", "web", "google", "online", "portal", "website", "news",
+            "press", "media", "service", "services", "authority", "trust", "agency",
+            "society", "academy", "foundation", "federation", "association", "committee",
+            "council", "bank", "police", "court", "station", "stationery", "hospital",
+            "university", "college", "school", "office", "headquarters", "division"
+        }
         suspect2_match = None
         for cand in suspect_candidates:
             cl = cand.lower()
             if cl in excluded_names:
+                continue
+            cand_words = set(cl.split())
+            if cand_words & _NON_PERSON_TOKENS:
+                continue
+            if all(w in self._NAME_STOPWORDS for w in cand_words):
                 continue
             if " " not in cand and cl in self._NAME_STOPWORDS:
                 continue
@@ -2217,6 +2232,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # no downstream check recognizes "compiler" as a value anymore.
         if answer_mode == "compiler":
             answer_mode = "dossier"
+        self._current_answer_mode = answer_mode
         _progress = progress_cb or (lambda _msg: None)
         _progress("Understanding your question...")
         # main.py prepends officer-identity and case-context headers to
@@ -2484,7 +2500,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
             # FRESH (present in this exact message) before this safety net
             # will force a single-subject composite -- a genuinely topic-less
             # request when the compiler is down now fails honestly instead.
-            if entities.get("case_id") and entities.get("case_id_fresh"):
+            _q_lower = (officer_query or "").lower()
+            if any(k in _q_lower for k in ("search the web", "search the internet", "web search", "google", "osint", "news search", "search online", "internet search")):
+                _dossier_fixed_fallback = {"tool": "web_search", "parameters": {"query": routing_query}}
+            elif entities.get("case_id") and entities.get("case_id_fresh"):
                 _dossier_fixed_fallback = {"tool": "generate_case_dossier", "parameters": {"case_no": entities["case_id"], "user_query": officer_query}}
             elif entities.get("suspect") and entities.get("suspect_fresh") and not entities.get("suspect2"):
                 # (suspect2 check preserved: a two-person question should
@@ -5853,7 +5872,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 # PRIMARY: citation-aware synthesis straight from the
                 # snippets already fetched above -- adaptive to answer_mode
                 # ("dossier" vs "standard") and query depth.
-                extracted = self._answer_from_web_search_results(raw_q, q, items, answer_mode=answer_mode)
+                _curr_mode = getattr(self, "_current_answer_mode", "standard") or "standard"
+                extracted = self._answer_from_web_search_results(raw_q, q, items, answer_mode=_curr_mode)
                 # A non-empty "NOT_FOUND: ..." reply is still an HONEST
                 # answer (never fabricated), but it means the specific fact
                 # wasn't in any snippet -- exactly the case the SECONDARY
