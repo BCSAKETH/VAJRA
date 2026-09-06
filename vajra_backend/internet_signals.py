@@ -161,8 +161,9 @@ def _scrape_news_rss(query: str, limit: int) -> List[Dict[str, str]]:
             link = grab("link")
             pub = grab("pubDate")
             src = grab("source") or "Google News"
+            desc = grab("description")
             if title and link:
-                out.append(_signal(title, src, pub, link, ""))
+                out.append(_signal(title, src, pub, link, desc))
     except Exception as e:
         logger.warning(f"News RSS scrape error for {query!r}: {e}")
     return out
@@ -175,7 +176,7 @@ def _signal(title: str, source: str, published: str, url: str, snippet: str = ""
         "source": (source or "web").strip(),
         "published": (published or "").strip(),
         "url": (url or "").strip(),
-        "snippet": (snippet or "").strip()[:240],
+        "snippet": (snippet or "").strip()[:2500],
         "kind": "open_source_signal",          # marks the trust lane, never official
         "disclaimer": "Open-source signal — unverified lead, not an official record.",
         "tier": classify_domain(url, source).get("tier", "WEB"),
@@ -340,19 +341,106 @@ def clean_search_query(q: str) -> str:
         return ""
     s = q.strip()
     stopwords = [
-        r"\b(perform|execute|conduct|do|gather|collect|find|fetch|search|scrape|look\s+up|give\s+me|show\s+me|tell\s+me)\b",
+        r"\b(perform|execute|conduct|do|gather|collect|find|fetch|search|scrape|look\s+up|give\s+me|show\s+me|tell\s+me|tell\s+me\s+about|what\s+happened\s+in|what\s+is|who\s+is)\b",
+        r"\b(summarize|summarise|summary|details|explain|overview|breakdown|dossier|brief|report|deep\s+dive|investigate)\b",
         r"\b(an?\s+|the\s+)?(osint|web|internet|google)\s*(search|sweep|inquest|scraping)?\b",
         r"\b(recent\s+|latest\s+)?(intelligence|news|articles|advisories|signals|reports|data|info|information|updates)\b",
-        r"\b(and|on|for|about|regarding|in|of|from|with|to)\b",
+        r"\b(and|on|for|about|regarding|in|of|from|with|to|it)\b",
         r"\b(the\s+web\s+for|on\s+the\s+web|online|can\s+you|please)\b",
     ]
     for pat in stopwords:
         s = re.sub(pat, " ", s, flags=re.IGNORECASE)
     s = re.sub(r"[^\w\s\-\.]", " ", s)
-    tokens = [w for w in s.split() if len(w) > 1 and w.lower() not in {"and", "or", "the", "for", "about", "with", "from", "in", "on", "to", "at", "an", "is"}]
+    tokens = [w for w in s.split() if len(w) > 1 and w.lower() not in {"and", "or", "the", "for", "about", "with", "from", "in", "on", "to", "at", "an", "is", "it"}]
     if len(tokens) >= 2:
         return " ".join(tokens[:8])
     return q.strip()
+
+
+def search_wikipedia_summary(query: str) -> Optional[Dict[str, Any]]:
+    """
+    Retrieves encyclopedic, structured OSINT from Wikipedia for major public
+    cases, financial scams, legal statutes, institutions, or public figures.
+    Fast (~300ms), structured, and provides crucial grounding facts (amounts,
+    dates, named accused, bank branches, statutory violations) that bare news
+    headlines lack.
+    """
+    clean_q = clean_search_query(query) or query
+    clean_q = clean_q.strip()
+    if not clean_q or len(clean_q) < 3:
+        return None
+    headers = {"User-Agent": "VajraPoliceCopilot/1.0 (saitanuku81@gmail.com)"}
+
+    # Generate search query variants (e.g. "Valmiki Corporation Fund Scam" -> also search "Valmiki Corporation Scam")
+    search_queries = [clean_q]
+    simplified = re.sub(r"\b(fund|funds|money|allegation|allegations)\b", "", clean_q, flags=re.I).strip()
+    simplified = re.sub(r"\s+", " ", simplified)
+    if simplified and simplified.lower() != clean_q.lower():
+        search_queries.append(simplified)
+
+    collected_items: List[Dict[str, Any]] = []
+    seen_titles = set()
+    for sq in search_queries:
+        try:
+            r = requests.get(
+                "https://en.wikipedia.org/w/api.php",
+                params={"action": "query", "list": "search", "srsearch": sq, "format": "json"},
+                headers=headers,
+                timeout=4,
+            )
+            if r.status_code == 200:
+                for it in r.json().get("query", {}).get("search", [])[:4]:
+                    t = it.get("title")
+                    if t and t not in seen_titles:
+                        seen_titles.add(t)
+                        collected_items.append(it)
+        except Exception:
+            pass
+
+    if not collected_items:
+        return None
+
+    # Score and rank matching titles
+    query_words = set(clean_q.lower().split())
+    scored = []
+    for it in collected_items:
+        t = it.get("title", "")
+        tl = t.lower()
+        score = sum(2 for w in query_words if len(w) > 2 and w in tl)
+        if any(k in tl for k in ("scam", "fraud", "case", "corporation", "karnataka", "police", "scheme")):
+            score += 3
+        scored.append((score, t))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    if not scored or scored[0][0] < 2:
+        return None
+
+    top_title = scored[0][1]
+    try:
+        r_ext = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={"action": "query", "prop": "extracts", "explaintext": True, "titles": top_title, "format": "json"},
+            headers=headers,
+            timeout=4,
+        )
+        if r_ext.status_code != 200:
+            return None
+        pages = r_ext.json().get("query", {}).get("pages", {})
+        for pid, pdata in pages.items():
+            text = pdata.get("extract", "").strip()
+            if text and len(text) > 60:
+                tier = "LEGAL" if any(k in top_title.lower() for k in ("scam", "fraud", "case", "act", "tribunal", "court")) else "PRESS"
+                wiki_url = f"https://en.wikipedia.org/wiki/{urllib.parse.quote(top_title.replace(' ', '_'))}"
+                return _signal(
+                    title=f"Wikipedia Dossier: {top_title}",
+                    source="Wikipedia Public Reference",
+                    published="",
+                    url=wiki_url,
+                    snippet=text[:2500].replace("\r\n", " ").replace("\n", " "),
+                )
+    except Exception as e:
+        logger.debug(f"search_wikipedia_summary error for {query!r}: {e}")
+    return None
 
 
 def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
@@ -439,6 +527,15 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
             if len(merged) > _before:
                 fetched_via.append("news_rss")
             items = merged
+
+        # Check Wikipedia for encyclopedic / investigative background on cases & public entities
+        try:
+            wiki_signal = search_wikipedia_summary(effective_query)
+            if wiki_signal:
+                items.insert(0, wiki_signal)
+                fetched_via.append("wikipedia")
+        except Exception as wex:
+            logger.debug(f"Wikipedia lookup error: {wex}")
 
         # If effective_query returned nothing and differed from raw_query, try raw query as fallback
         if not items and clean_q and clean_q != raw_query:
