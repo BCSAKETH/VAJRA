@@ -145,42 +145,207 @@ const splitIntoSpeechChunks = (text: string): string[] => {
   return chunks;
 };
 
-// Lightweight, dependency-free renderer for the small subset of markdown the
-// GLM emits -- **bold**, #/##/### headings, bullet lists (* - •), numbered
-// lists, and blank-line paragraphs. Builds JSX (never dangerouslySetInnerHTML),
-// so it's CSP-safe and can't inject HTML. Without this the raw "**...**" and
-// "* " markers show literally in the bubble (the reported rough look).
+// Rich-text renderer for AI answers -- researched against how ChatGPT's own
+// web UI actually renders text (2026-09-06) before extending this: standard
+// GFM (headings H1-H3, bold, italic, inline code, fenced code blocks, pipe
+// tables, blockquotes, horizontal rules, nested bullets, numbered lists).
+// ONE addition beyond ChatGPT parity: an "entity highlight" chip for case
+// numbers / statute citations / risk percentages / financial IDs -- this is
+// NOT a ChatGPT feature (confirmed: OpenAI's own UI has no colored-highlight
+// mechanic for arbitrary important words, multiple community feature
+// requests ask for exactly this and it isn't built) -- kept because the
+// identical pattern already proved its value in VAJRA's own PDF exporter
+// (catalyst_smartbrowz.py's entity-tag spans) for scanning case text fast.
+// Builds JSX only, never dangerouslySetInnerHTML -- CSP-safe, cannot inject
+// HTML even from unverified open-web-scraped text (no link-syntax support
+// by design, so a scraped news snippet can never become clickable markup).
+//
+// Deliberately NOT built: token-by-token streaming-safe parsing (auto-
+// closing incomplete "**"/backtick mid-render, the real technique behind
+// tools like Streamdown.ai). VAJRA's answers arrive WHOLE via the
+// background-task-and-poll architecture (see README §4.2), never streamed
+// token-by-token, so there is no incomplete-marker-mid-render case to guard
+// against -- adding that complexity now would be solving a problem this
+// architecture doesn't have.
+//
+// KEEP IN SYNC WITH vajra_backend/catalyst_smartbrowz.py's
+// _clean_and_format_text() entity-tag regex -- same entity classes should
+// highlight identically in the live chat and the exported PDF.
+const ENTITY_RE = /(?:PhonePe-\w+|ICICI-\w+|Paytm-\w+|GPay-\w+|BTC-\w+|CR-\d{4}-\d+|CR\/\w+\/\w+\/\w+|Section\s?\d+(?:\(\d+\))?[A-Za-z]?(?:\s(?:IPC|BNS|BNSS|JJA|BSA))?|§\s?\d+[A-Za-z]?|₹[\d,]+(?:\.\d+)?|\d+(?:\.\d+)?%)/;
+const INLINE_SPLIT_RE = new RegExp(
+  `(\`[^\`\n]+\`|\\*\\*[^*\n]+\\*\\*|\\*[^*\n]+\\*|_[^_\n]+_|${ENTITY_RE.source})`,
+  "g"
+);
+
 const renderInline = (s: string, kb: string): React.ReactNode[] => {
-  return s.split(/(\*\*[^*]+\*\*)/g).map((p, i) => {
+  return s.split(INLINE_SPLIT_RE).map((p, i) => {
+    if (!p) return null;
+    if (p.startsWith("`") && p.endsWith("`") && p.length > 1) {
+      return <code key={kb + i} className="font-mono text-[12px] bg-stone-900/70 border border-stone-800 rounded px-1 py-0.5">{p.slice(1, -1)}</code>;
+    }
     if (p.startsWith("**") && p.endsWith("**")) {
       return <strong key={kb + i} className="font-semibold text-stone-100">{p.slice(2, -2)}</strong>;
+    }
+    if ((p.startsWith("*") && p.endsWith("*")) || (p.startsWith("_") && p.endsWith("_"))) {
+      return <em key={kb + i} className="italic text-stone-200">{p.slice(1, -1)}</em>;
+    }
+    if (ENTITY_RE.test(p)) {
+      return <span key={kb + i} className="font-mono text-[12.5px] bg-[#C79A4E]/10 text-[#C79A4E] border border-[#C79A4E]/25 rounded px-1">{p}</span>;
     }
     return <React.Fragment key={kb + i}>{p}</React.Fragment>;
   });
 };
 
+// Fenced-code-block renderer, its own small component (needs the copy-button
+// click state, which a plain render function can't hold). VAJRA's real text
+// is IDs/hashes/config snippets quoted verbatim, not syntax-highlighted
+// source, so no per-language highlighter is pulled in -- monospace + a copy
+// button covers the real use case without a new dependency.
+const CodeBlock: React.FC<{ text: string }> = ({ text }) => {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="my-2 rounded-lg border border-stone-800 bg-stone-950/60 overflow-hidden">
+      <div className="flex justify-end px-2 py-1 border-b border-stone-800/80">
+        <button
+          onClick={() => {
+            navigator.clipboard?.writeText(text).then(() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            }).catch(() => {});
+          }}
+          className="text-stone-500 hover:text-stone-300 cursor-pointer flex items-center gap-1 text-[10px] font-mono"
+        >
+          {copied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+          {copied ? "Copied" : "Copy"}
+        </button>
+      </div>
+      <pre className="px-3 py-2 overflow-x-auto"><code className="font-mono text-[12px] text-stone-300 whitespace-pre">{text}</code></pre>
+    </div>
+  );
+};
+
 const renderRich = (text: string): React.ReactNode => {
   const lines = (text || "").split("\n");
   const blocks: React.ReactNode[] = [];
-  let bullets: React.ReactNode[] = [];
-  const flush = (k: string) => {
+  let bullets: { node: React.ReactNode; nested: boolean }[] = [];
+  let quote: React.ReactNode[] = [];
+  const flushBullets = (k: string) => {
     if (bullets.length) {
-      blocks.push(<ul key={"ul" + k} className="list-disc pl-5 space-y-0.5 my-1.5">{bullets}</ul>);
+      blocks.push(
+        <ul key={"ul" + k} className="list-disc pl-5 space-y-0.5 my-1.5">
+          {bullets.map((b, bi) => <li key={bi} className={b.nested ? "ml-4 marker:text-stone-600" : undefined}>{b.node}</li>)}
+        </ul>
+      );
       bullets = [];
     }
   };
-  lines.forEach((raw, idx) => {
+  const flushQuote = (k: string) => {
+    if (quote.length) {
+      blocks.push(
+        <blockquote key={"q" + k} className="border-l-2 border-[#C79A4E]/40 pl-3 my-2 text-stone-300 italic space-y-0.5">
+          {quote}
+        </blockquote>
+      );
+      quote = [];
+    }
+  };
+
+  let i = 0;
+  while (i < lines.length) {
+    const raw = lines[i];
     const t = raw.trim();
-    if (!t) { flush("e" + idx); return; }
+
+    // Fenced code block: ```...``` spans multiple lines, rendered verbatim
+    // (no inline bold/italic/entity parsing inside -- it's literal content).
+    if (t.startsWith("```")) {
+      flushBullets("cf" + i); flushQuote("cf" + i);
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].trim().startsWith("```")) { codeLines.push(lines[i]); i++; }
+      i++; // skip the closing fence
+      blocks.push(<CodeBlock key={"code" + i} text={codeLines.join("\n")} />);
+      continue;
+    }
+
+    if (!t) { flushBullets("e" + i); flushQuote("e" + i); i++; continue; }
+
+    // Horizontal rule: a line that's just 3+ repeated -, _, or * characters.
+    if (/^([-_*])\1{2,}$/.test(t.replace(/\s+/g, ""))) {
+      flushBullets("hr" + i); flushQuote("hr" + i);
+      blocks.push(<hr key={"hr" + i} className="border-stone-850 my-3" />);
+      i++; continue;
+    }
+
+    // GFM pipe table: a header row immediately followed by a |---|---| rule.
+    if (t.includes("|") && i + 1 < lines.length && /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$/.test(lines[i + 1].trim())) {
+      flushBullets("tb" + i); flushQuote("tb" + i);
+      const splitCells = (line: string) => {
+        const parts = line.trim().split("|").map((c) => c.trim());
+        if (parts[0] === "") parts.shift();
+        if (parts.length && parts[parts.length - 1] === "") parts.pop();
+        return parts;
+      };
+      const headerCells = splitCells(t);
+      i += 2;
+      const rows: string[][] = [];
+      while (i < lines.length && lines[i].trim().includes("|")) { rows.push(splitCells(lines[i])); i++; }
+      blocks.push(
+        <div key={"tblwrap" + i} className="my-2 overflow-x-auto">
+          <table className="w-full text-left border-collapse text-[12.5px]">
+            <thead>
+              <tr className="border-b border-stone-800">
+                {headerCells.map((c, ci) => <th key={ci} className="py-1 pr-3 font-semibold text-stone-200">{renderInline(c, "th" + ci)}</th>)}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, ri) => (
+                <tr key={ri} className="border-b border-stone-900/60">
+                  {row.map((c, ci) => <td key={ci} className="py-1 pr-3 text-stone-300 align-top">{renderInline(c, "td" + ri + "_" + ci)}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+      continue;
+    }
+
+    // Blockquote (consecutive "> " lines merge into one block).
+    const q = t.match(/^>\s?(.*)$/);
+    if (q) {
+      flushBullets("q" + i);
+      quote.push(<p key={"qp" + i} className="my-0.5">{renderInline(q[1], i + "q")}</p>);
+      i++; continue;
+    }
+    flushQuote("nq" + i);
+
     const h = t.match(/^(#{1,3})\s+(.*)$/);
-    const bul = t.match(/^[*\-•]\s+(.*)$/);
+    // Leading whitespace on the RAW (untrimmed) line marks a nested bullet --
+    // one indent level, not a full nested-list parser.
+    const bulMatch = raw.match(/^(\s*)[*\-•]\s+(.*)$/);
     const num = t.match(/^(\d+)\.\s+(.*)$/);
-    if (h) { flush("h" + idx); blocks.push(<div key={idx} className="font-bold text-stone-100 mt-2.5 mb-0.5 text-[14.5px]">{renderInline(h[2], idx + "h")}</div>); }
-    else if (bul) { bullets.push(<li key={idx}>{renderInline(bul[1], idx + "b")}</li>); }
-    else if (num) { flush("n" + idx); blocks.push(<div key={idx} className="mt-2 flex gap-1.5"><span className="text-[#C79A4E] font-bold shrink-0">{num[1]}.</span><span>{renderInline(num[2], idx + "n")}</span></div>); }
-    else { flush("p" + idx); blocks.push(<p key={idx} className="my-1.5">{renderInline(t, idx + "p")}</p>); }
-  });
-  flush("end");
+
+    if (h) {
+      flushBullets("h" + i);
+      const level = h[1].length;
+      const cls = level === 1
+        ? "font-black text-stone-100 mt-3 mb-1 text-[16px]"
+        : level === 2
+        ? "font-bold text-stone-100 mt-2.5 mb-0.5 text-[14.5px]"
+        : "font-semibold text-stone-100 mt-2 mb-0.5 text-[13.5px]";
+      blocks.push(<div key={i} className={cls}>{renderInline(h[2], i + "h")}</div>);
+    } else if (bulMatch) {
+      bullets.push({ node: renderInline(bulMatch[2], i + "b"), nested: bulMatch[1].length >= 2 });
+    } else if (num) {
+      flushBullets("n" + i);
+      blocks.push(<div key={i} className="mt-2 flex gap-1.5"><span className="text-[#C79A4E] font-bold shrink-0">{num[1]}.</span><span>{renderInline(num[2], i + "n")}</span></div>);
+    } else {
+      flushBullets("p" + i);
+      blocks.push(<p key={i} className="my-1.5">{renderInline(t, i + "p")}</p>);
+    }
+    i++;
+  }
+  flushBullets("end"); flushQuote("end");
   return <div className="leading-relaxed [&>*:first-child]:mt-0">{blocks}</div>;
 };
 
@@ -1162,9 +1327,20 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                         onExpand={() => onExpandWidget(panel.type, panel.data)}
                       />
                     ) : (
-                      <p className="text-[13px] text-stone-300 leading-relaxed whitespace-pre-wrap">
-                        {decodeDisplayText((effectiveLang === "kn" ? (panel.text_kn || panel.text) : panel.text)).trim() || (lang === "en" ? "No data for this section." : "ಈ ವಿಭಾಗಕ್ಕೆ ಡೇಟಾ ಇಲ್ಲ.")}
-                      </p>
+                      // Confirmed live bug, fixed: this used to render panel.text as a
+                      // raw <p> (no markdown parsing at all), so deterministic panel
+                      // builders that write "**bold**" straight into panel text (e.g.
+                      // agent_loop.py's dossier headline templates) showed literal "**"
+                      // characters in the dossier view. Same renderRich() the main
+                      // bubble text already uses, so panels get identical formatting.
+                      <div className="text-[13px] text-stone-300">
+                        {(() => {
+                          const panelText = decodeDisplayText((effectiveLang === "kn" ? (panel.text_kn || panel.text) : panel.text)).trim();
+                          return panelText
+                            ? renderRich(panelText)
+                            : (lang === "en" ? "No data for this section." : "ಈ ವಿಭಾಗಕ್ಕೆ ಡೇಟಾ ಇಲ್ಲ.");
+                        })()}
+                      </div>
                     )}
                   </div>
                 );
