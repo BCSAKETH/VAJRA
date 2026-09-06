@@ -389,6 +389,19 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   // Signals the chunk-playback loop (handleToggleSpeak) to stop advancing to
   // the next chunk once the officer hits stop mid-readout.
   const speakCancelRef = useRef(false);
+  // LH-1 / L1 fix: message-level audio engine lock. Previously each chunk
+  // independently tried the server (Zia) voice then fell back to the local
+  // browser voice ONLY for that one chunk on failure -- so a single
+  // transient Zia hiccup on, say, chunk 2 of 4 produced a message that
+  // played chunk 0/1/3 in Zia's neural voice and chunk 2 in the browser's
+  // robotic fallback: "sounds like two different people arguing" (the
+  // exact failure mode the plan names). Once ANY chunk in this readout
+  // downgrades to the local voice, every subsequent chunk in the SAME
+  // readout skips the server attempt entirely and goes straight to local --
+  // consistent engine for the whole message, and skips the wasted
+  // 12-35s server timeout on every remaining chunk too.
+  const engineLockRef = useRef<"zia" | "local" | null>(null);
+  const fallbackNotifiedRef = useRef(false);
   const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
 
   // Per-message ⇄ Translate (independent of the app-wide language toggle up top).
@@ -572,19 +585,41 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     _ttsPending.set(key, p);
   }, [isLast, isAI, message.id, message.isSimulated, effectiveLang, getSpeakText, voicePersona]);
 
-  // Plays ONE chunk to completion (server Zia audio, falling back to the
-  // browser voice for just this chunk if the server fails) and resolves only
-  // once that chunk has genuinely finished -- never a fixed timer. Returns
-  // false only when BOTH engines failed for this chunk, so the caller can
-  // still continue to the next chunk instead of the whole readout dying on
-  // one bad segment.
+  // Plays ONE chunk to completion and resolves only once that chunk has
+  // genuinely finished -- never a fixed timer. Returns false only when BOTH
+  // engines failed for this chunk, so the caller can still continue to the
+  // next chunk instead of the whole readout dying on one bad segment.
+  //
+  // LH-1/L1 engine lock: once engineLockRef has downgraded to "local" for
+  // this readout (set below, the first time any chunk's server attempt
+  // fails), every later chunk skips the server attempt entirely instead of
+  // re-trying and potentially flipping back and forth -- one consistent
+  // voice for the whole message, and no wasted 12-35s timeout per chunk.
+  const notifyFallback = () => {
+    if (fallbackNotifiedRef.current) return;
+    fallbackNotifiedRef.current = true;
+    addToast?.(
+      lang === "en" ? "Acoustic Fallback Active" : "ಧ್ವನಿ ಬದಲಾವಣೆ",
+      lang === "en"
+        ? "Cloud voice timed out or is unavailable. Switched to this device's voice for the rest of this reply."
+        : "ಮೇಘ ಧ್ವನಿ ಸಂಪರ್ಕ ವಿಳಂಬವಾಗಿದೆ ಅಥವಾ ಲಭ್ಯವಿಲ್ಲ. ಈ ಉತ್ತರದ ಉಳಿದ ಭಾಗಕ್ಕೆ ಸಾಧನದ ಧ್ವನಿಗೆ ಬದಲಾಯಿಸಲಾಗಿದೆ.",
+      "Info"
+    );
+  };
   const playChunk = async (text: string, vlang: "en" | "kn", key: string): Promise<boolean> => {
+    if (engineLockRef.current === "local") {
+      notifyFallback();
+      return await new Promise<boolean>((resolve) => {
+        const result = speakText(text, vlang, () => resolve(true));
+        if (result !== "started") resolve(false);
+      });
+    }
     let cachedUrl = _ttsCache.get(key);
     if (!cachedUrl && _ttsPending.has(key)) {
       cachedUrl = (await _ttsPending.get(key)!) || undefined;
     }
     if (cachedUrl) {
-      if (await playUrl(cachedUrl, false)) return true;
+      if (await playUrl(cachedUrl, false)) { engineLockRef.current = "zia"; return true; }
     } else {
       try {
         const ctrl = new AbortController();
@@ -607,14 +642,18 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
           const blob = await res.blob();
           const url = URL.createObjectURL(blob);
           _ttsPut(key, url);
-          if (await playUrl(url, false)) return true;
+          if (await playUrl(url, false)) { engineLockRef.current = "zia"; return true; }
         }
       } catch {
         // fall through to browser TTS for this chunk
       }
     }
-    // Server path failed for this chunk -- browser voice fallback, awaited via
-    // its own onEnd rather than a timer.
+    // Server path failed for this chunk -- lock the REST of this readout to
+    // the local voice too (LH-1/L1: no flip-flopping between engines across
+    // chunks) and let the officer know once, then fall back for this chunk,
+    // awaited via its own onEnd rather than a timer.
+    engineLockRef.current = "local";
+    notifyFallback();
     return await new Promise<boolean>((resolve) => {
       const result = speakText(text, vlang, () => resolve(true));
       if (result !== "started") resolve(false);
@@ -635,6 +674,8 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     const chunks = splitIntoSpeechChunks(toSpeak);
     if (chunks.length === 0) return;
     speakCancelRef.current = false;
+    engineLockRef.current = null;       // fresh engine lock for this readout
+    fallbackNotifiedRef.current = false; // allow one fresh fallback notice per readout
     setIsSpeaking(true);
     const vlang = effectiveLang;  // voice must match the DISPLAYED language, not the app toggle
     let anyPlayed = false;

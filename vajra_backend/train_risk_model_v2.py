@@ -29,6 +29,36 @@ turns out to be is what gets reported and (if it deploys) documented.
 
 Run from vajra_backend/ with sklearn + xgboost installed. Saves
 .v2.joblib artifacts; nothing is deployed by this script.
+
+RESULT (first run, 8 original features): confirmed the honest ceiling is
+NOT a calibration-method problem. Best candidate (sigmoid-CV, Brier
+0.2268) is statistically indistinguishable from an uninformative
+always-predict-the-base-rate baseline (Brier 0.2269) on genuine held-out
+data -- the 8-feature set (district/unit/crime-group/FIR-type/month/day/
+victim+accused-count) carries essentially no real signal for the
+conviction-outcome label.
+
+RESULT (second run, +Prior Offense Count, Item 27 attempt): added a new,
+genuinely different feature -- the max number of OTHER cases sharing an
+accused person's name on this case (a real repeat-offender signal none of
+the original 8 features reference at all). Sanity-checked it against the
+label directly before even training: conviction rate is 34.9% at 0 prior
+offenses, 33.0% at 1, 22.7% at 2 (only 22 cases in that bucket -- noise,
+not signal) -- essentially FLAT, slightly negative if anything. Held-out
+Brier with the new feature included: still 0.2268, unchanged from the
+8-feature run. Feature importance ranks it lowest of the real (non-zero)
+features. Conclusion: this is not a feature-engineering gap fixable by
+adding more columns from data already in CCTNS -- either the recorded
+case attributes genuinely don't predict this specific outcome variable,
+or (very plausible for a datathon's synthetic seed data) CaseStatusID was
+assigned independently of these attributes when the dataset was
+generated. Real improvement would need either fundamentally different
+signal (chargesheet content, evidence strength, court-stage data -- none
+of which exist in this schema) or accepting that "conviction risk" isn't
+a learnable target on this data and repositioning the feature (e.g. as a
+transparent RECIDIVISM/case-load indicator instead of a probability
+claim). Nothing here should be re-attempted as a quick retrain -- the
+ceiling is data, not modeling technique.
 """
 import os
 import numpy as np
@@ -104,16 +134,44 @@ cats = {int(c["CaseCategory"]["CaseCategoryID"]): c["CaseCategory"].get("LookupV
         for c in fetch_all("CaseCategoryID, LookupValue", "CaseCategory", "CaseCategoryID") if c.get("CaseCategory", {}).get("CaseCategoryID")}
 print(f"  districts={len(districts)} units={len(units)} crimeheads={len(heads)} categories={len(cats)}")
 
-print("Counting accused/victims per case...")
+print("Counting accused/victims per case, and each accused's name for a prior-offense feature...")
 acc_count, vic_count = {}, {}
-for r in fetch_all("ROWID, CaseMasterID", "Accused", "ROWID"):
-    cid = r.get("Accused", {}).get("CaseMasterID")
-    if cid is not None:
-        acc_count[int(cid)] = acc_count.get(int(cid), 0) + 1
+name_to_cases: dict = {}   # AccusedName -> set of CaseMasterIDs they appear in
+case_to_names: dict = {}   # CaseMasterID -> list of AccusedNames on that case
+for r in fetch_all("ROWID, CaseMasterID, AccusedName", "Accused", "ROWID"):
+    a = r.get("Accused", {})
+    cid = a.get("CaseMasterID")
+    if cid is None:
+        continue
+    cid = int(cid)
+    acc_count[cid] = acc_count.get(cid, 0) + 1
+    name = (a.get("AccusedName") or "").strip()
+    if name:
+        name_to_cases.setdefault(name, set()).add(cid)
+        case_to_names.setdefault(cid, []).append(name)
 for r in fetch_all("ROWID, CaseMasterID", "Victim", "ROWID"):
     cid = r.get("Victim", {}).get("CaseMasterID")
     if cid is not None:
         vic_count[int(cid)] = vic_count.get(int(cid), 0) + 1
+
+
+def prior_offense_count(cid: int) -> int:
+    """Real, new feature (Item 27 attempt): the MAX, over every accused
+    person named on this case, of how many OTHER cases (by CaseMasterID)
+    that same AccusedName also appears on. A genuine repeat-offender
+    signal, distinct from the existing 8 features (none of which reference
+    the accused's own history at all) -- criminologically, a repeat
+    offender is plausibly more likely to be convicted (established MO,
+    prior evidence-gathering experience by the investigating unit).
+    CaseMasterID collisions (documented elsewhere: ~2.6 genuinely different
+    cases share each value on average) add noise to this signal but don't
+    invalidate it -- the honest held-out Brier score below is the real
+    arbiter, not this reasoning alone.
+    """
+    names = case_to_names.get(cid) or []
+    if not names:
+        return 0
+    return max((len(name_to_cases.get(n, set())) - 1 for n in names), default=0)
 
 print("Pulling CaseMaster...")
 cases = fetch_all("ROWID, CaseMasterID, PoliceStationID, CrimeMajorHeadID, CaseCategoryID, CrimeRegisteredDate, CaseStatusID", "CaseMaster", "ROWID")
@@ -141,6 +199,7 @@ for c in cases:
         "CrimeGroup_Name": group_name or "Unknown", "FIR_Type": fir_type or "Non Heinous",
         "month": m, "day": d,
         "VICTIM COUNT": vic_count.get(cid, 1), "Accused Count": acc_count.get(cid, 1),
+        "Prior Offense Count": prior_offense_count(cid),
         "label": 1 if (status is not None and int(status) == CONVICTED_STATUS) else 0,
     })
 
@@ -165,10 +224,10 @@ df["FIR_YEAR"] = 0  # neutralize the temporal leak, same as train_risk_model.py
 
 FEATURES = ["District_Name_enc", "UnitName_enc", "CrimeGroup_Name_enc", "FIR_Type_enc",
             "FIR_YEAR", "month_sin", "month_cos", "day_sin", "day_cos",
-            "VICTIM COUNT", "Accused Count", "victim_to_accused_ratio"]
+            "VICTIM COUNT", "Accused Count", "victim_to_accused_ratio", "Prior Offense Count"]
 INFER_COLS = ["District_Name_encoded", "UnitName_encoded", "CrimeGroup_Name_encoded", "FIR_Type_encoded",
               "FIR_YEAR", "month_sin", "month_cos", "day_sin", "day_cos",
-              "VICTIM COUNT", "Accused Count", "victim_to_accused_ratio"]
+              "VICTIM COUNT", "Accused Count", "victim_to_accused_ratio", "prior_offense_count"]
 X = df[FEATURES].copy()
 X.columns = INFER_COLS
 y = df["label"].values
@@ -194,6 +253,9 @@ def brier_ece(p, y_true, label):
     print(f"  [{label}] Brier={brier:.4f}  ECE={ece*100:.2f}%  n={len(p)}")
     return brier, ece
 
+
+print("\n=== Sanity check: does Prior Offense Count actually correlate with conviction? ===")
+print(df.groupby(pd.cut(df["Prior Offense Count"], [-1, 0, 1, 2, 5, 1000]))["label"].agg(["mean", "count"]))
 
 print("\n=== CANDIDATE A: current approach (scale_pos_weight) + in-sample-style isotonic ===")
 pos = max(int(y_train.sum()), 1)
@@ -233,6 +295,11 @@ brier_ece(model_e.predict_proba(X_test)[:, 1], y_test, "E: shallow+isotonic-CV, 
 print("\n=== Always-predict-base-rate baseline (uninformative reference point) ===")
 base_p = np.full_like(y_test, y_train.mean(), dtype=float)
 brier_ece(base_p, y_test, "baseline: constant base rate, TEST")
+
+print("\n=== Feature importances (model B, raw, unweighted by calibration) ===")
+imp = sorted(zip(INFER_COLS, model_b.feature_importances_), key=lambda t: -t[1])
+for name, val in imp:
+    print(f"  {name}: {val:.4f}")
 
 print("\nPick whichever candidate has the lowest TEST Brier score above.")
 print("Saving candidate C (isotonic-CV) and E (shallow+isotonic-CV) for comparison; "
