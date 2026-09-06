@@ -5693,6 +5693,42 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         })
                 except Exception as e:
                     logger.warning(f"web_search failed for {q!r}: {e}")
+
+                # WS-12: Kannada dual-search. Karnataka's own-language press
+                # (Prajavani, Vijayavani, Kannada Prabha -- already tiered as
+                # PRESS in internet_signals.classify_domain) often covers
+                # local Karnataka crime news an English-only Google News RSS
+                # query never surfaces. Only runs when the English pass came
+                # up short, so a well-answered English search never pays the
+                # extra latency. Entirely fail-soft: Zia's fast-translate
+                # (translate_fast) is a ~0.7-2s call with its own strict
+                # input validator (rejects a handful of punctuation chars,
+                # sanitized below) -- any failure/timeout here just means the
+                # English-only results stand, never blocks the primary answer.
+                if len(items) < 6 and q:
+                    try:
+                        safe_q = re.sub(r"[%*()#+]", " ", q).strip()
+                        kn_res = self.llm.translate_fast(safe_q, "en", "kn") if safe_q else {}
+                        kn_query = (kn_res.get("text") or "").strip()
+                        if kn_res.get("available") and kn_query and kn_query.lower() != safe_q.lower():
+                            seen_urls = {it["url"] for it in items if it.get("url")}
+                            for it in internet_signals._scrape_news_rss(kn_query, 6 - len(items)):
+                                u = str(it.get("url") or "")[:250]
+                                if not u or u in seen_urls:
+                                    continue
+                                items.append({
+                                    "title": _INJECTION_PATTERNS.sub("[removed]", str(it.get("title") or "")[:140]),
+                                    "source": str(it.get("source") or "News")[:60],
+                                    "url": u,
+                                    "snippet": _INJECTION_PATTERNS.sub("[removed]", str(it.get("snippet") or "")[:180]),
+                                    "published_at": str(it.get("published") or "")[:40],
+                                    "tier": str(it.get("tier") or "WEB"),
+                                })
+                                seen_urls.add(u)
+                                if len(items) >= 6:
+                                    break
+                    except Exception as e:
+                        logger.debug(f"web_search Kannada dual-search skipped: {e}")
             search_duration_ms = int((_time.time() - search_started) * 1000)
             if items:
                 response_type = "news"

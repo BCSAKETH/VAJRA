@@ -66,6 +66,43 @@ def _cache_put(key: str, value: Any, ttl: int) -> None:
         _cache[key] = (time.time() + ttl, value)
 
 
+# WS-10 (Revamped Internet Search plan): KSWAN low-connectivity precheck.
+# Some rural KSP stations run on the Karnataka State Wide Area Network with
+# unreliable or momentarily absent internet backhaul. Without this, every
+# web_search/get_district_news call at such a station would still wait out
+# its full per-request HTTP timeout (several seconds, sometimes twice over
+# across the SerpAPI + News-RSS fallback chain) before honestly reporting
+# nothing -- exactly the wrong trade when the link is down right now. A
+# plain HTTPS GET to Google's own "is there real internet" probe endpoint
+# (the same one Android/Chrome use to distinguish "no internet" from "stuck
+# behind a captive portal") is the cheapest genuine signal available: no new
+# dependency (reuses `requests`), sub-2s worst case, and a near-instant
+# success on any working connection. Result is cached briefly so a burst of
+# calls in the same turn/session doesn't repeat the handshake.
+_CONNECTIVITY_CHECK_URL = "https://www.gstatic.com/generate_204"
+_CONNECTIVITY_CHECK_TIMEOUT = 1.5
+_CONNECTIVITY_CACHE_TTL = 15  # seconds -- long enough to dedupe a burst, short enough to re-detect recovery fast
+
+
+def has_internet_connectivity() -> bool:
+    """True if this process currently has real outbound internet reachability.
+    Fail-soft in the safe direction: any exception (DNS failure, connection
+    refused, timeout) means 'assume offline' -- callers should then skip
+    straight to an honest 'web search unavailable right now' instead of
+    trying the real fetch and timing out anyway."""
+    cached = _cache_get("connectivity::probe")
+    if cached is not None:
+        return cached
+    ok = False
+    try:
+        r = requests.get(_CONNECTIVITY_CHECK_URL, timeout=_CONNECTIVITY_CHECK_TIMEOUT)
+        ok = r.status_code in (200, 204)
+    except Exception:
+        ok = False
+    _cache_put("connectivity::probe", ok, _CONNECTIVITY_CACHE_TTL)
+    return ok
+
+
 def news_configured() -> bool:
     """True if any news provider key is set."""
     return bool(_GNEWS_KEY or _NEWSAPI_KEY)
@@ -217,6 +254,15 @@ def get_district_news(district: str, limit: int = 5) -> Dict[str, Any]:
     if cached is not None:
         return cached
 
+    # WS-10: same KSWAN low-connectivity precheck as web_search -- see its
+    # docstring on has_internet_connectivity for why this matters for rural
+    # stations specifically.
+    if not has_internet_connectivity():
+        result = {"configured": True, "items": [], "fetched_via": "offline",
+                  "note": "No internet connectivity detected right now -- district news is unavailable."}
+        _cache_put(ck, result, 20)
+        return result
+
     items: List[Dict[str, str]] = []
     try:
         if _GNEWS_KEY:
@@ -293,24 +339,51 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
     key contract as news. Supports SerpAPI (default) via WEB_SEARCH_API_KEY.
     Every result is an open-source signal (unverified lead), never official.
 
-    "Go deep": rather than one source, this sweeps BOTH of VAJRA's key-free
-    scrapers (Google News RSS + DuckDuckGo HTML), merges and de-duplicates them
-    by URL/title, and returns as many distinct results as it can up to `limit`.
+    Tiered fallback chain (Revamped Internet Search plan, Loophole WS-7),
+    each tier only attempted if the one before it came up short, and the
+    result records exactly which tier(s) actually supplied it in
+    `fetched_via` -- real provenance for the audit log, not just "search
+    happened":
+      1. SerpAPI (only if WEB_SEARCH_API_KEY is configured) -- richest results.
+      2. Google News RSS -- a stable, documented feed endpoint (not
+         screen-scraping a search engine's results page), so it isn't
+         subject to the anti-bot walls a raw HTML scrape hits. DuckDuckGo/
+         Bing HTML scraping was removed entirely (confirmed live: DDG now
+         serves an anomaly-detection CAPTCHA to automated requests).
+      3. A retry of the RAW (un-cleaned) officer query against News RSS, for
+         the case where query-cleaning stripped a term that mattered.
+    General web coverage beyond news additionally goes through
+    smartbrowz_search_and_extract in catalyst_smartbrowz.py (a real Catalyst
+    SmartBrowz rendered screenshot + QuickML Qwen-VL read), called directly
+    from the web_search TOOL in agent_loop.py, not this module.
     """
     raw_query = (query or "").strip()
     if not raw_query:
         return {"configured": True, "items": [], "note": "Empty query."}
-    
+
     clean_q = clean_search_query(raw_query)
     effective_query = clean_q if clean_q else raw_query
-    
+
     limit = max(1, min(int(limit or 24), 60))  # deep sweep ceiling (request-budget bounded)
     ck = f"search::{effective_query.lower()}::{limit}"
     cached = _cache_get(ck)
     if cached is not None:
         return cached
 
+    # WS-10: KSWAN low-connectivity precheck -- see has_internet_connectivity's
+    # own docstring. Skips straight to an honest offline result instead of
+    # waiting out (potentially two) full HTTP timeouts only to fail anyway.
+    if not has_internet_connectivity():
+        result = {
+            "configured": True, "items": [], "fetched_via": "offline",
+            "note": "No internet connectivity detected right now (the station's network link may be down) "
+                    "-- web search is unavailable. CCTNS records are unaffected.",
+        }
+        _cache_put(ck, result, 20)  # short TTL so connectivity coming back is picked up quickly
+        return result
+
     items: List[Dict[str, str]] = []
+    fetched_via: List[str] = []
     try:
         if _SEARCH_KEY and _SEARCH_ENGINE == "serpapi":
             r = requests.get(
@@ -324,21 +397,14 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
                         a.get("title", ""), a.get("displayed_link", "web"),
                         a.get("date", ""), a.get("link", ""), a.get("snippet", ""),
                     ))
+                if items:
+                    fetched_via.append("serpapi")
             else:
                 logger.warning(f"SerpAPI {r.status_code}: {r.text[:160]}")
         if len(items) < limit:
-            # Key-free lane: Google News RSS -- a stable, documented feed
-            # endpoint (not screen-scraping a search engine's results page),
-            # so it isn't subject to the anti-bot walls a raw HTML scrape
-            # hits. DuckDuckGo/Bing HTML scraping was removed entirely
-            # (confirmed live: DDG now serves an anomaly-detection CAPTCHA
-            # to automated requests) -- general web coverage beyond news
-            # now goes through smartbrowz_search_and_extract in
-            # catalyst_smartbrowz.py (a real Catalyst SmartBrowz rendered
-            # screenshot + QuickML Qwen-VL read), which is called directly
-            # from the web_search TOOL in agent_loop.py, not this module.
             merged: List[Dict[str, str]] = list(items)
             seen = {(_norm(i.get("url")) or _norm(i.get("title"))) for i in merged}
+            _before = len(merged)
             try:
                 for it in _scrape_news_rss(effective_query, limit):
                     key = _norm(it.get("url")) or _norm(it.get("title"))
@@ -348,6 +414,8 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
                             break
             except Exception as ie:
                 logger.warning(f"deep web scrape (news RSS) error: {ie}")
+            if len(merged) > _before:
+                fetched_via.append("news_rss")
             items = merged
 
         # If effective_query returned nothing and differed from raw_query, try raw query as fallback
@@ -359,10 +427,13 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
                         break
             except Exception:
                 pass
+            if items:
+                fetched_via.append("news_rss_raw_query_retry")
     except Exception as e:
         logger.warning(f"Web search error for {effective_query!r}: {e}")
 
     result = {"configured": True, "items": items[:limit],
+              "fetched_via": "+".join(fetched_via) if fetched_via else "none",
               "note": "" if items else "No public results found."}
     _cache_put(ck, result, _NEWS_TTL)
     return result
