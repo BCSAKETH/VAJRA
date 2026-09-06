@@ -957,6 +957,13 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                   <ShieldCheck className="w-2.5 h-2.5 shrink-0" />
                   {showEvidence
                     ? (lang === "en" ? "Hide evidence" : "ಸಾಕ್ಷ್ಯ ಮರೆಮಾಡಿ")
+                    // "ZCQL Provenance" is only accurate for answers actually
+                    // grounded in a database query -- a web_search answer
+                    // never runs one, so claiming it here would be its own
+                    // small honesty gap. "news" is VAJRA's only response
+                    // type sourced from the open web rather than CCTNS data.
+                    : message.responseType === "news"
+                    ? (lang === "en" ? "🔍 View Search Details" : "🔍 ಹುಡುಕಾಟ ವಿವರಗಳನ್ನು ವೀಕ್ಷಿಸಿ")
                     : (lang === "en" ? "🔍 View Grounding & ZCQL Provenance" : "🔍 ಆಧಾರ ಮತ್ತು ZCQL ಪುರಾವೆ ವೀಕ್ಷಿಸಿ")}
                 </button>
                 {message.data?.pocso_redacted && message.data?.case_no && (
@@ -1143,14 +1150,21 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
           </div>
         ) : isAI && message.responseType && message.responseType !== "text" && message.data && (
           <div className="w-full flex flex-col gap-2">
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[11px] text-[#C79A4E] font-medium animate-fade-in">
-              <Sparkles className="w-3.5 h-3.5 shrink-0 text-[#C79A4E]" />
-              <span>
-                {lang === "en"
-                  ? "Supporting Intelligence Visualization — Click expand icon to explore in full overlay"
-                  : "ಬೆಂಬಲಿತ ಅಪರಾಧ ಗುಪ್ತಚರ ದೃಶ್ಯೀಕರಣ — ವಿಸ್ತರಿಸಲು ಬಲಬದಿಯ ಐಕಾನ್ ಕ್ಲಿಕ್ ಮಾಡಿ"}
-              </span>
-            </div>
+            {/* "news" (the web-search drawer) already has its own header,
+                collapse toggle, and source list fully visible in place --
+                this generic "go explore it in an overlay" banner was pure
+                redundant chrome for that type (there's nothing extra an
+                overlay would reveal), so it's skipped there. */}
+            {message.responseType !== "news" && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[11px] text-[#C79A4E] font-medium animate-fade-in">
+                <Sparkles className="w-3.5 h-3.5 shrink-0 text-[#C79A4E]" />
+                <span>
+                  {lang === "en"
+                    ? "Supporting Intelligence Visualization — Click expand icon to explore in full overlay"
+                    : "ಬೆಂಬಲಿತ ಅಪರಾಧ ಗುಪ್ತಚರ ದೃಶ್ಯೀಕರಣ — ವಿಸ್ತರಿಸಲು ಬಲಬದಿಯ ಐಕಾನ್ ಕ್ಲಿಕ್ ಮಾಡಿ"}
+                </span>
+              </div>
+            )}
             <InlineWidget
               type={message.responseType}
               data={message.data}

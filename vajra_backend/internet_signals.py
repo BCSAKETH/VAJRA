@@ -178,7 +178,7 @@ def _signal(title: str, source: str, published: str, url: str, snippet: str = ""
         "snippet": (snippet or "").strip()[:240],
         "kind": "open_source_signal",          # marks the trust lane, never official
         "disclaimer": "Open-source signal — unverified lead, not an official record.",
-        "tier": classify_domain(url).get("tier", "WEB"),
+        "tier": classify_domain(url, source).get("tier", "WEB"),
     }
 
 
@@ -194,6 +194,19 @@ _PRESS_DOMAINS = (
     "thehindu.com", "deccanherald.com", "indianexpress.com", "timesofindia.indiatimes.com",
     "hindustantimes.com", "ndtv.com", "prajavani.net", "kannadaprabha.com", "vijayavani.net",
     "reuters.com", "aljazeera.com", "bbc.com", "livemint.com",
+)
+# Same outlets as _PRESS_DOMAINS, matched by their human-readable name instead
+# of domain -- needed because Google News RSS's own <link> field is always a
+# news.google.com/rss/articles/... REDIRECT, never the publisher's actual
+# domain (confirmed live: even a genuine indianexpress.com "The Indian
+# Express" story links through news.google.com), so domain-only matching
+# silently tiers every RSS result as WEB regardless of the real outlet. The
+# RSS <source> tag (the plain-text outlet name) IS reliable, so this is the
+# fallback classify_domain uses when the URL doesn't resolve to a known tier.
+_PRESS_NAME_HINTS = (
+    "the hindu", "deccan herald", "indian express", "times of india", "hindustan times",
+    "ndtv", "prajavani", "kannada prabha", "vijayavani", "reuters", "al jazeera", "bbc",
+    "livemint", "mint",
 )
 _TIER_LABELS = {
     "GOV": {"label": "Official Gov", "emoji": "\U0001F3DB️", "color": "emerald"},
@@ -218,11 +231,16 @@ def compute_evidence_hash(url: str, title: str, snippet: str, fetch_timestamp: s
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def classify_domain(url: str) -> Dict[str, str]:
+def classify_domain(url: str, source_name: str = "") -> Dict[str, str]:
     """Categorizes a result's domain into GOV / LEGAL / PRESS / WEB for the
     officer-facing credibility badge. Never affects trust in the DATA itself
     (every tier remains an unverified open-source lead) -- purely a triage
-    signal for where to look first."""
+    signal for where to look first.
+
+    `source_name` (the RSS <source> tag / SerpAPI displayed_link text) is an
+    optional fallback for when the URL itself doesn't reveal the real
+    publisher -- see _PRESS_NAME_HINTS's docstring for why this matters for
+    Google News RSS specifically."""
     try:
         domain = (urllib.parse.urlparse(url).hostname or "").lower()
     except Exception:
@@ -234,6 +252,10 @@ def classify_domain(url: str) -> Dict[str, str]:
         elif any(d in domain for d in _LEGAL_DOMAINS):
             tier = "LEGAL"
         elif any(d in domain for d in _PRESS_DOMAINS):
+            tier = "PRESS"
+    if tier == "WEB" and source_name:
+        name_l = source_name.lower()
+        if any(h in name_l for h in _PRESS_NAME_HINTS):
             tier = "PRESS"
     return {"tier": tier, **_TIER_LABELS[tier]}
 

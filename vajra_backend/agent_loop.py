@@ -1099,9 +1099,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "officer's actual question using ONLY the numbered web search results below -- "
             "never invent facts not present in them. Cite every claim with its bracketed "
             "number, e.g. 'per the 2026 circular [1]...'. If the results don't contain the "
-            "answer, say so plainly and suggest a better search. This is open-source web "
-            "content, not an official CCTNS record. Be direct and concise (2-5 sentences), "
-            "answer the specific question first, no headers or bullet templates."
+            "answer, begin your reply with the exact literal marker 'NOT_FOUND:' (nothing "
+            "before it), then say so plainly and suggest a better search -- this marker is "
+            "read by the calling code to decide whether to try another lookup, so it must be "
+            "present whenever the snippets don't actually contain the specific fact asked, "
+            "even if you can offer related context. This is open-source web content, not an "
+            "official CCTNS record. Be direct and concise (2-5 sentences), answer the "
+            "specific question first, no headers or bullet templates."
         )
         user_content = (
             f"<unverified_web_osint query=\"{query}\" bsa_section=\"63\">\n"
@@ -5736,16 +5740,40 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 # snippets already fetched above -- fast, no external render
                 # dependency, works off text VAJRA already successfully has.
                 extracted = self._answer_from_web_search_results(raw_q, q, items)
-                # SECONDARY: if snippet synthesis came up empty (the specific
-                # fact genuinely wasn't in any snippet) AND the question
-                # looks like an organization lookup, try Zoho SmartBrowz's
-                # Dataverse structured lookup as an enhancement -- may
+                # A non-empty "NOT_FOUND: ..." reply is still an HONEST
+                # answer (never fabricated), but it means the specific fact
+                # wasn't in any snippet -- exactly the case the SECONDARY
+                # Dataverse lookup below exists for. Previously this only
+                # checked `if not extracted`, so a real "I couldn't find it"
+                # narrative (non-empty string) was mistaken for success and
+                # Dataverse was never even attempted -- confirmed live: a
+                # college-pincode question got an honest "not found" instead
+                # of trying the ONE lookup actually built to answer it.
+                _not_found = (not extracted) or extracted.startswith("NOT_FOUND:")
+                _snippet_not_found_text = extracted[len("NOT_FOUND:"):].strip() if extracted.startswith("NOT_FOUND:") else extracted
+                # SECONDARY: if snippet synthesis came up empty or explicitly
+                # said the fact wasn't found, try Zoho SmartBrowz's Dataverse
+                # structured organization lookup as an enhancement -- may
                 # succeed or may hit its own known intermittent errors
                 # (logged, never blocks the answer already in hand).
-                if not extracted:
+                if _not_found:
                     try:
                         from catalyst_smartbrowz import smartbrowz_lookup_organization
-                        lead = smartbrowz_lookup_organization(q)
+                        # Dataverse resolves an ORGANIZATION NAME, not a full
+                        # search phrase -- confirmed live: passing "TKREC
+                        # college pincode" verbatim (the search query, not the
+                        # entity) as the org name made Dataverse fail to
+                        # match anything. Strip the fact-type word the
+                        # officer is actually asking for so what's left is
+                        # the entity itself, e.g. "TKREC college pincode" ->
+                        # "TKREC college".
+                        _org_name = re.sub(
+                            r"\b(pin\s*-?code|postal\s*code|zip\s*code|address|phone(?:\s*number)?|"
+                            r"contact(?:\s*(?:number|details))?|email|website|location)\b",
+                            " ", q, flags=re.IGNORECASE,
+                        )
+                        _org_name = re.sub(r"\s+", " ", _org_name).strip() or q
+                        lead = smartbrowz_lookup_organization(_org_name)
                         if lead:
                             hq = (lead.get("headquarters") or [{}])[0] if lead.get("headquarters") else {}
                             parts = []
@@ -5759,8 +5787,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
                                 parts.append(f"Contact: {', '.join(lead['contact'][:2])}")
                             if parts:
                                 extracted = f"{lead.get('organization_name', q)} -- " + "; ".join(parts) + " (Zoho SmartBrowz Dataverse organization lookup.)"
+                            else:
+                                extracted = _snippet_not_found_text
+                        else:
+                            extracted = _snippet_not_found_text
                     except Exception as ex:
                         logger.debug(f"web_search Dataverse enhancement skipped: {ex}")
+                        extracted = _snippet_not_found_text
                 if extracted:
                     text_result = f"{extracted}\n\n[ ⚠️ §63 BSA Notice: Web signals are unverified OSINT leads • Not certified CCTNS record ]"
                 else:

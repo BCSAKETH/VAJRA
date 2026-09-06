@@ -153,8 +153,11 @@ const NewsView: React.FC<{ data: any; lang: "en" | "kn" }> = ({ data, lang }) =>
                 <button
                   onClick={() => setViewMode("json")}
                   className={`px-2 py-1 cursor-pointer transition-colors flex items-center gap-1 border-l border-stone-800 ${viewMode === "json" ? "bg-[#C79A4E]/20 text-[#E4C590]" : "text-stone-500 hover:text-stone-300"}`}
+                  title={lang === "en"
+                    ? "Raw evidence data with SHA-256 digests -- for a report or court-file appendix"
+                    : "SHA-256 ಡೈಜೆಸ್ಟ್‌ಗಳೊಂದಿಗೆ ಕಚ್ಚಾ ಸಾಕ್ಷ್ಯ ಡೇಟಾ -- ವರದಿ ಅಥವಾ ನ್ಯಾಯಾಲಯದ ಕಡತಕ್ಕಾಗಿ"}
                 >
-                  <Code2 className="w-2.5 h-2.5" /> JSON
+                  <Code2 className="w-2.5 h-2.5" /> {lang === "en" ? "Evidence" : "ಸಾಕ್ಷ್ಯ"}
                 </button>
               </div>
               <button
@@ -196,15 +199,21 @@ const NewsView: React.FC<{ data: any; lang: "en" | "kn" }> = ({ data, lang }) =>
                           </span>
                           <span className="text-[9px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded bg-[#C79A4E]/12 text-[#E4C590] truncate max-w-[160px]">{src}</span>
                           {relDate(it.published || it.date) && <span className="text-[9px] font-mono text-stone-500">{relDate(it.published || it.date)}</span>}
+                          {/* §63 BSA evidentiary digest (WS-11): proof of what
+                              this source said at the moment VAJRA fetched it,
+                              independent of whether the page later changes.
+                              A small hover target instead of its own full
+                              line -- the full hash is still one hover away,
+                              and always in the Evidence/JSON view. */}
+                          {it.evidence_hash && (
+                            <span
+                              className="ml-auto shrink-0 text-stone-600 hover:text-stone-400 cursor-help"
+                              title={(lang === "en" ? "Section 63 BSA evidentiary SHA-256 digest: " : "ಸೆಕ್ಷನ್ 63 BSA ಸಾಕ್ಷ್ಯ SHA-256 ಡೈಜೆಸ್ಟ್: ") + it.evidence_hash}
+                            >
+                              <Fingerprint className="w-3 h-3" />
+                            </span>
+                          )}
                         </div>
-                        {/* §63 BSA evidentiary digest (WS-11): proof of what
-                            this source said at the moment VAJRA fetched it,
-                            independent of whether the page later changes. */}
-                        {it.evidence_hash && (
-                          <div className="text-[8.5px] font-mono text-stone-600 mt-1 truncate" title={lang === "en" ? "Section 63 BSA evidentiary SHA-256 digest" : "ಸೆಕ್ಷನ್ 63 BSA ಸಾಕ್ಷ್ಯ SHA-256 ಡೈಜೆಸ್ಟ್"}>
-                            SHA-256: {it.evidence_hash}
-                          </div>
-                        )}
                       </div>
                     </div>
                   </div>
@@ -303,6 +312,17 @@ interface InlineWidgetProps {
 
 const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpand }) => {
   const { lang } = useApp();
+  // NewsView (the web-search drawer) is already a complete, self-contained
+  // card -- its own border, its own "Browsed the web (N sources)" header,
+  // its own collapse toggle. Wrapping it in this component's generic
+  // "OPEN-SOURCE SIGNALS" header + a second outer card border just stacked
+  // two headers and two borders for the same one thing (confirmed live from
+  // a screenshot), and the Maximize2 "expand to full screen" button did
+  // nothing useful anyway -- ExpandedOverlay has no "news" case, so it fell
+  // through to a blank default. Render it standalone instead.
+  if (type === "news") {
+    return <NewsView data={data} lang={lang} />;
+  }
   return (
     <div className="glass-card rounded-xl border border-stone-800 p-4 shadow-lg animate-fade-in relative overflow-hidden">
       {/* Header Info */}
