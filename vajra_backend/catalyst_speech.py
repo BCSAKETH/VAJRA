@@ -146,13 +146,24 @@ _ABBREV_EN = {
     r"\bCRPC\b": "C.R.P.C.",
     r"\bBNS\b": "B.N.S.",
     r"\bBNSS\b": "B.N.S.S.",
+    r"\bBSA\b": "B.S.A.",
     r"\bSHO\b": "S.H.O.",
     r"\bDCP\b": "D.C.P.",
     r"\bACP\b": "A.C.P.",
     r"\bSP\b": "S.P.",
     r"\bDGP\b": "D.G.P.",
     r"\bIT Act\b": "I.T. Act",
-    r"\bPOCSO\b": "POCSO",
+    # Plan §2.5 (LH-9): a handful more police-domain acronyms Zia otherwise
+    # spells out letter-soup or garbles. CCTNS/CDR/IMEI as dotted initials
+    # match the pattern of every acronym above; IO expands to the full
+    # phrase since "I.O." alone reads as ambiguous letters to an officer
+    # listening rather than reading; POCSO gets its real spoken pronunciation
+    # instead of unhelpfully mapping to itself.
+    r"\bCCTNS\b": "C.C.T.N.S.",
+    r"\bCDR\b": "C.D.R.",
+    r"\bIMEI\b": "I.M.E.I.",
+    r"\bIO\b": "Investigating Officer",
+    r"\bPOCSO\b": "Pock-so",
 }
 _ABBREV_KN = {
     r"\bFIR\b": "ಎಫ್\u200cಐಆರ್",
@@ -167,6 +178,12 @@ _ABBREV_KN = {
     r"\bDGP\b": "ಡಿಜಿಪಿ",
     r"\bIT Act\b": "ಐಟಿ ಆಕ್ಟ್",
     r"\bCR/": "ಕ್ರೈಮ್ ನಂಬರ್ ",
+    r"\bCCTNS\b": "ಸಿಸಿಟಿಎನ‌ಎಸ್",
+    r"\bCDR\b": "ಸಿಡಿಆರ್",
+    r"\bIMEI\b": "ಐಎಂಇಐ",
+    r"\bIO\b": "ತನಿಖಾಅಧಿಕಾರಿ",
+    r"\bBSA\b": "ಬಿಎಸ್‌ಎ",
+    r"\bPOCSO\b": "ಪೋಕ್ಸೊ",
 }
 
 
