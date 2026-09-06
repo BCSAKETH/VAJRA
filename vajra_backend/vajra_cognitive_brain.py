@@ -32,8 +32,12 @@ inline, just organized into its own named file. Four real mechanisms:
    compiles a natural-language question into a deterministic multi-step
    execution plan over the real tool registry, rather than a fixed template.
 4. GROUNDING (_grounding_safety_net) -- the final honesty checkpoint every
-   single answer passes through before reaching the officer, independently
-   re-verifying POCSO redaction even if an upstream path forgot the rule.
+   single answer passes through before reaching the officer: independently
+   re-verifies POCSO redaction even if an upstream path forgot the rule, and
+   (Item 24) cross-checks every case number a multi-tool narrative names
+   against that same answer's own grounded citations, flagging any case
+   number invented or misquoted during synthesis instead of letting it
+   stand as fact.
 """
 import json
 import logging
@@ -727,26 +731,82 @@ class CognitiveBrainMixin:
         added later and forgets to call the inline gate, this still catches
         it before the officer ever sees it.
 
-        Currently enforces: POCSO/juvenile-victim redaction (Section 74 JJA).
-        If the outgoing answer names a case that's POCSO-sensitive, this
-        re-fetches that case's real victim/complainant names directly and
-        scans the outgoing text for either one verbatim; if found (and the
-        officer holds no supervisor tier / active access grant), it redacts
-        the name in place and flags the catch to audit -- deliberately
-        logged distinctly from a normal redaction so a real catch here is
-        visible as a signal that some upstream path needs fixing, not
-        silently absorbed.
+        Currently enforces TWO checks:
+        1. POCSO/juvenile-victim redaction (Section 74 JJA). If the outgoing
+           answer names a case that's POCSO-sensitive, this re-fetches that
+           case's real victim/complainant names directly and scans the
+           outgoing text for either one verbatim; if found (and the officer
+           holds no supervisor tier / active access grant), it redacts the
+           name in place and flags the catch to audit.
+        2. CCTNS Relational Grounding (Vajra Plan 04-09-26, Item 24): for any
+           answer whose OWN citations already track case identity by a real
+           CR-YYYY-NNNNN id (multi-tool dossiers/reports), any DIFFERENT case
+           number named in the narrative that isn't among those cited ids is
+           flagged inline as unverified -- catches the LLM inventing or
+           misquoting a case number when synthesizing several real records
+           into one narrative.
 
-        Cheap by construction: the extra DB round-trip only runs when a case
-        number is present in the result AND that case is POCSO-flagged
-        (rare) -- zero added cost on the overwhelming majority of answers.
-        Fails OPEN on any internal error (returns the original result
-        unchanged) -- a bug in this safety net must never itself take down
-        an otherwise-good answer.
+        Both catches are deliberately logged distinctly from a normal
+        redaction so a real catch here is visible as a signal that some
+        upstream path needs fixing, not silently absorbed.
+
+        Cheap by construction: check 1's extra DB round-trip only runs when a
+        case number is present AND that case is POCSO-flagged (rare); check 2
+        is a pure regex/set comparison, no DB round-trip at all -- zero added
+        cost on the overwhelming majority of answers either way. Fails OPEN
+        on any internal error (returns the original result unchanged) -- a
+        bug in this safety net must never itself take down an otherwise-good
+        answer.
         """
         try:
             text = result.get("text") or ""
             data = result.get("data") or {}
+            citations = result.get("citations") or []
+
+            # --- Item 24 (Vajra Plan 04-09-26): CCTNS Relational Grounding
+            # Guardrail -- catches the specific, well-documented LLM failure
+            # mode of inventing or misquoting a case number when
+            # synthesizing a multi-tool narrative (a full report/dossier
+            # composing several real linked cases). Only fires when this
+            # answer's OWN citations already track case identity via a
+            # CR-YYYY-NNNNN id -- that proves this answer type really does
+            # carry known-real case numbers, so a path that never surfaces
+            # case numbers via citations at all can never false-positive
+            # here. If the narrative names a case number that ISN'T among
+            # those real, fetched ids, that's a fabricated citation, not a
+            # real one, and gets flagged before the officer ever sees it as
+            # fact -- same "never silently absorb a catch" discipline as
+            # the POCSO check below.
+            cited_case_nos = {
+                str(c.get("id") or "").upper() for c in citations
+                if isinstance(c, dict) and re.match(r"^CR-\d{4}-\d+$", str(c.get("id") or ""), re.IGNORECASE)
+            }
+            if cited_case_nos:
+                mentioned_case_nos = {m.upper() for m in re.findall(r"\bCR-\d{4}-\d+\b", text, re.IGNORECASE)}
+                fabricated = mentioned_case_nos - cited_case_nos
+                if fabricated:
+                    logger.warning(
+                        f"_grounding_safety_net: narrative mentions case number(s) {sorted(fabricated)} not "
+                        f"present among this answer's own grounded citations {sorted(cited_case_nos)} -- "
+                        f"flagging as unverified rather than letting it stand as fact."
+                    )
+                    for fake in fabricated:
+                        text = re.sub(re.escape(fake), f"{fake} [UNVERIFIED — not among this answer's grounded records]", text, flags=re.IGNORECASE)
+                    try:
+                        self._write_audit_log(
+                            employee_id, "Grounding Guardrail Catch", ", ".join(sorted(fabricated)),
+                            f"The narrative named case number(s) not present in this answer's own "
+                            f"retrieved records ({', '.join(sorted(cited_case_nos))}) -- flagged as "
+                            f"unverified before reaching the officer.",
+                            "Flagged at final gate", session_id)
+                    except Exception:
+                        pass
+                    result = dict(result)
+                    result["text"] = text
+                    data = dict(data)
+                    data["grounding_guardrail_caught"] = sorted(fabricated)
+                    result["data"] = data
+
             case_no = data.get("case_no")
             if not case_no:
                 m = re.search(r"\bCR-\d{4}-\d+\b", text, re.IGNORECASE)
