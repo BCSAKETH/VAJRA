@@ -1,8 +1,8 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { useApp } from "../AppContext";
-import { Maximize2, ShieldAlert, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart, Newspaper, ExternalLink, Radio } from "lucide-react";
+import { Maximize2, ShieldAlert, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart, Newspaper, ExternalLink, Radio, ChevronDown, ChevronRight, Code2, Copy, Check } from "lucide-react";
 import { ExpandedOverlay } from "./ExpandedOverlay";
 
 // Fit the inline map to the ACTUAL hotspot coordinates every render, and force
@@ -58,9 +58,21 @@ const TIER_BADGE: Record<string, { label: string; emoji: string; cls: string }> 
   WEB: { label: "Open Web", emoji: "🌐", cls: "bg-stone-700/40 text-stone-400 border-stone-700" },
 };
 
+// "Browsed the web" trace drawer (Revamped Internet Search plan, §2 & §4.1)
+// -- a collapsible, high-density accordion in place of a flat card list:
+// dual Structured-Card / Raw-JSON view, one-click copy of every source,
+// per-source domain-credibility badge, evidentiary SHA-256 digest, and the
+// §63 BSA boundary notice. Currently backs a single web_search call per
+// turn (the backend doesn't yet chain multiple queries in one turn), so
+// this renders one query-group; the header/copy-all logic already counts
+// generically so it keeps working if that ever changes.
 const NewsView: React.FC<{ data: any; lang: "en" | "kn" }> = ({ data, lang }) => {
   const items: any[] = Array.isArray(data?.news) ? data.news : (Array.isArray(data?.results) ? data.results : []);
   const scope: string = data?.scope || data?.query || "";
+  const durationMs: number | undefined = typeof data?.duration_ms === "number" ? data.duration_ms : undefined;
+  const [isOpen, setIsOpen] = useState(true);
+  const [viewMode, setViewMode] = useState<"cards" | "json">("cards");
+  const [copied, setCopied] = useState(false);
   const relDate = (s?: string): string => {
     if (!s) return "";
     const d = new Date(s);
@@ -78,70 +90,145 @@ const NewsView: React.FC<{ data: any; lang: "en" | "kn" }> = ({ data, lang }) =>
       </div>
     );
   }
+  const jsonPayload = JSON.stringify(
+    items.map((it, i) => ({
+      index: i + 1, title: it.title || it.headline || "", source: it.source || "",
+      url: it.url || it.link || "", snippet: it.snippet || it.description || "",
+      tier: it.tier || "WEB", published_at: it.published || it.date || "",
+      evidence_sha256: it.evidence_hash || "",
+    })),
+    null, 2
+  );
+  const handleCopyAll = async () => {
+    try {
+      const text = viewMode === "json" ? jsonPayload : items.map((it, i) =>
+        `[${i + 1}] ${it.title || it.headline || ""} — ${it.source || "web"}\n${it.url || it.link || ""}\n${it.snippet || it.description || ""}`
+      ).join("\n\n");
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
+    } catch { /* clipboard unavailable -- non-critical */ }
+  };
+  const durationLabel = durationMs != null ? `${(durationMs / 1000).toFixed(1)}s` : "";
   return (
-    <div className="rounded-xl border border-[#C79A4E]/30 bg-[#C79A4E]/[0.04] p-3 space-y-2.5">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div className="flex items-center gap-1.5">
-          <span className="relative flex h-2 w-2">
+    <div className="rounded-xl border border-[#C79A4E]/30 bg-[#C79A4E]/[0.04] overflow-hidden">
+      {/* Header: click to collapse/expand the whole drawer -- "▼ Browsed the
+          web (1 search · N sources · Xs)" per the plan's exact UX pattern. */}
+      <button
+        onClick={() => setIsOpen((v) => !v)}
+        className="w-full flex items-center justify-between gap-2 flex-wrap px-3 py-2.5 cursor-pointer hover:bg-[#C79A4E]/[0.06] transition-colors"
+      >
+        <div className="flex items-center gap-1.5 min-w-0">
+          {isOpen ? <ChevronDown className="w-3.5 h-3.5 text-[#C79A4E] shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 text-[#C79A4E] shrink-0" />}
+          <span className="relative flex h-2 w-2 shrink-0">
             <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#C79A4E] opacity-60" />
             <span className="relative inline-flex rounded-full h-2 w-2 bg-[#C79A4E]" />
           </span>
-          <span className="text-[10px] font-black uppercase tracking-widest font-mono text-[#E4C590]">
-            {lang === "en" ? "Open-Source Signals · Live" : "ಮುಕ್ತ-ಮೂಲ ಸಂಕೇತಗಳು · ನೇರ"}{scope ? ` · ${scope}` : ""}
+          <span className="text-[10px] font-black uppercase tracking-widest font-mono text-[#E4C590] truncate">
+            {lang === "en" ? "Browsed the web" : "ವೆಬ್ ಬ್ರೌಸ್ ಮಾಡಲಾಗಿದೆ"}
+            {" · "}{items.length} {lang === "en" ? "sources" : "ಮೂಲಗಳು"}
+            {durationLabel ? ` · ${durationLabel}` : ""}
           </span>
         </div>
-        <span className="text-[8.5px] font-mono uppercase tracking-wide text-[#C79A4E]/80">
-          {lang === "en" ? `${items.length} unverified leads` : `${items.length} ಪರಿಶೀಲಿಸದ ಸುಳಿವುಗಳು`}
+        <span className="text-[8.5px] font-mono uppercase tracking-wide text-[#C79A4E]/70 truncate max-w-[220px]">
+          {scope}
         </span>
-      </div>
-      <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">
-        {items.map((it, i) => {
-          const title = (it.title || it.headline || "").trim();
-          const src = it.source || "source";
-          const url = it.url || it.link || "";
-          const snip = (it.snippet || it.description || "").trim();
-          const card = (
-            <div className="group bg-stone-950/50 hover:bg-stone-900/70 border border-stone-850 hover:border-[#C79A4E]/40 rounded-lg p-2.5 transition-colors">
-              <div className="flex items-start gap-2">
-                <span className="mt-0.5 shrink-0 text-[9px] font-mono font-black text-[#C79A4E] w-5 tabular-nums">{String(i + 1).padStart(2, "0")}</span>
-                <div className="min-w-0 flex-1">
-                  <div className="text-[12.5px] font-semibold text-stone-100 leading-snug group-hover:text-[#E4C590] transition-colors flex items-start gap-1.5">
-                    <span className="flex-1">{title}</span>
-                    {url && <ExternalLink className="w-3 h-3 mt-0.5 shrink-0 text-stone-500 group-hover:text-[#C79A4E]" />}
-                  </div>
-                  {snip && <p className="text-[10.5px] text-stone-400 leading-snug mt-1 line-clamp-2">{snip}</p>}
-                  <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                    {(() => {
-                      const tier = TIER_BADGE[it.tier as string] || TIER_BADGE.WEB;
-                      return (
-                        <span className={`text-[9px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded border ${tier.cls}`} title={tier.label}>
-                          {tier.emoji} {tier.label}
-                        </span>
-                      );
-                    })()}
-                    <span className="text-[9px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded bg-[#C79A4E]/12 text-[#E4C590] truncate max-w-[160px]">{src}</span>
-                    {relDate(it.published || it.date) && <span className="text-[9px] font-mono text-stone-500">{relDate(it.published || it.date)}</span>}
-                  </div>
-                </div>
+      </button>
+
+      {isOpen && (
+        <div className="px-3 pb-3 space-y-2.5">
+          {/* Query sub-header + view toggle + copy-all */}
+          <div className="flex items-center justify-between gap-2 flex-wrap pt-0.5">
+            <span className="text-[10.5px] text-stone-400 font-mono truncate flex-1 min-w-0">
+              {lang === "en" ? "Searched web: " : "ಹುಡುಕಲಾಗಿದೆ: "}<span className="text-stone-300">"{scope}"</span>
+            </span>
+            <div className="flex items-center gap-1 shrink-0">
+              <div className="flex rounded-md border border-stone-800 overflow-hidden text-[9px] font-mono uppercase">
+                <button
+                  onClick={() => setViewMode("cards")}
+                  className={`px-2 py-1 cursor-pointer transition-colors ${viewMode === "cards" ? "bg-[#C79A4E]/20 text-[#E4C590]" : "text-stone-500 hover:text-stone-300"}`}
+                >
+                  {lang === "en" ? "Cards" : "ಕಾರ್ಡ್"}
+                </button>
+                <button
+                  onClick={() => setViewMode("json")}
+                  className={`px-2 py-1 cursor-pointer transition-colors flex items-center gap-1 border-l border-stone-800 ${viewMode === "json" ? "bg-[#C79A4E]/20 text-[#E4C590]" : "text-stone-500 hover:text-stone-300"}`}
+                >
+                  <Code2 className="w-2.5 h-2.5" /> JSON
+                </button>
               </div>
+              <button
+                onClick={handleCopyAll}
+                className="flex items-center gap-1 px-2 py-1 rounded-md border border-stone-800 text-[9px] font-mono uppercase text-stone-400 hover:text-[#E4C590] hover:border-[#C79A4E]/40 cursor-pointer transition-colors"
+                title={lang === "en" ? "Copy all sources" : "ಎಲ್ಲಾ ಮೂಲಗಳನ್ನು ನಕಲಿಸಿ"}
+              >
+                {copied ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
+                {copied ? (lang === "en" ? "Copied" : "ನಕಲಿಸಲಾಗಿದೆ") : (lang === "en" ? "Copy All" : "ಎಲ್ಲಾ ನಕಲಿಸಿ")}
+              </button>
             </div>
-          );
-          return url ? (
-            <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="block">{card}</a>
+          </div>
+
+          {viewMode === "json" ? (
+            <pre className="bg-stone-950/80 border border-stone-900 rounded-lg p-2.5 text-[10px] font-mono text-stone-300 overflow-x-auto max-h-[380px] overflow-y-auto whitespace-pre">
+              {jsonPayload}
+            </pre>
           ) : (
-            <div key={i}>{card}</div>
-          );
-        })}
-      </div>
-      {/* Section 63 BSA evidentiary boundary (Revamped Internet Search plan,
-          WS-5): amber-gold demarcation so these results can never be
-          mistaken for certified CCTNS records in a charge sheet. */}
-      <div className="flex items-center gap-1.5 text-[9px] font-mono text-amber-400/90 pt-0.5 border-t border-amber-500/15 mt-1">
-        <Radio className="w-3 h-3" />
-        {lang === "en"
-          ? "⚠️ §63 BSA Notice: Web signals are unverified OSINT leads • Not certified CCTNS record"
-          : "⚠️ §63 BSA ಸೂಚನೆ: ಪರಿಶೀಲಿಸದ ಮುಕ್ತ-ಮೂಲ ಸುಳಿವುಗಳು • ಅಧಿಕೃತ CCTNS ದಾಖಲೆ ಅಲ್ಲ"}
-      </div>
+            <div className="space-y-1.5 max-h-[420px] overflow-y-auto pr-1">
+              {items.map((it, i) => {
+                const title = (it.title || it.headline || "").trim();
+                const src = it.source || "source";
+                const url = it.url || it.link || "";
+                const snip = (it.snippet || it.description || "").trim();
+                const tier = TIER_BADGE[it.tier as string] || TIER_BADGE.WEB;
+                const card = (
+                  <div className="group bg-stone-950/50 hover:bg-stone-900/70 border border-stone-850 hover:border-[#C79A4E]/40 rounded-lg p-2.5 transition-colors">
+                    <div className="flex items-start gap-2">
+                      <span className="mt-0.5 shrink-0 text-[9px] font-mono font-black text-[#C79A4E] w-5 tabular-nums">{String(i + 1).padStart(2, "0")}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[12.5px] font-semibold text-stone-100 leading-snug group-hover:text-[#E4C590] transition-colors flex items-start gap-1.5">
+                          <span className="flex-1">{title}</span>
+                          {url && <ExternalLink className="w-3 h-3 mt-0.5 shrink-0 text-stone-500 group-hover:text-[#C79A4E]" />}
+                        </div>
+                        {snip && <p className="text-[10.5px] text-stone-400 leading-snug mt-1 line-clamp-2">{snip}</p>}
+                        <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+                          <span className={`text-[9px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded border ${tier.cls}`} title={tier.label}>
+                            {tier.emoji} {tier.label}
+                          </span>
+                          <span className="text-[9px] font-mono uppercase tracking-wide px-1.5 py-0.5 rounded bg-[#C79A4E]/12 text-[#E4C590] truncate max-w-[160px]">{src}</span>
+                          {relDate(it.published || it.date) && <span className="text-[9px] font-mono text-stone-500">{relDate(it.published || it.date)}</span>}
+                        </div>
+                        {/* §63 BSA evidentiary digest (WS-11): proof of what
+                            this source said at the moment VAJRA fetched it,
+                            independent of whether the page later changes. */}
+                        {it.evidence_hash && (
+                          <div className="text-[8.5px] font-mono text-stone-600 mt-1 truncate" title={lang === "en" ? "Section 63 BSA evidentiary SHA-256 digest" : "ಸೆಕ್ಷನ್ 63 BSA ಸಾಕ್ಷ್ಯ SHA-256 ಡೈಜೆಸ್ಟ್"}>
+                            SHA-256: {it.evidence_hash}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+                return url ? (
+                  <a key={i} href={url} target="_blank" rel="noopener noreferrer" className="block">{card}</a>
+                ) : (
+                  <div key={i}>{card}</div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Section 63 BSA evidentiary boundary (Revamped Internet Search
+              plan, WS-5): amber-gold demarcation so these results can never
+              be mistaken for certified CCTNS records in a charge sheet. */}
+          <div className="flex items-center gap-1.5 text-[9px] font-mono text-amber-400/90 pt-1.5 border-t border-amber-500/15">
+            <Radio className="w-3 h-3" />
+            {lang === "en"
+              ? "⚠️ §63 BSA Notice: Web signals are unverified OSINT leads • Not certified CCTNS record"
+              : "⚠️ §63 BSA ಸೂಚನೆ: ಪರಿಶೀಲಿಸದ ಮುಕ್ತ-ಮೂಲ ಸುಳಿವುಗಳು • ಅಧಿಕೃತ CCTNS ದಾಖಲೆ ಅಲ್ಲ"}
+          </div>
+        </div>
+      )}
     </div>
   );
 };
