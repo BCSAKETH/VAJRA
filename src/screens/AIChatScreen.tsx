@@ -963,6 +963,7 @@ export const AIChatScreen: React.FC = () => {
   // Language Selection Modal state for PDF Export
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportTargetLang, setExportTargetLang] = useState<"en" | "kn">("en");
+  const [activeApprovalId, setActiveApprovalId] = useState<string | null>(null);
 
   // Export Transcript to PDF -- with the AI pre-screen + live supervisor-approval
   // flow. Supports explicit language selection (English / Kannada) and embeds
@@ -989,11 +990,14 @@ export const AIChatScreen: React.FC = () => {
         badge_id: badgeNumber || "KSP-4003385",
         lang: targetLang,
         session_id: activeSessionId || undefined,
-        approval_id: approvalId,
+        approval_id: approvalId || activeApprovalId || undefined,
       }),
     });
 
   const downloadPdfResponse = async (response: Response, targetLang: "en" | "kn") => {
+    if (response.status !== 200) {
+      throw new Error(`PDF Export returned status ${response.status}`);
+    }
     const blob = await response.blob();
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1018,6 +1022,7 @@ export const AIChatScreen: React.FC = () => {
         // AI held it for supervisor approval -- start the live wait.
         const d = await response.json().catch(() => ({}));
         const reqId: string = d.request_id;
+        setActiveApprovalId(reqId);
         addToast(
           lang === "en" ? "Awaiting supervisor approval" : "ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗಾಗಿ ಕಾಯಲಾಗುತ್ತಿದೆ",
           lang === "en"
@@ -1034,11 +1039,17 @@ export const AIChatScreen: React.FC = () => {
               headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
             }).then((r) => r.json());
             if (s.status === "approved") {
+              setActiveApprovalId(reqId);
               const rr = await requestExport(targetLang, reqId);
-              if (rr.ok) {
+              if (rr.status === 200) {
                 await downloadPdfResponse(rr, targetLang);
                 addToast(lang === "en" ? "Approved — exported" : "ಅನುಮೋದಿಸಲಾಗಿದೆ — ರಫ್ತು ಮಾಡಲಾಗಿದೆ",
                   lang === "en" ? "A supervisor approved this export." : "ಮೇಲ್ವಿಚಾರಕರು ಈ ರಫ್ತನ್ನು ಅನುಮೋದಿಸಿದ್ದಾರೆ.", "Info");
+                setIsExportingPdf(false);
+                return;
+              } else if (rr.status === 202) {
+                setTimeout(poll, 4000);
+                return;
               }
               setIsExportingPdf(false); return;
             }
