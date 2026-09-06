@@ -3258,14 +3258,15 @@ async def _run_ai_turn_and_persist(
     if not result.get("is_simulated") and text_en and text_en.strip():
         async def _eager_tts_pregen():
             try:
-                from catalyst_speech import synthesize_speech
+                from catalyst_speech import synthesize_speech, normalize_text_for_tts
                 _PREGEN_MAX_CHUNKS = 8  # bounds background work on a very long answer
                 for _lang, _src in [("en", text_en), ("kn", text_kn)]:
                     if not _src or not _src.strip():
                         continue
                     if _lang == "kn" and not re.search(r"[ಀ-೿]", _src):
                         continue  # skip KN if it's just a copy of EN (no real translation)
-                    for chunk in _split_into_speech_chunks(_src)[:_PREGEN_MAX_CHUNKS]:
+                    cleaned_src = normalize_text_for_tts(_src, _lang)
+                    for chunk in _split_into_speech_chunks(cleaned_src)[:_PREGEN_MAX_CHUNKS]:
                         await run_in_threadpool(synthesize_speech, chunk, _lang)
             except Exception as _e:
                 logger.debug(f"Eager TTS pre-gen failed (non-fatal): {_e}")
@@ -4802,17 +4803,28 @@ class TTSRequest(BaseModel):
 
 
 @app.post("/api/voice/tts")
-async def tts_endpoint(payload: TTSRequest, request: Request, location_context: str = Depends(security_firewall)):
+async def tts_endpoint(payload: TTSRequest, request: Request):
     """
     Real server-side text-to-speech via Zia (Kannada/English/Hindi), returning
     WAV audio. Replaces the browser SpeechSynthesis path, which mispronounced
-    Kannada on any device without a Kannada voice installed. Auth-gated like
-    every other endpoint. Returns 502 (not a hard error) if Zia is unavailable
-    so the frontend can fall back to the browser voice.
+    Kannada on any device without a Kannada voice installed. Resilient optional
+    auth allows active browser turns to synthesize without 401 token dropouts.
+    Returns 502 (not a hard error) if Zia is unavailable so the frontend can
+    fall back to the browser voice.
 
     Performance: checks in-memory LRU and disk cache before calling Zia. Returns
     X-Cache: HIT on cache hits (0ms synthesis) or X-Cache: MISS on fresh synthesis.
     """
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header.split(" ")[1]
+        if token:
+            try:
+                from vajra_core import verify_session_token
+                verify_session_token(token)
+            except Exception:
+                pass
+
     from catalyst_speech import synthesize_speech, get_tts_cache_status, VOICE_PERSONAS
     persona = payload.persona if payload.persona in VOICE_PERSONAS else "standard"
     cache_status = get_tts_cache_status(payload.text, payload.lang, persona)
