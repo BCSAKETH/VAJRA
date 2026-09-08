@@ -1026,7 +1026,7 @@ def smartbrowz_lookup_organization(name: str, _debug: dict = None) -> Optional[D
     headers = {"CATALYST-ORG": org_id, "Authorization": f"Zoho-oauthtoken {token}", "Content-Type": "application/json"}
     try:
         import requests as _requests
-        res = _requests.post(url, headers=headers, json={"lead_name": name}, timeout=45)
+        res = _requests.post(url, headers=headers, json={"lead_name": name}, timeout=8)
         _debug["status"] = res.status_code
         _debug["body"] = res.text[:1000]
         if res.status_code == 200:

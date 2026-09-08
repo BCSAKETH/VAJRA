@@ -345,16 +345,20 @@ def clean_search_query(q: str) -> str:
         r"\b(summarize|summarise|summary|details|explain|overview|breakdown|dossier|brief|report|deep\s+dive|investigate)\b",
         r"\b(an?\s+|the\s+)?(osint|web|internet|google)\s*(search|sweep|inquest|scraping)?\b",
         r"\b(recent\s+|latest\s+)?(intelligence|news|articles|advisories|signals|reports|data|info|information|updates)\b",
-        r"\b(and|on|for|about|regarding|in|of|from|with|to|it)\b",
-        r"\b(the\s+web\s+for|on\s+the\s+web|online|can\s+you|please)\b",
+        r"\b(and|on|for|about|regarding|in|of|from|with|to|it|its|their|them|this|that|there)\b",
+        r"\b(the\s+web\s+for|on\s+the\s+web|online|can\s+you|please|once|now|again|then)\b",
+        r"\b(accurate|accuracy|accurately|correct|correctly|wrong|false|mistake|error|actually|instead)\b",
     ]
     for pat in stopwords:
         s = re.sub(pat, " ", s, flags=re.IGNORECASE)
     s = re.sub(r"[^\w\s\-\.]", " ", s)
-    tokens = [w for w in s.split() if len(w) > 1 and w.lower() not in {"and", "or", "the", "for", "about", "with", "from", "in", "on", "to", "at", "an", "is", "it"}]
-    if len(tokens) >= 2:
+    tokens = [w for w in s.split() if len(w) > 1 and w.lower() not in {
+        "and", "or", "the", "for", "about", "with", "from", "in", "on", "to", "at", "an", "is", "it",
+        "that", "thats", "this", "there", "wrong", "once", "accurate", "correct", "please", "again"
+    }]
+    if len(tokens) >= 1:
         return " ".join(tokens[:8])
-    return q.strip()
+    return ""
 
 
 def search_wikipedia_summary(query: str) -> Optional[Dict[str, Any]]:

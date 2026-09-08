@@ -23,9 +23,9 @@ logger = logging.getLogger("catalyst_llm")
 _down_until: float = 0.0
 # Retry-exhaustion on transient errors (timeout/429/5xx) -- the failure
 # class that's most likely to just be "this one request was slow," not a
-# real outage. Short enough that the next officer's query gets a fresh
-# real attempt within a minute rather than inheriting someone else's bad luck.
-_TRANSIENT_COOLDOWN_SECONDS = 45
+# real outage. Short enough (8s) that the next query gets a fresh attempt
+# almost immediately rather than inheriting someone else's timeout.
+_TRANSIENT_COOLDOWN_SECONDS = 8
 # Definitive errors (401/404 misconfiguration, other clean 4xx, connection
 # exceptions) -- these mean something is actually broken (bad credentials,
 # bad URL) and won't self-heal by just waiting a few seconds, so it's worth
