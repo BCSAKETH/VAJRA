@@ -2684,6 +2684,11 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 _dossier_fixed_fallback = {"tool": "generate_full_report", "parameters": {"suspect_name": entities["suspect"]}}
             elif entities.get("district") and entities.get("district_fresh"):
                 _dossier_fixed_fallback = {"tool": "generate_crime_overview", "parameters": {"district": entities["district"]}}
+            elif len(routing_query.strip()) > 3:
+                # If no internal CCTNS case/suspect/district was recognized in Full Dossier mode,
+                # fall back to web_search so OSINT and external entity intelligence always
+                # succeeds even if the compiler encounters transient LLM issues.
+                _dossier_fixed_fallback = {"tool": "web_search", "parameters": {"query": routing_query}}
 
         # ELABORATION follow-up: a vague "in detail" / "more" / "elaborate"
         # should EXPAND THE PREVIOUS ANSWER conversationally -- explain what was

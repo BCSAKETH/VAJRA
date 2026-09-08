@@ -475,6 +475,9 @@ class CognitiveBrainMixin:
             "Ramesh -- can you give a fuller name or a case number?\"). This is a real, first-class outcome, "
             "not a fallback -- a wrong confident guess is worse than asking. Only ask when something is "
             "actually unclear; do not ask for confirmation on a request that's already clear.\n"
+            "- EXTERNAL & OSINT INQUIRIES: If the officer asks about an external entity, college, organization, "
+            "company, public scam, news story, or general topic not stored in CCTNS, do NOT set needs_clarification: true. "
+            "Plan a 'web_search' step with the topic or query as the parameter.\n"
             "- NEVER invent capability names or data. Plan only; the engine executes.\n"
             "- CONTEXT ABOVE (if present): earlier turns in this conversation, most recent last. If the last "
             "assistant turn asked a clarifying question and this officer's new message is answering it (a short "
@@ -544,11 +547,17 @@ class CognitiveBrainMixin:
         # directly" label on what's actually a clarifying question.
         if not steps:
             if intent and needs_clarification:
-                return {"text": intent, "response_type": "text", "data": {"needs_clarification": True},
-                        "citations": [{"type": "Clarification Requested", "id": "ambiguous",
-                                       "details": "The request was ambiguous or missing information needed to "
-                                                  "answer well -- asked instead of guessing."}],
-                        "is_simulated": False, "simulated_reason": ""}
+                _q_low = query.lower()
+                if any(w in _q_low for w in ("what", "who", "tell me", "college", "scam", "news", "company", "firm", "search", "details", "info", "overview", "dossier", "explain")):
+                    logger.info(f"compiler: overriding ambiguous clarification for external/informational query '{query}' -> dispatching web_search")
+                    steps = [{"id": "s1", "capability": "web_search", "params": {"query": query}}]
+                    needs_clarification = False
+                else:
+                    return {"text": intent, "response_type": "text", "data": {"needs_clarification": True},
+                            "citations": [{"type": "Clarification Requested", "id": "ambiguous",
+                                           "details": "The request was ambiguous or missing information needed to "
+                                                      "answer well -- asked instead of guessing."}],
+                            "is_simulated": False, "simulated_reason": ""}
             if intent:
                 return {"text": intent, "response_type": "text", "data": {},
                         "citations": [{"type": "AI Execution Plan", "id": "direct",
