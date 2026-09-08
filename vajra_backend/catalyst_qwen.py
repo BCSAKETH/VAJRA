@@ -308,11 +308,14 @@ class CatalystQwen:
                     f"query itself doesn't already name something more specific): {', '.join(parts)}.\n\n"
                 )
         prompt = (
-            "Ignore the attached image, it is blank and irrelevant. You are helping pick which database tool to "
-            "run for a Karnataka Police officer's query. Respond with ONLY a JSON object: either "
-            '{"tool": "<tool_name>", "parameters": {...}} if one of the tools below clearly matches, or '
-            '{"text_response": "<a short clarifying question>"} if none of them do or a required parameter '
-            "(like a name or case number) is missing from the query. No explanation outside the JSON.\n\n"
+            "Ignore the attached image, it is blank and irrelevant. You are VAJRA's tool router for a Karnataka Police officer's query. "
+            "If the query asks about external entities, colleges, universities, companies, scams, news, cyber threats, or general topics, "
+            "pick the 'web_search' tool with parameters {\"query\": \"" + query.replace('"', '\\"') + "\"}. "
+            "If the query matches an internal CCTNS crime database tool, pick that tool. "
+            "Respond with ONLY a JSON object: either "
+            '{"tool": "<tool_name>", "parameters": {...}} or '
+            '{"text_response": "<an informative direct answer or explanation>"} if the question can be answered directly without a tool. '
+            "Never ask for clarification if you can search the web or answer directly. No explanation outside the JSON.\n\n"
             f"Available tools:\n{tool_lines}\n\n"
             f"{context_line}"
             f"Officer's query: {query}"

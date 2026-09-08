@@ -1753,14 +1753,23 @@ class VajraAgentLoop(CognitiveBrainMixin):
                                    "where to send patrol", "where to deploy", "where to focus", "patrol plan"],
         "generate_crime_overview": ["crime overview", "overview of district", "district overview",
                                     "situation in", "picture of crime"],
+        "web_search": [
+            "search", "web", "internet", "google", "news", "online", "find out", "who is",
+            "what is", "where is", "tell me about", "college", "school", "university", "institute",
+            "company", "organization", "ngo", "trust", "hospital", "bank", "branch", "pincode",
+            "pin code", "scam", "fraud", "cybercrime", "phishing", "telegram", "apk", "courier",
+            "customs", "fedex", "mule", "crypto", "bitcoin", "upi", "url", "website", "domain",
+            "portal", "law", "article", "section", "bns", "bnss", "it act", "act", "judgement",
+            "guidelines", "advisory", "modus operandi", "threat", "osint", "tkrec", "tkrcet",
+            "bmsce", "rvce", "msrit", "pesu"
+        ],
     }
     # Compact generalist set for genuinely ambiguous queries that hint at no
-    # specific tool -- still far smaller than the full catalog.
+    # specific tool -- includes web_search so external queries can always search.
     _DEFAULT_TOOLS = ["query_case", "find_similar_cases", "query_graph_network", "get_offender_risk",
-                      "query_hotspots", "get_crime_trends", "get_demographic_correlation", "resolve_vague_query"]
-    # Always-available safety nets so a mis-scored query still has a catch-all
-    # and a way to ask for clarification.
-    _ALWAYS_TOOLS = {"find_similar_cases", "resolve_vague_query", "ask_clarifying_question"}
+                      "query_hotspots", "get_crime_trends", "get_demographic_correlation", "web_search"]
+    # Always-available safety nets so any query has both case search and web intelligence available.
+    _ALWAYS_TOOLS = {"web_search", "find_similar_cases"}
 
     def _relevant_tools(self, query: str) -> List[Dict[str, Any]]:
         """
@@ -1768,6 +1777,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
         all 25, so the GLM tool-selection prompt is small and fast. Scoring is
         blunt on purpose (keyword hits + tool-name-word hits); when nothing
         scores, fall back to a compact generalist set -- never the full 25.
+        Guarantees web_search is always present so external queries can be searched.
         """
         q = (query or "").lower()
         scores: Dict[str, int] = {}
@@ -1783,6 +1793,11 @@ class VajraAgentLoop(CognitiveBrainMixin):
             ranked = sorted(scores, key=lambda n: scores[n], reverse=True)[:6]
             keep = set(ranked) | self._ALWAYS_TOOLS
         filtered = [t for t in self.TOOLS if t["name"] in keep]
+        # Safety net: Ensure web_search is ALWAYS provided in the schema list to GLM
+        if not any(t["name"] == "web_search" for t in filtered):
+            ws_tool = next((t for t in self.TOOLS if t["name"] == "web_search"), None)
+            if ws_tool:
+                filtered.append(ws_tool)
         logger.info(f"Tool pre-filter: {len(filtered)}/{len(self.TOOLS)} tools sent to GLM -> {[t['name'] for t in filtered]}")
         return filtered
 
@@ -3052,6 +3067,9 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     if fallback_decision is None:
                         fallback_decision = self._keyword_route_tool(routing_query)
                         fallback_label = "Keyword Match"
+                    if fallback_decision is None and len(routing_query.strip()) > 3:
+                        fallback_decision = {"tool": "web_search", "parameters": {"query": routing_query}}
+                        fallback_label = "OSINT Web Safety Net"
                 if fallback_decision is not None:
                     logger.warning(f"Tool-selection fallback used ({fallback_label}, iteration {current_iteration}): {fallback_decision}")
                     citations.append({
@@ -3194,8 +3212,29 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     # instead of before the JSON block (the more common case,
                     # already handled by _extract_json stripping everything
                     # before the JSON itself).
-                    raw_text = decision.get("text_response") or decision.get("text") or "Please clarify your request."
-                    response_text = self._strip_think(raw_text) or "Could you please clarify your request?"
+                    raw_text = decision.get("text_response") or decision.get("text") or ""
+                    clean_raw = self._strip_think(raw_text).strip()
+                    # If the model or fallback gave a generic brush-off on iteration 1 for a substantive query,
+                    # don't give up! Route to web_search for external/general intelligence instead of stalling.
+                    _brush_offs = {
+                        "could you please clarify your request?", "please clarify your request.",
+                        "could you please clarify?", "please clarify your question.",
+                        "could you clarify your request?", "please clarify.", ""
+                    }
+                    if clean_raw.lower() in _brush_offs and allow_tools and current_iteration == 1 and len(routing_query.strip()) > 3:
+                        logger.warning(f"Model returned generic brush-off '{clean_raw}' for query '{routing_query}'. Auto-routing to web_search.")
+                        _progress("Searching open-source intelligence on the web...")
+                        ws_output = self._execute_tool("web_search", {"query": routing_query}, employee_id, session_id, user_unit_id)
+                        if ws_output.get("citations"):
+                            citations.extend(ws_output["citations"])
+                        if ws_output.get("text_result"):
+                            response_text = ws_output["text_result"]
+                            if ws_output.get("data"):
+                                data_payload.update(ws_output["data"])
+                            if ws_output.get("response_type"):
+                                response_type = ws_output["response_type"]
+                            break
+                    response_text = clean_raw or "Could you please provide more details or specify an FIR/suspect/topic to investigate?"
                     break
             except Exception as e:
                 logger.error(f"Error executing LLM agent loop choices on iteration {current_iteration}: {e}")
