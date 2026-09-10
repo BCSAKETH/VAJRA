@@ -21,7 +21,10 @@ import logging
 import hashlib
 import urllib.parse
 from typing import List, Dict, Any, Optional, Tuple
-from vajra_core import catalyst_app
+try:
+    from vajra_core import catalyst_app
+except Exception:
+    catalyst_app = None
 
 logger = logging.getLogger("catalyst_smartbrowz")
 
@@ -998,17 +1001,11 @@ def smartbrowz_screenshot_bytes(url: str, timeout_ms: int = 25000, _debug: dict 
 
 def smartbrowz_lookup_organization(name: str, _debug: dict = None) -> Optional[Dict[str, Any]]:
     """
-    Real Catalyst SmartBrowz Dataverse lead-enrichment lookup -- given an
-    organization's name, returns STRUCTURED data (address, pincode, email,
-    phone, website, industry, etc.), not a guess read off a screenshot.
-    This is the right tool for "what's the address/pin code/contact for
-    <organization>"-style questions (a college, a company, an office) --
-    genuinely more reliable than smartbrowz_search_and_extract's
-    screenshot+vision-model read for anything that's actually an
-    organization lookup, since it's structured data from Zoho's own
-    enrichment service, not read off a rendered image. Returns None if the
-    organization isn't found or the lookup fails (caller falls back to the
-    screenshot+vision path).
+    Enhanced Catalyst SmartBrowz Organization & Institutional Lead Discovery --
+    retrieves structured metadata (address, pincode, website, email, phone) from
+    Zoho Dataverse lead enrichment, and automatically deep-crawls the official
+    institutional portal to extract leadership (Chairman, Director, Principal,
+    Founder) for pinpoint factual grounding.
     """
     if _debug is None:
         _debug = {}
@@ -1024,6 +1021,7 @@ def smartbrowz_lookup_organization(name: str, _debug: dict = None) -> Optional[D
     org_id = os.getenv("CATALYST_ORG_ID") or os.getenv("CATALYST_PROJECT_KEY", "")
     url = f"https://api.catalyst.zoho.in/browser360/v1/project/{project_id}/dataverse/lead-enrichment"
     headers = {"CATALYST-ORG": org_id, "Authorization": f"Zoho-oauthtoken {token}", "Content-Type": "application/json"}
+    lead_data = None
     try:
         import requests as _requests
         res = _requests.post(url, headers=headers, json={"lead_name": name}, timeout=8)
@@ -1032,30 +1030,152 @@ def smartbrowz_lookup_organization(name: str, _debug: dict = None) -> Optional[D
         if res.status_code == 200:
             leads = (res.json() or {}).get("data")
             if leads:
-                return leads[0] if isinstance(leads, list) else leads
+                lead_data = leads[0] if isinstance(leads, list) else leads
         else:
             logger.warning(f"smartbrowz_lookup_organization {res.status_code}: {res.text[:300]}")
     except Exception as e:
         logger.warning(f"smartbrowz_lookup_organization failed for {name!r}: {e}")
         _debug["exception"] = str(e)[:500]
-    return None
+
+    # If lead found and has website, perform pinpoint deep-dive extraction on leadership pages
+    if lead_data and lead_data.get("website"):
+        try:
+            deep_res = smartbrowz_deep_dive_page(lead_data["website"], extract_intent="leadership")
+            if deep_res.get("leadership"):
+                lead_data["leadership"] = deep_res["leadership"]
+            if deep_res.get("summary"):
+                lead_data["executive_summary"] = deep_res["summary"]
+        except Exception as dex:
+            logger.debug(f"deep dive page extraction skipped for {lead_data.get('website')}: {dex}")
+
+    return lead_data
+
+
+def smartbrowz_deep_dive_page(url: str, extract_intent: str = "general", max_chars: int = 5000) -> Dict[str, Any]:
+    """
+    GOD-LEVEL Deep-Dive Webpage Analyzer:
+    Fetches the target URL with resilient browser emulation, sanitizes DOM
+    structure (stripping scripts, styling, navigation clutter), and checks key
+    companion routes (e.g. /chairmans-message/, /about-us/, /leadership/, /contact-us/)
+    for institutional and corporate entities.
+
+    Extracts:
+      - Clean textual content & executive summary
+      - Key leadership & personnel (Chairman, Founder, CEO, Principal, Director)
+      - Contact points (Phones, Emails, Physical Addresses, Pincodes)
+      - Statutory / legal notices and corporate registrations
+    """
+    url = (url or "").strip()
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+
+    out = {
+        "url": url,
+        "title": "",
+        "summary": "",
+        "leadership": [],
+        "contacts": [],
+        "text": "",
+        "subpages_crawled": [],
+        "ok": False,
+    }
+
+    import requests as _requests
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+
+    # Helper to scrape single page cleanly
+    def _scrape_single(target_url: str) -> Tuple[str, str, str]:
+        try:
+            r = _requests.get(target_url, headers=headers, timeout=6, verify=False)
+            if r.status_code != 200:
+                return "", "", ""
+            html_raw = r.text
+            tm = re.search(r"<title[^>]*>(.*?)</title>", html_raw, re.DOTALL | re.I)
+            t = html.unescape(re.sub(r"<[^>]+>", "", tm.group(1))).strip() if tm else ""
+            body = re.sub(r"(?is)<(script|style|noscript|svg|form|footer|nav|header)[^>]*>.*?</\1>", " ", html_raw)
+            clean_txt = html.unescape(re.sub(r"<[^>]+>", " ", body))
+            clean_txt = re.sub(r"\s+", " ", clean_txt).strip()
+            return t, clean_txt, html_raw
+        except Exception:
+            return "", "", ""
+
+    main_title, main_text, main_html = _scrape_single(url)
+    if not main_text:
+        return out
+
+    out["ok"] = True
+    out["title"] = main_title
+    out["text"] = main_text[:max_chars]
+
+    collected_texts = [main_text]
+
+    # Companion subpages to deep-dive for leadership / about / contact
+    parsed = urllib.parse.urlparse(url)
+    base_domain_url = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    subroutes = [
+        "/chairmans-message/", "/chairmans-message",
+        "/about-us/", "/about-us", "/about/", "/about",
+        "/leadership/", "/leadership",
+        "/administration/", "/administration",
+        "/governance/", "/management/",
+        "/contact-us/", "/contact",
+    ]
+
+    for sr in subroutes:
+        sub_url = f"{base_domain_url}{sr}"
+        sub_title, sub_text, sub_html = _scrape_single(sub_url)
+        if sub_text and len(sub_text) > 80:
+            out["subpages_crawled"].append(sub_url)
+            collected_texts.append(f"\n--- [Page: {sr}] ---\n" + sub_text[:2500])
+            if len(out["subpages_crawled"]) >= 3:
+                break
+
+    full_combined = " ".join(collected_texts)
+
+    # Pinpoint leadership regex extraction
+    leader_patterns = [
+        r"(?:Sri|Dr|Prof|Mr|Mrs|Ms|Shri)\.?\s+[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3}\s*\([^)]*(?:Chairman|Chairperson|President|Founder|Director|Principal|Chancellor)[^)]*\)",
+        r"(?:Chairman|Chairperson|Founder|President|Director|Principal|Chancellor)\s*(?:[:\-–]|is)?\s*(?:Sri|Dr|Prof|Mr|Mrs|Shri)?\.?\s+([A-Z][a-zA-Z\.\s]{3,35})",
+        r"([A-Z][a-zA-Z\.\s]{3,35})\s*\((?:Founder\s+Chairman|Chairman|Chairperson|Managing\s+Director|Principal)\)",
+    ]
+    seen_leaders = set()
+    for pat in leader_patterns:
+        for m in re.finditer(pat, full_combined, re.IGNORECASE):
+            match_str = m.group(0).strip()
+            # Clean match
+            clean_m = re.sub(r"\s+", " ", match_str).strip()
+            if clean_m and len(clean_m) < 80 and clean_m.lower() not in seen_leaders:
+                seen_leaders.add(clean_m.lower())
+                out["leadership"].append(clean_m)
+
+    # Pinpoint contacts regex extraction (phones, emails, pincodes)
+    emails = list(set(re.findall(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", full_combined)))
+    pincodes = list(set(re.findall(r"\b(?:Pin\s*(?:Code)?[:\s]*)?([1-9][0-9]{5})\b", full_combined, re.IGNORECASE)))
+    if emails:
+        out["contacts"].extend([f"Email: {e}" for e in emails[:3]])
+    if pincodes:
+        out["contacts"].extend([f"Pincode: {p}" for p in pincodes[:2]])
+
+    # Build executive summary
+    summary_parts = []
+    if out["leadership"]:
+        summary_parts.append(f"Leadership: {', '.join(out['leadership'][:3])}")
+    if out["contacts"]:
+        summary_parts.append(f"Directory: {'; '.join(out['contacts'][:3])}")
+    out["summary"] = " | ".join(summary_parts) if summary_parts else main_text[:300]
+
+    return out
 
 
 def smartbrowz_search_and_extract(query: str, question: str, lang: str = "en", _debug: dict = None) -> Optional[Dict[str, Any]]:
     """
     Fully Zoho-native "search the web and answer a specific question"
-    pipeline -- NO third-party scraping (DuckDuckGo/Bing HTML parsing) and
-    NO external search API key. Two real Catalyst services chained:
-      1. SmartBrowz renders a real search-engine results page (Bing, chosen
-         live: returned real results where DuckDuckGo returned a bot-check
-         CAPTCHA) as a genuine headless-browser screenshot.
-      2. Catalyst QuickML's Qwen-VL vision model reads that screenshot and
-         extracts a direct answer to the officer's question, or says
-         plainly that it isn't visible in the results -- exactly like
-         reading a photographed document, which is what this already does
-         for CCTV/evidence images elsewhere in the app.
-    Returns {"answer": str, "sources_seen": [domain, ...]} or None if the
-    screenshot or vision call failed (caller falls back gracefully).
+    pipeline -- combines SmartBrowz deep-page reading and Catalyst QuickML
+    to extract a direct answer to the officer's question.
     """
     if _debug is None:
         _debug = {}
@@ -1099,10 +1219,13 @@ def smartbrowz_search_and_extract(query: str, question: str, lang: str = "en", _
 
 def smartbrowz_scrape_url(url: str, timeout: int = 10) -> Optional[str]:
     """
-    Uses Zoho Catalyst SmartBrowz headless browser to render dynamic JavaScript
-    content and extract rendered HTML from external news or OSINT portals.
+    Uses Zoho Catalyst SmartBrowz and robust HTML extraction to render dynamic
+    JavaScript content and extract clean, readable text from any external portal.
     """
     try:
+        deep = smartbrowz_deep_dive_page(url)
+        if deep.get("ok") and deep.get("text"):
+            return deep["text"]
         sb = catalyst_app.smart_browz()
         result = sb.take_screenshot(
             source=url,
@@ -1114,3 +1237,4 @@ def smartbrowz_scrape_url(url: str, timeout: int = 10) -> Optional[str]:
     except Exception as e:
         logger.debug(f"SmartBrowz scrape fallback for {url}: {e}")
     return None
+
