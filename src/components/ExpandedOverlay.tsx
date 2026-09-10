@@ -1,12 +1,13 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useApp } from "../AppContext";
-import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2, PieChart as PieChartIcon, ShieldCheck, Scale, CheckCircle2 } from "lucide-react";
+import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2, PieChart as PieChartIcon, ShieldCheck, Scale, CheckCircle2, Sparkles } from "lucide-react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, CartesianGrid, PieChart, Pie, ReferenceLine } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { WatermarkOverlay } from "./WatermarkOverlay";
 import { NetworkGraph } from "./NetworkGraph";
 import { downloadJson, downloadHotspotsAsGeoJson, downloadSvgAsPng } from "../lib/widgetExport";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 // Confirmed live: the old 10-color palette repeats via index % length once a
 // breakdown has more than 10 categories (real crime-type distributions
@@ -156,7 +157,7 @@ const MapSizeAndBoundsFixer: React.FC<{ points: { lat: number; lng: number }[] }
 };
 
 interface ExpandedOverlayProps {
-  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "case_list";
+  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "case_list" | "dossier" | "priority_concerns" | "news" | string;
   data: any;
   onClose: () => void;
   // When true, render only the rich content pane (no fixed backdrop, no modal
@@ -166,9 +167,46 @@ interface ExpandedOverlayProps {
   inline?: boolean;
 }
 
-export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, onClose, inline = false }) => {
+export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType, data: rawData, onClose, inline = false }) => {
   const { lang } = useApp();
   const contentRef = useRef<HTMLDivElement>(null);
+
+  // Resolve sub-data across top-level keys, nested sub-objects, or panels
+  const netData = (rawData?.nodes && rawData.nodes.length > 0)
+    ? rawData
+    : (rawData?.network?.nodes && rawData.network.nodes.length > 0)
+    ? rawData.network
+    : (Array.isArray(rawData?.panels) ? rawData.panels.find((p: any) => p.type === "network" && p.data?.nodes?.length > 0)?.data : null);
+
+  const riskData = (rawData?.risk_score != null || (rawData?.shap_factors && rawData.shap_factors.length > 0))
+    ? rawData
+    : (rawData?.risk?.risk_score != null || (rawData?.risk?.shap_factors && rawData.risk.shap_factors.length > 0))
+    ? rawData.risk
+    : (Array.isArray(rawData?.panels) ? rawData.panels.find((p: any) => p.type === "risk" && (p.data?.risk_score != null || p.data?.shap_factors?.length > 0))?.data : null);
+
+  const mapData = (rawData?.hotspots && rawData.hotspots.length > 0)
+    ? rawData
+    : (Array.isArray(rawData?.panels) ? rawData.panels.find((p: any) => p.type === "map" && p.data?.hotspots?.length > 0)?.data : null);
+
+  const hasNetwork = Boolean(netData?.nodes && netData.nodes.length > 0);
+  const hasRisk = Boolean(riskData?.risk_score != null || (riskData?.shap_factors && riskData.shap_factors.length > 0));
+  const hasMap = Boolean(mapData?.hotspots && mapData.hotspots.length > 0);
+
+  const isMultiFacet = !inline && ((hasNetwork && hasRisk) || rawType === "dossier");
+
+  const [activeTab, setActiveTab] = useState<"network" | "risk" | "map">(
+    rawType === "risk" ? "risk" :
+    rawType === "network" ? "network" :
+    rawType === "map" ? "map" :
+    hasNetwork ? "network" :
+    hasRisk ? "risk" : "network"
+  );
+
+  const type = inline ? rawType : (isMultiFacet ? activeTab : rawType);
+  const rawTarget = type === "network" ? (netData || rawData) :
+                    type === "risk" ? (riskData || rawData) :
+                    type === "map" ? (mapData || rawData) : rawData;
+  const data = (rawTarget && typeof rawTarget === "object") ? rawTarget : {};
 
   // ESC key dismiss
   useEffect(() => {
@@ -182,7 +220,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
   const handleDownload = () => {
     const stamp = new Date().toISOString().replace(/[:.]/g, "-");
     if (type === "map") {
-      downloadHotspotsAsGeoJson(data.hotspots || [], `vajra_hotspots_${stamp}.geojson`);
+      downloadHotspotsAsGeoJson(Array.isArray(data.hotspots) ? data.hotspots : [], `vajra_hotspots_${stamp}.geojson`);
       return;
     }
     if (type === "network" || type === "risk" || type === "forecast" || type === "trend") {
@@ -198,118 +236,178 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
   };
 
   // Formulate SHAP factor data for recharts with police-friendly translations
-  const shapData = (data.shap_factors || []).map((f: any) => {
-    const cfg = POLICE_EVIDENTIARY_FACTORS[f.name];
-    const displayName = cfg ? (lang === "en" ? cfg.en : cfg.kn) : f.name;
+  const shapData = (Array.isArray(data.shap_factors) ? data.shap_factors : []).map((f: any) => {
+    const cfg = f?.name ? POLICE_EVIDENTIARY_FACTORS[f.name] : undefined;
+    const displayName = cfg ? (lang === "en" ? cfg.en : cfg.kn) : (f?.name || "Factor");
     const desc = cfg ? (lang === "en" ? cfg.descEn : cfg.descKn) : "";
+    const numVal = parseFloat(f?.value ?? 0);
     return {
-      rawName: f.name,
+      rawName: f?.name || "",
       name: displayName,
-      value: parseFloat(f.value),
-      contribution: f.contribution,
+      value: isNaN(numVal) ? 0 : numVal,
+      contribution: f?.contribution || (numVal >= 0 ? "positive" : "negative"),
       desc,
     };
   });
 
   // Formulate forecast data for recharts
-  const forecastData = (data.forecast || []).map((f: any, idx: number) => ({
-    name: f.period || `P-${idx + 1}`,
-    Predicted: f.predicted,
-    Baseline: f.historical_avg || 10.0,
+  const forecastData = (Array.isArray(data.forecast) ? data.forecast : []).map((f: any, idx: number) => ({
+    name: f?.period || `P-${idx + 1}`,
+    Predicted: typeof f?.predicted === "number" ? f.predicted : 0,
+    Baseline: typeof f?.historical_avg === "number" ? f.historical_avg : 10.0,
   }));
 
   // Formulate crime-trend series for recharts
-  const trendData = (data.series || []).map((s: any) => ({
-    name: s.label,
-    Incidents: s.count,
+  const trendData = (Array.isArray(data.series) ? data.series : []).map((s: any) => ({
+    name: s?.label || `Item`,
+    Incidents: typeof s?.count === "number" ? s.count : (typeof s?.value === "number" ? s.value : 0),
   }));
 
   return (
-    <div className={inline ? "w-full" : "fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 md:p-10 bg-stone-950/80 backdrop-blur-md animate-fade-in"}>
+    <ErrorBoundary
+      fallbackTitle={lang === "en" ? "Expanded View Unavailable" : "ವಿಸ್ತರಿಸಿದ ನೋಟ ಲಭ್ಯವಿಲ್ಲ"}
+      fallbackMessage={lang === "en" ? "An error occurred displaying this full visualization." : "ಈ ಪೂರ್ಣ ದೃಶ್ಯೀಕರಣವನ್ನು ಪ್ರದರ್ಶಿಸುವಾಗ ದೋಷ ಸಂಭವಿಸಿದೆ."}
+    >
+      <div className={inline ? "w-full" : "fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 md:p-10 bg-stone-950/80 backdrop-blur-md animate-fade-in"}>
       {/* Repeating Diagonal Security Watermark Overlay (modal only) */}
       {!inline && <WatermarkOverlay />}
 
       {/* Modal Container (inline: a bounded in-flow card, no fixed sizing) */}
-      <div className={inline ? "w-full flex flex-col relative h-[520px]" : "w-full max-w-5xl h-[85vh] glass-panel border border-stone-800 rounded-2xl shadow-2xl flex flex-col overflow-hidden relative"}>
+      <div className={inline ? "w-full flex flex-col relative h-[520px]" : "w-full max-w-5xl h-[85vh] bg-stone-950/95 border border-[#C79A4E]/30 rounded-2xl shadow-[0_8px_40px_rgba(199,154,78,0.12)] flex flex-col overflow-hidden relative backdrop-blur-xl"}>
         {/* Top Header (hidden inline -- the chat card renders its own header) */}
         {!inline && (
-        <div className="p-4 border-b border-stone-800 flex items-center justify-between shrink-0 bg-stone-900/40">
+        <div className="p-4 border-b border-[#C79A4E]/20 flex items-center justify-between shrink-0 bg-gradient-to-r from-[#C79A4E]/10 via-[#C79A4E]/[0.04] to-transparent">
           <div className="flex items-center gap-2">
-            {type === "map" && (
+            {isMultiFacet ? (
               <>
-                <MapPin className="w-5 h-5 text-[#C79A4E]" />
-                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Geospatial Hotspots Exploration" : "ಭೌಗೋಳಿಕ ಹಾಟ್‌ಸ್ಪಾಟ್ ಪರಿಶೋಧನೆ"}</h3>
+                <Sparkles className="w-5 h-5 text-[#C79A4E]" />
+                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Investigative Intelligence Dossier" : "ತನಿಖಾ ಗುಪ್ತಚರ ದೋಶಿಯರ್"}</h3>
               </>
-            )}
-            {type === "network" && (
+            ) : (
               <>
-                <Network className="w-5 h-5 text-[#C79A4E]" />
-                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Relational Intelligence Network" : "ಸಂಬಂಧಾತ್ಮಕ ಗುಪ್ತಚಾರ ಜಾಲ"}</h3>
-              </>
-            )}
-            {type === "risk" && (
-              <>
-                <ShieldAlert className="w-5 h-5 text-amber-500" />
-                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Explainable Recidivism Risk (SHAP Explainer)" : "ವಿವರಣಾತ್ಮಕ ಮರುಅಪರಾಧ ಅಪಾಯ (SHAP ವಿವರಣೆ)"}</h3>
-              </>
-            )}
-            {type === "forecast" && (
-              <>
-                <TrendingUp className="w-5 h-5 text-[#C79A4E]" />
-                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Seasonal Early Warning Predictions" : "ಋತುಮಾನ ಮುಂಚಿತ ಎಚ್ಚರಿಕೆ ಮುನ್ಸೂಚನೆಗಳು"}</h3>
-              </>
-            )}
-            {type === "timeline" && (
-              <>
-                <Clock className="w-5 h-5 text-[#C79A4E]" />
-                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Investigation Chronology" : "ಪ್ರಕರಣ ತನಿಖಾ ಕಾಲಾನುಕ್ರಮ"}</h3>
-              </>
-            )}
-            {type === "mo_match" && (
-              <>
-                <Fingerprint className="w-5 h-5 text-amber-500" />
-                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Behavioral MO Profiling Matches" : "ವರ್ತನೆಯ MO ಪ್ರೊಫೈಲಿಂಗ್ ಹೊಂದಾಣಿಕೆಗಳು"}</h3>
-              </>
-            )}
-            {type === "correlation" && (
-              <>
-                <Users className="w-5 h-5 text-[#C79A4E]" />
-                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "District Socio-demographic Dashboard" : "ಜಿಲ್ಲಾ ಸಾಮಾಜಿಕ-ಜನಸಂಖ್ಯಾ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್"}</h3>
-              </>
-            )}
-            {type === "repeat_offenders" && (
-              <>
-                <Repeat className="w-5 h-5 text-amber-500" />
-                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Repeat Offender Roster" : "ಪುನರಾವರ್ತಿತ ಅಪರಾಧಿಗಳ ಪಟ್ಟಿ"}</h3>
-              </>
-            )}
-            {type === "crime_groups" && (
-              <>
-                <Link2 className="w-5 h-5 text-amber-500" />
-                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Detected Organized Crime Groups" : "ಪತ್ತೆಯಾದ ಸಂಘಟಿತ ಅಪರಾಧ ಗುಂಪುಗಳು"}</h3>
-              </>
-            )}
-            {type === "case_list" && (
-              <>
-                <Fingerprint className="w-5 h-5 text-amber-500" />
-                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Records" : "ಪ್ರಕರಣ ದಾಖಲೆಗಳು"}</h3>
-              </>
-            )}
-            {type === "trend" && (
-              <>
-                <Activity className="w-5 h-5 text-[#C79A4E]" />
-                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Crime Trend Analysis" : "ಅಪರಾಧ ಪ್ರವೃತ್ತಿ ವಿಶ್ಲೇಷಣೆ"}</h3>
-              </>
-            )}
-            {type === "case_distribution" && (
-              <>
-                <PieChartIcon className="w-5 h-5 text-[#C79A4E]" />
-                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Types Distribution" : "ಪ್ರಕರಣಗಳ ಪ್ರಕಾರ ವಿತರಣೆ"}</h3>
+                {type === "map" && (
+                  <>
+                    <MapPin className="w-5 h-5 text-[#C79A4E]" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Geospatial Hotspots Exploration" : "ಭೌಗೋಳಿಕ ಹಾಟ್‌ಸ್ಪಾಟ್ ಪರಿಶೋಧನೆ"}</h3>
+                  </>
+                )}
+                {type === "network" && (
+                  <>
+                    <Network className="w-5 h-5 text-[#C79A4E]" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Relational Intelligence Network" : "ಸಂಬಂಧಾತ್ಮಕ ಗುಪ್ತಚಾರ ಜಾಲ"}</h3>
+                  </>
+                )}
+                {type === "risk" && (
+                  <>
+                    <ShieldAlert className="w-5 h-5 text-amber-500" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Explainable Recidivism Risk (SHAP Explainer)" : "ವಿವರಣಾತ್ಮಕ ಮರುಅಪರಾಧ ಅಪಾಯ (SHAP ವಿವರಣೆ)"}</h3>
+                  </>
+                )}
+                {type === "forecast" && (
+                  <>
+                    <TrendingUp className="w-5 h-5 text-[#C79A4E]" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Seasonal Early Warning Predictions" : "ಋತುಮಾನ ಮುಂಚಿತ ಎಚ್ಚರಿಕೆ ಮುನ್ಸೂಚನೆಗಳು"}</h3>
+                  </>
+                )}
+                {type === "timeline" && (
+                  <>
+                    <Clock className="w-5 h-5 text-[#C79A4E]" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Investigation Chronology" : "ಪ್ರಕರಣ ತನಿಖಾ ಕಾಲಾನುಕ್ರಮ"}</h3>
+                  </>
+                )}
+                {type === "mo_match" && (
+                  <>
+                    <Fingerprint className="w-5 h-5 text-amber-500" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Behavioral MO Profiling Matches" : "ವರ್ತನೆಯ MO ಪ್ರೊಫೈಲಿಂಗ್ ಹೊಂದಾಣಿಕೆಗಳು"}</h3>
+                  </>
+                )}
+                {type === "correlation" && (
+                  <>
+                    <Users className="w-5 h-5 text-[#C79A4E]" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "District Socio-demographic Dashboard" : "ಜಿಲ್ಲಾ ಸಾಮಾಜಿಕ-ಜನಸಂಖ್ಯಾ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್"}</h3>
+                  </>
+                )}
+                {type === "repeat_offenders" && (
+                  <>
+                    <Repeat className="w-5 h-5 text-amber-500" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Repeat Offender Roster" : "ಪುನರಾವರ್ತಿತ ಅಪರಾಧಿಗಳ ಪಟ್ಟಿ"}</h3>
+                  </>
+                )}
+                {type === "crime_groups" && (
+                  <>
+                    <Link2 className="w-5 h-5 text-amber-500" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Detected Organized Crime Groups" : "ಪತ್ತೆಯಾದ ಸಂಘಟಿತ ಅಪರಾಧ ಗುಂಪುಗಳು"}</h3>
+                  </>
+                )}
+                {type === "case_list" && (
+                  <>
+                    <Fingerprint className="w-5 h-5 text-amber-500" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Records" : "ಪ್ರಕರಣ ದಾಖಲೆಗಳು"}</h3>
+                  </>
+                )}
+                {type === "trend" && (
+                  <>
+                    <Activity className="w-5 h-5 text-[#C79A4E]" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Crime Trend Analysis" : "ಅಪರಾಧ ಪ್ರವೃತ್ತಿ ವಿಶ್ಲೇಷಣೆ"}</h3>
+                  </>
+                )}
+                {type === "case_distribution" && (
+                  <>
+                    <PieChartIcon className="w-5 h-5 text-[#C79A4E]" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Types Distribution" : "ಪ್ರಕರಣಗಳ ಪ್ರಕಾರ ವಿತರಣೆ"}</h3>
+                  </>
+                )}
               </>
             )}
           </div>
 
           <div className="flex items-center gap-2">
+            {isMultiFacet && (
+              <div className="flex items-center gap-1 bg-stone-900/90 p-0.5 rounded-lg border border-stone-800">
+                {hasNetwork && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("network")}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-mono font-bold transition-all cursor-pointer ${
+                      activeTab === "network"
+                        ? "bg-[#C79A4E]/25 text-[#C79A4E] border border-[#C79A4E]/40 shadow-sm"
+                        : "text-stone-400 hover:text-stone-200"
+                    }`}
+                  >
+                    <Network className="w-3.5 h-3.5" />
+                    <span>{lang === "en" ? "Syndicate Graph" : "ಅಪರಾಧ ಜಾಲ"}</span>
+                  </button>
+                )}
+                {hasRisk && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("risk")}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-mono font-bold transition-all cursor-pointer ${
+                      activeTab === "risk"
+                        ? "bg-amber-500/25 text-amber-400 border border-amber-500/40 shadow-sm"
+                        : "text-stone-400 hover:text-stone-200"
+                    }`}
+                  >
+                    <ShieldAlert className="w-3.5 h-3.5" />
+                    <span>{lang === "en" ? "Recidivism Risk & SHAP" : "ಮರುಅಪರಾಧ ಅಪಾಯ"}</span>
+                  </button>
+                )}
+                {hasMap && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab("map")}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-mono font-bold transition-all cursor-pointer ${
+                      activeTab === "map"
+                        ? "bg-[#C79A4E]/25 text-[#C79A4E] border border-[#C79A4E]/40 shadow-sm"
+                        : "text-stone-400 hover:text-stone-200"
+                    }`}
+                  >
+                    <MapPin className="w-3.5 h-3.5" />
+                    <span>{lang === "en" ? "Hotspot Map" : "ಹಾಟ್‌ಸ್ಪಾಟ್ ನಕ್ಷೆ"}</span>
+                  </button>
+                )}
+              </div>
+            )}
             <button
               onClick={handleDownload}
               title={type === "map" ? (lang === "en" ? "Download hotspot coordinates (GeoJSON)" : "ಹಾಟ್‌ಸ್ಪಾಟ್ ನಿರ್ದೇಶಾಂಕಗಳನ್ನು ಡೌನ್‌ಲೋಡ್ ಮಾಡಿ (GeoJSON)") : (lang === "en" ? "Download this view" : "ಈ ನೋಟವನ್ನು ಡೌನ್‌ಲೋಡ್ ಮಾಡಿ")}
@@ -403,7 +501,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                   panel read data.phones/data.vehicles/data.co_accused, fields
                   the backend never actually populated, always showing "None". */}
               <div className="flex-1 flex flex-col gap-3 min-w-0">
-                <h4 className="font-bold text-stone-200 uppercase tracking-wide text-xs">
+                <h4 className="font-bold text-stone-200 uppercase tracking-[0.14em] text-xs font-mono">
                   {lang === "en" ? "Syndicate Graph:" : "ಜಾಲ ಗ್ರಾಫ್:"} {data.target_suspect || data.suspect}
                   {data.engine_mode === "Static Fallback Simulation" && (
                     <span className="ml-2 text-amber-500 normal-case font-normal text-[10px]">{lang === "en" ? "(simulated — suspect not found in database)" : "(ಸಿಮ್ಯುಲೇಟೆಡ್ — ಶಂಕಿತರು ಡೇಟಾಬೇಸ್‌ನಲ್ಲಿ ಕಂಡುಬಂದಿಲ್ಲ)"}</span>
@@ -420,19 +518,19 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                     <span className="text-stone-500">· {data.hub.degree} {lang === "en" ? "direct links" : "ನೇರ ಸಂಪರ್ಕಗಳು"}</span>
                   </div>
                 )}
-                <div className="flex-1 bg-stone-950/60 border border-stone-900 rounded-xl p-2 min-h-[320px]">
+                <div className="flex-1 bg-stone-950/80 border border-[#C79A4E]/15 rounded-xl p-2 min-h-[320px]">
                   <NetworkGraph nodes={data.nodes || []} edges={data.edges || []} />
                 </div>
               </div>
 
-              {/* Right Transaction Ledger Flow */}
-              <div className="md:w-1/3 flex flex-col gap-3">
-                <h4 className="font-bold text-stone-200 uppercase tracking-wide text-xs">{lang === "en" ? "Linked Financial Transaction Nodes" : "ಜೋಡಿಸಲಾದ ಹಣಕಾಸು ವಹಿವಾಟು ನೋಡ್‌ಗಳು"}</h4>
-                <div className="flex-1 bg-stone-950/60 border border-stone-900 rounded-xl p-4 overflow-y-auto max-h-[350px]">
-                  {data.financial_transactions && data.financial_transactions.length > 0 ? (
+              {/* Right Transaction Ledger Flow (only rendered when transactions exist) */}
+              {Array.isArray(data.financial_transactions) && data.financial_transactions.length > 0 && (
+                <div className="md:w-1/3 flex flex-col gap-3">
+                  <h4 className="font-bold text-stone-200 uppercase tracking-[0.14em] text-xs font-mono">{lang === "en" ? "Linked Financial Transaction Nodes" : "ಜೋಡಿಸಲಾದ ಹಣಕಾಸು ವಹಿವಾಟು ನೋಡ್‌ಗಳು"}</h4>
+                  <div className="flex-1 bg-stone-950/80 border border-[#C79A4E]/15 rounded-xl p-3 overflow-y-auto max-h-[350px]">
                     <div className="space-y-2">
                       {data.financial_transactions.map((tx: any, idx: number) => (
-                        <div key={idx} className="flex justify-between items-center bg-stone-900/50 p-2.5 rounded border border-stone-850 font-mono text-[11px]">
+                        <div key={idx} className="flex justify-between items-center bg-stone-900/60 p-2.5 rounded-lg border border-stone-800/80 font-mono text-[11px] hover:border-[#C79A4E]/25 transition-colors">
                           <div>
                             <span className="text-[#C79A4E] font-bold">{tx.sender}</span>
                             <span className="text-stone-500 mx-1">&rarr;</span>
@@ -451,11 +549,9 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                         </div>
                       ))}
                     </div>
-                  ) : (
-                    <div className="text-center py-10 text-stone-550">{lang === "en" ? "No transaction logs linked to this profile." : "ಈ ಪ್ರೊಫೈಲ್‌ಗೆ ಯಾವುದೇ ವಹಿವಾಟು ದಾಖಲೆಗಳು ಜೋಡಣೆಯಾಗಿಲ್ಲ."}</div>
-                  )}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
 
@@ -475,7 +571,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
             return (
               <div className="w-full flex flex-col gap-5 pb-4">
                 {/* Risk Gauge Header */}
-                <div className="bg-stone-900/40 border border-stone-800 p-4 rounded-xl flex flex-col gap-3 shrink-0">
+                <div className="bg-stone-950/80 border border-[#C79A4E]/15 p-4 rounded-xl flex flex-col gap-3 shrink-0">
                   <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
@@ -543,7 +639,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
                 </div>
 
                 {/* Horizontal Evidentiary Diverging Bar Chart */}
-                <div className="w-full bg-stone-900/30 border border-stone-800/80 rounded-xl p-4 shrink-0 flex flex-col">
+                <div className="w-full bg-stone-950/80 border border-[#C79A4E]/15 rounded-xl p-4 shrink-0 flex flex-col">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
                     <div>
                       <h5 className="font-bold text-stone-200 text-xs font-mono tracking-wider flex items-center gap-2">
@@ -1248,5 +1344,6 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type, data, on
         </div>
       </div>
     </div>
-  );
+  </ErrorBoundary>
+);
 };

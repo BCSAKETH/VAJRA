@@ -8,8 +8,11 @@ export interface GraphNode {
 }
 
 export interface GraphEdge {
-  source: string;
-  target: string;
+  source?: string;
+  target?: string;
+  from?: string;
+  to?: string;
+  label?: string;
 }
 
 interface NetworkGraphProps {
@@ -21,17 +24,13 @@ interface NetworkGraphProps {
 // Categorical palette validated against the app's dark surface (#161412) via
 // the dataviz skill's validator: passing lightness band (OKLCH L 0.48-0.67),
 // chroma floor, adjacent-pair CVD separation, and normal-vision floor in this
-// exact order. The previous colors (brighter #C79A4E/#818cf8/#38bdf8 family)
-// failed the lightness band entirely and had a sub-15 normal-vision-floor
-// pair (indigo/sky, dE 13.5) -- confirmed via `validate_palette.js`, not
-// eyeballed. Every node also carries a text label, satisfying the
-// secondary-encoding requirement for any pair that lands in the 6-8 CVD band.
+// exact order.
 const NODE_COLORS: Record<string, string> = {
-  suspect: "#199e70",
-  case: "#c98500",
-  person: "#9085e9",
+  suspect: "#00C6AD",
+  case: "#f59e0b",
+  person: "#a78bfa",
   vehicle: "#e66767",
-  phone: "#3987e5",
+  phone: "#38bdf8",
 };
 
 const NODE_TYPE_LABELS: Record<string, string> = {
@@ -42,31 +41,35 @@ const NODE_TYPE_LABELS: Record<string, string> = {
   phone: "Phone",
 };
 
-// Real queries against the case DB can match dozens of records (e.g. a
-// common name via LIKE '*ramesh*'). Beyond this many nodes on a single ring,
-// the rest get collapsed into one "+N more" node so labels stay readable
-// instead of overlapping into an unreadable mass.
-const MAX_NODES_PER_RING = 10;
-// Minimum arc length (px) between adjacent node centers on the same ring,
-// so circles/labels don't visually collide as ring population grows.
-const MIN_ARC_SPACING = 58;
-const RING_STEP = 110;
+// Allow up to 16 nodes on a ring so medium clusters display all distinct entities
+// rather than prematurely collapsing into an aggregated overflow bubble.
+const MAX_NODES_PER_RING = 16;
+// Minimum arc length (px) between adjacent node centers on the same ring.
+const MIN_ARC_SPACING = 54;
+const RING_STEP = 115;
+
+const getEdgeEndpoints = (e: any): { source: string; target: string } => ({
+  source: String(e?.source || e?.from || ""),
+  target: String(e?.target || e?.to || ""),
+});
 
 // Simple deterministic radial layout: BFS distance from the "suspect" root
 // determines which ring a node sits on; nodes on the same ring are spread
-// evenly around the circle. No external graph/force-layout library --
-// keeps this dependency-free and fully predictable. Canvas size and per-ring
-// radius both scale with how many nodes actually need to fit, and
-// overcrowded rings are capped with an aggregated overflow node.
+// evenly around the circle.
 function computeLayout(nodes: GraphNode[], edges: GraphEdge[]) {
   const root = nodes.find((n) => n.type === "suspect") || nodes[0];
   if (!root) return { positions: new Map<string, { x: number; y: number }>(), width: 640, height: 380, renderNodes: nodes, overflowByRing: new Map<number, number>() };
 
   const adjacency = new Map<string, string[]>();
   nodes.forEach((n) => adjacency.set(n.id, []));
-  edges.forEach((e) => {
-    adjacency.get(e.source)?.push(e.target);
-    adjacency.get(e.target)?.push(e.source);
+  edges.forEach((rawE) => {
+    const e = getEdgeEndpoints(rawE);
+    if (e.source && e.target) {
+      if (!adjacency.has(e.source)) adjacency.set(e.source, []);
+      if (!adjacency.has(e.target)) adjacency.set(e.target, []);
+      adjacency.get(e.source)!.push(e.target);
+      adjacency.get(e.target)!.push(e.source);
+    }
   });
 
   const depth = new Map<string, number>();
@@ -102,8 +105,6 @@ function computeLayout(nodes: GraphNode[], edges: GraphEdge[]) {
   });
 
   const maxRingDepth = Math.max(...ringGroups.keys(), 1);
-  // Radius needed on each ring so nodes have enough arc spacing, given how
-  // many will actually be drawn on it (including the +N overflow node).
   let maxRadius = 0;
   ringGroups.forEach((ids, ringDepth) => {
     if (ringDepth === 0) return;
@@ -165,10 +166,6 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
 
   const isDense = renderNodes.length > 14;
 
-  // Legend only lists types actually present in this graph -- a fixed
-  // suspect/case/person/vehicle/phone legend would show swatches for node
-  // types that never appear in a small network (e.g. no vehicle/phone links
-  // found), which is more confusing than a legend scoped to what's on screen.
   const presentTypes = useMemo(() => {
     const seen = new Set<string>();
     const ordered: string[] = [];
@@ -183,10 +180,6 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
 
   return (
     <div className="w-full h-full flex flex-col gap-2">
-      {/* Legend -- required whenever >=2 categorical series are on screen;
-          node labels alone aren't a substitute since the color itself still
-          needs an explained meaning (a first-time viewer can't infer "amber
-          circle = linked case" from the label text next to it alone). */}
       {presentTypes.length > 1 && (
         <div className="flex flex-wrap gap-x-3 gap-y-1 justify-center px-2 shrink-0">
           {presentTypes.map((t) => (
@@ -199,7 +192,14 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
       )}
       <div className="w-full flex-1 overflow-auto">
       <svg width={width} height={Math.max(height, minHeight)} viewBox={`0 0 ${width} ${Math.max(height, minHeight)}`} className="block mx-auto">
-        {edges.map((e, idx) => {
+        <defs>
+          <radialGradient id="suspectGlow" cx="50%" cy="50%" r="50%">
+            <stop offset="0%" stopColor="#00C6AD" stopOpacity="0.35" />
+            <stop offset="100%" stopColor="#00C6AD" stopOpacity="0" />
+          </radialGradient>
+        </defs>
+        {edges.map((rawE, idx) => {
+          const e = getEdgeEndpoints(rawE);
           const from = positions.get(e.source);
           const to = positions.get(e.target);
           if (!from || !to) return null;
@@ -208,8 +208,9 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
               key={idx}
               x1={from.x} y1={from.y}
               x2={to.x} y2={to.y}
-              stroke="#1e293b"
-              strokeWidth={1.5}
+              stroke="#64748b"
+              strokeWidth={1.75}
+              strokeOpacity={0.65}
             />
           );
         })}
@@ -231,11 +232,20 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
                   "per-mark hover tooltip" is required, not a specific
                   implementation). */}
               <title>{tooltipText}</title>
+              {n.type === "suspect" && (
+                <circle
+                  cx={pos.x} cy={pos.y} r={radius + 8}
+                  fill="url(#suspectGlow)"
+                  stroke="#00C6AD"
+                  strokeWidth={1}
+                  strokeOpacity={0.4}
+                />
+              )}
               <circle
                 cx={pos.x} cy={pos.y} r={radius}
                 fill="#0f172a"
                 stroke={color}
-                strokeWidth={2}
+                strokeWidth={n.type === "suspect" ? 2.5 : 2}
                 strokeDasharray={isOverflow ? "3 3" : undefined}
               />
               <text

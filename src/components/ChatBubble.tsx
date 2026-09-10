@@ -43,7 +43,7 @@ interface ChatBubbleProps {
 // renders as its grounded text block instead).
 const WIDGET_PANEL_TYPES = new Set([
   "map", "network", "risk", "forecast", "timeline",
-  "mo_match", "correlation", "repeat_offenders", "crime_groups", "trend", "case_distribution", "case_list",
+  "mo_match", "correlation", "repeat_offenders", "crime_groups", "trend", "case_distribution", "case_list", "dossier",
 ]);
 
 // Normalize any stored text for display: turn SQL-escaped newlines back into
@@ -1450,28 +1450,68 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
             </div>
           </div>
         ) : isAI && message.responseType && message.responseType !== "text" && message.data && (
-          <div className="w-full flex flex-col gap-2">
-            {/* "news" (the web-search drawer) already has its own header,
-                collapse toggle, and source list fully visible in place --
-                this generic "go explore it in an overlay" banner was pure
-                redundant chrome for that type (there's nothing extra an
-                overlay would reveal), so it's skipped there. */}
-            {message.responseType !== "news" && (
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[11px] text-[#C79A4E] font-medium animate-fade-in">
-                <Sparkles className="w-3.5 h-3.5 shrink-0 text-[#C79A4E]" />
-                <span>
-                  {lang === "en"
-                    ? "Supporting Intelligence Visualization — Click expand icon to explore in full overlay"
-                    : "ಬೆಂಬಲಿತ ಅಪರಾಧ ಗುಪ್ತಚರ ದೃಶ್ಯೀಕರಣ — ವಿಸ್ತರಿಸಲು ಬಲಬದಿಯ ಐಕಾನ್ ಕ್ಲಿಕ್ ಮಾಡಿ"}
-                </span>
+          (() => {
+            const hasRisk = Boolean(
+              message.data?.risk_score != null ||
+              (message.data?.shap_factors && message.data.shap_factors.length > 0) ||
+              (message.data?.risk && (message.data.risk.risk_score != null || message.data.risk.shap_factors?.length > 0))
+            );
+            const hasNetwork = Boolean(
+              (message.data?.nodes && message.data.nodes.length > 0) ||
+              (message.data?.network?.nodes && message.data.network.nodes.length > 0)
+            );
+
+            if (hasRisk && hasNetwork) {
+              const riskData = message.data.risk || message.data;
+              const netData = message.data.network || message.data;
+              return (
+                <div className="w-full flex flex-col gap-4 mt-2">
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[11px] text-[#C79A4E] font-medium animate-fade-in">
+                    <Sparkles className="w-3.5 h-3.5 shrink-0 text-[#C79A4E]" />
+                    <span>
+                      {lang === "en"
+                        ? "Comprehensive Intelligence Visualizations — Recidivism Risk & Criminal Syndicate Graph"
+                        : "ಸಮಗ್ರ ಅಪರಾಧ ಗುಪ್ತಚರ ದೃಶ್ಯೀಕರಣಗಳು — ಮರುಅಪರಾಧ ಅಪಾಯ ಮತ್ತು ಅಪರಾಧ ಜಾಲ"}
+                    </span>
+                  </div>
+
+                  {/* 1. Recidivism Risk & SHAP Analysis */}
+                  <InlineWidget
+                    type="risk"
+                    data={riskData}
+                    onExpand={() => onExpandWidget("risk", riskData)}
+                  />
+
+                  {/* 2. Criminal Syndicate Network Graph */}
+                  <InlineWidget
+                    type="network"
+                    data={netData}
+                    onExpand={() => onExpandWidget("network", netData)}
+                  />
+                </div>
+              );
+            }
+
+            return (
+              <div className="w-full flex flex-col gap-2">
+                {message.responseType !== "news" && (
+                  <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[11px] text-[#C79A4E] font-medium animate-fade-in">
+                    <Sparkles className="w-3.5 h-3.5 shrink-0 text-[#C79A4E]" />
+                    <span>
+                      {lang === "en"
+                        ? "Supporting Intelligence Visualization — Click expand icon to explore in full overlay"
+                        : "ಬೆಂಬಲಿತ ಅಪರಾಧ ಗುಪ್ತಚರ ದೃಶ್ಯೀಕರಣ — ವಿಸ್ತರಿಸಲು ಬಲಬದಿಯ ಐಕಾನ್ ಕ್ಲಿಕ್ ಮಾಡಿ"}
+                    </span>
+                  </div>
+                )}
+                <InlineWidget
+                  type={message.responseType}
+                  data={message.data}
+                  onExpand={() => onExpandWidget(message.responseType!, message.data)}
+                />
               </div>
-            )}
-            <InlineWidget
-              type={message.responseType}
-              data={message.data}
-              onExpand={() => onExpandWidget(message.responseType!, message.data)}
-            />
-          </div>
+            );
+          })()
         )}
 
         {/* Message actions row. The variant-cycle pill is a real navigation

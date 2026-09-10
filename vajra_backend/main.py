@@ -2258,15 +2258,18 @@ def _fit_json(obj: Any, cap: int) -> str:
     # untrimmed payload got hard-truncated by the datastore into invalid JSON, so
     # json.loads failed and the whole widget rendered empty (confirmed live).
     news = d.get("news")
-    if isinstance(news, list) and len(news) > 1:
+    if isinstance(news, list) and len(news) > 0:
         arr = list(news)
         while arr:
             d["news"] = arr
             s = json.dumps(d, ensure_ascii=False, default=str)
             if len(s) <= cap:
                 return s
-            arr = arr[: max(1, len(arr) - 3)]
-        d["news"] = arr
+            if len(arr) <= 3:
+                arr = []
+            else:
+                arr = arr[:-3]
+        d["news"] = []
     s = json.dumps(d, ensure_ascii=False, default=str)
     if len(s) <= cap:
         return s
@@ -2283,15 +2286,18 @@ def _fit_json(obj: Any, cap: int) -> str:
     # graph, losing nodes could orphan edges into nonsense).
     for _key in ("financial_transactions", "edges"):
         _arr = d.get(_key)
-        if isinstance(_arr, list) and len(_arr) > 1:
+        if isinstance(_arr, list) and len(_arr) > 0:
             _arr = list(_arr)
             while _arr:
                 d[_key] = _arr
                 s = json.dumps(d, ensure_ascii=False, default=str)
                 if len(s) <= cap:
                     return s
-                _arr = _arr[: max(1, len(_arr) - 5)]
-            d[_key] = _arr
+                if len(_arr) <= 5:
+                    _arr = []
+                else:
+                    _arr = _arr[:-5]
+            d[_key] = []
     # generate_full_report's composite "risk" payload (see agent_loop.py's
     # generate_full_report -- risk gauge/SHAP as the base dict, with
     # mo_profile/network/repeat_offender_context folded in as "additive
@@ -2310,22 +2316,51 @@ def _fit_json(obj: Any, cap: int) -> str:
     # repeat-offender roster, then MO profile), keeping the small core risk/
     # SHAP fields intact -- same "trim what's dispensable" pattern as the
     # financial_transactions/edges/news handling above.
-    if "risk_score" in d:
-        for _key in ("network", "repeat_offender_context", "mo_profile"):
+    if "risk_score" in d or "network" in d or "nodes" in d:
+        # Before dropping network, first compact network nodes and edges to essential fields
+        _net = d.get("network") if isinstance(d.get("network"), dict) else None
+        if _net and _net.get("nodes"):
+            d = dict(d)
+            d["network"] = {
+                "target_suspect": _net.get("target_suspect") or d.get("suspect"),
+                "hub": _net.get("hub"),
+                "nodes": [{"id": n.get("id"), "label": n.get("label"), "type": n.get("type")} for n in _net.get("nodes", [])[:20]],
+                "edges": [{"source": e.get("source") or e.get("from"), "target": e.get("target") or e.get("to"), "from": e.get("from") or e.get("source"), "to": e.get("to") or e.get("target"), "label": e.get("label", "")} for e in _net.get("edges", [])[:25]],
+                "financial_transactions": (_net.get("financial_transactions") or [])[:3]
+            }
+            d["nodes"] = d["network"]["nodes"]
+            d["edges"] = d["network"]["edges"]
+            d["hub"] = d["network"]["hub"]
+            d["target_suspect"] = d["network"]["target_suspect"]
+            s = json.dumps(d, ensure_ascii=False, default=str)
+            if len(s) <= cap:
+                return s
+
+        for _key in ("panels", "_zcql_provenance", "repeat_offender_context", "mo_profile"):
             if d.get(_key):
                 d = dict(d)
                 d.pop(_key, None)
                 s = json.dumps(d, ensure_ascii=False, default=str)
                 if len(s) <= cap:
                     return s
-        # Core risk/SHAP fields only -- still small even with a full
-        # shap_factors + aggravating/mitigating breakdown.
+
+        # Core compound fields (both risk and compacted network graph)
         core = {k: d.get(k) for k in
                 ("suspect", "age", "risk_score", "shap_factors", "aggravating",
-                 "mitigating", "remand_status") if d.get(k) is not None}
+                 "mitigating", "remand_status", "nodes", "edges", "hub",
+                 "target_suspect", "financial_transactions") if d.get(k) is not None}
         s = json.dumps(core, ensure_ascii=False, default=str)
         if len(s) <= cap:
             return s
+
+        # If still over cap, try popping network as a last resort for risk-only views
+        if d.get("nodes"):
+            core_risk = {k: core.get(k) for k in
+                         ("suspect", "age", "risk_score", "shap_factors", "aggravating",
+                          "mitigating", "remand_status") if core.get(k) is not None}
+            s = json.dumps(core_risk, ensure_ascii=False, default=str)
+            if len(s) <= cap:
+                return s
     panels = d.get("panels")
     if isinstance(panels, list):
         d["panels"] = [dict(p) if isinstance(p, dict) else p for p in panels]
@@ -2354,8 +2389,8 @@ def _fit_json(obj: Any, cap: int) -> str:
         # widget type first, re-checking the cap after each pop, so a small
         # panel's data survives unless the payload is still over cap even
         # after every heavier panel has already given up its data.
-        _DROP_PRIORITY = ("network", "mo_match", "similar_cases", "case_summary",
-                          "timeline", "case_sections", "trend", "map")
+        _DROP_PRIORITY = ("mo_match", "similar_cases", "case_summary",
+                          "timeline", "case_sections", "trend", "network", "map", "risk")
         def _panel_drop_rank(p):
             t = p.get("type") if isinstance(p, dict) else None
             return _DROP_PRIORITY.index(t) if t in _DROP_PRIORITY else len(_DROP_PRIORITY)
@@ -2372,7 +2407,7 @@ def _fit_json(obj: Any, cap: int) -> str:
     # whitelist and silently fell all the way to an empty {}.
     minimal = {k: d.get(k) for k in
                ("case_no", "primary_accused", "_text_en", "news", "scope",
-                "nodes", "edges", "seed", "max_hop_reached", "_zcql_provenance",
+                "nodes", "edges", "hub", "target_suspect", "network", "seed", "max_hop_reached", "_zcql_provenance",
                 "msg_id", "variant_group", "version_index",
                 "suspect", "age", "risk_score", "shap_factors", "aggravating",
                 "mitigating", "remand_status") if d.get(k) is not None}
@@ -3369,7 +3404,7 @@ async def chat_progress_stream(session_id: str, request: Request, location_conte
 
     async def _gen():
         since = 0
-        deadline = time.time() + 150  # generous ceiling for a real 3-140s GLM turn
+        deadline = time.time() + 300  # generous ceiling for complex multi-tool analysis
         while time.time() < deadline:
             if await request.is_disconnected():
                 break

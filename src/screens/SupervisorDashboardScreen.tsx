@@ -917,7 +917,16 @@ export const SupervisorDashboardScreen: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-1.5 pr-3 text-stone-400">{h.approver_badge || "—"}</td>
-                    <td className="py-1.5 text-stone-500">{h.decided_at ? new Date(h.decided_at + (h.decided_at.endsWith("Z") ? "" : "Z")).toLocaleString() : "—"}</td>
+                    <td className="py-1.5 text-stone-500">{(() => {
+                      if (!h.decided_at) return "—";
+                      try {
+                        const s = String(h.decided_at);
+                        const d = new Date(s.endsWith("Z") ? s : `${s}Z`);
+                        return isNaN(d.getTime()) ? s : d.toLocaleString();
+                      } catch {
+                        return String(h.decided_at);
+                      }
+                    })()}</td>
                   </tr>
                 ))}
               </tbody>

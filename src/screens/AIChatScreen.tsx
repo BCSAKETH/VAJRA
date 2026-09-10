@@ -193,7 +193,7 @@ export const AIChatScreen: React.FC = () => {
     }
   }, []);
 
-  const [expandedWidget, setExpandedWidget] = useState<{ type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_list"; data: any } | null>(null);
+  const [expandedWidget, setExpandedWidget] = useState<{ type: string; data: any } | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);

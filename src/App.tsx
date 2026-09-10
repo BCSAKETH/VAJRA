@@ -4,6 +4,7 @@ import { LoginScreen } from "./screens/LoginScreen";
 import { MainLayout } from "./components/MainLayout";
 import { AIChatScreen } from "./screens/AIChatScreen";
 import { SessionTimeoutGuard } from "./components/SessionTimeoutGuard";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 
 // Code-split every screen except Login/AIChat (the two every officer hits on
 // every session) so the initial bundle doesn't pay for Leaflet (Spatial) and
@@ -65,13 +66,6 @@ const AppContent: React.FC = () => {
         return <ReportsScreen />;
       case "supervisor":
       case "audit":
-        // The sidebar nav item is already hidden for non-supervisors, but
-        // that's a UI convenience, not access control -- currentScreen is
-        // just localStorage state (vajra_screen) an officer could set
-        // directly. The backend now independently 403s the underlying
-        // audit-log/consistency-flag reads for non-supervisors regardless,
-        // so this is defense in depth: don't even render the screen shell
-        // for a role that can't see its data.
         if (roleTier !== "supervisor") {
           return (
             <div className="h-full flex items-center justify-center p-6">
@@ -102,10 +96,22 @@ const AppContent: React.FC = () => {
     <MainLayout>
       <div className="h-full relative">
         <div className="absolute inset-0" style={{ display: isChatActive ? "block" : "none" }}>
-          <AIChatScreen />
+          <ErrorBoundary
+            fallbackTitle={lang === "en" ? "AI Copilot Hub Encountered an Issue" : "AI ಕೊಪೈಲಟ್ ಹಬ್‌ನಲ್ಲಿ ದೋಷ ಸಂಭವಿಸಿದೆ"}
+            fallbackMessage={lang === "en" ? "A message in this session could not be rendered. Click Reset to restore normal conversation." : "ಈ ಅಧಿವೇಶನದಲ್ಲಿ ಸಂದೇಶವನ್ನು ರೆಂಡರ್ ಮಾಡಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ. ಮರುಸ್ಥಾಪಿಸಲು ರೀಸೆಟ್ ಕ್ಲಿಕ್ ಮಾಡಿ."}
+          >
+            <AIChatScreen />
+          </ErrorBoundary>
         </div>
         {!isChatActive && (
-          <Suspense fallback={<ScreenLoadingFallback />}>{renderOtherScreen()}</Suspense>
+          <Suspense fallback={<ScreenLoadingFallback />}>
+            <ErrorBoundary
+              fallbackTitle={lang === "en" ? "Screen Render Interrupted" : "ಪರದೆಯ ರೆಂಡರ್ ಅಡಚಣೆಯಾಗಿದೆ"}
+              fallbackMessage={lang === "en" ? "An unexpected error occurred while rendering this workspace. Click Reset to retry." : "ಈ ಕಾರ್ಯಕ್ಷೇತ್ರವನ್ನು ರೆಂಡರ್ ಮಾಡುವಾಗ ಅನಿರೀಕ್ಷಿತ ದೋಷ ಸಂಭವಿಸಿದೆ. ಮರುಪ್ರಯತ್ನಿಸಲು ರೀಸೆಟ್ ಕ್ಲಿಕ್ ಮಾಡಿ."}
+            >
+              {renderOtherScreen()}
+            </ErrorBoundary>
+          </Suspense>
         )}
       </div>
       <SessionTimeoutGuard />
@@ -115,8 +121,10 @@ const AppContent: React.FC = () => {
 
 export default function App() {
   return (
-    <AppProvider>
-      <AppContent />
-    </AppProvider>
+    <ErrorBoundary>
+      <AppProvider>
+        <AppContent />
+      </AppProvider>
+    </ErrorBoundary>
   );
 }

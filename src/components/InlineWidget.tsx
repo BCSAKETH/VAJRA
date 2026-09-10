@@ -2,8 +2,9 @@ import React, { useEffect, useState } from "react";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { useApp } from "../AppContext";
-import { Maximize2, ShieldAlert, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart, Newspaper, ExternalLink, Radio, ChevronDown, ChevronRight, Code2, Copy, Check } from "lucide-react";
+import { Maximize2, ShieldAlert, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart, Newspaper, ExternalLink, Radio, ChevronDown, ChevronRight, Code2, Copy, Check, Sparkles } from "lucide-react";
 import { ExpandedOverlay } from "./ExpandedOverlay";
+import { ErrorBoundary } from "./ErrorBoundary";
 
 // Fit the inline map to the ACTUAL hotspot coordinates every render, and force
 // a resize once the chat bubble has laid out (Leaflet renders grey/half-drawn
@@ -305,133 +306,156 @@ const PriorityConcernsView: React.FC<{ data: any; lang: "en" | "kn" }> = ({ data
 };
 
 interface InlineWidgetProps {
-  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "priority_concerns" | "case_list";
+  type: string;
   data: any;
   onExpand: () => void;
 }
 
 const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpand }) => {
   const { lang } = useApp();
-  // NewsView (the web-search drawer) is already a complete, self-contained
-  // card -- its own border, its own "Browsed the web (N sources)" header,
-  // its own collapse toggle. Wrapping it in this component's generic
-  // "OPEN-SOURCE SIGNALS" header + a second outer card border just stacked
-  // two headers and two borders for the same one thing (confirmed live from
-  // a screenshot), and the Maximize2 "expand to full screen" button did
-  // nothing useful anyway -- ExpandedOverlay has no "news" case, so it fell
-  // through to a blank default. Render it standalone instead.
+
+  if (!data || typeof data !== "object") {
+    return null;
+  }
+
   if (type === "news") {
     return <NewsView data={data} lang={lang} />;
   }
+
+  // Resolve sub-data across top-level keys, nested sub-objects, or panels
+  const netData = (data?.nodes && data.nodes.length > 0)
+    ? data
+    : (data?.network?.nodes && data.network.nodes.length > 0)
+    ? data.network
+    : (Array.isArray(data?.panels) ? data.panels.find((p: any) => p.type === "network" && p.data?.nodes?.length > 0)?.data : null);
+
+  const riskData = (data?.risk_score != null || (data?.shap_factors && data.shap_factors.length > 0))
+    ? data
+    : (data?.risk && (data.risk.risk_score != null || data.risk.shap_factors?.length > 0))
+    ? data.risk
+    : (Array.isArray(data?.panels) ? data.panels.find((p: any) => p.type === "risk" && (p.data?.risk_score != null || p.data?.shap_factors?.length > 0))?.data : null);
+
+  const mapData = (data?.hotspots && data.hotspots.length > 0)
+    ? data
+    : (Array.isArray(data?.panels) ? data.panels.find((p: any) => p.type === "map" && p.data?.hotspots?.length > 0)?.data : null);
+
+  const effectiveType = (type === "dossier" || !type)
+    ? (netData ? "network" : riskData ? "risk" : mapData ? "map" : "network")
+    : type;
+
+  const effectiveData = effectiveType === "network" ? (netData || data) :
+                        effectiveType === "risk" ? (riskData || data) :
+                        effectiveType === "map" ? (mapData || data) : data;
+  const safeEffectiveData = (effectiveData && typeof effectiveData === "object") ? effectiveData : {};
+
   return (
-    <div className="glass-card rounded-xl border border-stone-800 p-4 shadow-lg animate-fade-in relative overflow-hidden">
-      {/* Header Info */}
-      <div className="flex items-center justify-between border-b border-stone-850 pb-2 mb-3">
-        <div className="flex items-center gap-2">
-          {type === "map" && (
-            <>
-              <MapPin className="w-4 h-4 text-[#C79A4E]" />
-              <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Geospatial Incident Hotspots" : "ಭೌಗೋಳಿಕ ಘಟನಾ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳು"}</span>
-            </>
-          )}
-          {type === "network" && (
-            <>
-              <Network className="w-4 h-4 text-[#C79A4E]" />
-              <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Criminal Syndicate Graph" : "ಅಪರಾಧ ಜಾಲ ಗ್ರಾಫ್"}</span>
-            </>
-          )}
-          {type === "risk" && (
-            <>
-              <ShieldAlert className="w-4 h-4 text-amber-500" />
-              <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "Offender Recidivism Risk" : "ಅಪರಾಧಿ ಮರುಅಪರಾಧ ಅಪಾಯ"}</span>
-            </>
-          )}
-          {type === "forecast" && (
-            <>
-              <TrendingUp className="w-4 h-4 text-[#C79A4E]" />
-              <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Seasonal Trend Forecast" : "ಋತುಮಾನ ಪ್ರವೃತ್ತಿ ಮುನ್ಸೂಚನೆ"}</span>
-            </>
-          )}
-          {type === "timeline" && (
-            <>
-              <Clock className="w-4 h-4 text-[#C79A4E]" />
-              <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Chronological Case Timeline" : "ಪ್ರಕರಣದ ಕಾಲಾನುಕ್ರಮ"}</span>
-            </>
-          )}
-          {type === "mo_match" && (
-            <>
-              <Fingerprint className="w-4 h-4 text-amber-500" />
-              <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "MO Suspect Matches" : "MO ಶಂಕಿತ ಹೊಂದಾಣಿಕೆಗಳು"}</span>
-            </>
-          )}
-          {type === "correlation" && (
-            <>
-              <Users className="w-4 h-4 text-[#C79A4E]" />
-              <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Demographic Correlations" : "ಜನಸಂಖ್ಯಾ ಸಂಬಂಧಗಳು"}</span>
-            </>
-          )}
-          {type === "repeat_offenders" && (
-            <>
-              <Repeat className="w-4 h-4 text-amber-500" />
-              <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "Repeat Offender Roster" : "ಪುನರಾವರ್ತಿತ ಅಪರಾಧಿಗಳ ಪಟ್ಟಿ"}</span>
-            </>
-          )}
-          {type === "crime_groups" && (
-            <>
-              <Link2 className="w-4 h-4 text-amber-500" />
-              <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "Organized Crime Groups" : "ಸಂಘಟಿತ ಅಪರಾಧ ಗುಂಪುಗಳು"}</span>
-            </>
-          )}
-          {type === "trend" && (
-            <>
-              <Activity className="w-4 h-4 text-[#C79A4E]" />
-              <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Crime Trend Analysis" : "ಅಪರಾಧ ಪ್ರವೃತ್ತಿ ವಿಶ್ಲೇಷಣೆ"}</span>
-            </>
-          )}
-          {type === "case_distribution" && (
-            <>
-              <PieChart className="w-4 h-4 text-[#C79A4E]" />
-              <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Case Types Distribution" : "ಪ್ರಕರಣಗಳ ಪ್ರಕಾರ ವಿತರಣೆ"}</span>
-            </>
-          )}
-          {type === "priority_concerns" && (
-            <>
-              <ShieldAlert className="w-4 h-4 text-rose-400" />
-              <span className="text-xs font-bold text-rose-400 tracking-wider uppercase font-mono">{lang === "en" ? "Priority Concern Board" : "ಆದ್ಯತಾ ಕಾಳಜಿ ಫಲಕ"}</span>
-            </>
-          )}
-          {type === "news" && (
-            <>
-              <Newspaper className="w-4 h-4 text-[#C79A4E]" />
-              <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Open-Source Signals" : "ಮುಕ್ತ-ಮೂಲ ಸಂಕೇತಗಳು"}</span>
-            </>
-          )}
-          {type === "case_list" && (
-            <>
-              <Fingerprint className="w-4 h-4 text-amber-500" />
-              <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "Case Records" : "ಪ್ರಕರಣ ದಾಖಲೆಗಳು"}</span>
-            </>
-          )}
+    <ErrorBoundary
+      fallbackTitle={lang === "en" ? "Visualization Card" : "ದೃಶ್ಯೀಕರಣ ಕಾರ್ಡ್"}
+      fallbackMessage={lang === "en" ? "Unable to render this visual component. Underlying data is preserved." : "ಈ ಘಟಕವನ್ನು ರೆಂಡರ್ ಮಾಡಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ."}
+    >
+      <div className="rounded-xl border border-[#C79A4E]/30 bg-stone-950/90 backdrop-blur-md p-0 shadow-[0_4px_30px_rgba(199,154,78,0.08)] animate-fade-in relative overflow-hidden">
+        {/* Header Info — gold gradient strip matching the bespoke card aesthetic */}
+        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b border-[#C79A4E]/20 bg-gradient-to-r from-[#C79A4E]/10 via-[#C79A4E]/[0.04] to-transparent">
+          <div className="flex items-center gap-2 flex-wrap">
+            {effectiveType === "map" && (
+              <>
+                <MapPin className="w-4 h-4 text-[#C79A4E]" />
+                <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Geospatial Incident Hotspots" : "ಭೌಗೋಳಿಕ ಘಟನಾ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳು"}</span>
+              </>
+            )}
+            {effectiveType === "network" && (
+              <>
+                <Network className="w-4 h-4 text-[#C79A4E]" />
+                <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Criminal Syndicate Graph" : "ಅಪರಾಧ ಜಾಲ ಗ್ರಾಫ್"}</span>
+              </>
+            )}
+            {effectiveType === "risk" && (
+              <>
+                <ShieldAlert className="w-4 h-4 text-amber-500" />
+                <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "Offender Recidivism Risk & SHAP Analysis" : "ಅಪರಾಧಿ ಮರುಅಪರಾಧ ಅಪಾಯ ಮತ್ತು SHAP"}</span>
+              </>
+            )}
+            {effectiveType === "forecast" && (
+              <>
+                <TrendingUp className="w-4 h-4 text-[#C79A4E]" />
+                <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Seasonal Trend Forecast" : "ಋತುಮಾನ ಪ್ರವೃತ್ತಿ ಮುನ್ಸೂಚನೆ"}</span>
+              </>
+            )}
+            {effectiveType === "timeline" && (
+              <>
+                <Clock className="w-4 h-4 text-[#C79A4E]" />
+                <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Chronological Case Timeline" : "ಪ್ರಕರಣದ ಕಾಲಾನುಕ್ರಮ"}</span>
+              </>
+            )}
+            {effectiveType === "mo_match" && (
+              <>
+                <Fingerprint className="w-4 h-4 text-amber-500" />
+                <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "MO Suspect Matches" : "MO ಶಂಕಿತ ಹೊಂದಾಣಿಕೆಗಳು"}</span>
+              </>
+            )}
+            {effectiveType === "correlation" && (
+              <>
+                <Users className="w-4 h-4 text-[#C79A4E]" />
+                <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Demographic Correlations" : "ಜನಸಂಖ್ಯಾ ಸಂಬಂಧಗಳು"}</span>
+              </>
+            )}
+            {effectiveType === "repeat_offenders" && (
+              <>
+                <Repeat className="w-4 h-4 text-amber-500" />
+                <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "Repeat Offender Roster" : "ಪುನರಾವರ್ತಿತ ಅಪರಾಧಿಗಳ ಪಟ್ಟಿ"}</span>
+              </>
+            )}
+            {effectiveType === "crime_groups" && (
+              <>
+                <Link2 className="w-4 h-4 text-amber-500" />
+                <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "Organized Crime Groups" : "ಸಂಘಟಿತ ಅಪರಾಧ ಗುಂಪುಗಳು"}</span>
+              </>
+            )}
+            {effectiveType === "trend" && (
+              <>
+                <Activity className="w-4 h-4 text-[#C79A4E]" />
+                <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Crime Trend Analysis" : "ಅಪರಾಧ ಪ್ರವೃತ್ತಿ ವಿಶ್ಲೇಷಣೆ"}</span>
+              </>
+            )}
+            {effectiveType === "case_distribution" && (
+              <>
+                <PieChart className="w-4 h-4 text-[#C79A4E]" />
+                <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Case Types Distribution" : "ಪ್ರಕರಣಗಳ ಪ್ರಕಾರ ವಿತರಣೆ"}</span>
+              </>
+            )}
+            {effectiveType === "priority_concerns" && (
+              <>
+                <ShieldAlert className="w-4 h-4 text-rose-400" />
+                <span className="text-xs font-bold text-rose-400 tracking-wider uppercase font-mono">{lang === "en" ? "Priority Concern Board" : "ಆದ್ಯತಾ ಕಾಳಜಿ ಫಲಕ"}</span>
+              </>
+            )}
+            {effectiveType === "case_list" && (
+              <>
+                <Fingerprint className="w-4 h-4 text-amber-500" />
+                <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "Case Records" : "ಪ್ರಕರಣ ದಾಖಲೆಗಳು"}</span>
+              </>
+            )}
+          </div>
+
+          {/* Right action group: Maximize button */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onExpand}
+              className="p-1.5 rounded-md border border-transparent hover:border-[#C79A4E]/30 hover:bg-[#C79A4E]/10 text-[#C79A4E]/50 hover:text-[#C79A4E] transition-all cursor-pointer"
+              title={lang === "en" ? "Open full screen" : "ಪೂರ್ಣ ಪರದೆ ತೆರೆಯಿರಿ"}
+            >
+              <Maximize2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
         </div>
 
-        {/* Subtle pop-out to the full-screen artifact view (optional -- the rich
-            visualization already renders inline below). */}
-        <button
-          onClick={onExpand}
-          className="p-1 rounded hover:bg-stone-800 text-stone-500 hover:text-stone-300 transition-colors"
-          title={lang === "en" ? "Open full screen" : "ಪೂರ್ಣ ಪರದೆ ತೆರೆಯಿರಿ"}
-        >
-          <Maximize2 className="w-3.5 h-3.5" />
-        </button>
-      </div>
-
-      {/* Widget body: the map renders its own Leaflet view inline; every other
-          type reuses the SAME rich render as the full-screen view (ExpandedOverlay
-          in inline mode), so maps, graphs, charts and timelines all appear
-          directly in the chat -- no expand step needed. */}
-      <div className="text-xs">
-        {type === "map" ? (() => {
-          const hotspots: { lat: number; lng: number; label?: string }[] = (data.hotspots || []).filter(
+        {/* Widget body: the map renders its own Leaflet view inline; every other
+            type reuses the SAME rich render as the full-screen view (ExpandedOverlay
+            in inline mode), so maps, graphs, charts and timelines all appear
+            directly in the chat -- no expand step needed. */}
+        <div className="text-xs px-4 py-3">
+        {effectiveType === "map" ? (() => {
+          const hotspots: { lat: number; lng: number; label?: string }[] = (safeEffectiveData.hotspots || []).filter(
             (h: any) => typeof h?.lat === "number" && typeof h?.lng === "number"
           );
           if (hotspots.length === 0) {
@@ -450,11 +474,11 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                   <><span className="font-bold text-stone-200">{hotspots.length}</span> ಹಾಟ್‌ಸ್ಪಾಟ್ ಸಮೂಹಗಳನ್ನು ಗುರುತಿಸಲಾಗಿದೆ.</>
                 )}
               </p>
-              {data.trend && (data.trend.recent || data.trend.prior) ? (
-                <div className={`text-[11px] font-mono font-bold flex items-center gap-1 ${data.trend.direction === "rising" ? "text-rose-400" : data.trend.direction === "falling" ? "text-[#5DCAA5]" : "text-stone-400"}`}>
-                  <span>{data.trend.direction === "rising" ? "▲" : data.trend.direction === "falling" ? "▼" : "▬"}</span>
-                  <span>{lang === "en" ? "Incidents" : "ಘಟನೆಗಳು"} {data.trend.direction}{data.trend.pct_change != null ? ` ${data.trend.pct_change > 0 ? "+" : ""}${data.trend.pct_change}%` : ""}</span>
-                  <span className="text-stone-500 font-normal">({lang === "en" ? `last ${data.trend.window_days}d vs prior` : `ಕಳೆದ ${data.trend.window_days} ದಿನ`})</span>
+              {safeEffectiveData.trend && (safeEffectiveData.trend.recent || safeEffectiveData.trend.prior) ? (
+                <div className={`text-[11px] font-mono font-bold flex items-center gap-1 ${safeEffectiveData.trend.direction === "rising" ? "text-rose-400" : safeEffectiveData.trend.direction === "falling" ? "text-[#5DCAA5]" : "text-stone-400"}`}>
+                  <span>{safeEffectiveData.trend.direction === "rising" ? "▲" : safeEffectiveData.trend.direction === "falling" ? "▼" : "▬"}</span>
+                  <span>{lang === "en" ? "Incidents" : "ಘಟನೆಗಳು"} {safeEffectiveData.trend.direction}{safeEffectiveData.trend.pct_change != null ? ` ${safeEffectiveData.trend.pct_change > 0 ? "+" : ""}${safeEffectiveData.trend.pct_change}%` : ""}</span>
+                  <span className="text-stone-500 font-normal">({lang === "en" ? `last ${safeEffectiveData.trend.window_days}d vs prior` : `ಕಳೆದ ${safeEffectiveData.trend.window_days} ದಿನ`})</span>
                 </div>
               ) : null}
               <div className="rounded-lg overflow-hidden border border-stone-800 h-[280px] relative z-0">
@@ -470,11 +494,6 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                   />
                   <InlineMapFitter points={hotspots} />
                   {(() => {
-                    // Pinpoint accuracy: instead of one big vague blob per
-                    // cluster, plot the EXACT centre as a small solid dot, with a
-                    // subtle intensity halo behind it, colour-coded by how hot the
-                    // cluster is relative to the others. The precise location reads
-                    // at a glance; the halo only hints at density.
                     const counts = hotspots.map((h) => {
                       const m = h.label?.match(/\((\d+)\s*incidents?\)/i);
                       return m ? parseInt(m[1], 10) : 0;
@@ -506,15 +525,16 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
               </div>
             </div>
           );
-        })() : type === "priority_concerns" ? (
-          <PriorityConcernsView data={data} lang={lang} />
-        ) : type === "news" ? (
-          <NewsView data={data} lang={lang} />
+        })() : effectiveType === "priority_concerns" ? (
+          <PriorityConcernsView data={safeEffectiveData} lang={lang} />
+        ) : effectiveType === "news" ? (
+          <NewsView data={safeEffectiveData} lang={lang} />
         ) : (
-          <ExpandedOverlay inline type={type} data={data} onClose={() => {}} />
+          <ExpandedOverlay inline type={effectiveType} data={safeEffectiveData} onClose={() => {}} />
         )}
+        </div>
       </div>
-    </div>
+    </ErrorBoundary>
   );
 };
 

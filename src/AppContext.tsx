@@ -46,7 +46,7 @@ export interface ChatMessage {
   textEn?: string;
   textKn?: string;
   timestamp: string;
-  responseType?: "text" | "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution";
+  responseType?: "text" | "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "priority_concerns" | "case_list" | "dossier" | "news" | string;
   data?: any;
   isSimulated?: boolean;
   simulatedReason?: string;
