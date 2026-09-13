@@ -7,7 +7,11 @@ interface TwoPersonApprovalModalProps {
   actionName: string;
   isOpen: boolean;
   onClose: () => void;
-  onApprove: (supervisorBadge: string) => void;
+  // C.14: the password is now forwarded, not discarded after this modal's own
+  // /api/auth/login pre-check -- the actual state-changing endpoint (e.g.
+  // /review) must re-verify it server-side itself; a client-side pre-check the
+  // real endpoint never sees enforces nothing against a direct API call.
+  onApprove: (supervisorBadge: string, supervisorPassword: string) => void;
 }
 
 export const TwoPersonApprovalModal: React.FC<TwoPersonApprovalModalProps> = ({
@@ -82,8 +86,9 @@ export const TwoPersonApprovalModal: React.FC<TwoPersonApprovalModalProps> = ({
         );
       }
 
-      // Valid Supervisor
-      onApprove(supBadge);
+      // Valid Supervisor -- forward the password too (C.14), the caller's
+      // own state-changing endpoint re-verifies it server-side.
+      onApprove(supBadge, supPassword);
       setSupBadge("");
       setSupPassword("");
       onClose();

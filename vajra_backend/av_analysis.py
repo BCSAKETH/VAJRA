@@ -154,7 +154,7 @@ def extract_video_frames(file_bytes: bytes, ext: str, max_frames: int = 3) -> Li
     return frames
 
 
-def chunk_audio(file_bytes: bytes, ext: str, chunk_sec: int = 20, max_chunks: int = 3) -> List[Tuple[float, float, bytes]]:
+def chunk_audio(file_bytes: bytes, ext: str, chunk_sec: int = 20, max_chunks: int = 3, overlap_sec: int = 0) -> List[Tuple[float, float, bytes]]:
     """
     Splits audio into up to max_chunks segments of chunk_sec seconds each,
     re-encoded to 16kHz mono WAV (the format Zia STT is confirmed to
@@ -163,6 +163,15 @@ def chunk_audio(file_bytes: bytes, ext: str, chunk_sec: int = 20, max_chunks: in
     transcript. Empty list if the clip is too short to be worth chunking,
     or on any ffmpeg failure -- caller falls back to single-shot
     transcription of the whole file in that case.
+
+    5.1: overlap_sec (0 by default, preserving every existing caller's exact
+    prior behavior) slides each chunk's start back by that many seconds so
+    consecutive chunks share a small window -- a word landing exactly on a
+    hard chunk boundary is fully captured in at least one of the two
+    chunks, instead of being cut in half and lost from both. The caller
+    (main.py) is responsible for the overlap-dedup merge on the transcript
+    side; this function only ever returns exactly what was cut, real
+    timestamps, nothing estimated.
     """
     ffmpeg = get_ffmpeg_path()
     if not ffmpeg:
@@ -171,7 +180,8 @@ def chunk_audio(file_bytes: bytes, ext: str, chunk_sec: int = 20, max_chunks: in
     if not duration or duration <= chunk_sec * 1.5:
         return []
 
-    n_chunks = min(max_chunks, int(duration // chunk_sec) + 1)
+    stride = max(1, chunk_sec - overlap_sec)  # advance per chunk; overlap_sec >= chunk_sec would be nonsensical
+    n_chunks = min(max_chunks, int(duration // stride) + 1)
     chunks: List[Tuple[float, float, bytes]] = []
     tmp_path = None
     try:
@@ -179,7 +189,7 @@ def chunk_audio(file_bytes: bytes, ext: str, chunk_sec: int = 20, max_chunks: in
             tf.write(file_bytes)
             tmp_path = tf.name
         for i in range(n_chunks):
-            start = i * chunk_sec
+            start = i * stride
             if start >= duration:
                 break
             length = min(chunk_sec, duration - start)
@@ -208,6 +218,51 @@ def chunk_audio(file_bytes: bytes, ext: str, chunk_sec: int = 20, max_chunks: in
             except Exception:
                 pass
     return chunks
+
+
+def dedupe_consecutive_transcripts(transcripts: List[str], max_check_words: int = 12) -> List[str]:
+    """
+    5.1: consecutive audio chunks now share `overlap_sec` of real audio
+    (chunk_audio above), specifically so a word landing on a hard boundary
+    is fully captured in at least one chunk instead of split in half. That
+    same overlap means both chunks' independent STT passes may transcribe
+    the shared window twice.
+
+    Returns a list the SAME LENGTH as the input, in the same order --
+    entry 0 unchanged, every entry after it trimmed of whatever leading
+    words duplicate the END of the PREVIOUS entry's ORIGINAL (untrimmed)
+    text. Deliberately list-preserving, not a single merged blob: each
+    segment's real start/end timestamp still applies to exactly the text
+    returned for that segment, so the caller keeps a genuinely per-segment
+    timestamped transcript (what the officer actually needs -- "who said
+    what, when"), just without the boundary word/phrase appearing twice.
+
+    Simple, honest word-level dedup: checks only the last/first
+    `max_check_words` of each pair (the overlap is a few real seconds,
+    never the bulk of a 20s+ chunk), case/punctuation-insensitive for
+    finding the match only -- the kept text's original casing/punctuation
+    is untouched. A failed match (no common suffix/prefix found) leaves
+    that entry exactly as transcribed, same as no dedup ever ran.
+    """
+    if len(transcripts) <= 1:
+        return list(transcripts)
+    result = [transcripts[0]]
+    prev_original = transcripts[0]
+    for nxt in transcripts[1:]:
+        prev_words = prev_original.split()
+        nxt_words = nxt.split()
+        tail = prev_words[-max_check_words:] if len(prev_words) > max_check_words else prev_words
+        head = nxt_words[:max_check_words] if len(nxt_words) > max_check_words else nxt_words
+        tail_norm = [w.lower().strip(".,!?") for w in tail]
+        head_norm = [w.lower().strip(".,!?") for w in head]
+        best_overlap = 0
+        for n in range(min(len(tail_norm), len(head_norm)), 1, -1):
+            if tail_norm[-n:] == head_norm[:n]:
+                best_overlap = n
+                break
+        result.append(" ".join(nxt_words[best_overlap:]))
+        prev_original = nxt  # compare each pair against the ORIGINAL text, not the trimmed one
+    return result
 
 
 def format_timestamp(seconds: float) -> str:

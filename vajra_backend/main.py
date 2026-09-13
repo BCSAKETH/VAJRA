@@ -60,6 +60,9 @@ from vajra_core import (
     catalyst_app,
     zcql_insert_row,
     zcql_update_row,
+    insert_proactive_alert,  # C.3: whitelist-checked ProactiveAlerts insert
+    run_syndicate_detection_job,  # C.8
+    get_cached_syndicate_clusters,  # C.8
     invalidate_profile_cache,
     find_pocso_row,
     POCSO_GRANT_HOURS,
@@ -674,7 +677,14 @@ async def get_accident_spots(
 
 
 @app.get("/api/cases/spatial-hotspots")
-async def get_spatial_hotspots(request: Request, location_context: str = Depends(security_firewall)):
+async def get_spatial_hotspots(
+    request: Request,
+    district: str = "",
+    day_of_week: Optional[int] = None,
+    eps: Optional[float] = None,
+    min_samples: Optional[int] = None,
+    location_context: str = Depends(security_firewall),
+):
     """
     Backs SpatialScreen.tsx. This endpoint never existed -- the frontend has
     been calling a URL with no matching route this whole time, always 404ing
@@ -684,12 +694,35 @@ async def get_spatial_hotspots(request: Request, location_context: str = Depends
     coordinate fetch + the shared cluster_hotspots DBSCAN helper), not a
     reimplementation, so this endpoint and the chat tool can never drift
     apart on what counts as a hotspot.
+
+    C.6: district/day_of_week/eps/min_samples were previously hardcoded to an
+    empty params dict here -- the frontend's (until now decorative) sliders
+    had no real query params to actually send to. Forwarding them all lets
+    query_hotspots' own real validation/clamping (agent_loop.py) do the
+    actual work; this endpoint stays a thin pass-through, not a second copy
+    of that logic.
     """
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
     unit_id = request.state.user_profile.get("UnitID") or request.state.user_profile.get("unitid")
-    result = agent_loop._execute_tool("query_hotspots", {}, employee_id, "dashboard", unit_id)
-    hotspots = (result.get("data") or {}).get("hotspots") or []
-    return hotspots
+    tool_params: Dict[str, Any] = {}
+    if district:
+        tool_params["district"] = district
+    if day_of_week is not None:
+        tool_params["day_of_week"] = day_of_week
+    if eps is not None:
+        tool_params["eps"] = eps
+    if min_samples is not None:
+        tool_params["min_samples"] = min_samples
+    result = agent_loop._execute_tool("query_hotspots", tool_params, employee_id, "dashboard", unit_id)
+    result_data = result.get("data") or {}
+    # C.7: previously returned a bare array (hotspots only), silently
+    # dropping the hexbins/trend fields query_hotspots already computes.
+    # Now returns the full shape -- SpatialScreen.tsx updated to match.
+    return {
+        "hotspots": result_data.get("hotspots") or [],
+        "hexbins": result_data.get("hexbins") or [],
+        "trend": result_data.get("trend"),
+    }
 
 
 @app.get("/api/cases/demographics")
@@ -1013,7 +1046,7 @@ def _compute_dashboard_panels(unit_ids: List[Any]) -> Dict[str, Any]:
     # no nested-subquery support), then look up Accused against that literal list.
     most_wanted = None
     try:
-        cid_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID FROM CaseMaster{unit_filter} LIMIT 500")
+        cid_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID FROM CaseMaster{unit_filter} LIMIT 300")
         case_ids = [r.get("CaseMaster", {}).get("CaseMasterID") for r in cid_res if r.get("CaseMaster", {}).get("CaseMasterID")]
         if case_ids:
             acc_res = catalyst_app.zql().execute_query(
@@ -3796,16 +3829,30 @@ async def invite_to_cowork(payload: CoworkInviteRequest, request: Request, locat
     except Exception:
         pass
 
-    zcql_insert_row("CoworkInvitation", {
+    # C.15: EmployeeID is confirmed NOT unique in the real deployed data
+    # (29 of 34 distinct values collide between 2 different real officers).
+    # inviter_employee_id kept for compatibility with the existing column,
+    # but inviter_badge (KGID, genuinely unique) is now also stored so the
+    # invitation's real sender can be resolved unambiguously going forward.
+    # Tries WITH inviter_badge first; if that column doesn't exist yet on
+    # the real console table, falls back to the original shape rather than
+    # breaking the whole invite feature over one missing column.
+    _invitation_row = {
         "session_id": payload.session_id,
         "case_no": case_no or "",
         "inviter_employee_id": employee_id,
+        "inviter_badge": request.state.kgid,
         "invitee_badge": payload.invitee_badge,
         "invitee_employee_id": invitee_employee_id,
         "status": "pending",
         "created_at": datetime.utcnow().isoformat(),
         "responded_at": ""
-    })
+    }
+    try:
+        zcql_insert_row("CoworkInvitation", _invitation_row)
+    except Exception as e:
+        logger.warning(f"CoworkInvitation insert with inviter_badge failed, retrying without it: {e}")
+        zcql_insert_row("CoworkInvitation", {k: v for k, v in _invitation_row.items() if k != "inviter_badge"})
     return {"status": "invited", "invitee_badge": payload.invitee_badge, "role": payload.role}
 
 
@@ -3816,18 +3863,43 @@ async def list_cowork_invitations(request: Request, location_context: str = Depe
     if not catalyst_app:
         return []
     try:
-        res = catalyst_app.zql().execute_query(
-            f"SELECT invitation_id, ROWID, session_id, case_no, inviter_employee_id, created_at FROM CoworkInvitation "
-            f"WHERE invitee_badge = '{escape_zcql_literal(kgid)}' AND status = 'pending' ORDER BY created_at DESC LIMIT 50"
-        )
+        # C.15: selecting inviter_badge first (KGID -- genuinely unique);
+        # falls back to the original column list if that column doesn't
+        # exist yet on the real console table. A SELECT failure on an
+        # unknown column would otherwise make this whole endpoint silently
+        # return [] via the outer except below -- worse than just not having
+        # the fix -- so this fallback is its own separate try, not folded
+        # into the outer one.
+        try:
+            res = catalyst_app.zql().execute_query(
+                f"SELECT invitation_id, ROWID, session_id, case_no, inviter_employee_id, inviter_badge, created_at FROM CoworkInvitation "
+                f"WHERE invitee_badge = '{escape_zcql_literal(kgid)}' AND status = 'pending' ORDER BY created_at DESC LIMIT 50"
+            )
+        except Exception:
+            res = catalyst_app.zql().execute_query(
+                f"SELECT invitation_id, ROWID, session_id, case_no, inviter_employee_id, created_at FROM CoworkInvitation "
+                f"WHERE invitee_badge = '{escape_zcql_literal(kgid)}' AND status = 'pending' ORDER BY created_at DESC LIMIT 50"
+            )
         invitations = []
         for r in res:
             inv = r.get("CoworkInvitation", {})
             inviter_name = "Unknown Officer"
             try:
-                inviter_res = catalyst_app.zql().execute_query(f"SELECT FirstName FROM Employee WHERE EmployeeID = {inv.get('inviter_employee_id')}")
+                # C.15: prefer the real, unique KGID when this row has one
+                # (new invitations going forward); EmployeeID lookup is kept
+                # only as a fallback for pre-existing rows that predate
+                # inviter_badge, and is honestly ambiguous for any of the 29
+                # confirmed-colliding IDs -- not fixable after the fact
+                # without a live data migration.
+                inviter_badge = inv.get("inviter_badge")
+                if inviter_badge:
+                    inviter_res = catalyst_app.zql().execute_query(f"SELECT FirstName FROM Employee WHERE KGID = '{escape_zcql_literal(inviter_badge)}' LIMIT 1")
+                else:
+                    inviter_res = catalyst_app.zql().execute_query(f"SELECT FirstName FROM Employee WHERE EmployeeID = {inv.get('inviter_employee_id')} LIMIT 1")
                 if inviter_res:
                     inviter_name = inviter_res[0].get("Employee", {}).get("FirstName") or inviter_name
+                    if not inviter_badge:
+                        inviter_name += " (unconfirmed -- pre-dates unique officer ID, may be one of 2 officers)"
             except Exception:
                 pass
             invitations.append({
@@ -4253,7 +4325,7 @@ async def upload_chat_attachments(
     """
     from catalyst_stratus import store_attachment
     from catalyst_speech import transcribe_audio
-    from av_analysis import extract_video_frames, chunk_audio, get_media_duration, format_timestamp
+    from av_analysis import extract_video_frames, chunk_audio, get_media_duration, format_timestamp, dedupe_consecutive_transcripts
 
     _deep_video_used = False
     _deep_audio_used = False
@@ -4324,14 +4396,29 @@ async def upload_chat_attachments(
             segments = []
             if not _deep_audio_used:
                 try:
-                    segments = chunk_audio(content, ext, chunk_sec=20, max_chunks=3)
+                    # 5.1: raised from a fixed 3x20s (60s max coverage) to
+                    # adaptive, capped at 12 chunks (~4 minutes of real
+                    # coverage) -- long enough for a genuine interrogation/
+                    # witness recording, still bounded so total transcription
+                    # time stays reasonable. 2s overlap between chunks so a
+                    # word landing on a boundary isn't cut in half and lost.
+                    duration = get_media_duration(content, ext)
+                    adaptive_chunk_count = max(3, min(12, int((duration or 60) / 20) + 1))
+                    segments = chunk_audio(content, ext, chunk_sec=20, max_chunks=adaptive_chunk_count, overlap_sec=2)
                 except Exception as ex:
                     logger.warning(f"audio chunking failed for '{f.filename}': {ex}")
                 _deep_audio_used = True  # only the first long clip gets chunked, regardless of outcome
             if segments:
-                lines = [f"[Audio Timeline -- {f.filename}] (real {len(segments)}-segment breakdown, ~20s each):"]
-                for start, end, wav_bytes in segments:
-                    seg_text = transcribe_audio(wav_bytes, f"seg.wav", "audio/wav", lang=lang)
+                raw_seg_texts = [transcribe_audio(wav_bytes, f"seg.wav", "audio/wav", lang=lang) for _, _, wav_bytes in segments]
+                # 5.1: overlapping chunks can transcribe the shared boundary
+                # window twice -- trims each segment's duplicated leading
+                # words against the PREVIOUS segment's original transcript,
+                # while keeping every segment's own real timestamp intact
+                # (dedupe_consecutive_transcripts is list-preserving, not a
+                # flattening merge -- see its own docstring for why).
+                deduped_seg_texts = dedupe_consecutive_transcripts([t or "" for t in raw_seg_texts])
+                lines = [f"[Audio Timeline -- {f.filename}] (real {len(segments)}-segment breakdown, ~20s each, 2s overlap deduped):"]
+                for (start, end, _wav_bytes), seg_text in zip(segments, deduped_seg_texts):
                     lines.append(
                         f"  {format_timestamp(start)}-{format_timestamp(end)}: {seg_text}" if seg_text
                         else f"  {format_timestamp(start)}-{format_timestamp(end)}: [inaudible / transcription failed for this segment]"
@@ -4356,24 +4443,58 @@ async def upload_chat_attachments(
             frames = []
             if not _deep_video_used:
                 try:
-                    frames = extract_video_frames(content, real_ext, max_frames=3)
+                    # 5.1: adaptive sampling -- one frame per ~5s of real
+                    # duration, hard-capped at 24 (so Qwen-VL cost/latency
+                    # stays bounded regardless of clip length), replacing the
+                    # previous fixed 3 regardless of how long the video was.
+                    duration = get_media_duration(content, real_ext)
+                    adaptive_frame_count = max(3, min(24, int((duration or 15) / 5) + 1))
+                    frames = extract_video_frames(content, real_ext, max_frames=adaptive_frame_count)
                 except Exception as ex:
                     logger.warning(f"video frame extraction failed for '{f.filename}': {ex}")
                 _deep_video_used = True
             if frames:
                 try:
                     qwen_v = CatalystQwen()
-                    ts_list = ", ".join(format_timestamp(t) for t, _ in frames)
-                    instruction = (
-                        f"These {len(frames)} images are frames sampled from a video attachment, in order, at "
-                        f"real timestamps {ts_list}. For EACH frame in order, on its own line prefixed with its "
-                        f"exact timestamp (e.g. '{format_timestamp(frames[0][0])}: ...'), describe what is "
-                        f"visible and flag anything investigatively relevant -- people, vehicles/plates, "
-                        f"actions, visible text. Be concise and factual; this is for a police case file."
-                    )
-                    vres = qwen_v.analyze([b for _, b in frames], instruction=instruction)
-                    if vres.get("available") and vres.get("text"):
-                        video_notes.append(f"[Video Analysis -- {f.filename}] (sampled {len(frames)} frames):\n{vres['text']}")
+                    # 5.1: CatalystQwen.analyze() hard-caps at 3 images per
+                    # call (Qwen VL's real token-budget ceiling, confirmed in
+                    # catalyst_qwen.py -- image_bytes_list[:3] silently drops
+                    # anything past the 3rd). Adaptive sampling above can
+                    # produce up to 24 frames, so they're batched into
+                    # groups of <=3 and analyzed CONCURRENTLY via
+                    # ThreadPoolExecutor (same pattern already proven for the
+                    # financial-ring BFS speedup, agent_loop.py), never one
+                    # call with more than 3 images (which would silently
+                    # drop frames) and never sequential batches (which would
+                    # multiply latency by the number of batches).
+                    from concurrent.futures import ThreadPoolExecutor
+                    QWEN_BATCH_SIZE = 3
+                    frame_batches = [frames[i:i + QWEN_BATCH_SIZE] for i in range(0, len(frames), QWEN_BATCH_SIZE)]
+
+                    def _analyze_batch(batch: list) -> Tuple[list, dict]:
+                        ts_list_b = ", ".join(format_timestamp(t) for t, _ in batch)
+                        instr_b = (
+                            f"These {len(batch)} images are frames sampled from a video attachment, in order, at "
+                            f"real timestamps {ts_list_b}. For EACH frame in order, on its own line prefixed with its "
+                            f"exact timestamp (e.g. '{format_timestamp(batch[0][0])}: ...'), describe what is "
+                            f"visible and flag anything investigatively relevant -- people, vehicles/plates, "
+                            f"actions, visible text. Be concise and factual; this is for a police case file."
+                        )
+                        return batch, qwen_v.analyze([b for _, b in batch], instruction=instr_b)
+
+                    with ThreadPoolExecutor(max_workers=min(8, len(frame_batches))) as _vex:
+                        batch_results = list(_vex.map(_analyze_batch, frame_batches))
+
+                    ok_texts = [r["text"] for _, r in batch_results if r.get("available") and r.get("text")]
+                    if ok_texts:
+                        # Batches already come back in submission order from
+                        # executor.map (it preserves input order even though
+                        # execution is concurrent) -- and frame_batches were
+                        # built from `frames`, which extract_video_frames
+                        # returns in timestamp order, so this join is already
+                        # chronological, no re-sort needed.
+                        combined_text = "\n".join(ok_texts)
+                        video_notes.append(f"[Video Analysis -- {f.filename}] (sampled {len(frames)} frames across {len(frame_batches)} batch(es)):\n{combined_text}")
                     else:
                         video_notes.append(
                             f"[Video Attachment -- {f.filename}]: {len(frames)} frames extracted but Qwen vision "
@@ -4417,13 +4538,25 @@ async def upload_chat_attachments(
         # "analysis," and claiming otherwise would overstate what happened.
         analysis_text_parts.extend(video_notes)
 
+    # 5.1: video/audio-derived text (scene descriptions, transcripts) goes
+    # through the same phone-number masking every other officer-facing text
+    # in this app already gets for POCSO-sensitive contexts (vajra_core.py's
+    # redact_phone_numbers) -- treated exactly like any other text VAJRA
+    # generates, not a separate unguarded path just because it came from
+    # media instead of a database row. This endpoint has no case_no/session
+    # context to check is_pocso_sensitive() against, so name-based POCSO
+    # redaction isn't wired here yet (a real, separate gap -- flagged, not
+    # silently skipped); phone-number masking is safe and applied
+    # unconditionally since it costs nothing when no number is present.
+    combined_analysis = redact_phone_numbers("\n\n".join(analysis_text_parts))
+
     # TEMPORARY -- see av_analysis.py's _last_debug docstring. Exposes why
     # ffmpeg-based chunking/frame-extraction did or didn't run, since this
     # can only be verified against the real deployed container. Remove once
     # confirmed working.
     from av_analysis import get_last_debug
     return {
-        "attachment_analysis": "\n\n".join(analysis_text_parts),
+        "attachment_analysis": combined_analysis,
         "analysis_available": analysis_available,
         "attachments": attachment_refs,
         "_debug_av": get_last_debug(),
@@ -4542,7 +4675,25 @@ def _resolve_badge_identifiers(raw_badge: str) -> Tuple[list, Optional[Dict[str,
                     f"WHERE EmployeeID = {int(cleaned)} OR KGID = '{safe}' LIMIT 1"
                 )
                 if er:
-                    ed = er[0].get("Employee", {})
+                    ed = dict(er[0].get("Employee", {}))
+                    # C.15: EmployeeID is confirmed NOT unique (29/34 real
+                    # values collide between 2 different officers). If this
+                    # matched via the numeric EmployeeID branch (not a
+                    # 7-digit KGID -- those are genuinely unique), check
+                    # whether it's one of the colliding IDs before treating
+                    # this single row as confirmed identity. Note: the
+                    # AuditLog rows found under this ID may legitimately
+                    # belong to either officer -- this only flags that the
+                    # NAME/PROFILE shown might be the wrong one of the two.
+                    if len(cleaned) != 7 and ed.get("EmployeeID") is not None:
+                        try:
+                            cnt_res = catalyst_app.zql().execute_query(
+                                f"SELECT COUNT(EmployeeID) FROM Employee WHERE EmployeeID = {int(ed['EmployeeID'])}")
+                            match_count = int(cnt_res[0].get("Employee", {}).get("COUNT(EmployeeID)") or 1) if cnt_res else 1
+                            if match_count > 1:
+                                ed["_identity_ambiguous"] = match_count
+                        except Exception:
+                            pass
                     employee = ed
                     for k in ("EmployeeID", "KGID"):
                         v = ed.get(k)
@@ -4621,6 +4772,12 @@ async def get_audit_logs(
                     "name": f"{employee.get('FirstName', '')} {employee.get('LastName', '')}".strip() or None,
                     "kgid": employee.get("KGID"),
                     "employeeId": employee.get("EmployeeID"),
+                    # C.15: set when this profile was resolved via a
+                    # confirmed-colliding EmployeeID -- the name/rank/unit
+                    # shown may belong to either of N officers sharing this
+                    # legacy ID; the AuditLog rows returned below may
+                    # genuinely mix both officers' real activity.
+                    "identityAmbiguous": employee.get("_identity_ambiguous"),
                 }
             if not target_ids:
                 return {"logs": [], "total": 0, "has_more": False, "officer": officer_profile, "officer_found": officer_found}
@@ -4859,6 +5016,10 @@ async def get_consistency_flags(request: Request, location_context: str = Depend
 
 class ReviewFlagRequest(BaseModel):
     reviewed: int
+    # C.14: real dual-control -- a genuinely different, credentialed second
+    # supervisor, not just whoever's own session token is calling this.
+    second_supervisor_badge: str
+    second_supervisor_password: str
 
 
 @app.post("/api/alerts/consistency-flags/{flag_id}/review")
@@ -4873,6 +5034,16 @@ async def review_consistency_flag(flag_id: int, payload: ReviewFlagRequest, requ
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Security Access Violation: Reviewing consistency flags requires Supervisor-tier clearance (PI and above)."
         )
+    # C.14: real dual control. The frontend modal already runs its own
+    # /api/auth/login pre-check, but that's a separate call the server has no
+    # way to tie to this one -- a direct API call could skip the modal
+    # entirely and post {"reviewed": 1} with only the first caller's own
+    # token. This is the actual enforcement point.
+    second_badge = (payload.second_supervisor_badge or "").strip()
+    if second_badge == request.state.kgid:
+        raise HTTPException(status_code=400, detail="The second approver must be a different supervisor.")  # Loophole L1
+    if not _verify_supervisor_approver(second_badge, payload.second_supervisor_password):  # Loophole L2, reuses the existing export-flow function
+        raise HTTPException(status_code=403, detail="Second supervisor credentials invalid.")
     if not catalyst_app:
         return {"status": "Database offline"}
     try:
@@ -5294,6 +5465,163 @@ async def get_model_calibration_status(job_id: str, request: Request, location_c
     return _calibration_jobs.get(job_id, {"status": "unknown"})
 
 
+# --- C.8: Syndicate Radar, real Louvain community detection ---
+# The compute + cache live in vajra_core.py (run_syndicate_detection_job /
+# get_cached_syndicate_clusters), not here -- agent_loop.py's
+# detect_crime_groups also needs to read the cache, and main.py imports FROM
+# vajra_core.py, never the other way, so vajra_core.py is the one place both
+# can reach it (same fix as C.3's circular-import correction). Unlike
+# model-calibration's job_id-keyed pattern (built for tracking multiple
+# concurrent/historical runs), this uses a single global status/result --
+# there is only ever one "current" syndicate analysis that matters, matching
+# how get_repeat_offenders already reads "the latest" scheduled result with
+# no job_id involved. Simpler on purpose, not a corner cut.
+async def _run_syndicate_detection_job() -> None:
+    await run_in_threadpool(run_syndicate_detection_job)
+
+
+@app.post("/api/admin/syndicate-detection/run")
+async def start_syndicate_detection(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    C.8: kicks off the full-table Louvain syndicate detection as a background
+    task (the ~14,000-row Accused table alone needs ~47 paginated ZCQL calls,
+    comfortably exceeding AppSail's synchronous request kill) and returns
+    immediately. Supervisor-only -- this scans every real Accused/
+    AccusedContact row, not something an ordinary officer triggers.
+    """
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    task = asyncio.create_task(_run_syndicate_detection_job())
+    _BACKGROUND_AI_TASKS.add(task)
+    task.add_done_callback(lambda t: _BACKGROUND_AI_TASKS.discard(t))
+    return {"status": "started"}
+
+
+@app.get("/api/admin/syndicate-detection/status")
+async def get_syndicate_detection_status(request: Request, location_context: str = Depends(security_firewall)):
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    return get_cached_syndicate_clusters()
+
+
+# --- §5.3/C.21: Signals -- auto cross-match on new CaseMaster insert ---
+# HONESTY NOTE on what this closes and what it doesn't: this app never
+# creates a CaseMaster row itself anywhere in its own code (confirmed via
+# grep) -- CaseMaster is populated entirely externally. That means the ONLY
+# way to genuinely fire "on new case insert" is a real Catalyst Signal (a
+# Console-configured DB-change trigger), the same class of console-only step
+# already documented for the OSINT radar's cron schedule and the Zoho OAuth
+# rotation -- NOT something creatable from a repo file. This endpoint is the
+# real, reusable matching logic a Signal handler calls into; it deliberately
+# does NOT duplicate MOBehavioralProfiler/_compute_mo_vector (reuses the
+# exact SAME already-instantiated profiler get_mo_profile uses, via the
+# global `agent_loop`), so the manual "ask about a suspect" match and this
+# automatic one can never drift apart on what counts as a serial pattern.
+#
+# Machine-to-machine auth, not an officer JWT: the caller here is a Catalyst
+# function, which has no officer session. Gated by a shared secret header
+# instead of security_firewall.
+INTERNAL_SIGNAL_SECRET = os.getenv("INTERNAL_SIGNAL_SECRET")
+
+# Loophole (5.3's own table): "same accused re-triggers repeatedly across
+# nearby inserts" -- in-memory per-accused cooldown, same honest limitation
+# already accepted elsewhere in this session (_calibration_jobs,
+# _syndicate_cache, _active_session_jti): lost on restart, acceptable for
+# this deployment's real restart frequency.
+_serial_match_last_alerted: Dict[str, float] = {}
+_SERIAL_MATCH_COOLDOWN_SECONDS = 6 * 3600  # 6h -- matches the OSINT radar's own real interval
+
+
+class CaseInsertedSignal(BaseModel):
+    case_master_id: int
+
+
+@app.post("/api/internal/case-inserted")
+async def handle_case_inserted_signal(payload: CaseInsertedSignal, request: Request):
+    """
+    §5.3/C.21: called by a real Catalyst Signal (Console-configured, not
+    built here -- see module comment above) the moment a new CaseMaster row
+    is inserted. Runs the EXACT SAME MO cosine-similarity check
+    get_mo_profile already does for a manual ask, and raises a
+    ProactiveAlert on a high-confidence match -- turning a reactive lookup
+    into a proactive lead.
+    """
+    if not INTERNAL_SIGNAL_SECRET or request.headers.get("X-Internal-Signal-Secret") != INTERNAL_SIGNAL_SECRET:
+        raise HTTPException(status_code=403, detail="Internal signal authentication failed.")
+    if not catalyst_app:
+        return {"status": "skipped", "reason": "Database client offline."}
+
+    cm_id = payload.case_master_id
+    try:
+        cm_res = catalyst_app.zql().execute_query(
+            f"SELECT latitude, GravityOffenceID, IncidentFromDate, CrimeMajorHeadID "
+            f"FROM CaseMaster WHERE CaseMasterID = {cm_id} LIMIT 1"
+        )
+        if not cm_res:
+            return {"status": "skipped", "reason": f"CaseMasterID {cm_id} not found."}
+        cm_data = cm_res[0].get("CaseMaster", {})
+        latitude = float(cm_data.get("latitude") or 13.027)
+        gravity_id = int(cm_data.get("GravityOffenceID") or 4)
+        crime_head_id = int(cm_data.get("CrimeMajorHeadID") or 5)
+        day_of_week = 0
+        raw_date = cm_data.get("IncidentFromDate") or ""
+        try:
+            day_of_week = datetime.strptime(raw_date[:10], "%Y-%m-%d").weekday()
+        except Exception:
+            pass
+
+        acc_res = catalyst_app.zql().execute_query(f"SELECT AccusedName FROM Accused WHERE CaseMasterID = {cm_id}")
+        accused_names = [r.get("Accused", {}).get("AccusedName") for r in acc_res if r.get("Accused", {}).get("AccusedName")]
+        accused_count = len(accused_names) or 1
+        if not accused_names:
+            return {"status": "skipped", "reason": "No accused on this case yet -- nothing to match against."}
+
+        from vajra_core import _compute_mo_vector
+        target_vector = _compute_mo_vector(latitude, gravity_id, day_of_week, accused_count, crime_head_id)
+        profiler = agent_loop._get_mo_profiler()
+        matches = profiler.find_matches(target_vector, top_k=3)
+        is_live = profiler.data_source == "live_db"
+        # Loophole (5.3's table): "never invent a looser automated threshold" --
+        # SERIAL_MO_THRESHOLD is the exact same constant get_mo_profile uses.
+        SERIAL_MO_THRESHOLD = 80.0
+        if not matches or not is_live:
+            return {"status": "no_match"}
+        top_match = matches[0]
+        match_rate = round(top_match.get("similarity_score", 0.0) * 100, 1)
+        if match_rate < SERIAL_MO_THRESHOLD:
+            return {"status": "no_match", "top_match_rate": match_rate}
+
+        primary_accused = accused_names[0]
+        now = time.time()
+        last_alerted = _serial_match_last_alerted.get(primary_accused)
+        if last_alerted and (now - last_alerted) < _SERIAL_MATCH_COOLDOWN_SECONDS:
+            return {"status": "deduped", "reason": "Already alerted for this accused within the cooldown window."}
+        _serial_match_last_alerted[primary_accused] = now
+
+        message = (
+            f"New case (CaseMasterID {cm_id}) involving '{primary_accused}' matches suspect "
+            f"'{top_match.get('suspect', 'Unknown')}' (case {top_match.get('case_id', 'Unknown')}, "
+            f"{top_match.get('station', 'Unknown')}) at {match_rate}% MO similarity -- consistent with a "
+            f"repeating modus operandi. Investigative lead, not an identification."
+        )
+        # Fire-and-forget after this signal's own work -- never rolls back
+        # or blocks the original CaseMaster insert transaction (that already
+        # committed before this Signal ever fired), same as the plan's own
+        # "must never affect the officer's ability to file the FIR" rule.
+        insert_proactive_alert({
+            "AlertType": "SERIAL_PATTERN_AUTO_MATCH",
+            "Severity": "Warning",
+            "TriggerTime": datetime.utcnow().isoformat(),
+            "IsRead": False,
+            "DistrictID": "0",
+            "AlertMessage": message,
+        })
+        return {"status": "alerted", "match_rate": match_rate, "accused": primary_accused}
+    except Exception as e:
+        logger.warning(f"case-inserted signal handler failed for CaseMasterID {cm_id}: {e}")
+        return {"status": "error", "detail": str(e)}
+
+
 # --- Item 28 (Vajra Plan 04-09-26): Autonomous Viral OSINT Radar ---
 # The real, always-scheduled version of this is the standalone Catalyst Job
 # function at vajra_backend/functions/osint_radar/ (deployed separately,
@@ -5364,7 +5692,7 @@ def _run_osint_radar_sweep() -> Dict[str, Any]:
             f"operational action (Section 63 BSA)."
         )
         try:
-            zcql_insert_row("ProactiveAlerts", {
+            insert_proactive_alert({  # C.3: whitelist-checked, was a raw zcql_insert_row
                 "AlertType": "OSINT_THREAT", "DistrictID": district_id, "AlertMessage": message,
                 "TriggerTime": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
                 "Severity": "Warning", "IsRead": False,
@@ -5577,14 +5905,30 @@ async def admin_access_oversight(request: Request, location_context: str = Depen
         return {"officers": []}
     agg: Dict[Any, Dict[str, Any]] = {}
     try:
-        rows = catalyst_app.zql().execute_query(
-            "SELECT employee_id, target_entity, logged_at FROM AuditLog ORDER BY logged_at DESC LIMIT 300")
+        # C.15: EmployeeID is confirmed NOT unique (29/34 real values
+        # collide between 2 different officers) -- aggregating purely by
+        # employee_id risks silently MERGING two different officers'
+        # activity under one name. Prefer kgid (genuinely unique) as the
+        # aggregation key for any row that has one (new entries, after this
+        # fix); rows without it (legacy, pre-fix) still aggregate by
+        # employee_id as before -- so the same officer can show as 2 rows
+        # (an old ambiguous one + a new confirmed one) rather than 1 wrong
+        # merged one. Falls back to the original column list if `kgid`
+        # doesn't exist yet on the real console table.
+        try:
+            rows = catalyst_app.zql().execute_query(
+                "SELECT employee_id, kgid, target_entity, logged_at FROM AuditLog ORDER BY logged_at DESC LIMIT 300")
+        except Exception:
+            rows = catalyst_app.zql().execute_query(
+                "SELECT employee_id, target_entity, logged_at FROM AuditLog ORDER BY logged_at DESC LIMIT 300")
         for r in rows:
             a = r.get("AuditLog", {})
             eid = a.get("employee_id")
-            if eid is None:
+            row_kgid = a.get("kgid")
+            if eid is None and not row_kgid:
                 continue
-            d = agg.setdefault(eid, {"count": 0, "subjects": set(), "last": ""})
+            agg_key = ("kgid", row_kgid) if row_kgid else ("eid", eid)
+            d = agg.setdefault(agg_key, {"count": 0, "subjects": set(), "last": "", "eid": eid, "kgid": row_kgid})
             d["count"] += 1
             tgt = (a.get("target_entity") or "").strip().lower()
             if tgt and tgt not in ("", "all districts", "all firs"):
@@ -5596,25 +5940,46 @@ async def admin_access_oversight(request: Request, location_context: str = Depen
         logger.warning(f"access-oversight audit read failed: {e}")
         return {"officers": []}
     officers = []
-    for eid, d in agg.items():
-        name, kgid = f"Officer {eid}", str(eid)
-        try:
-            er = catalyst_app.zql().execute_query(
-                f"SELECT FirstName, KGID FROM Employee WHERE EmployeeID = {int(eid)} LIMIT 1")
-            if er:
-                ed = er[0].get("Employee", {})
-                name = ed.get("FirstName") or name
-                kgid = str(ed.get("KGID") or kgid)
-        except Exception:
-            pass
+    for _agg_key, d in agg.items():
+        row_kgid, eid = d["kgid"], d["eid"]
+        ambiguous = False
+        if row_kgid:
+            # Genuinely unique -- this row's identity is confirmed, not guessed.
+            name, kgid = f"Officer {row_kgid}", str(row_kgid)
+            try:
+                er = catalyst_app.zql().execute_query(f"SELECT FirstName FROM Employee WHERE KGID = '{escape_zcql_literal(row_kgid)}' LIMIT 1")
+                if er:
+                    name = er[0].get("Employee", {}).get("FirstName") or name
+            except Exception:
+                pass
+        else:
+            # C.15: legacy row, no kgid recorded -- employee_id is the ONLY
+            # identifier available, and it's confirmed ambiguous for any of
+            # the 29 real colliding IDs. Never silently pick one of 2
+            # possible officers and present it as confirmed fact.
+            name, kgid = f"Officer {eid}", str(eid)
+            try:
+                cnt_res = catalyst_app.zql().execute_query(f"SELECT COUNT(EmployeeID) FROM Employee WHERE EmployeeID = {int(eid)}")
+                match_count = int(cnt_res[0].get("Employee", {}).get("COUNT(EmployeeID)") or 1) if cnt_res else 1
+                if match_count > 1:
+                    ambiguous = True
+                    name = f"Officer #{eid} (ambiguous -- ID shared by {match_count} officers, pre-dates unique tracking)"
+                else:
+                    er = catalyst_app.zql().execute_query(f"SELECT FirstName FROM Employee WHERE EmployeeID = {int(eid)} LIMIT 1")
+                    if er:
+                        name = er[0].get("Employee", {}).get("FirstName") or name
+            except Exception:
+                pass
         qc, ds = d["count"], len(d["subjects"])
         flagged = ds >= 20 or qc >= 40
         reason = None
         if flagged:
             reason = f"Broad access: {qc} queries across {ds} distinct subjects in the recent window"
+            if ambiguous:
+                reason += " -- NOTE: this activity may actually belong to either of 2 officers sharing this legacy ID, verify before acting"
         officers.append({
             "kgid": kgid, "name": name, "query_count": qc, "distinct_subjects": ds,
-            "flagged": flagged, "flag_reason": reason, "last_active": d["last"],
+            "flagged": flagged, "flag_reason": reason, "last_active": d["last"], "identity_ambiguous": ambiguous,
         })
     officers.sort(key=lambda o: o["query_count"], reverse=True)
     return {"officers": officers}
@@ -5723,7 +6088,7 @@ async def analytics_syndicate(request: Request, district_id: int = 0, location_c
         return {"groups": groups, "disclaimer": disclaimer}
     try:
         cid_res = catalyst_app.zql().execute_query(
-            f"SELECT CaseMasterID FROM CaseMaster WHERE PoliceStationID IN ({','.join(str(u) for u in unit_ids)}) LIMIT 500")
+            f"SELECT CaseMasterID FROM CaseMaster WHERE PoliceStationID IN ({','.join(str(u) for u in unit_ids)}) LIMIT 300")
         case_ids = [r.get("CaseMaster", {}).get("CaseMasterID") for r in cid_res if r.get("CaseMaster", {}).get("CaseMasterID")]
         if not case_ids:
             return {"groups": groups, "disclaimer": disclaimer}
@@ -6041,7 +6406,7 @@ def _create_export_request(requester_badge, requester_name, session_id, reasons,
         "created_at": datetime.utcnow().isoformat(),
     }
     try:
-        zcql_insert_row("ProactiveAlerts", {
+        insert_proactive_alert({  # C.3: whitelist-checked, was a raw zcql_insert_row
             "AlertType": "EXPORT_APPROVAL", "Severity": "Critical",
             "TriggerTime": datetime.utcnow().isoformat(), "IsRead": False,
             "DistrictID": "0", "AlertMessage": json.dumps(meta),
@@ -7493,7 +7858,7 @@ async def request_profile_change(payload: ProfileChangeRequestPayload, request: 
         "created_at": datetime.utcnow().isoformat(),
     }
     try:
-        zcql_insert_row("ProactiveAlerts", {
+        insert_proactive_alert({  # C.3: whitelist-checked, was a raw zcql_insert_row
             "AlertType": "PROFILE_CHANGE", "Severity": "Info",
             "TriggerTime": datetime.utcnow().isoformat(), "IsRead": False,
             "DistrictID": "0", "AlertMessage": json.dumps(meta),

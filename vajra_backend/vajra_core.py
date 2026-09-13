@@ -293,6 +293,58 @@ def zcql_insert_row(table_name: str, row: Dict[str, Any]) -> None:
     catalyst_app.zql().execute_query(f"INSERT INTO {table_name} ({cols}) VALUES ({vals})")
 
 
+# C.3: WORKFLOW_INTERNAL_ALERT_TYPES (main.py:4478) filters what's *shown* on
+# read, but nothing previously constrained what could be *written* -- any
+# string could land in ProactiveAlerts.AlertType on insert. This is the real,
+# enumerated set of every AlertType this app actually writes OR reads.
+#
+# CORRECTION (found while building C.8, 2026-09-12): the first pass of this
+# set only grepped `vajra_backend/*.py` and missed
+# `vajra_backend/functions/**/*.py` -- the separate, standalone Catalyst Job
+# deployments (proactive_alerts, osint_radar). Those write REPEAT_OFFENDER
+# and SPATIAL_SPIKE via their OWN raw SQL INSERT (a different deployment
+# unit with its own requirements.txt, not importing this module, so they
+# never went through this whitelist gate to begin with) -- but
+# get_repeat_offenders (agent_loop.py) already reads both as real, expected
+# data. Added here so this set is genuinely complete, and so this gate would
+# recognize them correctly if this helper is ever reused from a context that
+# CAN call it for one of these two types.
+#
+# OSINT_THREAT/EXPORT_APPROVAL/PROFILE_CHANGE (main.py), POCSO_ACCESS/
+# DISTRICT_ACCESS (this file, DISTRICT_ACCESS x2), REPEAT_OFFENDER/
+# SPATIAL_SPIKE (functions/proactive_alerts/index.py). If a new alert type
+# is ever added anywhere -- including a standalone Job function -- it must
+# be added here too, at the same time.
+ALL_VALID_ALERT_TYPES = {
+    "OSINT_THREAT", "EXPORT_APPROVAL", "PROFILE_CHANGE", "POCSO_ACCESS", "DISTRICT_ACCESS",
+    "REPEAT_OFFENDER", "SPATIAL_SPIKE",
+    "SERIAL_PATTERN_AUTO_MATCH",  # §5.3/C.21: auto cross-match on new case insert
+}
+
+# Loophole L2: this is meant to be the ONLY sanctioned way to write a
+# ProactiveAlerts row anywhere in this codebase (main.py and agent_loop.py
+# both already import from this module for zcql_insert_row/zcql_update_row --
+# this lives next to zcql_insert_row for the same reason). A raw
+# zcql_insert_row("ProactiveAlerts", ...) call written directly, bypassing
+# this function, is exactly the gap this whitelist cannot close on its own --
+# if you're adding a new ProactiveAlerts insert, call this, not
+# zcql_insert_row directly.
+def insert_proactive_alert(row: Dict[str, Any]) -> bool:
+    """Validates row["AlertType"] against ALL_VALID_ALERT_TYPES before writing
+    to ProactiveAlerts. Returns False (and logs, doesn't insert) if the type
+    isn't recognized -- an unrecognized value is far more likely to be a typo
+    at a new call site than a genuinely new, intentionally-added alert type."""
+    alert_type = row.get("AlertType")
+    if alert_type not in ALL_VALID_ALERT_TYPES:
+        logging.getLogger("vajra_core").error(
+            f"Rejected ProactiveAlerts insert with unrecognized AlertType: {alert_type!r} "
+            f"-- add it to ALL_VALID_ALERT_TYPES if this is intentional."
+        )
+        return False
+    zcql_insert_row("ProactiveAlerts", row)
+    return True
+
+
 def zcql_update_row(table_name: str, row: Dict[str, Any]) -> None:
     """Same fix as zcql_insert_row, for UPDATE. `row` must include ROWID."""
     if not catalyst_app:
@@ -464,6 +516,24 @@ def cache_get(segment_name: str, key: str) -> Optional[str]:
 SESSION_SECRET = os.getenv("SESSION_SECRET")
 SESSION_TTL_SECONDS = 86400  # 24 hours — extended for hackathon demo sessions
 
+# Single-session-per-officer enforcement (user request, 2026-09-12): logging
+# in on a second device must invalidate the first device's session, not run
+# both concurrently. Maps kgid -> the jti of that officer's CURRENT (most
+# recent) session; issuing a new token overwrites the old jti, and any
+# older token's jti no longer matching what's stored here is rejected even
+# though it's still cryptographically valid and unexpired.
+#
+# Honest limitation, same class already accepted elsewhere in this codebase
+# for an identical reason (main.py's _calibration_jobs, vajra_core.py's
+# _syndicate_cache): in-memory, not persisted. A server restart clears this
+# map, so every previously-issued token (from however many devices) becomes
+# valid again until each officer logs in at least once post-restart -- there
+# is no live, TTL-capable store in this deployment to persist it in instead
+# (same real constraint noted in C.18a). Acceptable for this deployment's
+# actual restart frequency; would need a real store to hold under
+# production-scale rolling restarts.
+_active_session_jti: Dict[str, str] = {}
+
 
 def issue_session_token(kgid: str) -> str:
     """
@@ -477,23 +547,67 @@ def issue_session_token(kgid: str) -> str:
     individual identity. This token is real (HS256-signed, tied to one KGID,
     expires, can't be forged without SESSION_SECRET) -- it replaces which
     system verifies the session, it isn't a bypass of the check itself.
+
+    Single-session enforcement: also registers this token's jti as the
+    ONLY valid session for this kgid going forward -- any token issued to
+    this same officer before this call (any other device/browser/tab) stops
+    verifying on its very next request, even though it hasn't expired.
     """
     if not SESSION_SECRET:
         raise RuntimeError("SESSION_SECRET is not configured.")
-    payload = {"kgid": kgid, "iat": int(time.time()), "exp": int(time.time()) + SESSION_TTL_SECONDS}
+    jti = uuid.uuid4().hex
+    payload = {"kgid": kgid, "jti": jti, "iat": int(time.time()), "exp": int(time.time()) + SESSION_TTL_SECONDS}
+    _active_session_jti[kgid] = jti
     return pyjwt.encode(payload, SESSION_SECRET, algorithm="HS256")
 
 
 def verify_session_token(token: str) -> Optional[str]:
-    """Returns the KGID embedded in a valid, unexpired session token, or None."""
+    """Returns the KGID embedded in a valid, unexpired session token, or
+    None -- also None if a newer login for this KGID has since superseded
+    this specific token (single-session enforcement)."""
     if not SESSION_SECRET:
         return None
     try:
         payload = pyjwt.decode(token, SESSION_SECRET, algorithms=["HS256"])
-        return payload.get("kgid")
+        kgid = payload.get("kgid")
+        if not kgid:
+            return None
+        jti = payload.get("jti")
+        # Tokens minted before this fix carry no jti -- treated as
+        # pre-existing and allowed through untouched (not retroactively
+        # invalidated by a deploy; they age out naturally via the existing
+        # 24h TTL). A token WITH a jti that doesn't match this officer's
+        # current one was issued to a session that has since been replaced
+        # by a newer login elsewhere.
+        if jti is not None:
+            current = _active_session_jti.get(kgid)
+            if current is not None and jti != current:
+                logger.info(f"Session token for KGID '{kgid}' rejected -- superseded by a newer login on another device.")
+                return None
+        return kgid
     except pyjwt.PyJWTError as e:
         logger.warning(f"Session token verification failed: {e}")
         return None
+
+
+def is_session_superseded(token: str) -> bool:
+    """True specifically when a token is cryptographically valid and
+    unexpired but was replaced by a newer login elsewhere -- lets
+    security_firewall give an officer a real, specific reason ("logged in
+    on another device") instead of a generic 'authentication failed' for
+    this one distinguishable case. Never raises; a malformed/expired token
+    is simply not this case (False), not an error."""
+    if not SESSION_SECRET:
+        return False
+    try:
+        payload = pyjwt.decode(token, SESSION_SECRET, algorithms=["HS256"])
+    except pyjwt.PyJWTError:
+        return False
+    kgid, jti = payload.get("kgid"), payload.get("jti")
+    if not kgid or jti is None:
+        return False
+    current = _active_session_jti.get(kgid)
+    return current is not None and jti != current
 
 
 def verify_catalyst_token_direct(jwt_token: str) -> Optional[Dict[str, Any]]:
@@ -622,7 +736,7 @@ def create_pocso_request(requester_badge: str, requester_name: str, case_no: str
         "created_at": datetime.utcnow().isoformat(),
     }
     try:
-        zcql_insert_row("ProactiveAlerts", {
+        insert_proactive_alert({  # C.3: whitelist-checked, was a raw zcql_insert_row
             "AlertType": "POCSO_ACCESS", "Severity": "Critical",
             "TriggerTime": datetime.utcnow().isoformat(), "IsRead": False,
             "DistrictID": "0", "AlertMessage": json.dumps(meta),
@@ -731,7 +845,7 @@ def create_district_access_request(requester_badge: str, requester_name: str,
         "created_at": datetime.utcnow().isoformat(),
     }
     try:
-        zcql_insert_row("ProactiveAlerts", {
+        insert_proactive_alert({  # C.3: whitelist-checked, was a raw zcql_insert_row
             "AlertType": "DISTRICT_ACCESS", "Severity": "Critical",
             "TriggerTime": datetime.utcnow().isoformat(), "IsRead": False,
             "DistrictID": str(target_district_id or "0"), "AlertMessage": json.dumps(meta),
@@ -805,7 +919,7 @@ def create_emergency_district_access(requester_badge: str, requester_name: str,
         "emergency": True, "reviewed": False,
     }
     try:
-        zcql_insert_row("ProactiveAlerts", {
+        insert_proactive_alert({  # C.3: whitelist-checked, was a raw zcql_insert_row
             "AlertType": "DISTRICT_ACCESS", "Severity": "Critical",
             "TriggerTime": now.isoformat(), "IsRead": False,
             "DistrictID": str(target_district_id or "0"), "AlertMessage": json.dumps(meta),
@@ -939,6 +1053,16 @@ class VajraSecurityFirewall:
             kgid = verify_session_token(jwt_token)
 
             if not kgid:
+                # Single-session enforcement: give a specific, honest reason
+                # for this one distinguishable case instead of a generic
+                # "authentication failed" that reads like a real error when
+                # it's actually expected behavior (the officer logged in
+                # somewhere else, on purpose).
+                if is_session_superseded(jwt_token):
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="This session has been signed out because your account was logged in on another device or browser."
+                    )
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Security Access Violation: Session authentication failed."
@@ -1639,3 +1763,174 @@ class VajraSemanticMemory:
                 "confidence_score": round(score, 4)
             })
         return results
+
+
+# ---- C.8: Syndicate Radar, real Louvain community detection ----
+# Lives HERE, not in main.py (where the plan first drafted it) or
+# agent_loop.py (where detect_crime_groups reads it): main.py imports FROM
+# this module, and agent_loop.py does too -- putting the cache/compute in
+# either of those would make it unreachable from the other (same circular-
+# import class of mistake caught and fixed in C.3). This module is the one
+# place both already import from.
+#
+# Cache is a simple in-memory dict, matching the SAME real precedent already
+# established in this codebase for an identical problem (main.py's
+# `_calibration_jobs` for the model-calibration job) -- not a new pattern
+# invented for this item. Honest limitation, same as that precedent: a
+# server restart loses the cached result until the job is manually re-run;
+# no persisted store exists for this in the current deployment.
+_syndicate_cache: Dict[str, Any] = {"status": "never_run", "result": None, "computed_at": None}
+
+
+def get_cached_syndicate_clusters() -> Dict[str, Any]:
+    """Read-only accessor -- detect_crime_groups (agent_loop.py) calls this,
+    never touches _syndicate_cache directly."""
+    return _syndicate_cache
+
+
+def _fetch_all_syndicate_rows(select_clause: str, table: str, key_col: str = "ROWID", max_pages: int = 400) -> List[Dict[str, Any]]:
+    """Keyset pagination on ROWID -- OFFSET pagination is confirmed
+    unreliable on this ZCQL deployment (see main.py's _compute_model_
+    calibration._fetch_all and its own reference to calibrate_risk_model.py).
+    Reused here verbatim rather than reimplemented differently, so this
+    doesn't become a second, subtly-different copy of the same fix."""
+    rows: List[Dict[str, Any]] = []
+    last = None
+    seen: set = set()
+    for _ in range(max_pages):
+        where = f"WHERE {key_col} > {last} " if last is not None else ""
+        q = f"SELECT {select_clause} FROM {table} {where}ORDER BY {key_col} ASC LIMIT 300"
+        try:
+            page = catalyst_app.zql().execute_query(q)
+        except Exception as e:
+            logging.getLogger("vajra_core").warning(f"Syndicate detection: {table} pagination stopped early: {e}")
+            break
+        if not page:
+            break
+        max_key = last
+        for r in page:
+            kv = r.get(table, {}).get(key_col)
+            if kv is None:
+                continue
+            kv = int(kv)
+            if kv in seen:
+                continue
+            seen.add(kv)
+            rows.append(r)
+            if max_key is None or kv > max_key:
+                max_key = kv
+        if max_key == last or len(page) < 300:
+            break
+        last = max_key
+    return rows
+
+
+def _compute_syndicate_clusters() -> List[Dict[str, Any]]:
+    """Background job (Loophole L3) -- never called inline from a live chat
+    turn; the ~14,000-row Accused table alone needs ~47 paginated calls,
+    which comfortably exceeds AppSail's synchronous request kill on top of
+    an already-slow GLM round-trip (same reasoning as get_repeat_offenders'
+    own scheduled-job precedent, agent_loop.py).
+
+    Builds ONE combined graph from two real, distinct edge sources -- shared-
+    case co-accusal (Accused table, >=2 separate cases, same threshold
+    detect_crime_groups' existing naive version already uses) AND shared
+    phone/vehicle (AccusedContact table) -- tagging each edge with its
+    source so Loophole L2's synthetic-data disclosure can be computed
+    per-cluster, not guessed."""
+    if not catalyst_app:
+        return []
+    try:
+        import networkx as nx
+        from networkx.algorithms.community import louvain_communities
+    except ImportError as ie:
+        logging.getLogger("vajra_core").warning(f"networkx unavailable, syndicate detection skipped: {ie}")
+        return []
+
+    G = nx.Graph()
+
+    # Edge source 1: shared-case co-accusal, full table (not the naive
+    # version's first-300-rows sample) -- same >=2-shared-cases threshold
+    # as detect_crime_groups' existing logic, just over the whole dataset.
+    cases_by_name: Dict[str, set] = {}
+    for r in _fetch_all_syndicate_rows("AccusedName, CaseMasterID, ROWID", "Accused"):
+        a = r.get("Accused", {})
+        name = a.get("AccusedName")
+        cid = a.get("CaseMasterID")
+        if name and name.strip() and "unknown" not in name.lower() and cid:
+            cases_by_name.setdefault(name, set()).add(cid)
+    names = [n for n, cids in cases_by_name.items() if len(cids) > 1]
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            shared = cases_by_name[names[i]] & cases_by_name[names[j]]
+            if len(shared) >= 2:
+                G.add_edge(names[i], names[j], source="shared_case", shared_case_count=len(shared))
+
+    # Edge source 2: shared phone/vehicle (AccusedContact) -- CONFIRMED
+    # SYNTHETIC DEMO DATA per docs/SCHEMA.md, never a real telecom/RTO
+    # record. Tagged distinctly from shared_case edges above so Loophole L2's
+    # disclosure is computed from a real per-edge fact, not assumed.
+    by_phone: Dict[str, set] = {}
+    by_vehicle: Dict[str, set] = {}
+    for r in _fetch_all_syndicate_rows("AccusedName, PhoneNumber, VehicleNumber, ROWID", "AccusedContact"):
+        a = r.get("AccusedContact", {})
+        name = a.get("AccusedName")
+        if not name:
+            continue
+        if a.get("PhoneNumber"):
+            by_phone.setdefault(a["PhoneNumber"], set()).add(name)
+        if a.get("VehicleNumber"):
+            by_vehicle.setdefault(a["VehicleNumber"], set()).add(name)
+    for group_map in (by_phone, by_vehicle):
+        for _, members in group_map.items():
+            ms = sorted(members)
+            for i in range(len(ms)):
+                for j in range(i + 1, len(ms)):
+                    if G.has_edge(ms[i], ms[j]):
+                        G[ms[i]][ms[j]]["also_accused_contact"] = True
+                    else:
+                        G.add_edge(ms[i], ms[j], source="accused_contact")
+
+    if G.number_of_nodes() == 0:
+        return []
+
+    communities = louvain_communities(G, seed=42)  # Loophole L1: fixed seed, deterministic re-run
+    results = []
+    for comm in communities:
+        if len(comm) < 2:
+            continue
+        members = sorted(comm)
+        subgraph_edges = list(G.edges(comm, data=True))
+        has_synthetic_edge = any(
+            (d.get("source") == "accused_contact" or d.get("also_accused_contact"))
+            for u, v, d in subgraph_edges if u in comm and v in comm
+        )
+        # Same hub/degree-centrality signal as the existing naive version --
+        # kept for continuity, computed over the real full-table graph now.
+        degree_in_cluster = {m: G.degree(m) for m in members}
+        hub = max(members, key=lambda m: degree_in_cluster.get(m, 0)) if members else None
+        results.append({
+            "members": members,
+            "hub": hub,
+            "hub_links": degree_in_cluster.get(hub, 0) if hub else 0,
+            "shared_case_count": sum(d.get("shared_case_count", 0) for _, _, d in subgraph_edges if d.get("source") == "shared_case"),
+            "synthetic_data_disclosure": has_synthetic_edge,  # Loophole L2 -- checked by frontend before render
+        })
+    results.sort(key=lambda g: (len(g["members"]), g["shared_case_count"]), reverse=True)
+    return results
+
+
+def run_syndicate_detection_job() -> Dict[str, Any]:
+    """Synchronous -- callers (main.py's admin endpoint) run this via
+    run_in_threadpool, same pattern as _compute_model_calibration."""
+    _syndicate_cache["status"] = "running"
+    try:
+        result = _compute_syndicate_clusters()
+        _syndicate_cache["status"] = "done"
+        _syndicate_cache["result"] = result
+        _syndicate_cache["computed_at"] = datetime.utcnow().isoformat()
+    except Exception as e:
+        logging.getLogger("vajra_core").exception("Syndicate detection job failed")
+        _syndicate_cache["status"] = "error"
+        _syndicate_cache["error"] = str(e)
+    return _syndicate_cache

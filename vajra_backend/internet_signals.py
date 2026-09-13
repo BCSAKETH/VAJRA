@@ -190,7 +190,10 @@ def _signal(title: str, source: str, published: str, url: str, snippet: str = ""
 # authoritative source. Purely a display/trust signal; every tier is still
 # an unverified open-source lead, never official CCTNS record.
 _GOV_SUFFIXES = (".gov.in", ".nic.in", ".judiciary.gov.in", ".kar.nic.in")
-_LEGAL_DOMAINS = ("sci.gov.in", "indiankanoon.org", "livelaw.in", "barandbench.com")
+_LEGAL_DOMAINS = ("sci.gov.in", "indiankanoon.org", "livelaw.in", "barandbench.com", "ecourts.gov.in")
+# C.4 Loophole L2: starting set, not exhaustive -- a genuinely judicial source
+# not yet listed here falls back to WEB/GOV rather than being mis-badged;
+# extend this list as new legal-info domains are found, don't assume complete.
 _PRESS_DOMAINS = (
     "thehindu.com", "deccanherald.com", "indianexpress.com", "timesofindia.indiatimes.com",
     "hindustantimes.com", "ndtv.com", "prajavani.net", "kannadaprabha.com", "vijayavani.net",
@@ -419,6 +422,24 @@ def clean_search_query(q: str) -> str:
     if len(tokens) >= 1:
         return " ".join(tokens[:8])
     return ""
+
+
+# C.4: named, testable replacement for the implicit single-branch keyword
+# check that used to live inline at the news_queries call site (line ~678 --
+# leadership only). Returns a LIST, not one string (Loophole L1): a query can
+# genuinely be both `legal` and `institution` at once (e.g. "what section
+# governs TKREC's registration"), and both reformulation paths should fire,
+# not just whichever branch happened to be checked first.
+def _classify_query_intent(query: str) -> List[str]:
+    q = (query or "").lower()
+    intents = []
+    if any(w in q for w in ("chair", "founder", "director", "principal", "head", "who is")):
+        intents.append("leadership")
+    if any(w in q for w in ("section", "act", "bns", "bsa", "bnss", "ipc", "judgment", "court")):
+        intents.append("legal")
+    if any(w in q for w in ("college", "university", "hospital", "institute")):
+        intents.append("institution")
+    return intents or ["general"]
 
 
 def search_wikipedia_summary(query: str) -> List[Dict[str, Any]]:
@@ -674,10 +695,18 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
 
         # TIER 3: GNews API & Multi-Vector Google News RSS
         news_queries = [effective_query]
-        # Query formulation for leadership/institutions
-        if any(w in raw_query.lower() for w in ("chair", "person", "who is", "founder", "director", "principal", "head")):
+        # C.4: multi-intent reformulation -- a dual-intent query (e.g. "what
+        # BNS section covers TKREC's founder's alleged fraud") now triggers
+        # BOTH the leadership AND legal paths below, not just whichever single
+        # implicit branch happened to match first (Loophole L1).
+        matched_intents = _classify_query_intent(raw_query)
+        if "leadership" in matched_intents:
             news_queries.append(f'"{effective_query}"')
             news_queries.append(f'{effective_query} chairman OR leadership OR founder OR management')
+        if "legal" in matched_intents:
+            news_queries.append(f'{effective_query} judgment OR court OR section OR ruling')
+        if "institution" in matched_intents:
+            news_queries.append(f'{effective_query} official OR accreditation OR affiliation')
 
         for nq in news_queries:
             if len(items) >= limit:

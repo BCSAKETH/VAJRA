@@ -17,6 +17,8 @@ import {
   IdCard,
   Building2,
   X,
+  AlertTriangle,
+  MapPin,
 } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
 import { NotificationBellPanel } from "./NotificationBellPanel";
@@ -49,6 +51,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
     roleTier,
     theme,
     setTheme,
+    llmServiceAvailable, // C.16
   } = useApp();
 
   const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
@@ -99,9 +102,16 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const navItems = [
     { id: "ai_chat" as ScreenId, label: t.navChat, icon: MessageSquare },
     { id: "district_dashboard" as ScreenId, label: t.navDistrictDashboard, icon: Map },
+    { id: "spatial" as ScreenId, label: t.navSpatial, icon: MapPin },      // C.17: fully built, was unreachable
+    { id: "reports" as ScreenId, label: t.navReports, icon: FileText },   // C.17: fully built, was unreachable
     ...(roleTier === "supervisor"
       ? [{ id: "supervisor" as ScreenId, label: t.navSupervisor, icon: UserCheck }]
       : []),
+    // fir_search intentionally NOT added -- confirmed its backend endpoints
+    // (/api/cases/search, /api/cases/all) don't exist anywhere in main.py,
+    // so it 404s unconditionally. Making it reachable now would surface a
+    // "new," visibly broken feature, worse than a silently missing one
+    // (C.17 Loophole L1). Fix the data source first, separately.
   ];
 
   return (
@@ -334,6 +344,17 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
               </div>
             </div>
           </header>
+
+          {/* C.16: persistent AI-degraded banner -- llmServiceAvailable already
+              requires 2 consecutive bad /api/health reads before flipping to
+              false (AppContext.tsx, Loophole L1), so this only ever appears
+              for a real, sustained degradation, never a single poll blip. */}
+          {!llmServiceAvailable && (
+            <div className="shrink-0 flex items-center gap-2 px-6 py-2 bg-amber-500/10 border-b border-amber-500/25 text-amber-400">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span className="text-[11px] font-mono">{t.aiDegradedBanner}</span>
+            </div>
+          )}
 
           {/* Core Content Display Pane -- overflow-hidden (not auto): every
               screen already manages its own internal scroll region (its own
