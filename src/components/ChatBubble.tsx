@@ -1397,6 +1397,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                         type={panel.type}
                         data={panel.data}
                         onExpand={() => onExpandWidget(panel.type, panel.data)}
+                        onFollowUpQuery={onQuickReply}
                       />
                     ) : (
                       // Confirmed live bug, fixed: this used to render panel.text as a
@@ -1480,6 +1481,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                     type="risk"
                     data={riskData}
                     onExpand={() => onExpandWidget("risk", riskData)}
+                    onFollowUpQuery={onQuickReply}
                   />
 
                   {/* 2. Criminal Syndicate Network Graph */}
@@ -1487,6 +1489,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                     type="network"
                     data={netData}
                     onExpand={() => onExpandWidget("network", netData)}
+                    onFollowUpQuery={onQuickReply}
                   />
                 </div>
               );
@@ -1508,6 +1511,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                   type={message.responseType}
                   data={message.data}
                   onExpand={() => onExpandWidget(message.responseType!, message.data)}
+                  onFollowUpQuery={onQuickReply}
                 />
               </div>
             );

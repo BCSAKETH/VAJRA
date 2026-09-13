@@ -251,6 +251,7 @@ class CognitiveBrainMixin:
         {"name": "list_victims_by_category", "does": "list victims linked to cases of a specific crime type/district -- identities auto-masked on POCSO/juvenile-victim sensitive cases", "params": {"crime_group": "optional", "district": "optional", "top_n": "optional integer, defaults to 15, max 25"}},
         {"name": "get_offender_risk", "does": "conviction-risk score for ONE named suspect", "params": {"suspect_name": "required"}},
         {"name": "query_graph_network", "does": "criminal network/associates of ONE named suspect", "params": {"suspect_name": "required"}},
+        {"name": "trace_connection_path", "does": "F.3: shortest chain of co-accused connections between TWO named people (e.g. 'how is X connected to Y?') -- use this, NOT two separate query_graph_network calls, whenever the question names two distinct people to connect", "params": {"name_a": "required", "name_b": "required"}},
         {"name": "get_mo_profile", "does": "modus-operandi profile for ONE named suspect", "params": {"suspect_name": "required"}},
         {"name": "query_financial_links", "does": "financial transaction links for a named entity", "params": {"entity_id": "required name"}},
         {"name": "get_case_types_distribution", "does": "breakdown of cases by crime type (pie/bar)", "params": {"district": "optional"}},

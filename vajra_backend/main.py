@@ -4353,6 +4353,121 @@ async def list_investigations(request: Request, location_context: str = Depends(
         return []
 
 
+def _get_latest_network_message(session_id: str) -> Optional[Dict[str, Any]]:
+    """
+    F.28: the most recent 'network'-response-type message's data for one
+    Investigation, read directly from the real, already-existing ChatMessage
+    table (session_id, response_type, data_json, sent_at are all real
+    columns -- see get_session_messages above). There is no separate
+    server-side "CaseBoard" data store in this codebase today, so this reads
+    straight from chat history rather than inventing one.
+    """
+    if not catalyst_app:
+        return None
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT data_json, sent_at FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}' "
+            f"AND response_type = 'network' LIMIT 300"
+        )
+        if not res:
+            return None
+        res.sort(key=lambda r: r.get("ChatMessage", {}).get("sent_at") or "", reverse=True)
+        latest = res[0].get("ChatMessage", {})
+        data = _safe_json_loads(latest.get("data_json"), {})
+        return data or None
+    except Exception as ex:
+        logger.warning(f"_get_latest_network_message failed for session {session_id}: {ex}")
+        return None
+
+
+@app.get("/api/investigations/my-networks")
+async def get_my_case_networks(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    F.28 -- "My Cases" combined network view: one summary card per
+    Investigation the officer owns or participates in, each carrying its own
+    most-recently-generated network graph. Loophole L1: these stay SEPARATE
+    per-Investigation summaries, never merged into one graph -- merging
+    networks across unrelated cases would fabricate connections that don't
+    really exist between separate investigations. Loophole L2: reuses
+    list_investigations' exact same ownership/Cowork-participant scoping, no
+    new/parallel access path.
+    """
+    investigations = await list_investigations(request, location_context)
+    summaries = []
+    for inv in (investigations or [])[:20]:  # bounded
+        net_data = _get_latest_network_message(inv["session_id"])
+        has_nodes = bool(net_data and (net_data.get("nodes") or (net_data.get("network") or {}).get("nodes")))
+        if has_nodes:
+            summaries.append({
+                "investigation_title": inv.get("title"),
+                "session_id": inv.get("session_id"),
+                "case_no": inv.get("case_no"),
+                "network_preview": net_data,
+            })
+    return {"case_networks": summaries}
+
+
+# F.34: "New Since Last Visit" badges on a network graph -- needs a per-
+# officer "last viewed this network" timestamp, which no existing table
+# tracks. Requires a NEW Console table before these two endpoints can
+# function: NetworkViewState(employee_id TEXT/BIGINT, session_id TEXT,
+# last_viewed_at TEXT/DATETIME). Until that table exists in the Zoho
+# Catalyst Datastore console, both endpoints below fail closed (return a
+# clear "not yet available" response rather than crashing or fabricating a
+# result) -- see docs/PLAN_MASTER_BUILD_QUEUE.md F.99/F.34.
+NETWORK_VIEW_STATE_TABLE = "NetworkViewState"
+
+
+@app.post("/api/investigations/{session_id}/network-viewed")
+async def mark_network_viewed(session_id: str, request: Request, location_context: str = Depends(security_firewall)):
+    """F.34: records that THIS officer just viewed this Investigation's network (Loophole L2: keyed per-officer, not per-session, so two officers sharing one Cowork investigation never share one "last viewed" state)."""
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not employee_id or not _get_cowork_role(session_id, employee_id, request.state.kgid):
+        raise HTTPException(status_code=403, detail="You do not have access to this session.")
+    if not catalyst_app:
+        raise HTTPException(status_code=503, detail="Datastore unavailable.")
+    now_iso = datetime.utcnow().isoformat()
+    try:
+        existing = catalyst_app.zql().execute_query(
+            f"SELECT ROWID FROM {NETWORK_VIEW_STATE_TABLE} WHERE employee_id = {employee_id} "
+            f"AND session_id = '{escape_zcql_literal(session_id)}' LIMIT 1"
+        )
+        if existing:
+            row_id = existing[0].get(NETWORK_VIEW_STATE_TABLE, {}).get("ROWID")
+            zcql_update_row(NETWORK_VIEW_STATE_TABLE, {"ROWID": row_id, "last_viewed_at": now_iso})
+        else:
+            zcql_insert_row(NETWORK_VIEW_STATE_TABLE, {"employee_id": employee_id, "session_id": session_id, "last_viewed_at": now_iso})
+        return {"status": "recorded", "last_viewed_at": now_iso}
+    except Exception as e:
+        # Fails closed and says exactly why, rather than a bare 500 --
+        # NetworkViewState is a NEW table this feature needs created in the
+        # Catalyst console first (see comment above).
+        logger.warning(f"mark_network_viewed failed (has the {NETWORK_VIEW_STATE_TABLE} table been created yet?): {e}")
+        raise HTTPException(status_code=503, detail=f"Network-view tracking is not yet available (requires the {NETWORK_VIEW_STATE_TABLE} table).")
+
+
+@app.get("/api/investigations/{session_id}/network-new-since")
+async def get_network_new_since(session_id: str, request: Request, location_context: str = Depends(security_firewall)):
+    """F.34: this officer's own last-viewed timestamp for this Investigation's network, so the frontend can badge nodes/edges newer than it."""
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not employee_id or not _get_cowork_role(session_id, employee_id, request.state.kgid):
+        raise HTTPException(status_code=403, detail="You do not have access to this session.")
+    if not catalyst_app:
+        raise HTTPException(status_code=503, detail="Datastore unavailable.")
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT last_viewed_at FROM {NETWORK_VIEW_STATE_TABLE} WHERE employee_id = {employee_id} "
+            f"AND session_id = '{escape_zcql_literal(session_id)}' LIMIT 1"
+        )
+        last_viewed_at = res[0].get(NETWORK_VIEW_STATE_TABLE, {}).get("last_viewed_at") if res else None
+        return {"last_viewed_at": last_viewed_at}
+    except Exception as e:
+        logger.warning(f"get_network_new_since failed (has the {NETWORK_VIEW_STATE_TABLE} table been created yet?): {e}")
+        # Fails closed as "never viewed before" rather than erroring the
+        # whole network view -- worst case, nothing gets badged as new yet.
+        return {"last_viewed_at": None, "tracking_unavailable": True}
+
+
 class AppletRequest(BaseModel):
     response_type: str
     data: Dict[str, Any] = {}

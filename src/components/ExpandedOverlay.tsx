@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../AppContext";
 import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2, PieChart as PieChartIcon, ShieldCheck, Scale, CheckCircle2, Sparkles } from "lucide-react";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, CartesianGrid, PieChart, Pie, ReferenceLine } from "recharts";
@@ -156,6 +156,103 @@ const MapSizeAndBoundsFixer: React.FC<{ points: { lat: number; lng: number }[] }
   return null;
 };
 
+// F.8: Time-Ordered Money-Flow Animation. Reveals real transactions one at a
+// time in genuine chronological order (by the actual `txn_time` already
+// present on every financial edge) instead of a frozen ledger list.
+// Loophole L1: only transactions with a valid, parseable timestamp are
+// sorted/animated -- anything missing/malformed renders up front in a
+// separate "undated" bucket, never silently dropped or mis-ordered into the
+// sequence.
+const MoneyFlowLedger: React.FC<{ transactions: any[]; lang: "en" | "kn" }> = ({ transactions, lang }) => {
+  const { sorted, undated } = useMemo(() => {
+    const withTime: any[] = [];
+    const without: any[] = [];
+    for (const t of transactions) {
+      if (t?.txn_time && !isNaN(Date.parse(t.txn_time))) withTime.push(t);
+      else without.push(t);
+    }
+    withTime.sort((a, b) => Date.parse(a.txn_time) - Date.parse(b.txn_time));
+    return { sorted: withTime, undated: without };
+  }, [transactions]);
+
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [revealCount, setRevealCount] = useState(sorted.length); // default: show everything (today's behavior)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    setRevealCount(sorted.length);
+  }, [sorted.length]);
+
+  useEffect(() => {
+    if (!isPlaying) return;
+    timerRef.current = setInterval(() => {
+      setRevealCount((c) => {
+        if (c >= sorted.length) {
+          setIsPlaying(false);
+          return sorted.length;
+        }
+        return c + 1;
+      });
+    }, 700);
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [isPlaying, sorted.length]);
+
+  const handlePlay = () => {
+    if (revealCount >= sorted.length) setRevealCount(0); // restart from the beginning
+    setIsPlaying(true);
+  };
+
+  const fmtDate = (ts?: string) => {
+    if (!ts) return lang === "en" ? "Date not recorded" : "ದಿನಾಂಕ ದಾಖಲಾಗಿಲ್ಲ";
+    const d = new Date(ts);
+    return isNaN(d.getTime()) ? ts : d.toLocaleString(lang === "en" ? "en-IN" : "kn-IN", { dateStyle: "medium", timeStyle: "short" });
+  };
+
+  const renderTx = (tx: any, idx: number) => (
+    <div key={idx} className="flex justify-between items-center bg-stone-900/60 p-2.5 rounded-lg border border-stone-800/80 font-mono text-[11px] hover:border-[#C79A4E]/25 transition-colors">
+      <div>
+        <span className="text-[#C79A4E] font-bold">{tx.sender}</span>
+        <span className="text-stone-500 mx-1">&rarr;</span>
+        <span className="text-stone-350">{tx.receiver}</span>
+      </div>
+      <div className="text-right">
+        <span className="text-amber-500 font-extrabold">₹{tx.amount?.toLocaleString() || "0"}</span>
+        <span className="block text-[9px] text-stone-500">{fmtDate(tx.txn_time)}</span>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="md:w-1/3 flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2">
+        <h4 className="font-bold text-stone-200 uppercase tracking-[0.14em] text-xs font-mono">{lang === "en" ? "Linked Financial Transaction Nodes" : "ಜೋಡಿಸಲಾದ ಹಣಕಾಸು ವಹಿವಾಟು ನೋಡ್‌ಗಳು"}</h4>
+        {sorted.length > 1 && (
+          <button
+            onClick={isPlaying ? () => setIsPlaying(false) : handlePlay}
+            className="text-[10px] px-2 py-1 rounded-full border border-[#C79A4E]/30 bg-[#C79A4E]/10 text-[#C79A4E] hover:bg-[#C79A4E]/20 transition-colors shrink-0 cursor-pointer"
+            title={lang === "en" ? "Play money-flow animation in real chronological order" : "ನೈಜ ಕಾಲಾನುಕ್ರಮದಲ್ಲಿ ಹಣ-ಹರಿವು ಅನಿಮೇಷನ್ ಪ್ಲೇ ಮಾಡಿ"}
+          >
+            {isPlaying ? (lang === "en" ? "⏸ Pause" : "⏸ ವಿರಾಮ") : (lang === "en" ? "▶ Play flow" : "▶ ಹರಿವು ಪ್ಲೇ ಮಾಡಿ")}
+          </button>
+        )}
+      </div>
+      {undated.length > 0 && (
+        <div className="bg-stone-900/40 border border-stone-800 rounded-lg p-2 space-y-1.5">
+          <div className="text-[9.5px] uppercase tracking-wider text-stone-500 font-mono">
+            {lang === "en" ? `${undated.length} undated (excluded from animation)` : `${undated.length} ದಿನಾಂಕವಿಲ್ಲದ (ಅನಿಮೇಷನ್‌ನಿಂದ ಹೊರಗಿಡಲಾಗಿದೆ)`}
+          </div>
+          {undated.map(renderTx)}
+        </div>
+      )}
+      <div className="flex-1 bg-stone-950/80 border border-[#C79A4E]/15 rounded-xl p-3 overflow-y-auto max-h-[350px]">
+        <div className="space-y-2">
+          {sorted.slice(0, revealCount).map(renderTx)}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 interface ExpandedOverlayProps {
   type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "case_list" | "dossier" | "priority_concerns" | "news" | string;
   data: any;
@@ -165,9 +262,17 @@ interface ExpandedOverlayProps {
   // embedded directly inline in the chat thread -- ChatGPT-style -- reusing
   // every type's render here instead of maintaining a second copy in InlineWidget.
   inline?: boolean;
+  // F.23/F.28: dispatches a new chat follow-up query (e.g. clicking a repeat
+  // offender's name to jump straight to their network) -- reuses the exact
+  // same chat-send mechanism as every other suggested-question chip in the
+  // app, not a new backend path.
+  onFollowUpQuery?: (text: string) => void;
+  // F.34: this officer's own "last viewed this network" timestamp for the
+  // current Investigation, so newly-appeared nodes/edges can be badged.
+  networkNewSinceTimestamp?: string | null;
 }
 
-export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType, data: rawData, onClose, inline = false }) => {
+export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType, data: rawData, onClose, inline = false, onFollowUpQuery, networkNewSinceTimestamp }) => {
   const { lang } = useApp();
   const contentRef = useRef<HTMLDivElement>(null);
 
@@ -518,39 +623,33 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                     <span className="text-stone-500">· {data.hub.degree} {lang === "en" ? "direct links" : "ನೇರ ಸಂಪರ್ಕಗಳು"}</span>
                   </div>
                 )}
+                {/* F.7: real round-trip (money-laundering-signature) loops
+                    flagged on this graph, if any -- excludes any cycle
+                    through an already-classified high-volume hub. */}
+                {Array.isArray(data.round_trip_loops) && data.round_trip_loops.length > 0 && (
+                  <div className="bg-rose-500/10 border border-rose-500/25 rounded-lg p-2.5 text-[11px] font-mono text-rose-300 space-y-1">
+                    <div className="font-bold uppercase tracking-wider text-[10px]">
+                      {lang === "en" ? "Round-Trip Loops Flagged" : "ಸುತ್ತು-ಪ್ರಯಾಣ ಲೂಪ್‌ಗಳು ಗುರುತಿಸಲಾಗಿದೆ"}
+                    </div>
+                    {data.round_trip_loops.map((loop: string[], li: number) => (
+                      <div key={li} className="truncate">{loop.join(" → ")}</div>
+                    ))}
+                  </div>
+                )}
                 <div className="flex-1 bg-stone-950/80 border border-[#C79A4E]/15 rounded-xl p-2 min-h-[320px]">
-                  <NetworkGraph nodes={data.nodes || []} edges={data.edges || []} />
+                  <NetworkGraph
+                    nodes={data.nodes || []}
+                    edges={data.edges || []}
+                    activeLayers={data.active_layers}
+                    primaryEntityId={data.primary_entity ? (data.nodes || []).find((n: any) => (n.label || "").toLowerCase() === String(data.primary_entity).toLowerCase())?.id : undefined}
+                    newSinceTimestamp={networkNewSinceTimestamp}
+                  />
                 </div>
               </div>
 
               {/* Right Transaction Ledger Flow (only rendered when transactions exist) */}
               {Array.isArray(data.financial_transactions) && data.financial_transactions.length > 0 && (
-                <div className="md:w-1/3 flex flex-col gap-3">
-                  <h4 className="font-bold text-stone-200 uppercase tracking-[0.14em] text-xs font-mono">{lang === "en" ? "Linked Financial Transaction Nodes" : "ಜೋಡಿಸಲಾದ ಹಣಕಾಸು ವಹಿವಾಟು ನೋಡ್‌ಗಳು"}</h4>
-                  <div className="flex-1 bg-stone-950/80 border border-[#C79A4E]/15 rounded-xl p-3 overflow-y-auto max-h-[350px]">
-                    <div className="space-y-2">
-                      {data.financial_transactions.map((tx: any, idx: number) => (
-                        <div key={idx} className="flex justify-between items-center bg-stone-900/60 p-2.5 rounded-lg border border-stone-800/80 font-mono text-[11px] hover:border-[#C79A4E]/25 transition-colors">
-                          <div>
-                            <span className="text-[#C79A4E] font-bold">{tx.sender}</span>
-                            <span className="text-stone-500 mx-1">&rarr;</span>
-                            <span className="text-stone-350">{tx.receiver}</span>
-                          </div>
-                          <div className="text-right">
-                            <span className="text-amber-500 font-extrabold">₹{tx.amount?.toLocaleString() || "0"}</span>
-                            <span className="block text-[9px] text-stone-500">
-                              {(() => {
-                                if (!tx.txn_time) return lang === "en" ? "Date not recorded" : "ದಿನಾಂಕ ದಾಖಲಾಗಿಲ್ಲ";
-                                const d = new Date(tx.txn_time);
-                                return isNaN(d.getTime()) ? tx.txn_time : d.toLocaleString(lang === "en" ? "en-IN" : "kn-IN", { dateStyle: "medium", timeStyle: "short" });
-                              })()}
-                            </span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
+                <MoneyFlowLedger transactions={data.financial_transactions} lang={lang} />
               )}
             </div>
           )}
@@ -1243,7 +1342,25 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                 {(data.offenders || []).map((o: any, idx: number) => (
                   <div key={idx} className="bg-stone-900/60 border border-stone-850 p-3.5 rounded-lg flex justify-between items-center gap-3">
                     <div className="space-y-0.5 min-w-0">
-                      <span className="text-xs font-black text-stone-250 block truncate">{o.suspect}</span>
+                      {/* F.23: one tap jumps straight to this offender's full
+                          network graph -- dispatches the SAME query_graph_
+                          network tool via the normal chat pipeline, so it
+                          inherits its existing ambiguous-name safety (no new
+                          lookup path). Falls back to plain (non-clickable)
+                          text when no follow-up handler is wired (e.g. a
+                          standalone/full-screen view opened without chat
+                          context). */}
+                      {onFollowUpQuery ? (
+                        <button
+                          onClick={() => onFollowUpQuery(`show network for ${o.suspect}`)}
+                          className="text-xs font-black text-stone-250 hover:text-[#C79A4E] block truncate text-left transition-colors cursor-pointer"
+                          title={lang === "en" ? "View network" : "ಜಾಲ ವೀಕ್ಷಿಸಿ"}
+                        >
+                          {o.suspect}
+                        </button>
+                      ) : (
+                        <span className="text-xs font-black text-stone-250 block truncate">{o.suspect}</span>
+                      )}
                       <span className="text-[11px] text-stone-450">{o.district}</span>
                     </div>
                     <div className="shrink-0 text-right">

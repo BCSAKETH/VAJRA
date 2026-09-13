@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { MessageSquarePlus, MessageSquare, FolderPlus, Folder, Users, Loader2, MoreVertical, Trash2, CheckSquare, Square, Check } from "lucide-react";
+import { MessageSquarePlus, MessageSquare, FolderPlus, Folder, Users, Loader2, MoreVertical, Trash2, CheckSquare, Square, Check, Network } from "lucide-react";
 import { NewInvestigationModal } from "./NewInvestigationModal";
+import { MyCasesNetworkModal } from "./MyCasesNetworkModal";
 
 interface SessionSummary {
   session_id: string;
@@ -43,6 +44,7 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
   const [investigations, setInvestigations] = useState<Investigation[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [showNewInvestigation, setShowNewInvestigation] = useState(false);
+  const [showMyCasesNetwork, setShowMyCasesNetwork] = useState(false); // F.28
   const [investigationsRefresh, setInvestigationsRefresh] = useState(0);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   // "Select" used to be its own always-visible header button, competing with
@@ -286,6 +288,18 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
           <FolderPlus className="w-3.5 h-3.5" />
           {t.newInvestigation}
         </button>
+        {/* F.28: "My Cases" combined network view -- reachable from the
+            Investigations section, only shown once there's at least one
+            Investigation to have a network on. */}
+        {investigations.length > 0 && (
+          <button
+            onClick={() => setShowMyCasesNetwork(true)}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-stone-800 hover:border-[#C79A4E]/30 bg-stone-900/40 hover:bg-stone-900/70 text-stone-400 hover:text-[#C79A4E] text-xs font-bold uppercase tracking-wider transition-all cursor-pointer"
+          >
+            <Network className="w-3.5 h-3.5" />
+            {lang === "en" ? "My Cases — Network View" : "ನನ್ನ ಪ್ರಕರಣಗಳು — ಜಾಲ ನೋಟ"}
+          </button>
+        )}
         {investigations.length > 0 && (
           <div className="space-y-1 pt-1">
             {investigations.map((inv) => {
@@ -440,6 +454,12 @@ const ChatHistoryPanelComponent: React.FC<ChatHistoryPanelProps> = ({
             setInvestigationsRefresh((k) => k + 1);
             onSelectSession(sessionId);
           }}
+        />
+      )}
+      {showMyCasesNetwork && (
+        <MyCasesNetworkModal
+          onClose={() => setShowMyCasesNetwork(false)}
+          onSelectSession={onSelectSession}
         />
       )}
     </div>

@@ -1,10 +1,30 @@
-import React, { useMemo } from "react";
+import React, { useMemo, useState } from "react";
 
 export interface GraphNode {
   id: string;
   label: string;
   sublabel?: string;
-  type: "suspect" | "case" | "person" | "vehicle" | "phone" | string;
+  type: "suspect" | "case" | "person" | "vehicle" | "phone" | "financial_account" | string;
+  // F.1/F.33: which combined-view toggle group this node belongs to.
+  // Separate from "type" on purpose (Loophole L4) -- toggling a layer on/off
+  // never changes a node's color/legend bucket.
+  layer?: "co_accused" | "financial" | "phone_vehicle" | string;
+  // A node that is a de-duplicated match across layers (Loophole L1) carries
+  // every layer it appears in here; "layer" above stays its PRIMARY one for
+  // color/legend purposes.
+  layers?: string[];
+  // F.2: BFS distance from the root suspect (1 = direct link). Missing/1
+  // renders as a normal direct link; >=2 renders dashed/faded (Loophole L2).
+  hop?: number;
+  // F.6: real per-node degree centrality (0-1, normalized) and, ONLY when a
+  // caller has actually computed one, an individual risk score (0-100) --
+  // never fabricated when absent (Loophole L1).
+  centrality?: number;
+  risk?: number;
+  // F.9: a hub also confirmed on the Repeat Offenders list.
+  cross_flag?: string;
+  // F.5: earliest shared-case date this specific edge/node was "first seen."
+  first_seen?: string | null;
 }
 
 export interface GraphEdge {
@@ -13,12 +33,38 @@ export interface GraphEdge {
   from?: string;
   to?: string;
   label?: string;
+  layer?: "co_accused" | "financial" | "phone_vehicle" | string;
+  hop?: number;
+  // F.4: real shared-case (or transaction) count backing this edge -- drives
+  // line thickness, log-scaled and capped (Loophole L1).
+  weight?: number;
+  first_seen?: string | null;
+  // F.8: real transaction timestamp (financial edges only), used to sort a
+  // time-ordered money-flow animation.
+  txn_time?: string | null;
+  amount?: number | null;
 }
 
 interface NetworkGraphProps {
   nodes: GraphNode[];
   edges: GraphEdge[];
   height?: number;
+  // F.1/F.33: which layer(s) render, and the toggle handler. Omitted
+  // entirely (no layers present on any node) falls back to "show everything,
+  // no toggle bar" -- fully backward compatible with every existing caller
+  // that doesn't pass per-node layers yet.
+  activeLayers?: string[];
+  onToggleLayer?: (layer: string) => void;
+  // Loophole L3 (F.1): this specific entity always renders regardless of
+  // any active filter.
+  primaryEntityId?: string;
+  // F.1/#33 merge: hide peripheral nodes below this risk (0-100); never
+  // applied to primaryEntityId.
+  minRiskFilter?: number;
+  // F.34: nodes/edges whose first_seen/txn_time is AFTER this ISO timestamp
+  // render with a "NEW" badge -- undefined/null means no badge (either
+  // never viewed before, or the feature's backing table isn't set up yet).
+  newSinceTimestamp?: string | null;
 }
 
 // Categorical palette validated against the app's dark surface (#161412) via
@@ -31,6 +77,7 @@ const NODE_COLORS: Record<string, string> = {
   person: "#a78bfa",
   vehicle: "#e66767",
   phone: "#38bdf8",
+  financial_account: "#22d3ee", // F.1/L4: distinct from "case" (#f59e0b), which already means a linked CrimeNo here
 };
 
 const NODE_TYPE_LABELS: Record<string, string> = {
@@ -39,7 +86,25 @@ const NODE_TYPE_LABELS: Record<string, string> = {
   person: "Co-Accused",
   vehicle: "Vehicle",
   phone: "Phone",
+  financial_account: "Financial Account",
 };
+
+// F.1/F.33: toggle-bar labels for the three combined-view layers.
+const LAYER_LABELS: Record<string, string> = {
+  co_accused: "Co-accused",
+  financial: "Financial",
+  phone_vehicle: "Phone/Vehicle",
+};
+
+// F.6: blends real degree centrality with an individual risk score WHEN one
+// has actually been computed for that node -- otherwise falls back to
+// centrality alone and marks the node as risk-not-yet-assessed (Loophole L1:
+// never implies a real low-risk score for a node that was simply never
+// individually scored).
+function getNodeImportance(node: GraphNode): { score: number; assessed: boolean } {
+  if (node.risk == null) return { score: node.centrality ?? 0.3, assessed: false };
+  return { score: 0.5 * (node.centrality ?? 0) + 0.5 * (node.risk / 100), assessed: true };
+}
 
 // Allow up to 16 nodes on a ring so medium clusters display all distinct entities
 // rather than prematurely collapsing into an aggregated overflow bubble.
@@ -153,8 +218,50 @@ function computeLayout(nodes: GraphNode[], edges: GraphEdge[]) {
   return { positions, width, height, renderNodes, overflowByRing };
 }
 
-export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height: minHeight = 380 }) => {
-  const { positions, width, height, renderNodes } = useMemo(() => computeLayout(nodes, edges), [nodes, edges]);
+export const NetworkGraph: React.FC<NetworkGraphProps> = ({
+  nodes, edges, height: minHeight = 380,
+  activeLayers, onToggleLayer, primaryEntityId, minRiskFilter, newSinceTimestamp,
+}) => {
+  // F.1/F.33: which layers this graph actually carries (legacy payloads with
+  // no "layer" field on any node render exactly as before -- no toggle bar,
+  // no filtering, zero behavior change for every caller that predates this).
+  const availableLayers = useMemo(
+    () => Array.from(new Set(nodes.map((n) => n.layer).filter((l): l is string => !!l))),
+    [nodes]
+  );
+  // Self-contained toggle state -- always interactive regardless of whether
+  // a parent listens via onToggleLayer (Loophole L2: a wrong initial guess
+  // never blocks access, it just costs one click).
+  const [internalActiveLayers, setInternalActiveLayers] = useState<string[]>(
+    () => (activeLayers && activeLayers.length ? activeLayers : availableLayers)
+  );
+  const activeSet = useMemo(() => new Set(internalActiveLayers), [internalActiveLayers]);
+  const handleToggle = (layer: string) => {
+    setInternalActiveLayers((prev) => (prev.includes(layer) ? prev.filter((l) => l !== layer) : [...prev, layer]));
+    onToggleLayer?.(layer);
+  };
+
+  // F.1 Loophole L3 (risk filter, #33 merge): a node passes if its layer is
+  // active (or it carries no layer at all -- legacy data) AND (it's the
+  // specifically-queried primary entity OR its risk clears minRiskFilter).
+  const nodeVisible = (n: GraphNode): boolean => {
+    if (n.id === primaryEntityId) return true;
+    if (availableLayers.length > 0) {
+      const nodeLayers = n.layers && n.layers.length ? n.layers : [n.layer].filter(Boolean);
+      if (nodeLayers.length && !nodeLayers.some((l) => activeSet.has(l as string))) return false;
+    }
+    if (minRiskFilter != null && n.risk != null && n.risk < minRiskFilter) return false;
+    return true;
+  };
+
+  const visibleNodes = useMemo(() => nodes.filter(nodeVisible), [nodes, activeSet, availableLayers, minRiskFilter, primaryEntityId]);
+  const visibleIds = useMemo(() => new Set(visibleNodes.map((n) => n.id)), [visibleNodes]);
+  const visibleEdges = useMemo(() => edges.filter((rawE) => {
+    const e = getEdgeEndpoints(rawE);
+    return visibleIds.has(e.source) && visibleIds.has(e.target);
+  }), [edges, visibleIds]);
+
+  const { positions, width, height, renderNodes } = useMemo(() => computeLayout(visibleNodes, visibleEdges), [visibleNodes, visibleEdges]);
 
   if (nodes.length === 0) {
     return (
@@ -178,8 +285,35 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
     return ordered;
   }, [renderNodes]);
 
+  // F.34: "new since last visit" -- an edge/node whose real first_seen/
+  // txn_time postdates the officer's own last view of THIS network.
+  const isNew = (ts?: string | null): boolean => {
+    if (!newSinceTimestamp || !ts) return false;
+    const t = Date.parse(ts);
+    const since = Date.parse(newSinceTimestamp);
+    return !isNaN(t) && !isNaN(since) && t > since;
+  };
+
   return (
     <div className="w-full h-full flex flex-col gap-2">
+      {availableLayers.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 justify-center px-2 shrink-0">
+          {availableLayers.map((layer) => (
+            <button
+              key={layer}
+              onClick={() => handleToggle(layer)}
+              className={`text-[10px] px-2 py-1 rounded-full border transition-colors cursor-pointer ${
+                activeSet.has(layer)
+                  ? "bg-[#C79A4E]/15 border-[#C79A4E]/40 text-[#E4C590]"
+                  : "bg-stone-900 border-stone-800 text-stone-500"
+              }`}
+              title={`Toggle ${LAYER_LABELS[layer] || layer} layer`}
+            >
+              {activeSet.has(layer) ? "✓ " : ""}{LAYER_LABELS[layer] || layer}
+            </button>
+          ))}
+        </div>
+      )}
       {presentTypes.length > 1 && (
         <div className="flex flex-wrap gap-x-3 gap-y-1 justify-center px-2 shrink-0">
           {presentTypes.map((t) => (
@@ -198,20 +332,32 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
             <stop offset="100%" stopColor="#00C6AD" stopOpacity="0" />
           </radialGradient>
         </defs>
-        {edges.map((rawE, idx) => {
+        {visibleEdges.map((rawE, idx) => {
           const e = getEdgeEndpoints(rawE);
           const from = positions.get(e.source);
           const to = positions.get(e.target);
           if (!from || !to) return null;
+          // F.4: real shared-case/transaction COUNT scales stroke width,
+          // log-scaled and capped so one outlier can't visually dominate.
+          const strokeWidth = Math.min(6, 1 + Math.log2(((rawE as GraphEdge).weight || 1) + 1) * 1.5);
+          // F.2: 2nd/3rd-degree links render dashed + faded, visually
+          // distinct from a direct 1-hop connection.
+          const isMultiHop = ((rawE as GraphEdge).hop || 1) > 1;
+          const edgeIsNew = isNew((rawE as GraphEdge).first_seen) || isNew((rawE as GraphEdge).txn_time);
           return (
-            <line
-              key={idx}
-              x1={from.x} y1={from.y}
-              x2={to.x} y2={to.y}
-              stroke="#64748b"
-              strokeWidth={1.75}
-              strokeOpacity={0.65}
-            />
+            <g key={idx}>
+              <line
+                x1={from.x} y1={from.y}
+                x2={to.x} y2={to.y}
+                stroke={edgeIsNew ? "#5DCAA5" : "#64748b"}
+                strokeWidth={strokeWidth}
+                strokeOpacity={isMultiHop ? 0.35 : 0.65}
+                strokeDasharray={isMultiHop ? "4 3" : undefined}
+              />
+              {edgeIsNew && (
+                <text x={(from.x + to.x) / 2} y={(from.y + to.y) / 2 - 4} textAnchor="middle" fill="#5DCAA5" fontSize={8} fontFamily="monospace" fontWeight={700}>NEW</text>
+              )}
+            </g>
           );
         })}
         {renderNodes.map((n) => {
@@ -219,13 +365,20 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
           if (!pos) return null;
           const isOverflow = n.type === "overflow";
           const color = isOverflow ? "#94a3b8" : NODE_COLORS[n.type] || "#64748b";
-          const radius = n.type === "suspect" ? 26 : isDense ? 14 : 18;
+          const isMultiHopNode = (n.hop || 1) > 1;
+          // F.6: importance blends real degree centrality with an
+          // individual risk score ONLY when one exists for this node.
+          const importance = getNodeImportance(n);
+          const baseRadius = n.type === "suspect" ? 26 : isDense ? 14 : 18;
+          const radius = n.type === "suspect" || isOverflow ? baseRadius : baseRadius * (0.85 + importance.score * 0.4);
           const maxLabelLen = isDense ? 12 : 18;
-          const tooltipText = isOverflow
-            ? n.label
-            : `${NODE_TYPE_LABELS[n.type] || n.type}: ${n.label}${n.sublabel ? ` (${n.sublabel})` : ""}`;
+          const nodeIsNew = isNew(n.first_seen);
+          const tooltipParts = [isOverflow ? n.label : `${NODE_TYPE_LABELS[n.type] || n.type}: ${n.label}${n.sublabel ? ` (${n.sublabel})` : ""}`];
+          if (importance.assessed) tooltipParts.push(`Risk-weighted importance: ${(importance.score * 100).toFixed(0)}%`);
+          if (n.cross_flag) tooltipParts.push(n.cross_flag);
+          const tooltipText = tooltipParts.join(" · ");
           return (
-            <g key={n.id} className="cursor-default">
+            <g key={n.id} className="cursor-default" opacity={isMultiHopNode ? 0.6 : 1}>
               {/* Native <title> gives every node a real hover tooltip with no
                   extra JS state/positioning logic -- appropriate for a
                   lightweight SVG diagram like this one (see interaction.md:
@@ -241,12 +394,15 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
                   strokeOpacity={0.4}
                 />
               )}
+              {n.cross_flag && (
+                <circle cx={pos.x} cy={pos.y} r={radius + 4} fill="none" stroke="#E24B4A" strokeWidth={1.5} strokeDasharray="2 2" />
+              )}
               <circle
                 cx={pos.x} cy={pos.y} r={radius}
                 fill="#0f172a"
                 stroke={color}
                 strokeWidth={n.type === "suspect" ? 2.5 : 2}
-                strokeDasharray={isOverflow ? "3 3" : undefined}
+                strokeDasharray={isOverflow || isMultiHopNode ? "3 3" : undefined}
               />
               <text
                 x={pos.x} y={pos.y + radius + 13}
@@ -268,6 +424,9 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({ nodes, edges, height
                 >
                   {n.sublabel}
                 </text>
+              )}
+              {nodeIsNew && (
+                <text x={pos.x} y={pos.y - radius - 6} textAnchor="middle" fill="#5DCAA5" fontSize={8} fontFamily="monospace" fontWeight={700}>NEW</text>
               )}
             </g>
           );
