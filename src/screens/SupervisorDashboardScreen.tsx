@@ -279,7 +279,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
   const [historyItems, setHistoryItems] = useState<any[]>([]);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [historyTypeFilter, setHistoryTypeFilter] = useState<"all" | "export" | "pocso">("all");
-  const [historyStatusFilter, setHistoryStatusFilter] = useState<"all" | "approved" | "rejected">("all");
+  const [historyStatusFilter, setHistoryStatusFilter] = useState<"all" | "approved" | "rejected" | "expired">("all");
 
   const fetchApprovalHistory = async (typeF: string, statusF: string) => {
     try {
@@ -885,6 +885,8 @@ export const SupervisorDashboardScreen: React.FC = () => {
               <option value="all">{lang === "en" ? "All outcomes" : "ಎಲ್ಲಾ ಫಲಿತಾಂಶ"}</option>
               <option value="approved">{lang === "en" ? "Approved" : "ಅನುಮೋದಿಸಲಾಗಿದೆ"}</option>
               <option value="rejected">{lang === "en" ? "Rejected" : "ತಿರಸ್ಕರಿಸಲಾಗಿದೆ"}</option>
+              {/* §5.4/C.22: a real terminal state now -- a request nobody reviewed within 24h, distinct from a deliberate rejection */}
+              <option value="expired">{lang === "en" ? "Expired" : "ಅವಧಿ ಮುಗಿದಿದೆ"}</option>
             </select>
             <button
               onClick={() => fetchApprovalHistory(historyTypeFilter, historyStatusFilter)}
@@ -926,8 +928,17 @@ export const SupervisorDashboardScreen: React.FC = () => {
                     <td className="py-1.5 pr-3 truncate max-w-[160px]">{h.requester_badge} {h.requester_name ? `(${h.requester_name})` : ""}</td>
                     <td className="py-1.5 pr-3 truncate max-w-[220px] text-stone-400">{h.subject || "—"}</td>
                     <td className="py-1.5 pr-3">
-                      <span className={h.status === "approved" ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>
-                        {h.status === "approved" ? (lang === "en" ? "Approved" : "ಅನುಮೋದಿಸಲಾಗಿದೆ") : (lang === "en" ? "Rejected" : "ತಿರಸ್ಕರಿಸಲಾಗಿದೆ")}
+                      {/* §5.4/C.22: 3-way now, not binary -- "expired" is a real
+                          auto-timeout, distinct from a supervisor's deliberate
+                          rejection. Amber (not red) since nobody actually said no. */}
+                      <span className={
+                        h.status === "approved" ? "text-emerald-400 font-bold"
+                          : h.status === "expired" ? "text-amber-400 font-bold"
+                          : "text-rose-400 font-bold"
+                      }>
+                        {h.status === "approved" ? (lang === "en" ? "Approved" : "ಅನುಮೋದಿಸಲಾಗಿದೆ")
+                          : h.status === "expired" ? (lang === "en" ? "Expired (no action)" : "ಅವಧಿ ಮುಗಿದಿದೆ (ಯಾವುದೇ ಕ್ರಮವಿಲ್ಲ)")
+                          : (lang === "en" ? "Rejected" : "ತಿರಸ್ಕರಿಸಲಾಗಿದೆ")}
                       </span>
                     </td>
                     <td className="py-1.5 pr-3 text-stone-400">{h.approver_badge || "—"}</td>

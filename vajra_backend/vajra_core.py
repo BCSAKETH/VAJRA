@@ -898,6 +898,41 @@ def find_active_district_access_request(badge: str, target_district_id: Any) -> 
 # use is visible and revocable after the fact.
 BREAK_GLASS_GRANT_HOURS = 2
 
+# §5.4/C.22: real state transitions for the export/POCSO/district-access
+# approval queues -- today a request that's never reviewed sits "pending"
+# forever (confirmed: create_pocso_request/create_district_access_request/
+# _create_export_request all set created_at at creation but nothing ever
+# checks it against the current time). One sane default (24h) applied
+# uniformly across all three request types, not left configurable-and-
+# forgotten per type (this item's own Loophole table).
+REQUEST_EXPIRY_HOURS = 24
+
+
+def is_request_stale(meta: Dict[str, Any], hours: int = REQUEST_EXPIRY_HOURS) -> bool:
+    """Pure check, no side effects -- callers (main.py's three pending-list
+    endpoints) decide what to actually do about a stale request (write the
+    expired status, notify the requester over their WebSocket), since those
+    actions need main.py's own connection_manager, which this lower-level
+    module doesn't have access to.
+
+    A request with no `created_at` at all (pre-dates this field, or a
+    genuinely malformed row) is NEVER treated as stale -- there's no way to
+    know its real age, and guessing wrong in the "expire it" direction would
+    silently deny a request nobody actually let time out. Same defensive
+    bias as everywhere else in this codebase: an inability to determine
+    something safely defaults to leaving current behavior unchanged, not to
+    a new failure mode."""
+    if meta.get("status") != "pending":
+        return False
+    created_at = meta.get("created_at")
+    if not created_at:
+        return False
+    try:
+        created_dt = datetime.fromisoformat(created_at)
+    except (TypeError, ValueError):
+        return False
+    return (datetime.utcnow() - created_dt) > timedelta(hours=hours)
+
 
 def create_emergency_district_access(requester_badge: str, requester_name: str,
                                      home_district_id: Any, target_district_id: Any,

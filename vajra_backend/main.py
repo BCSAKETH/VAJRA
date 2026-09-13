@@ -63,6 +63,8 @@ from vajra_core import (
     insert_proactive_alert,  # C.3: whitelist-checked ProactiveAlerts insert
     run_syndicate_detection_job,  # C.8
     get_cached_syndicate_clusters,  # C.8
+    is_request_stale,  # 5.4/C.22
+    REQUEST_EXPIRY_HOURS,  # 5.4/C.22
     invalidate_profile_cache,
     find_pocso_row,
     POCSO_GRANT_HOURS,
@@ -7623,6 +7625,31 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         raise HTTPException(status_code=500, detail=f"PDF generation error: {e}")
 
 
+# §5.4/C.22: shared expire-and-notify -- one function used by all three
+# pending-queue endpoints (export/POCSO/district-access) below, so the 24h
+# default and the notification behavior can't drift apart per request type
+# (this item's own Loophole table: "pick one sane default... don't leave it
+# configurable-and-forgotten per request type").
+async def _expire_and_notify(rowid: Any, meta: Dict[str, Any], ws_event_type: str) -> None:
+    meta = dict(meta)
+    meta["status"] = "expired"
+    meta["decided_at"] = datetime.utcnow().isoformat()
+    try:
+        zcql_update_row("ProactiveAlerts", {"ROWID": rowid, "AlertMessage": json.dumps(meta), "IsRead": True})
+    except Exception as e:
+        logger.warning(f"_expire_and_notify update failed for rowid {rowid}: {e}")
+        return
+    if meta.get("session_id"):
+        try:
+            await connection_manager.broadcast(meta["session_id"], {
+                "type": ws_event_type, "request_id": meta.get("request_id"),
+                "status": "expired",
+                "reason": f"No supervisor action within {REQUEST_EXPIRY_HOURS}h -- automatically expired.",
+                "timestamp": meta["decided_at"]})
+        except Exception as e:
+            logger.warning(f"_expire_and_notify broadcast failed for rowid {rowid}: {e}")
+
+
 @app.get("/api/exports/pending")
 async def list_pending_exports(request: Request, location_context: str = Depends(security_firewall)):
     """Supervisor-only: pending export-approval requests (the Supervisor screen
@@ -7641,9 +7668,13 @@ async def list_pending_exports(request: Request, location_context: str = Depends
                     m = json.loads(a.get("AlertMessage") or "{}")
                 except Exception:
                     continue
-                if m.get("status") == "pending":
-                    m["rowid"] = a.get("ROWID")
-                    out.append(m)
+                if m.get("status") != "pending":
+                    continue
+                if is_request_stale(m):  # §5.4/C.22: real Requested/Pending/Expired state, not pending forever
+                    await _expire_and_notify(a.get("ROWID"), m, "export_decision")
+                    continue
+                m["rowid"] = a.get("ROWID")
+                out.append(m)
         except Exception as e:
             logger.warning(f"list_pending_exports: {e}")
     return {"pending": out, "count": len(out)}
@@ -8044,9 +8075,13 @@ async def list_pending_pocso(request: Request, location_context: str = Depends(s
                     m = json.loads(a.get("AlertMessage") or "{}")
                 except Exception:
                     continue
-                if m.get("status") == "pending":
-                    m["rowid"] = a.get("ROWID")
-                    out.append(m)
+                if m.get("status") != "pending":
+                    continue
+                if is_request_stale(m):  # §5.4/C.22
+                    await _expire_and_notify(a.get("ROWID"), m, "pocso_decision")
+                    continue
+                m["rowid"] = a.get("ROWID")
+                out.append(m)
         except Exception as e:
             logger.warning(f"list_pending_pocso: {e}")
     return {"pending": out, "count": len(out)}
@@ -8226,6 +8261,14 @@ async def list_pending_district_access(request: Request, location_context: str =
                 except Exception:
                     continue
                 if m.get("status") == "pending":
+                    # §5.4/C.22: emergency break-glass grants are already
+                    # "approved" at creation (is_request_stale's own
+                    # status=="pending" check naturally excludes them --
+                    # they're never in scope for auto-expiry, only a normal
+                    # unreviewed request is).
+                    if is_request_stale(m):
+                        await _expire_and_notify(a.get("ROWID"), m, "district_access_decision")
+                        continue
                     m["rowid"] = a.get("ROWID")
                     out.append(m)
                 elif m.get("emergency") and not m.get("reviewed"):
@@ -8299,7 +8342,7 @@ async def approvals_history(request: Request, type: str = "all", status: str = "
                         m = json.loads(a.get("AlertMessage") or "{}")
                     except Exception:
                         continue
-                    if m.get("status") in ("approved", "rejected"):
+                    if m.get("status") in ("approved", "rejected", "expired"):  # 5.4/C.22: expired is a real, visible terminal state, not silently dropped from history
                         out.append({
                             "kind": "export", "rowid": a.get("ROWID"),
                             "requester_badge": m.get("requester_badge"),
@@ -8321,7 +8364,7 @@ async def approvals_history(request: Request, type: str = "all", status: str = "
                         m = json.loads(a.get("AlertMessage") or "{}")
                     except Exception:
                         continue
-                    if m.get("status") in ("approved", "rejected"):
+                    if m.get("status") in ("approved", "rejected", "expired"):  # 5.4/C.22: expired is a real, visible terminal state, not silently dropped from history
                         out.append({
                             "kind": "pocso", "rowid": a.get("ROWID"),
                             "requester_badge": m.get("requester_badge"),
@@ -8344,7 +8387,7 @@ async def approvals_history(request: Request, type: str = "all", status: str = "
                         m = json.loads(a.get("AlertMessage") or "{}")
                     except Exception:
                         continue
-                    if m.get("status") in ("approved", "rejected"):
+                    if m.get("status") in ("approved", "rejected", "expired"):  # 5.4/C.22: expired is a real, visible terminal state, not silently dropped from history
                         out.append({
                             "kind": "district", "rowid": a.get("ROWID"),
                             "requester_badge": m.get("requester_badge"),
@@ -8356,7 +8399,7 @@ async def approvals_history(request: Request, type: str = "all", status: str = "
                         })
             except Exception as e:
                 logger.warning(f"approvals_history district: {e}")
-    if status_f in ("approved", "rejected"):
+    if status_f in ("approved", "rejected", "expired"):  # §5.4/C.22: expired is a real, filterable outcome
         out = [o for o in out if o.get("status") == status_f]
     out.sort(key=lambda o: o.get("decided_at") or o.get("created_at") or "", reverse=True)
     out = out[:100]
