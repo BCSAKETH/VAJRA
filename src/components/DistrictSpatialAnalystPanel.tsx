@@ -168,7 +168,13 @@ export const DistrictSpatialAnalystPanel: React.FC<{ district: string }> = ({ di
           </div>
         ) : (
           <MapContainer center={[points[0].lat, points[0].lng]} zoom={11} style={{ height: "100%", width: "100%" }}>
-            <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" subdomains="abcd" attribution="&copy; OpenStreetMap &copy; CARTO" />
+            {/* Real bug found live: CartoDB's dark_all tiles now show an
+                "API KEY REQUIRED" watermark over the map (Carto restricted
+                free anonymous access) -- every other map in this app
+                (InlineWidget.tsx, ExpandedOverlay.tsx, AppletPanel.tsx)
+                already uses plain OpenStreetMap tiles with no key needed;
+                matching that proven-working source here instead. */}
+            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
             <AutoFitBounds points={points} />
             {viewMode === "hex" && hexbins.length > 0 && (() => {
               const maxCount = Math.max(...hexbins.map((h) => h.count), 1);
