@@ -21,7 +21,7 @@ import {
   Area,
   CartesianGrid,
 } from "recharts";
-import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid } from "lucide-react";
+import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2 } from "lucide-react";
 import { DistrictSpatialAnalystPanel } from "../components/DistrictSpatialAnalystPanel";
 import { DistrictDemographicPanel } from "../components/DistrictDemographicPanel";
 
@@ -142,6 +142,15 @@ export const DistrictDashboardScreen: React.FC = () => {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<DistrictDetail | null>(null);
   const [stateOv, setStateOv] = useState<{ total_incidents: number; monthly_trend: { label: string; count: number }[]; trend_pct: number; crime_mix: { name: string; value: number }[] } | null>(null);
+  // F.17: Side-by-Side District/Time Comparison -- compareMode toggles a
+  // second Spatial Analyst panel; compareDistrict picks which district it
+  // shows (defaults to any other real district once the summary list
+  // loads). sharedViewport is lifted here so BOTH panels read/write the
+  // exact same pan/zoom state (Loophole L1: two maps at different
+  // viewports would make the comparison meaningless).
+  const [compareMode, setCompareMode] = useState(false);
+  const [compareDistrict, setCompareDistrict] = useState<string>("");
+  const [sharedViewport, setSharedViewport] = useState<{ center: [number, number]; zoom: number }>({ center: [14.5, 75.7], zoom: 7 });
   const [stateNews, setStateNews] = useState<{ title: string; source: string; url: string }[]>([]);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   // Open-Source Signals lane (live news) — kept in its OWN state and rendered
@@ -569,12 +578,69 @@ export const DistrictDashboardScreen: React.FC = () => {
 
       {detailTab === "spatial" && (
         <div className="glass-card p-4 border border-stone-850">
-          <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono mb-3 flex items-center gap-1.5">
-            <MapPin className="w-3.5 h-3.5 text-[#C79A4E]" />
-            {selectedId && districtDetailCache ? districtDetailCache.district : (lang === "en" ? "Statewide — All Districts" : "ರಾಜ್ಯವ್ಯಾಪಿ — ಎಲ್ಲಾ ಜಿಲ್ಲೆಗಳು")}
-            {" — "}{lang === "en" ? "Spatial Hotspot Analysis" : "ಪ್ರಾದೇಶಿಕ ಹಾಟ್‌ಸ್ಪಾಟ್ ವಿಶ್ಲೇಷಣೆ"}
-          </h3>
-          <DistrictSpatialAnalystPanel key={selectedId && districtDetailCache ? districtDetailCache.district : "__statewide__"} district={selectedId && districtDetailCache ? districtDetailCache.district : ""} />
+          <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
+            <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
+              <MapPin className="w-3.5 h-3.5 text-[#C79A4E]" />
+              {selectedId && districtDetailCache ? districtDetailCache.district : (lang === "en" ? "Statewide — All Districts" : "ರಾಜ್ಯವ್ಯಾಪಿ — ಎಲ್ಲಾ ಜಿಲ್ಲೆಗಳು")}
+              {" — "}{lang === "en" ? "Spatial Hotspot Analysis" : "ಪ್ರಾದೇಶಿಕ ಹಾಟ್‌ಸ್ಪಾಟ್ ವಿಶ್ಲೇಷಣೆ"}
+            </h3>
+            {/* F.17: Side-by-Side District/Time Comparison toggle */}
+            <button
+              onClick={() => {
+                setCompareMode((v) => !v);
+                if (!compareDistrict) {
+                  const currentName = selectedId && districtDetailCache ? districtDetailCache.district : "";
+                  const other = rows.find((r) => r.district !== currentName)?.district || "";
+                  setCompareDistrict(other);
+                }
+              }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[10.5px] font-bold font-mono uppercase tracking-wide transition-colors cursor-pointer border ${compareMode ? "bg-[#C79A4E]/15 border-[#C79A4E]/40 text-[#C79A4E]" : "bg-stone-900 border-stone-800 text-stone-500 hover:text-stone-300"}`}
+            >
+              <Columns2 className="w-3.5 h-3.5" />
+              {lang === "en" ? "Compare" : "ಹೋಲಿಸಿ"}
+            </button>
+          </div>
+
+          {compareMode ? (
+            <div className="space-y-2">
+              <div className="flex items-center justify-end">
+                <select
+                  value={compareDistrict}
+                  onChange={(e) => setCompareDistrict(e.target.value)}
+                  className="bg-stone-900 border border-stone-800 rounded-md text-[10.5px] font-mono font-bold text-stone-300 px-2 py-1.5 cursor-pointer"
+                >
+                  {rows.map((r) => (
+                    <option key={r.district_id} value={r.district}>{r.district}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                <div>
+                  <p className="text-[10px] font-mono font-bold text-stone-500 uppercase mb-1.5">
+                    {selectedId && districtDetailCache ? districtDetailCache.district : (lang === "en" ? "Statewide" : "ರಾಜ್ಯವ್ಯಾಪಿ")}
+                  </p>
+                  <DistrictSpatialAnalystPanel
+                    district={selectedId && districtDetailCache ? districtDetailCache.district : ""}
+                    sharedViewport={sharedViewport}
+                    onViewportChange={setSharedViewport}
+                  />
+                </div>
+                <div>
+                  <p className="text-[10px] font-mono font-bold text-stone-500 uppercase mb-1.5">{compareDistrict || "—"}</p>
+                  {compareDistrict && (
+                    <DistrictSpatialAnalystPanel
+                      key={compareDistrict}
+                      district={compareDistrict}
+                      sharedViewport={sharedViewport}
+                      onViewportChange={setSharedViewport}
+                    />
+                  )}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <DistrictSpatialAnalystPanel key={selectedId && districtDetailCache ? districtDetailCache.district : "__statewide__"} district={selectedId && districtDetailCache ? districtDetailCache.district : ""} />
+          )}
         </div>
       )}
 

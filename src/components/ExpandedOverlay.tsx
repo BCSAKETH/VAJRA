@@ -638,6 +638,26 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                   </div>
                 </div>
 
+                {/* F.18: Risk Score with Peer-Average Context -- real peer
+                    group (same crime type, this district; broadened
+                    statewide if too few local peers), scored with the SAME
+                    trained model. Absent entirely when the model/data
+                    couldn't produce one -- never a fabricated placeholder. */}
+                {data.peer_average?.available && (
+                  <div className="bg-stone-950/80 border border-stone-850 p-3.5 rounded-xl flex items-center justify-between gap-3 shrink-0">
+                    <div className="text-xs text-stone-400">
+                      <span className="font-bold text-stone-200">{lang === "en" ? "Peer comparison" : "ಸಹವರ್ತಿ ಹೋಲಿಕೆ"}</span>
+                      <span className="block text-[10.5px] text-stone-500 mt-0.5">
+                        {lang === "en" ? `Similar cases (${data.peer_average.peer_scope}, n=${data.peer_average.peer_count})` : `ಸಮಾನ ಪ್ರಕರಣಗಳು (n=${data.peer_average.peer_count})`}
+                      </span>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="text-lg font-black text-stone-300 font-mono">{data.peer_average.peer_avg_risk}%</div>
+                      <div className="text-[9px] text-stone-500 uppercase tracking-wider">{lang === "en" ? "peer average" : "ಸಹವರ್ತಿ ಸರಾಸರಿ"}</div>
+                    </div>
+                  </div>
+                )}
+
                 {/* Horizontal Evidentiary Diverging Bar Chart */}
                 <div className="w-full bg-stone-950/80 border border-[#C79A4E]/15 rounded-xl p-4 shrink-0 flex flex-col">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
@@ -918,13 +938,24 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
             );
           })()}
 
-          {type === "forecast" && (
+          {type === "forecast" && (() => {
+            const forecastMeta = Array.isArray(data.forecast) ? data.forecast[0] : null;
+            return (
             <div className="h-full flex flex-col gap-6">
               <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl">
                 <h4 className="font-black text-stone-100 text-sm">{lang === "en" ? "Target Area Trends & Predictive Projection" : "ಗುರಿ ಪ್ರದೇಶ ಪ್ರವೃತ್ತಿಗಳು ಮತ್ತು ಮುನ್ಸೂಚನಾ ಪ್ರೊಜೆಕ್ಷನ್"}</h4>
                 <p className="text-xs text-stone-450 mt-1">
                   {lang === "en" ? "Time-series model forecasts. Evaluates seasonal trends, cyclical variables, and rolling baselines." : "ಟೈಮ್-ಸೀರೀಸ್ ಮಾದರಿ ಮುನ್ಸೂಚನೆಗಳು. ಋತುಮಾನ ಪ್ರವೃತ್ತಿಗಳು, ಆವರ್ತಕ ಅಸ್ಥಿರಗಳು ಮತ್ತು ರೋಲಿಂಗ್ ಬೇಸ್‌ಲೈನ್‌ಗಳನ್ನು ಮೌಲ್ಯಮಾಪನ ಮಾಡುತ್ತದೆ."}
                 </p>
+                {/* F.20: Forecast Confidence Band -- real uncertainty range
+                    (population stddev of the trailing 6-month count series),
+                    clamped at 0, never negative. */}
+                {forecastMeta?.confidence_range && (
+                  <p className="text-[11px] text-[#C79A4E] font-mono font-bold mt-2">
+                    {lang === "en" ? "Likely range: " : "ಸಂಭವನೀಯ ವ್ಯಾಪ್ತಿ: "}
+                    {forecastMeta.confidence_range.lower}–{forecastMeta.confidence_range.upper}
+                  </p>
+                )}
               </div>
 
               {/* Line Chart */}
@@ -939,11 +970,39 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                     />
                     <Line type="monotone" dataKey="Predicted" stroke="#F59E0B" strokeWidth={2.5} activeDot={{ r: 6 }} />
                     <Line type="monotone" dataKey="Baseline" stroke="#C79A4E" strokeWidth={2} strokeDasharray="5 5" />
+                    {forecastMeta?.confidence_range && (
+                      <>
+                        <ReferenceLine y={forecastMeta.confidence_range.upper} stroke="#94A3B8" strokeDasharray="2 3" label={{ value: lang === "en" ? "Upper" : "ಮೇಲಿನ", position: "right", fill: "#94A3B8", fontSize: 9 }} />
+                        <ReferenceLine y={forecastMeta.confidence_range.lower} stroke="#94A3B8" strokeDasharray="2 3" label={{ value: lang === "en" ? "Lower" : "ಕೆಳಗಿನ", position: "right", fill: "#94A3B8", fontSize: 9 }} />
+                      </>
+                    )}
                   </LineChart>
                 </ResponsiveContainer>
               </div>
+
+              {/* F.21: Forecast Accuracy Track Record -- only ever populated
+                  for genuinely fully-closed months (needs the ForecastHistory
+                  Console table + at least one prior forecast that has since
+                  closed; silently absent until both exist). */}
+              {forecastMeta?.accuracy_track_record?.history?.length > 0 && (
+                <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl shrink-0">
+                  <h5 className="font-bold text-stone-200 text-xs font-mono tracking-wider mb-2">
+                    {lang === "en" ? "FORECAST ACCURACY TRACK RECORD" : "ಮುನ್ಸೂಚನೆ ನಿಖರತೆಯ ದಾಖಲೆ"}
+                  </h5>
+                  <div className="space-y-1.5">
+                    {forecastMeta.accuracy_track_record.history.map((h: any, i: number) => (
+                      <div key={i} className="flex items-center justify-between text-[11px] font-mono">
+                        <span className="text-stone-500">{h.month}</span>
+                        <span className="text-stone-400">{lang === "en" ? "Predicted" : "ಊಹಿಸಲಾಗಿದೆ"}: <span className="text-amber-450 font-bold">{h.predicted}</span></span>
+                        <span className="text-stone-400">{lang === "en" ? "Actual" : "ವಾಸ್ತವ"}: <span className="text-[#5DCAA5] font-bold">{h.actual}</span></span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          )}
+            );
+          })()}
 
           {type === "trend" && (
             <div className="h-full flex flex-col gap-5">
@@ -1331,6 +1390,45 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                     {g.case_ids && g.case_ids.length > 0 && (
                       <div className="text-[10px] text-stone-500 font-mono truncate">
                         {lang === "en" ? "Case IDs: " : "ಪ್ರಕರಣ ID: "}{g.case_ids.join(", ")}
+                      </div>
+                    )}
+                    {/* F.11: threat score + its 3 real components -- always
+                        shown together, never one opaque number a supervisor
+                        can't sanity-check. */}
+                    {typeof g.threat_score === "number" && (
+                      <div className="flex items-center gap-2 pt-1.5 border-t border-stone-850">
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-black bg-rose-500/15 border border-rose-500/30 text-rose-400">
+                          {lang === "en" ? "Threat" : "ಬೆದರಿಕೆ"}: {g.threat_score}
+                        </span>
+                        {g.threat_components && (
+                          <span className="text-[9.5px] text-stone-500 font-mono">
+                            {lang === "en" ? "severity" : "ತೀವ್ರತೆ"} {g.threat_components.avg_case_severity}/10 ·
+                            {" "}₹{Number(g.threat_components.total_financial_volume || 0).toLocaleString()} ·
+                            {" "}{g.threat_components.member_count} {lang === "en" ? "members" : "ಸದಸ್ಯರು"}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {/* F.12: cross-district flag -- summary-level only; a
+                        cross-district drill-down still goes through normal
+                        district access control wherever detail is shown. */}
+                    {g.cross_district && g.districts_involved && g.districts_involved.length > 0 && (
+                      <div className="text-[10px] font-bold text-amber-400 flex items-center gap-1">
+                        <span>⚠</span>
+                        <span>{lang === "en" ? "Spans districts:" : "ಜಿಲ್ಲೆಗಳಾದ್ಯಂತ:"} {g.districts_involved.join(", ")}</span>
+                      </div>
+                    )}
+                    {/* F.13: resemblance to a previously-detected syndicate --
+                        only ever populated once SyndicateDetectionHistory
+                        exists and has at least one prior run to compare
+                        against. */}
+                    {g.resembles_past_syndicate && (
+                      <div className="text-[10px] font-bold text-[#C79A4E] flex items-center gap-1">
+                        <span>↻</span>
+                        <span>
+                          {lang === "en" ? "Resembles a past detected syndicate" : "ಹಿಂದೆ ಪತ್ತೆಯಾದ ಸಿಂಡಿಕೇಟ್ ಹೋಲುತ್ತದೆ"}
+                          {" "}({g.resembles_past_syndicate.overlap_pct}% {lang === "en" ? "member overlap" : "ಸದಸ್ಯ ಅತಿಕ್ರಮಣ"})
+                        </span>
                       </div>
                     )}
                   </div>
