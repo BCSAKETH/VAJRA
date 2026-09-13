@@ -20,14 +20,38 @@ export const FocusLossCurtain: React.FC = () => {
 
   useEffect(() => {
     if (!isAuthenticated) return;
-    const handleBlur = () => setIsActive(true);
-    const handleFocus = () => setIsActive(false);
-    const handleVisibility = () => setIsActive(document.hidden);
+    // A short grace delay before the curtain actually shows -- a quick
+    // alt-tab (e.g. to the OS Snipping Tool and straight back, or a
+    // PrintScreen key that some setups route through a capture overlay)
+    // blurs and refocuses the window within a couple hundred ms; without
+    // this delay every one of those threw up the full-screen curtain for an
+    // instant, which read as janky/slow rather than protective. A real
+    // walk-away or app-switch is still caught well within half a second --
+    // the delay only skips capture-tool-speed blur/focus round trips.
+    let showTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearShowTimer = () => {
+      if (showTimer) {
+        clearTimeout(showTimer);
+        showTimer = null;
+      }
+    };
+    const scheduleShow = () => {
+      clearShowTimer();
+      showTimer = setTimeout(() => setIsActive(true), 400);
+    };
+    const dismissNow = () => {
+      clearShowTimer();
+      setIsActive(false);
+    };
+    const handleBlur = () => scheduleShow();
+    const handleFocus = () => dismissNow();
+    const handleVisibility = () => (document.hidden ? scheduleShow() : dismissNow());
 
     window.addEventListener("blur", handleBlur);
     window.addEventListener("focus", handleFocus);
     document.addEventListener("visibilitychange", handleVisibility);
     return () => {
+      clearShowTimer();
       window.removeEventListener("blur", handleBlur);
       window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleVisibility);
