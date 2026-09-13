@@ -467,6 +467,35 @@ or pending approval appears, cutting the delay from "next poll interval" to inst
 | Browser push permission can be denied or revoked any time | Existing polling stays as the fallback path permanently — push is a latency improvement, never the only delivery mechanism |
 | Multiple open tabs/devices → duplicate or stale pushes | Dedupe by alert ID; a newer push for the same alert supersedes/cancels the older one client-side |
 
+**Build status (2026-09-13) — DONE, verified live end-to-end.**
+- Real stack: `pywebpush` + `py-vapid` + `cryptography` + `cffi` + `pycparser` + `http-ece`
+  + `aiohttp` (a hard, undocumented-until-hit `pywebpush` import dependency) + its own chain
+  (`multidict`, `yarl`, `frozenlist`, `propcache`, `aiohappyeyeballs`, `aiosignal`, `attrs`)
+  — all vendored as real `manylinux2014_x86_64`/`cp312` wheels (vendor/ 468MB → 505MB).
+- Real generated VAPID keypair set as 3 AppSail env vars (`VAPID_PUBLIC_KEY`,
+  `VAPID_PRIVATE_KEY`, `VAPID_CLAIM_EMAIL`); new `PushSubscriptions` table
+  (kgid, endpoint, p256dh, auth, created_at — all Text, Catalyst's Text type is
+  10,000 chars, not 255, so no separate "Large Text" type exists or is needed).
+- Backend: `save_push_subscription`/`remove_push_subscription`/`send_push_to_kgids`
+  (vajra_core.py), wired into `insert_proactive_alert()` for the 5 alert types that
+  represent a pending decision (EXPORT_APPROVAL, POCSO_ACCESS, DISTRICT_ACCESS,
+  PROFILE_CHANGE, SERIAL_PATTERN_AUTO_MATCH); 3 endpoints in main.py.
+- Frontend: `public/sw.js` Service Worker, "Enable Alerts" toggle in
+  SupervisorDashboardScreen.tsx.
+- **4 real bugs found and fixed via live testing, not assumption:**
+  1. Service Worker registered at an absolute `/sw.js` — 404'd because the app is
+     hosted under `/app/`, not the domain root. Fixed to a relative path.
+  2. `pushManager.subscribe()` called immediately after `register()`, before the
+     worker was actually active — fixed by awaiting `serviceWorker.ready`.
+  3. Frontend never checked the `/api/push/subscribe` response — showed "success"
+     even when the backend save had failed (a schema mismatch at the time).
+  4. `pywebpush` unconditionally imports `aiohttp` at module load (used internally
+     for its async variant, never actually called) — not declared as a concern
+     anywhere in its docs; only surfaced as a live `ImportError` in production logs.
+- Verified live via Catalyst's own log/query tools (not guesswork): subscription
+  row saved with a real endpoint/keys, alert insert triggered the send, push
+  accepted with no error — confirmed working end-to-end by the user.
+
 ### 5.6 Domain Mappings (#5) — already tracked, no new work
 
 Buying+verifying a domain (§4.10, already blocking Mail dispatch) closes this item too
