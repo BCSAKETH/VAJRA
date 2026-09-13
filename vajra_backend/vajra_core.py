@@ -2069,16 +2069,24 @@ def send_push_to_kgids(kgids, title: str, body: str, url: str = "/") -> None:
         logging.getLogger("vajra_core").warning(f"send_push_to_kgids subscription lookup failed: {e}")
         return
     payload = json.dumps({"title": title, "body": body, "url": url})
+    logging.getLogger("vajra_core").info(f"send_push_to_kgids: {len(subs)} subscription(s) found for {kgids}")
     for r in subs:
         s = r.get("PushSubscriptions", {})
         endpoint = s.get("endpoint")
         try:
-            webpush(
+            resp = webpush(
                 subscription_info={"endpoint": endpoint, "keys": {"p256dh": s.get("p256dh"), "auth": s.get("auth")}},
                 data=payload,
                 vapid_private_key=VAPID_PRIVATE_KEY,
                 vapid_claims={"sub": VAPID_CLAIM_EMAIL},
             )
+            # Real gap this closed: nothing was ever logged on the success
+            # path, so a silently-dropped delivery (accepted by the push
+            # service, never shown by the browser/OS) was indistinguishable
+            # from "never sent" in these logs.
+            status_code = getattr(resp, "status_code", "?")
+            logging.getLogger("vajra_core").info(
+                f"webpush accepted by push service (status {status_code}) for endpoint ...{endpoint[-24:]}")
         except WebPushException as we:
             status = getattr(getattr(we, "response", None), "status_code", None)
             if status == 410:  # subscription confirmed dead by the push service itself
