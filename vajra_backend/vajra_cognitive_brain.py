@@ -42,10 +42,11 @@ inline, just organized into its own named file. Four real mechanisms:
 import json
 import logging
 import re
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from vajra_core import catalyst_app, is_pocso_sensitive, is_supervisor_badge, has_active_pocso_grant
+from vajra_core import catalyst_app, is_pocso_sensitive, is_supervisor_badge, has_active_pocso_grant, zcql_insert_row
 
 logger = logging.getLogger(__name__)
 
@@ -999,9 +1000,15 @@ class CognitiveBrainMixin:
         bug in this safety net must never itself take down an otherwise-good
         answer.
         """
+        # §5.2/C.20: initialized here, BEFORE the try block, specifically so
+        # the `finally` at the bottom of this method can always see whatever
+        # value `data` holds (original, or reassigned during POCSO
+        # redaction below) regardless of which return/exception path was
+        # taken -- `try`/`except`/`finally` share this function's scope in
+        # Python, they don't create a new one.
+        data = result.get("data") or {}
         try:
             text = result.get("text") or ""
-            data = result.get("data") or {}
             citations = result.get("citations") or []
 
             # --- Item 24 (Vajra Plan 04-09-26): CCTNS Relational Grounding
@@ -1102,4 +1109,49 @@ class CognitiveBrainMixin:
                 result["data"] = data
         except Exception as e:
             logger.warning(f"_grounding_safety_net check failed (non-fatal, original result returned): {e}")
+        finally:
+            # §5.2/C.20: persist the Full Dossier hypothesis tree. This
+            # function is the ONE point every real answer already passes
+            # through exactly once (its own docstring: "wired in
+            # run_agent_loop, the one public entry point"), and `finally`
+            # runs on every return/exception path above -- so this can never
+            # be a second, separately-maintained gate that drifts out of
+            # sync with what the officer actually saw. Fails open, same
+            # philosophy as the rest of this function: a persistence bug
+            # must never affect the officer's actual answer.
+            #
+            # Loophole (5.2's own table): "Could persist POCSO-sensitive raw
+            # case text ungoverned by the redaction layer." `data` here is
+            # read AFTER any POCSO redaction above already ran (it's the
+            # same local variable, reassigned in place if `caught` was
+            # True) -- this persists exactly what the officer was shown,
+            # never a separate, unredacted copy.
+            #
+            # Loophole: "adds latency to an already-slow (20-45s) Dossier
+            # answer." The plan's own suggestion (asyncio.create_task after
+            # the response is sent) doesn't fit this call site cleanly --
+            # this is a synchronous method with no guaranteed running event
+            # loop in its calling thread, unlike a FastAPI request handler.
+            # A single small ZCQL insert (single-digit milliseconds) is
+            # negligible against 20-45s of LLM calls already dominating this
+            # path -- the same synchronous-but-best-effort pattern every
+            # other per-turn write in this codebase already uses
+            # (_write_audit_log itself runs on the same hot path, always
+            # has). Deliberate deviation from the plan's literal wording,
+            # not an oversight.
+            try:
+                hyps = data.get("hypotheses")
+                if hyps:
+                    zcql_insert_row("DossierHypotheses", {
+                        "session_id": session_id,
+                        "case_ref": locals().get("case_no") or "",
+                        "hypotheses_json": json.dumps(hyps)[:4000],
+                        "chosen_hypothesis": (hyps[0].get("theory") or "")[:300],
+                        "devils_advocate": (data.get("devils_advocate") or "")[:1000],
+                        "operator_kgid": getattr(self, "officer_badge", None) or "",
+                        "pocso_redacted": bool(data.get("pocso_redacted")),
+                        "created_at": datetime.utcnow().isoformat(),
+                    })
+            except Exception as pe:
+                logger.warning(f"DossierHypotheses persist skipped (non-fatal): {pe}")
         return result
