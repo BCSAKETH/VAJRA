@@ -501,18 +501,31 @@ or pending approval appears, cutting the delay from "next poll interval" to inst
 Buying+verifying a domain (§4.10, already blocking Mail dispatch) closes this item too
 — same action, same trigger, don't treat it as separate work.
 
-### 5.7 Zia AutoML (#13) — needs one research step before committing to it
+### 5.7 Zia AutoML (#13) — RESOLVED (2026-09-13): not a fit, keep the custom pipeline
 
-**Honest current state**: the risk-model retrain is a hand-written XGBoost script
-(`train_risk_model.py`) run as a manual/scheduled job — real, working, has a measured
-Brier score — but it is not the literal Zia AutoML product. Before promising "Zia
-AutoML" anywhere again: **confirm whether Zia AutoML actually supports bring-your-own
-labeled tabular data for a binary classifier with SHAP-style explainability.** If yes,
-migrate the retrain pipeline onto it for real. If the product genuinely doesn't fit
-this use case (a real possibility — AutoML products often don't expose the exact SHAP
-attribution style this app already relies on), the honest path is: keep the working
-custom XGBoost pipeline exactly as-is, and stop describing it as "Zia AutoML" in any
-external material. Don't force a fit that isn't there just to tick the box.
+**Research finding**: Catalyst AutoML (Zia's tabular-model product) genuinely does
+support bring-your-own labeled tabular data for binary classification — real, CSV
+upload + choose training columns + choose a target column, no invented capability.
+But its explainability is **global feature importance only** (one bar chart: "across
+every prediction, which columns mattered most overall") — there is no per-instance
+attribution anywhere in its evaluation report. This app's actual differentiator is
+the opposite of that: `shap.TreeExplainer`'s interactive **local waterfall**, a
+different breakdown for every single suspect ("for Ramesh specifically, prior
+convictions contributed +15%, age contributed −5%..."), which the officer-facing UI
+is built around. Migrating to Catalyst AutoML would be a real downgrade in
+explainability, not a lateral move — it cannot reproduce the per-suspect waterfall at
+all, only a single static chart shared by every prediction.
+
+**Decision**: keep the working custom XGBoost + SHAP pipeline (`train_risk_model.py`)
+exactly as-is. Do not migrate.
+
+**Verification that no correction was needed**: confirmed via grep that no user-facing
+code, UI text, PDF export, or README anywhere in this repo claims "Zia AutoML" powers
+this feature — the phrase only appears in internal planning docs describing what
+`implementation_plan.md` originally aspired to before this feature was actually built.
+Nothing external to fix; this entry itself is the record of the research being done.
+
+Sources: [Catalyst AutoML — Implementation](https://docs.catalyst.zoho.com/en/zia-services/help/automl/implementation/), [Catalyst AutoML — Introduction](https://docs.catalyst.zoho.com/en/zia-services/help/automl/introduction/), [QuickML model details — feature importance](https://docs.catalyst.zoho.com/en/quickml/help/models-details/)
 
 ---
 
