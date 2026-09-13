@@ -2,10 +2,14 @@ import React, { useState, useEffect, useRef, useCallback, useMemo, Suspense, laz
 import { useApp, ChatMessage } from "../AppContext";
 import { API_BASE } from "../config";
 import { ChatBubble } from "../components/ChatBubble";
-import { ChatHistoryPanel } from "../components/ChatHistoryPanel";
 import { ChatInput } from "../components/ChatInput";
 import { WatermarkOverlay } from "../components/WatermarkOverlay";
-import { Download, Sparkles, X, Users, FileText, Globe, Check } from "lucide-react";
+import { GreetingHeader } from "../components/GreetingHeader";
+import { CaseBoard } from "../components/CaseBoard";
+import { CaseChipStrip } from "../components/CaseChipStrip";
+import { TaskChecklist } from "../components/TaskChecklist";
+import { CaseDiary } from "../components/CaseDiary";
+import { Download, Sparkles, X, Users, FileText, Globe, Check, MoreVertical, ListChecks, BookText } from "lucide-react";
 
 // ExpandedOverlay pulls in Leaflet + Recharts directly (~250KB+ of the main
 // bundle) but only ever renders when a widget is actually expanded -- most
@@ -79,6 +83,12 @@ export const AIChatScreen: React.FC = () => {
     addNotification,
     setIsAuthenticated,
     voicePersona,
+    // §9.1 Unified Sidebar bridge -- see AppContext.tsx's own comment for
+    // why this thin bridge exists instead of lifting this whole pipeline.
+    setActiveChatSessionId,
+    chatSessionSelectRequest,
+    newChatRequestNonce,
+    bumpChatSessionsRefresh,
   } = useApp();
 
   const [inputVal, setInputVal] = useState("");
@@ -97,6 +107,11 @@ export const AIChatScreen: React.FC = () => {
   // always reflects the current one.
   const activeSessionIdRef = useRef<string | null>(null);
   useEffect(() => { activeSessionIdRef.current = activeSessionId; }, [activeSessionId]);
+  // §9.1: mirror the real active session id into AppContext so the now-
+  // global UnifiedSidebar (a sibling of this screen, not a child of it) can
+  // highlight the right row without this screen handing over its whole
+  // send/poll pipeline.
+  useEffect(() => { setActiveChatSessionId(activeSessionId); }, [activeSessionId, setActiveChatSessionId]);
   const [sessionsRefreshKey, setSessionsRefreshKey] = useState(0);
   // Which session (if any) is currently being fetched from the history
   // sidebar. Surfaced as an immediate spinner on the clicked row and a
@@ -320,6 +335,29 @@ export const AIChatScreen: React.FC = () => {
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     setVoiceAvailable(Boolean(SpeechRecognitionCtor));
   }, []);
+
+  // §9.4/§9.7: whether the active session is a real Investigation (non-empty
+  // description) -- same fetch-on-activeSessionId-change pattern already
+  // used by the hasParticipants effect right below, tolerant of failure
+  // (defaults to false, i.e. "treat as a regular chat" -- the safer default
+  // for a screen that must never crash).
+  const [isActiveInvestigation, setIsActiveInvestigation] = useState(false);
+  useEffect(() => {
+    if (!activeSessionId) {
+      setIsActiveInvestigation(false);
+      return;
+    }
+    let cancelled = false;
+    fetch(`${API_BASE}/api/investigations`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+    })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((list: { session_id: string }[]) => {
+        if (!cancelled) setIsActiveInvestigation(list.some((i) => i.session_id === activeSessionId));
+      })
+      .catch(() => { if (!cancelled) setIsActiveInvestigation(false); });
+    return () => { cancelled = true; };
+  }, [activeSessionId]);
 
   // Whether the active session already has a real participant (used to
   // decide whether "Cowork" mode shows an invite prompt or just behaves
@@ -757,6 +795,7 @@ export const AIChatScreen: React.FC = () => {
       // function exists to prevent. The sidebar refresh is always safe.
       if (!sendSessionId && data.session_id) {
         setSessionsRefreshKey((k) => k + 1);
+        bumpChatSessionsRefresh(); // §9.1: the sidebar is global now, refresh it too
         // Migrate the pending marker from the "__new__" bucket to the real
         // id now that one exists, so the eventual clear (here or inside
         // pollForPendingReply) actually finds and removes it.
@@ -925,6 +964,78 @@ export const AIChatScreen: React.FC = () => {
     }
   };
 
+  // §9.7 Investigation "Manage" menu -----------------------------------
+  const [showManageMenu, setShowManageMenu] = useState(false);
+  const [showAddCaseModal, setShowAddCaseModal] = useState(false);
+  const [addCaseNo, setAddCaseNo] = useState("");
+  const [isAddingCase, setIsAddingCase] = useState(false);
+  const [showTaskChecklist, setShowTaskChecklist] = useState(false);
+  const [showCaseDiary, setShowCaseDiary] = useState(false);
+
+  const handleAddCase = async () => {
+    if (!activeSessionId || !addCaseNo.trim()) return;
+    setIsAddingCase(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/investigations/${activeSessionId}/cases`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({ case_no: addCaseNo.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Could not link that case.");
+      addToast(
+        lang === "en" ? "Case Linked" : "ಪ್ರಕರಣ ಜೋಡಿಸಲಾಗಿದೆ",
+        lang === "en" ? `Case ${addCaseNo.trim()} linked to this Investigation.` : `ಪ್ರಕರಣ ${addCaseNo.trim()} ಈ ತನಿಖೆಗೆ ಜೋಡಿಸಲಾಗಿದೆ.`,
+        "Success"
+      );
+      setShowAddCaseModal(false);
+      setAddCaseNo("");
+    } catch (err: any) {
+      addToast(lang === "en" ? "Could Not Link Case" : "ಪ್ರಕರಣ ಜೋಡಿಸಲಾಗಲಿಲ್ಲ", err.message, "Critical");
+    } finally {
+      setIsAddingCase(false);
+    }
+  };
+
+  // "Generate Full Dossier" reuses the EXISTING PDF export pipeline
+  // (handleExportPDF) rather than a second, parallel dossier-generation
+  // path -- buildTranscript already maps only already-persisted
+  // chatMessages data (never re-runs a tool), which is exactly Loophole
+  // L2's requirement ("a closed investigation's dossier is a frozen
+  // snapshot of already-persisted data, no live tool re-execution") --
+  // the existing export mechanism already satisfies this as-is.
+  const handleGenerateDossier = () => {
+    setShowManageMenu(false);
+    handleExportPDF();
+  };
+
+  const handleCloseInvestigation = async () => {
+    if (!activeSessionId) return;
+    setShowManageMenu(false);
+    const confirmed = window.confirm(
+      lang === "en"
+        ? "Close this Investigation? It stays viewable and can be re-opened later -- nothing is deleted."
+        : "ಈ ತನಿಖೆಯನ್ನು ಮುಚ್ಚುವುದೇ? ಇದನ್ನು ನಂತರ ಮತ್ತೆ ತೆರೆಯಬಹುದು -- ಏನನ್ನೂ ಅಳಿಸಲಾಗುವುದಿಲ್ಲ."
+    );
+    if (!confirmed) return;
+    try {
+      const res = await fetch(`${API_BASE}/api/investigations/${activeSessionId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({ status: "closed" }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Could not close this Investigation.");
+      addToast(
+        lang === "en" ? "Investigation Closed" : "ತನಿಖೆ ಮುಚ್ಚಲಾಗಿದೆ",
+        lang === "en" ? "It remains viewable and can be re-opened anytime." : "ಇದು ವೀಕ್ಷಿಸಬಹುದಾಗಿ ಉಳಿದಿದೆ ಮತ್ತು ಯಾವಾಗ ಬೇಕಾದರೂ ಮತ್ತೆ ತೆರೆಯಬಹುದು.",
+        "Success"
+      );
+    } catch (err: any) {
+      addToast(lang === "en" ? "Could Not Close" : "ಮುಚ್ಚಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ", err.message, "Critical");
+    }
+  };
+
   // Resume a past conversation from the history sidebar. Gives immediate
   // visual feedback (spinner on the clicked row + thread skeleton) instead
   // of appearing frozen while the fetch is in flight, and ignores its own
@@ -959,6 +1070,47 @@ export const AIChatScreen: React.FC = () => {
       if (requestId === selectSessionRequestRef.current) setLoadingSessionId(null);
     }
   };
+
+  // §9.1 Unified Sidebar bridge: the sidebar now lives in MainLayout (a
+  // sibling of this screen), so a session click there arrives as a request
+  // through AppContext instead of a direct prop call. Keyed off the
+  // request's own nonce (not its sessionId) so re-selecting the SAME
+  // session a second time still fires (matches handleSelectSession's own
+  // early-return-if-unchanged behavior, which already handles the no-op
+  // case correctly on its own).
+  const lastHandledSelectNonceRef = useRef<number>(0);
+  useEffect(() => {
+    if (!chatSessionSelectRequest || chatSessionSelectRequest.nonce === lastHandledSelectNonceRef.current) return;
+    lastHandledSelectNonceRef.current = chatSessionSelectRequest.nonce;
+    handleSelectSession(chatSessionSelectRequest.sessionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatSessionSelectRequest]);
+
+  // Same bridge pattern for "New Chat" triggered from the sidebar -- nonce
+  // starts at 0 on both sides, so this never fires on mount, only on a real
+  // request from UnifiedSidebar.
+  const lastHandledNewChatNonceRef = useRef(0);
+  useEffect(() => {
+    if (newChatRequestNonce === lastHandledNewChatNonceRef.current) return;
+    lastHandledNewChatNonceRef.current = newChatRequestNonce;
+    handleNewChat();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newChatRequestNonce]);
+
+  // §9.4 Case Board / Chip Strip: tapping an entry scrolls to and briefly
+  // highlights the ORIGINAL message that already carries this data (never
+  // re-runs or re-fetches anything -- Loophole L1). Both CaseBoard (full
+  // panel, Investigations) and CaseChipStrip (thin strip, regular chats)
+  // call this same handler.
+  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
+  const handleJumpToMessage = useCallback((msgId: string) => {
+    const el = document.querySelector(`[data-msg-id="${msgId}"]`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    setHighlightedMsgId(msgId);
+    window.setTimeout(() => setHighlightedMsgId((cur) => (cur === msgId ? null : cur)), 2200);
+  }, []);
 
   // Language Selection Modal state for PDF Export
   const [showExportModal, setShowExportModal] = useState(false);
@@ -1123,27 +1275,70 @@ export const AIChatScreen: React.FC = () => {
 
   return (
     <div className="h-full flex overflow-hidden bg-stone-950/20">
-      <ChatHistoryPanel
-        activeSessionId={activeSessionId}
-        onSelectSession={handleSelectSession}
-        onNewChat={handleNewChat}
-        refreshKey={sessionsRefreshKey}
-        loadingSessionId={loadingSessionId}
-        onSessionDeleted={(deletedId) => {
-          sessionMessagesCacheRef.current.delete(deletedId);
-          if (deletedId === activeSessionId) {
-            handleNewChat();
-          }
-        }}
-      />
-
+      {/* §9.1: the chat-history/investigations panel is now the global
+          UnifiedSidebar rendered once in MainLayout.tsx (a sibling of every
+          screen, never remounted here) -- this screen no longer renders its
+          own local history panel. Session switch/new-chat requests arrive
+          via the AppContext bridge (chatSessionSelectRequest/
+          newChatRequestNonce, wired above). */}
       <div className="flex-1 flex flex-col relative overflow-hidden">
       {/* Security watermark -- already used on Spatial/Supervisor, missing
           here despite chat being the screen most likely to display raw case
           facts, suspect names, and attachment content. */}
       <WatermarkOverlay />
-      {/* Header export action button */}
-      <div className="absolute top-4 right-4 z-20">
+      {/* Header export action button + §9.5/§9.6/§9.7 Investigation-only controls */}
+      <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
+        {isActiveInvestigation && (
+          <>
+            <button
+              onClick={() => setShowTaskChecklist(true)}
+              title={lang === "en" ? "Guided Tasks" : "ಮಾರ್ಗದರ್ಶಿ ಕಾರ್ಯಗಳು"}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-white transition-all shadow-md cursor-pointer"
+            >
+              <ListChecks className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => setShowCaseDiary(true)}
+              title={lang === "en" ? "Case Diary" : "ಪ್ರಕರಣ ದಿನಚರಿ"}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-white transition-all shadow-md cursor-pointer"
+            >
+              <BookText className="w-3.5 h-3.5" />
+            </button>
+            <div className="relative">
+              <button
+                onClick={() => setShowManageMenu((v) => !v)}
+                title={lang === "en" ? "Manage Investigation" : "ತನಿಖೆ ನಿರ್ವಹಿಸಿ"}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-white transition-all shadow-md cursor-pointer"
+              >
+                <MoreVertical className="w-3.5 h-3.5" />
+              </button>
+              {showManageMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowManageMenu(false)} />
+                  <div className="absolute right-0 top-9 z-50 bg-stone-900 border border-stone-800 rounded-lg shadow-2xl py-1 w-56">
+                    {/* Reuses the EXISTING invite flow verbatim (setShowInvitePanel
+                        already works for any Nth member) -- the only gap was ever
+                        having a second way to trigger it beyond the automatic
+                        first-participant prompt. */}
+                    <button onClick={() => { setShowInvitePanel(true); setShowManageMenu(false); }} className="w-full text-left px-3 py-2 text-xs text-stone-300 hover:bg-stone-800 cursor-pointer">
+                      {lang === "en" ? "Add member" : "ಸದಸ್ಯರನ್ನು ಸೇರಿಸಿ"}
+                    </button>
+                    <button onClick={() => { setShowAddCaseModal(true); setShowManageMenu(false); }} className="w-full text-left px-3 py-2 text-xs text-stone-300 hover:bg-stone-800 cursor-pointer">
+                      {lang === "en" ? "Add another case" : "ಇನ್ನೊಂದು ಪ್ರಕರಣ ಸೇರಿಸಿ"}
+                    </button>
+                    <button onClick={handleGenerateDossier} className="w-full text-left px-3 py-2 text-xs text-stone-300 hover:bg-stone-800 cursor-pointer">
+                      {lang === "en" ? "Generate Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್ ರಚಿಸಿ"}
+                    </button>
+                    <div className="border-t border-stone-800 my-1" />
+                    <button onClick={handleCloseInvestigation} className="w-full text-left px-3 py-2 text-xs text-rose-400 hover:bg-rose-500/10 cursor-pointer">
+                      {lang === "en" ? "Close Investigation" : "ತನಿಖೆ ಮುಚ್ಚಿ"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </>
+        )}
         {chatMessages.length > 0 && (
           <button
             onClick={handleExportPDF}
@@ -1155,6 +1350,21 @@ export const AIChatScreen: React.FC = () => {
           </button>
         )}
       </div>
+
+      {/* §9.4 Case Board (Investigation, full panel) / Chip Strip (regular
+          chat, thin row) -- placed above the message list per the blueprint,
+          inside the same scrollable thread region. */}
+      {chatMessages.length > 0 && (
+        <div className="px-4 sm:px-6 pt-4">
+          <div className="max-w-3xl mx-auto">
+            {isActiveInvestigation ? (
+              <CaseBoard messages={chatMessages} onJumpToMessage={handleJumpToMessage} />
+            ) : (
+              <CaseChipStrip messages={chatMessages} onJumpToMessage={handleJumpToMessage} />
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Messages Thread Container */}
       <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
@@ -1171,6 +1381,11 @@ export const AIChatScreen: React.FC = () => {
           </div>
         ) : chatMessages.length === 0 ? (
           <div className="h-full flex flex-col items-center justify-center text-center max-w-lg mx-auto space-y-4 animate-fade-in">
+            {/* §9.10 Context-aware greeting -- time/date + officer name (already
+                a global, persisted AppContext value) + a case-load digest that
+                fetches asynchronously and never blocks this greeting from
+                rendering instantly. */}
+            <GreetingHeader />
             <div className="w-16 h-16 rounded-full bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[#C79A4E] flex items-center justify-center glow-teal">
               <Sparkles className="w-8 h-8" />
             </div>
@@ -1187,8 +1402,16 @@ export const AIChatScreen: React.FC = () => {
           displayMessages.map((msg, idx) => {
             const vmeta = msg.variantGroup ? variantMeta[`${msg.variantGroup}::${msg.sender}`] : undefined;
             return (
-            <ChatBubble
+            // §9.4 Case Board: data-msg-id + a brief highlight ring is what
+            // "tap a board entry -> jump to and highlight the original
+            // message" (Loophole L1: never re-run/re-fetch) actually hooks
+            // into -- see handleJumpToMessage below.
+            <div
               key={msg.id}
+              data-msg-id={msg.msgId || undefined}
+              className={msg.msgId && msg.msgId === highlightedMsgId ? "rounded-xl ring-2 ring-[#C79A4E]/60 transition-all" : ""}
+            >
+            <ChatBubble
               message={msg}
               lang={lang}
               voicePersona={voicePersona}
@@ -1211,6 +1434,7 @@ export const AIChatScreen: React.FC = () => {
               activeVariantIndex={vmeta?.activeIndex}
               onCycleVariant={msg.variantGroup ? (dir) => handleCycleVariant(msg.variantGroup!, dir) : undefined}
             />
+            </div>
             );
           })
         )}
@@ -1395,6 +1619,52 @@ export const AIChatScreen: React.FC = () => {
             </button>
           </div>
         </div>
+      )}
+
+      {/* §9.7 "Add another case" -- links an additional real CaseMaster
+          record to this Investigation (InvestigationCaseLink). */}
+      {showAddCaseModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/85 backdrop-blur-sm">
+          <div className="w-full max-w-sm glass-panel border border-stone-800 rounded-2xl p-6 space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-black text-stone-100 uppercase tracking-wider font-mono">
+                {lang === "en" ? "Add Another Case" : "ಇನ್ನೊಂದು ಪ್ರಕರಣ ಸೇರಿಸಿ"}
+              </h3>
+              <button onClick={() => setShowAddCaseModal(false)} className="text-stone-500 hover:text-stone-200 cursor-pointer">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="space-y-1">
+              <label className="block text-[10px] font-black text-stone-450 uppercase font-mono">
+                {lang === "en" ? "Case / FIR Number" : "ಪ್ರಕರಣ / FIR ಸಂಖ್ಯೆ"}
+              </label>
+              <input
+                type="text"
+                value={addCaseNo}
+                onChange={(e) => setAddCaseNo(e.target.value)}
+                placeholder="e.g. FIR-2026-0814"
+                className="w-full bg-stone-950/60 border border-stone-850 focus:border-[#C79A4E] rounded-xl py-2.5 px-3 text-xs text-stone-200 focus:outline-none transition-all"
+              />
+            </div>
+            <button
+              onClick={handleAddCase}
+              disabled={isAddingCase || !addCaseNo.trim()}
+              className="w-full py-2.5 rounded-xl bg-[#C79A4E]/10 hover:bg-[#C79A4E]/20 border border-[#C79A4E]/30 text-[#C79A4E] text-xs font-black uppercase tracking-wider transition-all disabled:opacity-50 cursor-pointer"
+            >
+              {isAddingCase ? (lang === "en" ? "Linking…" : "ಜೋಡಿಸಲಾಗುತ್ತಿದೆ…") : (lang === "en" ? "Link Case" : "ಪ್ರಕರಣ ಜೋಡಿಸಿ")}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* §9.5 Guided Task Workflow */}
+      {showTaskChecklist && activeSessionId && (
+        <TaskChecklist sessionId={activeSessionId} lang={lang} onClose={() => setShowTaskChecklist(false)} />
+      )}
+
+      {/* §9.6 Case Diary */}
+      {showCaseDiary && activeSessionId && (
+        <CaseDiary sessionId={activeSessionId} lang={lang} onClose={() => setShowCaseDiary(false)} />
       )}
 
       {/* Language Selection Modal for Official PDF Dossier Export */}

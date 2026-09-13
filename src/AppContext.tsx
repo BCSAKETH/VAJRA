@@ -122,6 +122,22 @@ interface AppContextType {
   isGlobalLoading: boolean;
   globalLoadingMessage: string;
   setGlobalLoading: (isLoading: boolean, message?: string) => void;
+  // §9.1 Unified Sidebar bridge: the sidebar now lives in MainLayout (a
+  // sibling of AIChatScreen, never remounted on screen change), while the
+  // actual send/poll/branching pipeline stays owned by AIChatScreen itself
+  // (touching that directly would be far riskier than this thin bridge).
+  // activeChatSessionId mirrors AIChatScreen's own local activeSessionId so
+  // the sidebar can highlight the right row from anywhere; the two request
+  // fields let the sidebar ask AIChatScreen to switch/create a session
+  // without owning that logic itself.
+  activeChatSessionId: string | null;
+  setActiveChatSessionId: (id: string | null) => void;
+  chatSessionSelectRequest: { sessionId: string; nonce: number } | null;
+  requestChatSessionSelect: (sessionId: string) => void;
+  newChatRequestNonce: number;
+  requestNewChat: () => void;
+  chatSessionsRefreshNonce: number;
+  bumpChatSessionsRefresh: () => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -248,6 +264,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isGlobalLoading, setIsGlobalLoading] = useState(false);
   const [globalLoadingMessage, setGlobalLoadingMessage] = useState("");
+
+  // §9.1 Unified Sidebar bridge -- see the interface comment above for why
+  // this exists instead of lifting AIChatScreen's whole send/poll pipeline.
+  const [activeChatSessionId, setActiveChatSessionId] = useState<string | null>(null);
+  const [chatSessionSelectRequest, setChatSessionSelectRequest] = useState<{ sessionId: string; nonce: number } | null>(null);
+  const requestChatSessionSelect = useCallback((sessionId: string) => {
+    setChatSessionSelectRequest({ sessionId, nonce: Date.now() + Math.random() });
+  }, []);
+  const [newChatRequestNonce, setNewChatRequestNonce] = useState(0);
+  const requestNewChat = useCallback(() => setNewChatRequestNonce((n) => n + 1), []);
+  const [chatSessionsRefreshNonce, setChatSessionsRefreshNonce] = useState(0);
+  const bumpChatSessionsRefresh = useCallback(() => setChatSessionsRefreshNonce((n) => n + 1), []);
 
   const setGlobalLoading = (isLoading: boolean, message: string = "") => {
     setIsGlobalLoading(isLoading);
@@ -479,6 +507,14 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         isGlobalLoading,
         globalLoadingMessage,
         setGlobalLoading,
+        activeChatSessionId,
+        setActiveChatSessionId,
+        chatSessionSelectRequest,
+        requestChatSessionSelect,
+        newChatRequestNonce,
+        requestNewChat,
+        chatSessionsRefreshNonce,
+        bumpChatSessionsRefresh,
       }}
     >
       {children}

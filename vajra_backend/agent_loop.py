@@ -2032,6 +2032,51 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "district_fresh": bool(resolved_district),
         }
 
+    def _review_task_completion(self, note: str, attachment_stratus_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        §9.5 Guided Task Workflow: bounded, single-purpose LLM call reviewing
+        a just-closed investigative task's note for anything that looks
+        incomplete or contradictory, optionally proposing one follow-up
+        question. Advisory ONLY (Loophole L3) -- the officer can always
+        override and close the task regardless of what this returns, and a
+        failed/timed-out review (Loophole L3 corollary, L4) never blocks the
+        task from completing; the caller (main.py's complete_task) always
+        marks the task done regardless of this method's outcome. Hard 8s
+        timeout via its own ThreadPoolExecutor -- this must never hold up
+        the officer's UI waiting on a slow LLM turn for what is fundamentally
+        a secondary/advisory check.
+
+        attachment_stratus_id is accepted for interface symmetry with the
+        upload flow but not yet analyzed here -- no existing helper in this
+        module turns a bare Stratus file id into ready analysis text outside
+        the dedicated attachment-upload pipeline (av_analysis.py / the
+        /api/chat/attachments endpoint), and inventing a second, parallel
+        analysis path for this one advisory call isn't worth the risk this
+        close to review. The note itself (the real, forced accountability
+        text) is always reviewed regardless.
+        """
+        prompt = (
+            "A police officer just marked an investigative task complete with this note. "
+            "In ONE short sentence, either say it looks complete, or flag ONE specific "
+            "concrete gap and ask ONE follow-up question. Do not invent details not in the note.\n\n"
+            f"NOTE: {note}"
+        )
+        try:
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                res = ex.submit(
+                    self.llm.chat, [{"role": "user", "content": prompt}],
+                    use_agent_system_prompt=False, max_tokens=150,
+                ).result(timeout=8)
+            if res.get("error"):
+                return {"flag": None, "follow_up_question": None}
+            content = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+            text = self._strip_think(content)
+            looks_incomplete = "?" in text  # a follow-up question is the signal, not a keyword guess
+            return {"flag": text if looks_incomplete else None, "follow_up_question": text if looks_incomplete else None}
+        except Exception as e:
+            logger.warning(f"Task review LLM call failed/timed out: {e}")
+            return {"flag": None, "follow_up_question": None}  # Loophole L3 corollary: a failed review never blocks the task
+
     def _write_audit_log(self, employee_id: int, action_type: str, target: str, query: str, response: str, session_id: str):
         """
         Writes a secure, immutable audit log entry into the Catalyst AuditLog table.
