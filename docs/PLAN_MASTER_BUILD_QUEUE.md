@@ -6979,7 +6979,21 @@ def _apply_synthetic_data_disclosure(text_result: str, used_accused_contact: boo
 ```
 
 ### Verification Checklist
-- [ ] Every response type that queries `AccusedContact` — confirmed by grepping for every real call site, not assumed — carries the identical disclosure text.
+- [x] Every response type that queries `AccusedContact` — confirmed by grepping for every real call site, not assumed — carries the identical disclosure text.
+
+**Build status (2026-09-13) — DONE, and the premise was mostly already true.**
+Audited every real `AccusedContact` call site by grep across `agent_loop.py`,
+`main.py`, `vajra_core.py` (not assumed) -- found `search_by_identifier`,
+`shared_attribute_links`, `community_detection` (agent_loop.py), the district
+dashboard's Syndicate Signals endpoint (main.py), and the Louvain syndicate
+detection job (vajra_core.py, which tracks synthetic-vs-real per EDGE, more
+granular than this item even asked for) **already** disclose the synthetic
+phone/vehicle data correctly. Exactly one real gap found: `centrality_ranking`
+(agent_loop.py) was the one sibling tool that never mentioned "synthetic"
+anywhere in its text or citation -- fixed to match its siblings' wording. A
+single shared helper (as the blueprint proposed) wasn't needed in the end since
+the gap was one missed call site, not a systemic pattern -- adding a
+never-reused abstraction for one line would be over-engineering.
 
 ---
 

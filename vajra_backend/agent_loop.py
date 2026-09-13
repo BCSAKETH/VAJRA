@@ -6497,8 +6497,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 _cr_top_n = 10
             response_type = "text"
             if ranked:
+                # F.35: every sibling tool that reads AccusedContact
+                # (search_by_identifier, shared_attribute_links,
+                # community_detection) already discloses the phone/vehicle
+                # data is synthetic -- this was the one real gap found
+                # auditing every AccusedContact call site in this file.
                 lines = ["Most-connected accused by shared-attribute degree (higher = more central, a likely hub -- "
-                         "leads to verify, not proof):"]
+                         "synthetic phone/vehicle data, leads to verify, not proof):"]
                 for i, (n, deg) in enumerate(ranked[:_cr_top_n], 1):
                     lines.append(f"{i}. {n} -- linked to {deg} other accused")
                 text_result = "\n".join(lines)
@@ -6506,7 +6511,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             else:
                 text_result = "No shared-attribute links exist to rank centrality in the current contact data."
             citations.append({"type": "Centrality Ranking", "id": "All",
-                              "details": "Degree centrality over the shared phone/vehicle graph (AccusedContact) -- grounded."})
+                              "details": "Degree centrality over the shared phone/vehicle graph (AccusedContact) -- synthetic demo data, grounded computation."})
             final_answer = True
             self._write_audit_log(employee_id, "Centrality Ranking", "All", "Shared-attribute centrality", text_result, session_id)
 
