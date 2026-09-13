@@ -55,6 +55,7 @@ export interface Translations {
   settingsZcqlLabel: string;
   settingsOnline: string;
   settingsOffline: string;
+  aiDegradedBanner: string; // C.16: persistent AI-degraded-state banner
   settingsSecurityPoliciesTitle: string;
   settingsSessionTimeoutTitle: string;
   settingsPolicyEnforced: string;
@@ -198,6 +199,7 @@ export const translations: Record<Language, Translations> = {
     settingsZcqlLabel: "Zoho Catalyst ZCQL Client:",
     settingsOnline: "ONLINE (Catalyst serverless)",
     settingsOffline: "OFFLINE",
+    aiDegradedBanner: "AI analysis is temporarily degraded -- responses may fall back to grounded data without generative reasoning. Retrying automatically.",
     settingsSecurityPoliciesTitle: "Active Security Policies",
     settingsSessionTimeoutTitle: "Session Timeout Limit",
     settingsPolicyEnforced: "⚠️ POLICY ENFORCED — READ ONLY",
@@ -331,6 +333,7 @@ export const translations: Record<Language, Translations> = {
     settingsZcqlLabel: "Zoho Catalyst ZCQL ಕ್ಲೈಂಟ್:",
     settingsOnline: "ಆನ್‌ಲೈನ್ (Catalyst serverless)",
     settingsOffline: "ಆಫ್‌ಲೈನ್",
+    aiDegradedBanner: "AI ವಿಶ್ಲೇಷಣೆ ತಾತ್ಕಾಲಿಕವಾಗಿ ಕುಂಠಿತವಾಗಿದೆ -- ಪ್ರತಿಕ್ರಿಯೆಗಳು ಜನರೇಟಿವ್ ತಾರ್ಕಿಕತೆ ಇಲ್ಲದೆ ಆಧಾರಿತ ಡೇಟಾಗೆ ಹಿಂತಿರುಗಬಹುದು. ಸ್ವಯಂಚಾಲಿತವಾಗಿ ಮರುಪ್ರಯತ್ನಿಸಲಾಗುತ್ತಿದೆ.",
     settingsSecurityPoliciesTitle: "ಸಕ್ರಿಯ ಭದ್ರತಾ ನೀತಿಗಳು",
     settingsSessionTimeoutTitle: "ಅಧಿವೇಶನ ಅವಧಿ ಮಿತಿ",
     settingsPolicyEnforced: "⚠️ ನೀತಿ ಜಾರಿಯಲ್ಲಿದೆ — ಓದಲು ಮಾತ್ರ",

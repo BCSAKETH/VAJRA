@@ -94,6 +94,7 @@ interface AppContextType {
   setRoleTier: (tier: "officer" | "supervisor" | null) => void;
   isDbConnected: boolean;
   setIsDbConnected: (connected: boolean) => void;
+  llmServiceAvailable: boolean; // C.16: was fetched from /api/health and discarded
   toasts: ToastMessage[];
   addToast: (
     title: string,
@@ -199,11 +200,27 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
   // Neo4j was dead code (unreachable bolt://localhost:7687 in any real deployment)
   // and has been removed from the backend; the ZCQL relational path is the only
   // graph-tracing path that ever ran.
+  // C.16: llm_service_available was already returned by /api/health but
+  // discarded here -- no banner ever surfaced a degraded AI state. Requires
+  // 2 CONSECUTIVE bad reads (60s of real degradation, Loophole L1) before
+  // flipping to false, and clears on the very next clean read -- asymmetric
+  // on purpose, biased toward not crying wolf over one transient poll blip.
+  const [llmDegradedStrikes, setLlmDegradedStrikes] = useState(0);
+  const [llmServiceAvailable, setLlmServiceAvailable] = useState(true);
+
   useEffect(() => {
     const checkHealth = () => {
       fetch(`${API_BASE}/api/health`)
         .then((res) => res.json())
-        .then((data) => setIsDbConnected(Boolean(data.database_connected)))
+        .then((data) => {
+          setIsDbConnected(Boolean(data.database_connected));
+          const available = Boolean(data.llm_service_available);
+          setLlmDegradedStrikes((prev) => {
+            const next = available ? 0 : prev + 1;
+            setLlmServiceAvailable(next < 2);
+            return next;
+          });
+        })
         .catch(() => setIsDbConnected(false));
     };
     checkHealth();
@@ -444,6 +461,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         setRoleTier,
         isDbConnected,
         setIsDbConnected,
+        llmServiceAvailable,
         toasts,
         addToast,
         removeToast,

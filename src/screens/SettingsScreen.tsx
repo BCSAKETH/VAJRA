@@ -475,10 +475,16 @@ export const SettingsScreen: React.FC = () => {
                   {t.settingsSessionTimeoutTitle}
                 </span>
                 <p className="text-[11px] leading-relaxed text-stone-500">
+                  {/* C.18: corrected -- this only clears the local session and
+                      redirects; it does not remotely invalidate the underlying
+                      JWT, which stays valid server-side for the rest of its
+                      1-hour life. Real server-side revocation (a JTI denylist)
+                      is a separate, still-open, tracked item (C.18 Loophole L1) --
+                      not something this wording change closes. */}
                   {lang === "en" ? (
-                    <>Automatically invalidates session tokens and redirects to Login Screen after <strong>15 minutes</strong> of operator inactivity.</>
+                    <>Logs you out of this device and clears your local session after <strong>15 minutes</strong> of operator inactivity. (Note: does not remotely invalidate the underlying token -- real server-side revocation is a separate, tracked item.)</>
                   ) : (
-                    <>ಆಪರೇಟರ್ ನಿಷ್ಕ್ರಿಯತೆಯ <strong>೧೫ ನಿಮಿಷಗಳ</strong> ನಂತರ ಅಧಿವೇಶನ ಟೋಕನ್‌ಗಳನ್ನು ಸ್ವಯಂಚಾಲಿತವಾಗಿ ಅಮಾನ್ಯಗೊಳಿಸಿ ಲಾಗಿನ್ ಪರದೆಗೆ ಮರುನಿರ್ದೇಶಿಸುತ್ತದೆ.</>
+                    <>ಆಪರೇಟರ್ ನಿಷ್ಕ್ರಿಯತೆಯ <strong>೧೫ ನಿಮಿಷಗಳ</strong> ನಂತರ ಈ ಸಾಧನದಿಂದ ಲಾಗ್ ಔಟ್ ಮಾಡಿ ನಿಮ್ಮ ಸ್ಥಳೀಯ ಅಧಿವೇಶನವನ್ನು ತೆರವುಗೊಳಿಸುತ್ತದೆ. (ಗಮನಿಸಿ: ಇದು ಮೂಲ ಟೋಕನ್ ಅನ್ನು ದೂರದಿಂದ ಅಮಾನ್ಯಗೊಳಿಸುವುದಿಲ್ಲ -- ನಿಜವಾದ ಸರ್ವರ್-ಸೈಡ್ ರದ್ದತಿ ಪ್ರತ್ಯೇಕ, ಟ್ರ್ಯಾಕ್ ಮಾಡಲಾದ ಐಟಂ ಆಗಿದೆ.)</>
                   )}
                 </p>
                 <div className="text-[10px] font-mono text-amber-500 font-bold uppercase tracking-wider">

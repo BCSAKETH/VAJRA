@@ -1,0 +1,11 @@
+{
+	"deployment": {
+		"name": "case_insert_signal",
+		"stack": "python_3_12",
+		"type": "event",
+		"env_variables": {}
+	},
+	"execution": {
+		"main": "index.py"
+	}
+}

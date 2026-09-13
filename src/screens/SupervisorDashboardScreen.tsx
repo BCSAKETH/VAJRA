@@ -6,11 +6,14 @@ import { WatermarkOverlay } from "../components/WatermarkOverlay";
 import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2 } from "lucide-react";
 
 interface ConsistencyFlag {
-  ROWID: number;
-  CrimeNo: string;
-  flag_type: string;
-  flag_details: string;
-  reviewed: number;
+  rowid: number;
+  case_id: number | null;
+  case_no: string;
+  recorded_section: string;
+  suggested_section: string;
+  confidence_score: number | null;
+  reviewed: string | number | null; // ZCQL can return this as a string -- always coerce with Number() before comparing
+  flagged_at: string | null;
 }
 
 interface AuditLogRecord {
@@ -52,7 +55,11 @@ export const SupervisorDashboardScreen: React.FC = () => {
   const [activeBadgeFilter, setActiveBadgeFilter] = useState<string | null>(null);
   // LS-8: tell "officer exists, 0 logs" apart from "no such badge" apart
   // from "genuinely nothing to show" -- a bare empty array can't do that.
-  const [officerProfile, setOfficerProfile] = useState<{ name: string | null; kgid: string | null; employeeId: number | null } | null>(null);
+  // C.15: identityAmbiguous is set when this profile was resolved via a
+  // confirmed-colliding EmployeeID (29 of 34 real values collide between 2
+  // different officers) -- the name/rank shown, and the logs below it, may
+  // actually belong to either officer.
+  const [officerProfile, setOfficerProfile] = useState<{ name: string | null; kgid: string | null; employeeId: number | null; identityAmbiguous?: number | null } | null>(null);
   const [officerFound, setOfficerFound] = useState<boolean | null>(null);
   // LS-4: the real total match count and whether more pages exist beyond
   // the current page, so "Load More" only ever appears when it's true.
@@ -559,8 +566,12 @@ export const SupervisorDashboardScreen: React.FC = () => {
     setIsApprovalOpen(true);
   };
 
-  // On Supervisor approve
-  const onSupervisorApproved = async (supervisorBadge: string) => {
+  // On Supervisor approve. C.14: the second supervisor's badge+password are
+  // sent through to the server on the actual state-changing call -- the
+  // modal's own /api/auth/login check gates the UI, but only this call is
+  // what the server re-verifies (Loophole L2: a client-only check enforces
+  // nothing against someone hitting the API directly).
+  const onSupervisorApproved = async (supervisorBadge: string, supervisorPassword: string) => {
     if (!selectedFlagId) return;
     try {
       const response = await fetch(`${API_BASE}/api/alerts/consistency-flags/${selectedFlagId}/review`, {
@@ -571,11 +582,14 @@ export const SupervisorDashboardScreen: React.FC = () => {
         },
         body: JSON.stringify({
           reviewed: 1,
+          second_supervisor_badge: supervisorBadge,
+          second_supervisor_password: supervisorPassword,
         }),
       });
 
       if (!response.ok) {
-        throw new Error("Resolution request rejected by server.");
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.detail || "Resolution request rejected by server.");
       }
 
       addToast(
@@ -944,7 +958,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
           </div>
           <div className="min-w-0">
             <div className="text-lg font-black text-stone-100 font-mono leading-tight">
-              {isLoadingFlags ? "—" : flags.filter((f) => f.reviewed === 0).length}
+              {isLoadingFlags ? "—" : flags.filter((f) => Number(f.reviewed) === 0).length}
             </div>
             <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
               {lang === "en" ? "Pending Flags" : "ಬಾಕಿ ಫ್ಲ್ಯಾಗ್‌ಗಳು"}
@@ -957,7 +971,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
           </div>
           <div className="min-w-0">
             <div className="text-lg font-black text-stone-100 font-mono leading-tight">
-              {isLoadingFlags ? "—" : flags.filter((f) => f.reviewed !== 0).length}
+              {isLoadingFlags ? "—" : flags.filter((f) => Number(f.reviewed) !== 0).length}
             </div>
             <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
               {lang === "en" ? "Resolved Flags" : "ಬಗೆಹರಿದ ಫ್ಲ್ಯಾಗ್‌ಗಳು"}
@@ -1152,19 +1166,25 @@ export const SupervisorDashboardScreen: React.FC = () => {
           ) : (
             <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
               {flags.map((flag) => (
-                <div key={flag.ROWID} className="bg-stone-950/45 p-3 rounded-lg border border-stone-900 space-y-2 text-xs">
+                <div key={flag.rowid} className="bg-stone-950/45 p-3 rounded-lg border border-stone-900 space-y-2 text-xs">
                   <div className="flex justify-between items-center">
-                    <span className="font-bold text-stone-200 font-mono">{flag.CrimeNo}</span>
-                    <span className="text-[10px] bg-amber-500/10 text-amber-450 border border-amber-500/25 px-1.5 py-0.2 rounded font-mono uppercase">
-                      {flag.flag_type}
-                    </span>
+                    <span className="font-bold text-stone-200 font-mono">{flag.case_no}</span>
+                    {flag.confidence_score !== null && flag.confidence_score !== undefined && (
+                      <span className="text-[10px] bg-amber-500/10 text-amber-450 border border-amber-500/25 px-1.5 py-0.2 rounded font-mono uppercase">
+                        {Math.round(Number(flag.confidence_score) * 100)}%
+                      </span>
+                    )}
                   </div>
-                  <p className="text-stone-400 font-sans leading-relaxed">{flag.flag_details}</p>
-                  
-                  {flag.reviewed === 0 ? (
+                  <p className="text-stone-400 font-sans leading-relaxed">
+                    {lang === "en" ? "Recorded" : "ದಾಖಲಿಸಲಾಗಿದೆ"}: <span className="text-stone-300 font-mono">{flag.recorded_section}</span>
+                    {" → "}
+                    {lang === "en" ? "Suggested" : "ಸಲಹೆ ನೀಡಲಾಗಿದೆ"}: <span className="text-[#C79A4E] font-mono">{flag.suggested_section}</span>
+                  </p>
+
+                  {Number(flag.reviewed) === 0 ? (
                     <div className="text-right">
                       <button
-                        onClick={() => handleReviewFlag(flag.ROWID)}
+                        onClick={() => handleReviewFlag(flag.rowid)}
                         className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[#C79A4E] hover:text-white hover:bg-[#C79A4E]/20 font-bold font-mono text-[10px] uppercase cursor-pointer"
                       >
                         <Lock className="w-3 h-3" />
@@ -1259,6 +1279,21 @@ export const SupervisorDashboardScreen: React.FC = () => {
               >
                 {lang === "en" ? "Clear" : "ತೆರವು"}
               </button>
+            </div>
+          )}
+
+          {/* C.15: this ID is confirmed shared by 2+ real officers -- the
+              name above and the logs below may belong to either one. Search
+              by the full 7-digit KGID instead for a confirmed, unambiguous
+              match. */}
+          {activeBadgeFilter && officerProfile?.identityAmbiguous && (
+            <div className="flex items-start gap-1.5 text-[10px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/25 rounded px-2 py-1.5">
+              <AlertOctagon className="w-3 h-3 shrink-0 mt-0.5" />
+              <span>
+                {lang === "en"
+                  ? `This numeric ID is shared by ${officerProfile.identityAmbiguous} officers on record (legacy data, pre-dates unique tracking) -- the name and logs shown may belong to either one. Search by the full 7-digit KGID for a confirmed match.`
+                  : `ಈ ಸಂಖ್ಯಾ ID ${officerProfile.identityAmbiguous} ಅಧಿಕಾರಿಗಳ ನಡುವೆ ಹಂಚಿಕೊಳ್ಳಲಾಗಿದೆ (ಹಳೆಯ ಡೇಟಾ) -- ತೋರಿಸಿರುವ ಹೆಸರು ಮತ್ತು ಲಾಗ್‌ಗಳು ಯಾವುದೇ ಒಂದಕ್ಕೆ ಸೇರಿರಬಹುದು. ಖಚಿತವಾದ ಹೊಂದಾಣಿಕೆಗಾಗಿ ಪೂರ್ಣ ೭-ಅಂಕಿಯ KGID ಮೂಲಕ ಹುಡುಕಿ.`}
+              </span>
             </div>
           )}
 

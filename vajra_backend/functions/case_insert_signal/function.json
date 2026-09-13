@@ -1,0 +1,5 @@
+{
+  "name": "case_insert_signal",
+  "runtime": "python3.12",
+  "entry_point": "index.handler"
+}

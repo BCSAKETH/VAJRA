@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { MapContainer, TileLayer, CircleMarker, Popup, Circle, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Popup, Circle, Polygon, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet.heat";
 import { WatermarkOverlay } from "../components/WatermarkOverlay";
@@ -12,6 +12,20 @@ interface HotspotPoint {
   lng: number;
   label: string;
   weight?: number;
+  // C.6: already returned by cluster_hotspots (agent_loop.py) but previously
+  // discarded here -- real per-cluster depth (incident count, dominant crime
+  // type/station), not invented client-side.
+  point_count?: number;
+  dominant_crime?: string | null;
+  dominant_station?: string | null;
+}
+
+// C.7: one H3 cell -- boundary is a real polygon (array of [lat, lng] pairs)
+// from h3.cell_to_boundary, not an approximated circle.
+interface HexBin {
+  h3_index: string;
+  count: number;
+  boundary: [number, number][];
 }
 
 // BUILD_BACKLOG.md item #9 ("Tactical Geospatial Thermal Density 'Gas-Spray'
@@ -74,26 +88,60 @@ const AutoFitBounds: React.FC<{ points: HotspotPoint[] }> = ({ points }) => {
   return null;
 };
 
+// C.6: 0=Monday..6=Sunday, matching Python's datetime.weekday() -- the exact
+// convention agent_loop.py's day_of_week filter already uses server-side, so
+// there's no day-index translation to get wrong between frontend and backend.
+const DAY_LABELS: { value: number; en: string; kn: string }[] = [
+  { value: 0, en: "Mon", kn: "ಸೋಮ" },
+  { value: 1, en: "Tue", kn: "ಮಂಗಳ" },
+  { value: 2, en: "Wed", kn: "ಬುಧ" },
+  { value: 3, en: "Thu", kn: "ಗುರು" },
+  { value: 4, en: "Fri", kn: "ಶುಕ್ರ" },
+  { value: 5, en: "Sat", kn: "ಶನಿ" },
+  { value: 6, en: "Sun", kn: "ಭಾನು" },
+];
+
 export const SpatialScreen: React.FC = () => {
   const { addToast, lang, setIsAuthenticated } = useApp();
   const [points, setPoints] = useState<HotspotPoint[]>([]);
+  // C.7: real H3 hex-density grid, alternative to the DBSCAN heat/cluster
+  // view -- viewMode toggles which one renders, both come from the same
+  // already-fetched response (no second request).
+  const [hexbins, setHexbins] = useState<HexBin[]>([]);
+  const [viewMode, setViewMode] = useState<"heat" | "hex">("heat");
   const [eps, setEps] = useState(0.015);
   const [minPts, setMinPts] = useState(3);
+  // C.6: previously purely decorative -- neither slider, nor any day-of-week
+  // control (which didn't exist at all), ever reached the backend. Both now
+  // drive a real, debounced refetch below.
+  const [dayOfWeek, setDayOfWeek] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Fetch coordinates on mount
+  // Debounced real refetch on any control change -- same 300ms-after-you-
+  // stop-adjusting pattern already used for Ledger Search in
+  // SupervisorDashboardScreen.tsx, so a slider drag doesn't fire a DBSCAN
+  // re-clustering request on every single pixel of movement. An
+  // AbortController guards against an older, slower request finishing after
+  // a newer one and clobbering it with stale results (same reasoning as
+  // that existing Ledger Search implementation).
   useEffect(() => {
-    const fetchCoordinates = async () => {
+    const controller = new AbortController();
+    const handle = setTimeout(async () => {
       try {
         setIsLoading(true);
         setErrorMsg(null);
-        
-        // ZCQL coordinates extraction
-        const response = await fetch(`${API_BASE}/api/cases/spatial-hotspots`, {
+
+        const qs = new URLSearchParams();
+        qs.set("eps", String(eps));
+        qs.set("min_samples", String(minPts));
+        if (dayOfWeek !== null) qs.set("day_of_week", String(dayOfWeek));
+
+        const response = await fetch(`${API_BASE}/api/cases/spatial-hotspots?${qs.toString()}`, {
           headers: {
             "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
           },
+          signal: controller.signal,
         });
 
         if (response.status === 401) {
@@ -110,23 +158,39 @@ export const SpatialScreen: React.FC = () => {
           throw new Error("Data Unavailable — Geospatial Database Offline");
         }
 
+        // C.7: this endpoint now returns {hotspots, hexbins, trend}, not a
+        // bare array (previously the hexbins/trend fields were silently
+        // dropped server-side before this ever reached the frontend).
         const data = await response.json();
-        // Fallback check: if server returns empty and error
-        if (!data || data.length === 0) {
-          throw new Error("No spatial case clusters resolved from CCTNS register.");
+        const hotspots = Array.isArray(data) ? data : data?.hotspots || []; // Array.isArray: tolerate an older bare-array response during a rolling deploy
+        const bins = Array.isArray(data) ? [] : data?.hexbins || [];
+        if (hotspots.length === 0) {
+          // A real, filtered-down-to-nothing result (e.g. no cases on the
+          // selected day) is a legitimate answer, not a fetch failure --
+          // distinguished from an actual error via the empty-state below,
+          // not folded into errorMsg (which reads as an outage).
+          setPoints([]);
+          setHexbins([]);
+          return;
         }
 
-        setPoints(data);
+        setPoints(hotspots);
+        setHexbins(bins);
       } catch (err: any) {
+        if (err?.name === "AbortError") return;
         console.error(err);
         setErrorMsg(err.message || "Geospatial services unreachable.");
       } finally {
         setIsLoading(false);
       }
-    };
+    }, 300);
 
-    fetchCoordinates();
-  }, []);
+    return () => {
+      clearTimeout(handle);
+      controller.abort();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eps, minPts, dayOfWeek]);
 
   return (
     <div className="h-full flex flex-col md:flex-row relative overflow-hidden bg-stone-950/20">
@@ -147,7 +211,29 @@ export const SpatialScreen: React.FC = () => {
           </p>
         </div>
 
-        <div className="space-y-4">
+        {/* C.7: Heat/Cluster vs Hex Grid view toggle -- placed above the
+            DBSCAN-specific sliders below since eps/min-points only apply to
+            that view, not the hex grid, which needs no tuning to be useful. */}
+        <div className="flex rounded-lg border border-stone-800 bg-stone-900 p-0.5 gap-0.5">
+          <button
+            onClick={() => setViewMode("heat")}
+            className={`flex-1 py-1.5 rounded-md text-[11px] font-bold font-mono uppercase tracking-wide transition-colors cursor-pointer ${
+              viewMode === "heat" ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"
+            }`}
+          >
+            {lang === "en" ? "Heat / Clusters" : "ಹೀಟ್ / ಸಮೂಹ"}
+          </button>
+          <button
+            onClick={() => setViewMode("hex")}
+            className={`flex-1 py-1.5 rounded-md text-[11px] font-bold font-mono uppercase tracking-wide transition-colors cursor-pointer ${
+              viewMode === "hex" ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"
+            }`}
+          >
+            {lang === "en" ? "Hex Grid" : "ಹೆಕ್ಸ್ ಗ್ರಿಡ್"}
+          </button>
+        </div>
+
+        <div className={`space-y-4 ${viewMode === "hex" ? "opacity-40 pointer-events-none" : ""}`}>
           {/* DBSCAN EPS Radius */}
           <div className="space-y-1.5">
             <label className="flex justify-between text-[11.5px] font-bold text-stone-400 font-mono">
@@ -183,17 +269,60 @@ export const SpatialScreen: React.FC = () => {
               disabled={!!errorMsg}
             />
           </div>
+
+          {/* C.6: day-of-week filter -- didn't exist on this screen at all
+              before. "Any day" (null) is the default so a first-time officer
+              sees the same full picture as always; picking a day is opt-in. */}
+          <div className="space-y-1.5">
+            <label className="flex justify-between text-[11.5px] font-bold text-stone-400 font-mono">
+              <span>{lang === "en" ? "Day of Week:" : "ವಾರದ ದಿನ:"}</span>
+            </label>
+            <div className="grid grid-cols-4 gap-1">
+              <button
+                onClick={() => setDayOfWeek(null)}
+                disabled={!!errorMsg}
+                className={`px-1.5 py-1 rounded-md text-[10px] font-bold font-mono uppercase tracking-wide transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
+                  dayOfWeek === null
+                    ? "bg-[#C79A4E]/15 border border-[#C79A4E]/40 text-[#C79A4E]"
+                    : "bg-stone-900 border border-stone-800 text-stone-500 hover:text-stone-300"
+                }`}
+              >
+                {lang === "en" ? "Any" : "ಯಾವುದೇ"}
+              </button>
+              {DAY_LABELS.map((d) => (
+                <button
+                  key={d.value}
+                  onClick={() => setDayOfWeek(d.value)}
+                  disabled={!!errorMsg}
+                  className={`px-1.5 py-1 rounded-md text-[10px] font-bold font-mono uppercase tracking-wide transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 ${
+                    dayOfWeek === d.value
+                      ? "bg-[#C79A4E]/15 border border-[#C79A4E]/40 text-[#C79A4E]"
+                      : "bg-stone-900 border border-stone-800 text-stone-500 hover:text-stone-300"
+                  }`}
+                >
+                  {lang === "en" ? d.en : d.kn}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
 
-        {/* Diagnostic Metadata */}
+        {/* Diagnostic Metadata -- C.6: previously fabricated "Active
+            Clusters" via points.length / minPts, a meaningless further
+            reduction of a number that WAS ALREADY the real cluster count
+            (each entry in `points` is one DBSCAN centroid, not a raw case --
+            see cluster_hotspots in agent_loop.py). Now uses the real
+            point_count the backend already computes per cluster. */}
         <div className="mt-auto border-t border-stone-850 pt-4 space-y-3 font-mono text-[10px] text-stone-450 bg-stone-950/20 p-3 rounded-lg border">
           <div className="flex justify-between">
-            <span>{lang === "en" ? "Points Scanned:" : "ಸ್ಕ್ಯಾನ್ ಮಾಡಿದ ಬಿಂದುಗಳು:"}</span>
-            <span className="font-bold text-stone-200">{points.length}</span>
+            <span>{lang === "en" ? "Incidents in Clusters:" : "ಸಮೂಹಗಳಲ್ಲಿ ಘಟನೆಗಳು:"}</span>
+            <span className="font-bold text-stone-200">
+              {errorMsg ? "0" : points.reduce((sum, p) => sum + (p.point_count || 1), 0)}
+            </span>
           </div>
           <div className="flex justify-between">
             <span>{lang === "en" ? "Active Clusters:" : "ಸಕ್ರಿಯ ಸಮೂಹಗಳು:"}</span>
-            <span className="font-bold text-amber-500">{errorMsg ? "0" : Math.max(1, Math.round(points.length / minPts))}</span>
+            <span className="font-bold text-amber-500">{errorMsg ? "0" : points.length}</span>
           </div>
           <div className="flex justify-between">
             <span>{lang === "en" ? "Spatial Engine:" : "ಪ್ರಾದೇಶಿಕ ಎಂಜಿನ್:"}</span>
@@ -237,6 +366,21 @@ export const SpatialScreen: React.FC = () => {
           <div className="flex-1 flex items-center justify-center bg-stone-950/40 text-stone-400 text-xs font-mono">
             {lang === "en" ? "Loading geographical spatial nodes..." : "ಭೌಗೋಳಿಕ ಪ್ರಾದೇಶಿಕ ನೋಡ್‌ಗಳನ್ನು ಲೋಡ್ ಮಾಡಲಾಗುತ್ತಿದೆ..."}
           </div>
+        ) : points.length === 0 ? (
+          // C.6: a real, filtered-to-zero result (e.g. no cases on the
+          // selected day) is a legitimate answer, not an outage -- shown
+          // distinctly from the red "Data Unavailable" error state above so
+          // an officer isn't told the registry is down when it just means
+          // "nothing matched this filter."
+          <div className="flex-1 flex flex-col items-center justify-center gap-2 bg-stone-950/40 text-center p-6">
+            <MapPin className="w-6 h-6 text-stone-600" />
+            <p className="text-stone-400 text-xs font-mono font-bold">
+              {lang === "en" ? "No hotspots match these filters." : "ಈ ಫಿಲ್ಟರ್‌ಗಳಿಗೆ ಯಾವುದೇ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳು ಹೊಂದಿಕೆಯಾಗುವುದಿಲ್ಲ."}
+            </p>
+            <p className="text-stone-600 text-[10.5px] font-mono">
+              {lang === "en" ? "Try a wider EPS radius, a lower minimum cluster size, or a different day." : "ವಿಶಾಲವಾದ EPS ತ್ರಿಜ್ಯ, ಕಡಿಮೆ ಕನಿಷ್ಠ ಸಮೂಹ ಗಾತ್ರ, ಅಥವಾ ಬೇರೆ ದಿನವನ್ನು ಪ್ರಯತ್ನಿಸಿ."}
+            </p>
+          </div>
         ) : (
           <div className="flex-1 relative">
             <MapContainer
@@ -249,9 +393,40 @@ export const SpatialScreen: React.FC = () => {
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
                 subdomains="abcd"
               />
-              <HeatLayer points={points} />
               <AutoFitBounds points={points} />
-              {points.map((point, index) => (
+              {/* C.7: real H3 hex-density grid -- an alternative view to the
+                  DBSCAN heat/cluster rendering below, over the same
+                  already-fetched response, no second request. Color/opacity
+                  scaled against this result set's own densest cell (same
+                  normalization approach as HeatLayer above), not a fixed
+                  scale that would make a quiet district always look empty. */}
+              {viewMode === "hex" && hexbins.length > 0 && (() => {
+                const maxCount = Math.max(...hexbins.map((h: HexBin) => h.count), 1);
+                return hexbins.map((h: HexBin) => (
+                  <Polygon
+                    key={h.h3_index}
+                    positions={h.boundary}
+                    pathOptions={{
+                      fillColor: "#C79A4E",
+                      color: "#C79A4E",
+                      weight: 1,
+                      fillOpacity: 0.15 + 0.55 * (h.count / maxCount),
+                      opacity: 0.5,
+                    }}
+                  >
+                    <Popup>
+                      <div className="text-xs font-sans text-stone-900">
+                        <span className="font-bold block">
+                          {h.count} {lang === "en" ? "incidents in this cell" : "ಈ ಕೋಶದಲ್ಲಿ ಘಟನೆಗಳು"}
+                        </span>
+                        <span className="block text-[10px] text-stone-500 mt-0.5">{h.h3_index}</span>
+                      </div>
+                    </Popup>
+                  </Polygon>
+                ));
+              })()}
+              {viewMode === "heat" && <HeatLayer points={points} />}
+              {viewMode === "heat" && points.map((point: HotspotPoint, index: number) => (
                 <React.Fragment key={index}>
                   <Circle
                     center={[point.lat, point.lng]}
@@ -280,9 +455,37 @@ export const SpatialScreen: React.FC = () => {
                     }}
                   >
                     <Popup>
-                      <div className="text-xs font-sans text-stone-900">
-                        <span className="font-bold block">{point.label}</span>
-                        Lat: {point.lat.toFixed(5)}, Lng: {point.lng.toFixed(5)}
+                      {/* C.6: point_count/dominant_crime/dominant_station are
+                          real, already-computed fields from cluster_hotspots
+                          -- previously reached this component but were
+                          discarded; label's baked-in text is kept as a
+                          fallback for an older response shape that lacks
+                          them. */}
+                      <div className="text-xs font-sans text-stone-900 space-y-1 min-w-[160px]">
+                        {point.point_count ? (
+                          <>
+                            <span className="font-bold block">
+                              {point.point_count} {lang === "en" ? "incidents" : "ಘಟನೆಗಳು"}
+                            </span>
+                            {point.dominant_crime && (
+                              <span className="block text-[11px]">
+                                {lang === "en" ? "Dominant type: " : "ಪ್ರಧಾನ ಬಗೆ: "}
+                                <strong>{point.dominant_crime}</strong>
+                              </span>
+                            )}
+                            {point.dominant_station && (
+                              <span className="block text-[11px]">
+                                {lang === "en" ? "Near: " : "ಸಮೀಪ: "}
+                                <strong>{point.dominant_station}</strong>
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          <span className="font-bold block">{point.label}</span>
+                        )}
+                        <span className="block text-[10px] text-stone-500">
+                          {point.lat.toFixed(5)}, {point.lng.toFixed(5)}
+                        </span>
                       </div>
                     </Popup>
                   </CircleMarker>

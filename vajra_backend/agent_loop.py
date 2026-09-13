@@ -14,7 +14,7 @@ import pandas as pd
 from vajra_core import catalyst_app, VajraGraphRAG, VajraSemanticMemory, MOBehavioralProfiler, zcql_insert_row, \
     is_pocso_sensitive, redact_pocso_name, redact_phone_numbers, is_supervisor_badge, \
     has_active_pocso_grant, create_pocso_request, find_active_pocso_request, _compute_mo_vector, \
-    start_zql_log, get_zql_log, escape_zcql_literal
+    start_zql_log, get_zql_log, escape_zcql_literal, get_cached_syndicate_clusters  # C.8
 from session_memory import VajraSessionMemory
 from catalyst_llm import CatalystLLM
 from catalyst_qwen import CatalystQwen
@@ -261,7 +261,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "district": {"type": "string", "description": "Optional district name to scope the map to (e.g. Ballari). Omit for a state-wide map."}
+                    "district": {"type": "string", "description": "Optional district name to scope the map to (e.g. Ballari). Omit for a state-wide map."},
+                    "day_of_week": {"type": "integer", "description": "C.6: optional, 0=Monday through 6=Sunday. Only set this when the officer explicitly asks about a specific day or 'weekends' (map 'weekend' to a Saturday=5 or Sunday=6 query, one at a time). Omit entirely for a normal, all-days request."},
+                    "eps": {"type": "number", "description": "C.6: optional DBSCAN neighborhood radius in degrees (roughly 0.001-0.05). Only set this if the officer explicitly asks for a 'tighter'/'wider' cluster radius; leave unset otherwise."},
+                    "min_samples": {"type": "integer", "description": "C.6: optional DBSCAN minimum cluster size (roughly 2-50). Only set this if the officer explicitly asks for a stricter/looser cluster threshold; leave unset otherwise."}
                 },
                 "required": []
             }
@@ -846,6 +849,21 @@ class VajraAgentLoop(CognitiveBrainMixin):
         "act", "bns", "ipc", "bnss", "bsa", "section", "sections", "law", "laws", "legal",
         "offence", "offences", "step", "steps", "upi", "minor",
     }
+
+    # C.1: common real-world misspellings of the words
+    # _handle_suspect_existence_question's trigger phrases require exactly --
+    # normalized before the existence-cue check so a typo doesn't fall
+    # through to the full GLM->Qwen->keyword pipeline. Whole-word (\b...\b)
+    # only, never a loose substring match (Loophole L1).
+    _SUSPECT_TYPO_MAP = {
+        r"\bsucpect\b": "suspect", r"\bsuspet\b": "suspect", r"\bsuspec\b": "suspect",
+        r"\bacussed\b": "accused", r"\baccsued\b": "accused", r"\baccuse\b": "accused",
+    }
+
+    def _normalize_suspect_typos(self, q: str) -> str:
+        for pat, repl in self._SUSPECT_TYPO_MAP.items():
+            q = re.sub(pat, repl, q)
+        return q
 
     _KNOWN_CRIME_GROUPS = [
         "MURDER", "SEXUAL OFFENCES", "ASSAULT", "ATTEMPT TO MURDER", "MOTOR VEHICLE THEFT",
@@ -2042,28 +2060,61 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "session_id": session_id,
             "logged_at": logged_at
         }
+        # C.15: EmployeeID is confirmed NOT unique in the real deployed data
+        # (live audit, 2026-09-12 -- 29 of 34 distinct EmployeeID values are
+        # each shared by 2 different real officers; only a handful of
+        # special/high IDs are clean). AuditLog has never stored any OTHER
+        # identifier per entry, so every existing row's attribution is
+        # already ambiguous and can't be fixed retroactively without a live
+        # data migration (a separate, larger, user-authorized action -- not
+        # something this pass does). What this pass CAN fix: every NEW audit
+        # entry from here on also carries the officer's real KGID
+        # (self.officer_badge, populated from request.state.kgid at turn
+        # start -- confirmed reliably set for every real authenticated
+        # session), so future entries are genuinely attributable even though
+        # employee_id keeps being ambiguous. Requires a new `kgid` column on
+        # the real AuditLog table (console step, not yet confirmed present) --
+        # same "write with the new field, fall back without it if the column
+        # doesn't exist yet" pattern already used here for row_hash/prev_hash,
+        # so this never breaks audit logging entirely if that column isn't
+        # there yet.
+        officer_kgid = getattr(self, "officer_badge", None)
+        if officer_kgid:
+            base_row["kgid"] = str(officer_kgid)
+
+        prev_hash = "0000000000000000000000000000000000000000000000000000000000000000"
         try:
-            prev_hash = "0000000000000000000000000000000000000000000000000000000000000000"
+            last_res = catalyst_app.zql().execute_query("SELECT row_hash FROM AuditLog ORDER BY logged_at DESC LIMIT 1")
+            if last_res:
+                prev_hash = last_res[0].get("AuditLog", {}).get("row_hash") or prev_hash
+        except Exception:
+            pass  # row_hash column doesn't exist yet -- attempts below degrade gracefully
+
+        serialized_content = f"{employee_id}|{action_type}|{target}|{query[:100]}|{response[:100]}|{session_id}|{logged_at}"
+        row_hash = hashlib.sha256((prev_hash + serialized_content).encode('utf-8')).hexdigest()
+        hash_fields = {"prev_hash": prev_hash, "row_hash": row_hash}
+
+        # Ordered fallback attempts -- most-complete row shape first, degrading
+        # one unknown-column risk at a time, so a single missing console
+        # column (kgid OR the hash-chain pair) never loses the audit entry
+        # entirely the way a single try/except pair would have.
+        base_row_no_kgid = {k: v for k, v in base_row.items() if k != "kgid"}
+        attempts = [{**base_row, **hash_fields}]  # full: kgid (if available) + hash chain
+        if "kgid" in base_row:
+            attempts.append({**base_row_no_kgid, **hash_fields})  # hash chain, no kgid
+        attempts.append(dict(base_row))  # kgid (if available), no hash chain
+        if "kgid" in base_row:
+            attempts.append(dict(base_row_no_kgid))  # original plain write, matches this function's exact pre-C.15 behavior
+
+        for i, row in enumerate(attempts):
             try:
-                last_res = catalyst_app.zql().execute_query("SELECT row_hash FROM AuditLog ORDER BY logged_at DESC LIMIT 1")
-                if last_res:
-                    prev_hash = last_res[0].get("AuditLog", {}).get("row_hash") or prev_hash
-            except Exception:
-                pass  # row_hash column doesn't exist yet -- fall through to plain write below
-
-            serialized_content = f"{employee_id}|{action_type}|{target}|{query[:100]}|{response[:100]}|{session_id}|{logged_at}"
-            row_hash = hashlib.sha256((prev_hash + serialized_content).encode('utf-8')).hexdigest()
-            zcql_insert_row("AuditLog", {**base_row, "prev_hash": prev_hash, "row_hash": row_hash})
-            logger.info(f"Audit log hash-chained: {action_type} -> row_hash={row_hash[:10]}...")
-            return
-        except Exception as e:
-            logger.warning(f"Hash-chained audit write failed (row_hash/prev_hash columns may not exist yet), falling back to plain write: {e}")
-
-        try:
-            zcql_insert_row("AuditLog", base_row)
-            logger.info(f"Audit log written (no hash chain): {action_type} for session {session_id}")
-        except Exception as e:
-            logger.error(f"Failed to write to AuditLog table: {e}")
+                zcql_insert_row("AuditLog", row)
+                logged_kind = ("hash-chained" if "row_hash" in row else "no hash chain") + (", with kgid" if "kgid" in row else "")
+                logger.info(f"Audit log written ({logged_kind}): {action_type} for session {session_id}")
+                return
+            except Exception as e:
+                logger.warning(f"AuditLog insert attempt {i + 1}/{len(attempts)} failed, trying next fallback shape: {e}")
+        logger.error(f"Failed to write to AuditLog table after all fallback attempts: {action_type} for session {session_id}")
 
     @staticmethod
     def _extract_json(content_str: str) -> str:
@@ -3522,6 +3573,48 @@ class VajraAgentLoop(CognitiveBrainMixin):
             logger.warning(f"DBSCAN clustering failed: {db_err}")
         return centroids
 
+    def _compute_hexbins(self, coordinates: List[Dict[str, Any]], resolution: int = 8) -> List[Dict[str, Any]]:
+        """C.7: H3 hexagonal density grid, as an alternative view alongside
+        DBSCAN clusters -- same input shape cluster_hotspots takes.
+        resolution=8 (~0.7km^2/cell) is a starting default, not fixed in
+        stone -- tune against real live coordinate density once seen
+        (Loophole L3).
+
+        BUG FIX vs. this item's own first-draft blueprint: it read
+        c.get("Latitude")/c.get("Longitude") (capitalized) -- but the real
+        `coordinates` list built in query_hotspots (this same file, a few
+        hundred lines up) uses lowercase "lat"/"lng" keys throughout. Using
+        the capitalized keys here would have silently returned an empty
+        hexbins list every time (every c.get() would be None, every point
+        skipped by the except below) -- never crashing, just quietly doing
+        nothing, which is worse than an error because it looks like it works.
+        """
+        counts: Dict[str, int] = {}
+        try:
+            # Local, guarded import -- same convention as cluster_hotspots'
+            # own `from sklearn.cluster import DBSCAN` a few lines up in this
+            # file. A top-level `import h3` (as this item's first-draft
+            # blueprint had it) would crash this ENTIRE module on startup if
+            # the vendored Linux .so ever fails to load for any reason (wrong
+            # glibc, corrupted vendor copy, etc.) -- taking down the whole
+            # app over one optional feature. This way, a failure here only
+            # ever costs the hex-grid view, nothing else.
+            import h3
+        except ImportError as ie:
+            logger.warning(f"h3 unavailable, hexbins skipped: {ie}")
+            return []
+        for c in coordinates:
+            try:
+                lat, lng = float(c["lat"]), float(c["lng"])
+                cell = h3.latlng_to_cell(lat, lng, resolution)
+                counts[cell] = counts.get(cell, 0) + 1
+            except (TypeError, ValueError, KeyError):
+                continue  # Loophole L1: skip a bad/missing coordinate, never crash the whole response
+        return [
+            {"h3_index": cell, "count": n, "boundary": h3.cell_to_boundary(cell)}
+            for cell, n in counts.items()
+        ]
+
     def _execute_tool(self, tool_name: str, params: Dict[str, Any], employee_id: int, session_id: str, user_unit_id: Optional[int]) -> Dict[str, Any]:
         """
         Executes the registered backend capabilities.
@@ -4197,6 +4290,25 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 except Exception as ex:
                     logger.warning(f"Could not resolve district '{district}' for hotspot map: {ex}")
 
+            # C.6: day_of_week filter + real eps/min_samples wiring -- this
+            # tool previously accepted no such params at all, running the
+            # exact same hardcoded-eps/min_samples query regardless of what
+            # the (until now decorative) sliders on SpatialScreen showed.
+            raw_day = params.get("day_of_week")
+            day_of_week = None
+            if raw_day is not None:
+                try:
+                    day_of_week = int(raw_day)
+                    if not (0 <= day_of_week <= 6):
+                        day_of_week = None  # out-of-range silently ignored, not erroring
+                except (TypeError, ValueError):
+                    day_of_week = None
+            try:
+                eps = max(0.001, min(0.05, float(params.get("eps", 0.005))))
+                min_samples = max(2, min(50, int(params.get("min_samples", 6))))
+            except (TypeError, ValueError):
+                eps, min_samples = 0.005, 6  # bad client input falls back to the existing defaults
+
             response_type = "map"
             final_answer = True  # map + descriptive text_result is complete; skip GLM synthesis
             coordinates = []
@@ -4240,12 +4352,16 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     # suspect's history must always be scanned in full.
                     from datetime import timedelta as _td
                     _recency_cutoff = (datetime.utcnow() - _td(days=180)).strftime("%Y-%m-%d")
-                    map_query = (f"SELECT Latitude, Longitude, CrimeNo, CrimeMajorHeadID, PoliceStationID "
+                    # C.6: CrimeRegisteredDate is now also SELECTed and carried
+                    # into each coordinate dict -- previously used only in the
+                    # WHERE clause above for the recency window, never stored,
+                    # so a day-of-week filter had nothing real to filter on.
+                    map_query = (f"SELECT Latitude, Longitude, CrimeNo, CrimeMajorHeadID, PoliceStationID, CrimeRegisteredDate "
                                  f"FROM CaseMaster {where_clause} AND CrimeRegisteredDate >= '{_recency_cutoff}' LIMIT 300")
                     map_res = catalyst_app.zql().execute_query(map_query)
                     if len(map_res) < 15:
                         map_res = catalyst_app.zql().execute_query(
-                            f"SELECT Latitude, Longitude, CrimeNo, CrimeMajorHeadID, PoliceStationID "
+                            f"SELECT Latitude, Longitude, CrimeNo, CrimeMajorHeadID, PoliceStationID, CrimeRegisteredDate "
                             f"FROM CaseMaster {where_clause} LIMIT 300")
                     for r in map_res:
                         cm = r.get("CaseMaster", {})
@@ -4258,6 +4374,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                                 "label": cm.get("CrimeNo"),
                                 "crime_head_name": crime_names_by_id.get(str(cm.get("CrimeMajorHeadID"))),
                                 "station_name": station_names_by_id.get(str(cm.get("PoliceStationID"))),
+                                "registered_date": cm.get("CrimeRegisteredDate"),
                             })
                 except Exception as ex:
                     logger.error(f"Failed to fetch coordinates for hotspot: {ex}")
@@ -4272,10 +4389,32 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 citations.append({"type": "Geospatial DBSCAN Analyst", "id": "KSP Hotspots", "details": f"District '{district}' not found"})
                 self._write_audit_log(employee_id, "Spatial Hotspot Query", district, "Get crime hotspots (district not found)", text_result, session_id)
             else:
+                # C.6: day-of-week filter, applied in Python after the fetch
+                # (same pattern as the existing MO-vector day-of-week
+                # computation) -- no extra ZCQL round trip, and only ever
+                # against the already-bounded LIMIT 300 fetch above.
+                if day_of_week is not None:
+                    filtered_coords = []
+                    for c in coordinates:
+                        raw_date = c.get("registered_date") or ""
+                        try:
+                            if datetime.strptime(str(raw_date)[:10], "%Y-%m-%d").weekday() == day_of_week:
+                                filtered_coords.append(c)
+                        except (ValueError, TypeError):
+                            continue  # skip unparseable rows, never crash the whole map
+                    coordinates = filtered_coords
+
                 # Execute DBSCAN clustering (shared helper -- see cluster_hotspots
                 # below; the district-dashboard detail endpoint in main.py calls
                 # the same method so hotspot clustering is never reimplemented).
-                centroids = self.cluster_hotspots(coordinates)
+                centroids = self.cluster_hotspots(coordinates, eps=eps, min_samples=min_samples)
+
+                # C.7: H3 hex-density grid, computed alongside (not instead
+                # of) the DBSCAN clusters above -- an alternative view the
+                # frontend can toggle to, over the SAME already-fetched
+                # coordinates, no extra ZCQL round trip. Never blocks the map
+                # if it fails (Loophole L1/guarded import above).
+                hexbins = self._compute_hexbins(coordinates)
 
                 # Hotspot TREND DELTA [B4]: is incident volume in this scope RISING
                 # or FALLING? Compare the last 90 days to the prior 90 days using
@@ -4314,13 +4453,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
                 scope_label = f" in {district}" if district else ""
                 if centroids:
-                    data = {"hotspots": centroids, "trend": trend}
+                    data = {"hotspots": centroids, "trend": trend, "hexbins": hexbins}
                     text_result = f"Plotted spatial crime density map{scope_label}. Detected {len(centroids)} active hotspot clusters containing dense incident concentrations.{trend_txt}"
                 else:
                     data = {"hotspots": coordinates if coordinates else [
                         {"lat": 13.02768, "lng": 77.5124, "label": "Peenya Hotspot A"},
                         {"lat": 12.9716, "lng": 77.5946, "label": "Cubbon Park Cluster"}
-                    ], "trend": trend}
+                    ], "trend": trend, "hexbins": hexbins}
                     text_result = f"The CCTNS database does not currently contain enough dense incident coordinates{scope_label} to form statistical clusters using DBSCAN (requires at least 10 spatial points within an eps of 0.005). Displaying raw incident marker positions.{trend_txt}"
 
                 citations.append({"type": "Geospatial DBSCAN Analyst", "id": "KSP Hotspots", "details": f"Incident spatial coordinates{scope_label}"})
@@ -5731,111 +5870,130 @@ class VajraAgentLoop(CognitiveBrainMixin):
         elif tool_name == "detect_crime_groups":
             response_type = "crime_groups"
             groups = []
-            if catalyst_app:
+            # C.8: prefer the real, full-table Louvain result (scheduled
+            # background job, same pattern as get_repeat_offenders reading
+            # from a scheduled analysis rather than recomputing live) when
+            # one exists. Falls through to the original 300-row union-find
+            # below ONLY if the job has never been run yet (Loophole L3: this
+            # tool call itself never triggers or recomputes it inline) --
+            # never worse than before, only better once a cached run exists.
+            _syn_cache = get_cached_syndicate_clusters()
+            if _syn_cache.get("status") == "done" and _syn_cache.get("result"):
                 try:
-                    # A single shared case doesn't distinguish an organized
-                    # group from two strangers coincidentally co-accused once
-                    # (e.g. a bystander witness-turned-co-accused). Requiring
-                    # accused pairs to share >= 2 SEPARATE CaseMasterIDs is a
-                    # simple, honestly-grounded proxy for "these people
-                    # actually operate together repeatedly" -- computed
-                    # directly from real Accused rows, not fabricated.
-                    # Bounded to the first 300 rows (one ZCQL page) to stay
-                    # within interactive chat latency; a full-table sweep
-                    # would need the same ~47-page pagination as
-                    # get_repeat_offenders and belongs in a scheduled job, not
-                    # a live tool call.
-                    acc_res = catalyst_app.zql().execute_query("SELECT AccusedName, CaseMasterID FROM Accused LIMIT 300")
-                    cases_by_name: Dict[str, set] = {}
-                    for r in acc_res:
-                        a = r.get("Accused", {})
-                        name = a.get("AccusedName")
-                        cid = a.get("CaseMasterID")
-                        if name and name.strip() and "unknown" not in name.lower() and cid:
-                            cases_by_name.setdefault(name, set()).add(cid)
-
-                    names = [n for n, cids in cases_by_name.items() if len(cids) > 1]
-                    pair_overlap: Dict[Tuple[str, str], set] = {}
-                    for i in range(len(names)):
-                        for j in range(i + 1, len(names)):
-                            shared = cases_by_name[names[i]] & cases_by_name[names[j]]
-                            if len(shared) >= 2:
-                                pair_overlap[(names[i], names[j])] = shared
-
-                    # Merge overlapping pairs into groups via union-find, so
-                    # A-B and B-C sharing cases with B surface as one 3-person
-                    # group instead of two disconnected pairs.
-                    parent: Dict[str, str] = {}
-
-                    def find(x: str) -> str:
-                        while parent.get(x, x) != x:
-                            x = parent.get(x, x)
-                        return x
-
-                    def union(x: str, y: str):
-                        parent.setdefault(x, x)
-                        parent.setdefault(y, y)
-                        rx, ry = find(x), find(y)
-                        if rx != ry:
-                            parent[rx] = ry
-
-                    all_case_ids: Dict[str, set] = {}
-                    for (a, b), shared in pair_overlap.items():
-                        union(a, b)
-                        all_case_ids.setdefault(find(a), set()).update(shared)
-
-                    members_by_root: Dict[str, set] = {}
-                    for (a, b) in pair_overlap.keys():
-                        root = find(a)
-                        members_by_root.setdefault(root, set()).update([a, b])
-
-                    # Intra-group degree centrality: how many OTHER members each
-                    # person shares cases with. The highest-degree member is the
-                    # group's likely hub/coordinator -- the "who runs this cell"
-                    # signal, not just a flat member list. Deterministic, no LLM.
-                    member_degree: Dict[str, set] = {}
-                    for (a, b) in pair_overlap.keys():
-                        member_degree.setdefault(a, set()).add(b)
-                        member_degree.setdefault(b, set()).add(a)
-
-                    for root, members in members_by_root.items():
-                        ms = sorted(members)
-                        hub = max(ms, key=lambda m: len(member_degree.get(m, set()))) if ms else None
-                        groups.append({
-                            "members": ms,
-                            "hub": hub,
-                            "hub_links": len(member_degree.get(hub, set())) if hub else 0,
-                            "shared_case_count": len(all_case_ids.get(root, set())),
-                            "case_ids": sorted(all_case_ids.get(root, set()), key=str)[:10]
-                        })
-                    groups.sort(key=lambda g: (len(g["members"]), g["shared_case_count"]), reverse=True)
-                    try:
-                        _dcg_top_n = max(1, min(int(params.get("top_n") or params.get("limit") or 10), 30))
-                    except (TypeError, ValueError):
-                        _dcg_top_n = 10
-                    groups = groups[:_dcg_top_n]
-                except Exception as ex:
-                    logger.warning(f"detect_crime_groups query failed: {ex}")
-            data = {"groups": groups, "scan_scope": "First 300 Accused records (one database page)"}
-            if groups:
-                top = groups[0]
-                hub_txt = ""
-                if top.get("hub"):
-                    hub_txt = f"Likely hub/coordinator: {top['hub']} (co-offends with {top.get('hub_links', 0)} of the group). "
-                text_result = (
-                    f"Detected {len(groups)} likely organized-crime group(s) -- clusters of accused persons who "
-                    f"repeatedly co-offend together (sharing 2+ separate cases, not just one). Largest: "
-                    f"{', '.join(top['members'])} ({top['shared_case_count']} shared cases). {hub_txt}This scan covers the "
-                    f"first 300 Accused records in the database, not the full table."
-                )
+                    _top_n = max(1, min(int(params.get("top_n") or params.get("limit") or 10), 30))
+                except (TypeError, ValueError):
+                    _top_n = 10
+                groups = _syn_cache["result"][:_top_n]
+                data = {"groups": groups, "scan_scope": "Full Accused + AccusedContact tables (scheduled Louvain analysis)",
+                        "computed_at": _syn_cache.get("computed_at")}
+                if groups:
+                    top = groups[0]
+                    hub_txt = f"Likely hub/coordinator: {top['hub']} (co-offends with {top.get('hub_links', 0)} of the group). " if top.get("hub") else ""
+                    synth_note = (" ⚠ This cluster's links include synthetic demo phone/vehicle data (docs/SCHEMA.md), "
+                                   "not a real telecom/RTO record -- investigative lead only, verify independently."
+                                   if top.get("synthetic_data_disclosure") else "")
+                    text_result = (
+                        f"Detected {len(groups)} likely organized-crime group(s) via full-table Louvain community "
+                        f"detection (last run: {_syn_cache.get('computed_at') or 'unknown'}) -- clusters of accused "
+                        f"persons who repeatedly co-offend together or share contact attributes. Largest: "
+                        f"{', '.join(top['members'])} ({top['shared_case_count']} shared cases). {hub_txt}{synth_note}"
+                    )
+                else:
+                    text_result = "The scheduled Louvain syndicate analysis found no groups of 2+ members in the full dataset."
+                citations.append({"type": "Louvain Community Detection", "id": "Accused + AccusedContact (full table)",
+                                   "details": f"Scheduled background job, last run {_syn_cache.get('computed_at') or 'unknown'}"})
+                self._write_audit_log(employee_id, "Organized Crime Group Detection", "Accused", "Detect organized crime groups (Louvain)", text_result, session_id)
             else:
-                text_result = (
-                    "No accused pairs sharing 2 or more separate cases were found in the scanned sample (first 300 "
-                    "Accused records) -- no repeated-co-offense pattern strong enough to call an organized group in "
-                    "this slice of the data."
-                )
-            citations.append({"type": "Co-Offense Pattern Analysis", "id": "Accused Table Sample", "details": "Repeated-co-accusal clustering (>=2 shared cases required)"})
-            self._write_audit_log(employee_id, "Organized Crime Group Detection", "Accused", "Detect organized crime groups", text_result, session_id)
+                # No cached Louvain run yet -- original 300-row union-find,
+                # UNCHANGED, kept as the honest fallback (Loophole L3: never
+                # recomputed inline here, only ever read from the cache above
+                # or, absent that, this pre-existing bounded sample).
+                if catalyst_app:
+                    try:
+                        acc_res = catalyst_app.zql().execute_query("SELECT AccusedName, CaseMasterID FROM Accused LIMIT 300")
+                        cases_by_name: Dict[str, set] = {}
+                        for r in acc_res:
+                            a = r.get("Accused", {})
+                            name = a.get("AccusedName")
+                            cid = a.get("CaseMasterID")
+                            if name and name.strip() and "unknown" not in name.lower() and cid:
+                                cases_by_name.setdefault(name, set()).add(cid)
+
+                        names = [n for n, cids in cases_by_name.items() if len(cids) > 1]
+                        pair_overlap: Dict[Tuple[str, str], set] = {}
+                        for i in range(len(names)):
+                            for j in range(i + 1, len(names)):
+                                shared = cases_by_name[names[i]] & cases_by_name[names[j]]
+                                if len(shared) >= 2:
+                                    pair_overlap[(names[i], names[j])] = shared
+
+                        parent: Dict[str, str] = {}
+
+                        def find(x: str) -> str:
+                            while parent.get(x, x) != x:
+                                x = parent.get(x, x)
+                            return x
+
+                        def union(x: str, y: str):
+                            parent.setdefault(x, x)
+                            parent.setdefault(y, y)
+                            rx, ry = find(x), find(y)
+                            if rx != ry:
+                                parent[rx] = ry
+
+                        all_case_ids: Dict[str, set] = {}
+                        for (a, b), shared in pair_overlap.items():
+                            union(a, b)
+                            all_case_ids.setdefault(find(a), set()).update(shared)
+
+                        members_by_root: Dict[str, set] = {}
+                        for (a, b) in pair_overlap.keys():
+                            root = find(a)
+                            members_by_root.setdefault(root, set()).update([a, b])
+
+                        member_degree: Dict[str, set] = {}
+                        for (a, b) in pair_overlap.keys():
+                            member_degree.setdefault(a, set()).add(b)
+                            member_degree.setdefault(b, set()).add(a)
+
+                        for root, members in members_by_root.items():
+                            ms = sorted(members)
+                            hub = max(ms, key=lambda m: len(member_degree.get(m, set()))) if ms else None
+                            groups.append({
+                                "members": ms,
+                                "hub": hub,
+                                "hub_links": len(member_degree.get(hub, set())) if hub else 0,
+                                "shared_case_count": len(all_case_ids.get(root, set())),
+                                "case_ids": sorted(all_case_ids.get(root, set()), key=str)[:10]
+                            })
+                        groups.sort(key=lambda g: (len(g["members"]), g["shared_case_count"]), reverse=True)
+                        try:
+                            _dcg_top_n = max(1, min(int(params.get("top_n") or params.get("limit") or 10), 30))
+                        except (TypeError, ValueError):
+                            _dcg_top_n = 10
+                        groups = groups[:_dcg_top_n]
+                    except Exception as ex:
+                        logger.warning(f"detect_crime_groups query failed: {ex}")
+                data = {"groups": groups, "scan_scope": "First 300 Accused records (one database page) -- no scheduled Louvain analysis has run yet"}
+                if groups:
+                    top = groups[0]
+                    hub_txt = ""
+                    if top.get("hub"):
+                        hub_txt = f"Likely hub/coordinator: {top['hub']} (co-offends with {top.get('hub_links', 0)} of the group). "
+                    text_result = (
+                        f"Detected {len(groups)} likely organized-crime group(s) -- clusters of accused persons who "
+                        f"repeatedly co-offend together (sharing 2+ separate cases, not just one). Largest: "
+                        f"{', '.join(top['members'])} ({top['shared_case_count']} shared cases). {hub_txt}This scan covers the "
+                        f"first 300 Accused records in the database, not the full table (no scheduled Louvain analysis has run yet)."
+                    )
+                else:
+                    text_result = (
+                        "No accused pairs sharing 2 or more separate cases were found in the scanned sample (first 300 "
+                        "Accused records) -- no repeated-co-offense pattern strong enough to call an organized group in "
+                        "this slice of the data."
+                    )
+                citations.append({"type": "Co-Offense Pattern Analysis", "id": "Accused Table Sample", "details": "Repeated-co-accusal clustering (>=2 shared cases required)"})
+                self._write_audit_log(employee_id, "Organized Crime Group Detection", "Accused", "Detect organized crime groups", text_result, session_id)
 
         # 18. get_crime_trends
         elif tool_name == "get_crime_trends":
@@ -7874,7 +8032,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
         an existence check AND a candidate name could be extracted -- a
         wrongly-triggered fast-path is worse than none.
         """
-        q = (query or "").lower().strip()
+        q = self._normalize_suspect_typos((query or "").lower().strip())  # C.1
         existence_cues = (
             "is there a suspect", "is there any suspect", "any suspect named",
             "any suspect called", "does suspect", "is there a person named",
