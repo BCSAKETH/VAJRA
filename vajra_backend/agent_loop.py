@@ -3561,6 +3561,17 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     depth_bits.append(f"near {dominant_station}")
                 depth_txt = f" -- {', '.join(depth_bits)}" if depth_bits else ""
 
+                # F.15: real case numbers per cluster, not just a location
+                # blob -- member_points already carries the real CrimeNo in
+                # its "label" field (see query_hotspots' coordinates.append
+                # above), so this is free (already-fetched data), not a new
+                # query. Capped at 10 (Loophole L1: an unbounded list would
+                # clutter a map popup) -- total_case_count (== point_count)
+                # tells the caller how many more exist beyond the preview.
+                # Loophole L2 (POCSO redaction) doesn't apply here: a bare
+                # CrimeNo carries no victim/narrative text, unlike BriefFacts
+                # or a name, so there is nothing to redact in this preview.
+                case_preview = [p.get("label") for p in member_points if p.get("label")][:10]
                 centroids.append({
                     "lat": lat_center,
                     "lng": lng_center,
@@ -3568,6 +3579,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     "point_count": point_count,
                     "dominant_crime": dominant_crime,
                     "dominant_station": dominant_station,
+                    "case_preview": case_preview,
+                    "total_case_count": point_count,
                 })
         except Exception as db_err:
             logger.warning(f"DBSCAN clustering failed: {db_err}")

@@ -18,6 +18,10 @@ interface HotspotPoint {
   point_count?: number;
   dominant_crime?: string | null;
   dominant_station?: string | null;
+  // F.15: real CrimeNo list for this cluster (already-fetched data, capped
+  // at 10 server-side), not a location blob with nothing to act on.
+  case_preview?: string[];
+  total_case_count?: number;
 }
 
 interface HexBin {
@@ -180,12 +184,28 @@ export const DistrictSpatialAnalystPanel: React.FC<{ district: string }> = ({ di
                 <Circle center={[point.lat, point.lng]} radius={eps * 111300} pathOptions={{ fillColor: "#C79A4E", color: "rgba(199,154,78,0.3)", weight: 1, fillOpacity: 0.08 }} />
                 <CircleMarker center={[point.lat, point.lng]} radius={6} pathOptions={{ fillColor: "#C79A4E", color: "#211F1D", weight: 1.5, fillOpacity: 0.95 }}>
                   <Popup>
-                    <div className="text-xs font-sans text-stone-900 space-y-1 min-w-[150px]">
+                    <div className="text-xs font-sans text-stone-900 space-y-1 min-w-[170px] max-w-[220px]">
                       {point.point_count ? (
                         <>
                           <span className="font-bold block">{point.point_count} incidents</span>
                           {point.dominant_crime && <span className="block text-[11px]">Type: <strong>{point.dominant_crime}</strong></span>}
                           {point.dominant_station && <span className="block text-[11px]">Near: <strong>{point.dominant_station}</strong></span>}
+                          {/* F.15: real case numbers from this cluster, not just a location blob */}
+                          {point.case_preview && point.case_preview.length > 0 && (
+                            <div className="mt-1.5 pt-1.5 border-t border-stone-300">
+                              <span className="block text-[10px] font-bold text-stone-600 mb-0.5">Cases in this cluster:</span>
+                              <ul className="space-y-0.5">
+                                {point.case_preview.map((cn, ci) => (
+                                  <li key={ci} className="font-mono text-[10px] text-stone-700 truncate">{cn}</li>
+                                ))}
+                              </ul>
+                              {typeof point.total_case_count === "number" && point.total_case_count > point.case_preview.length && (
+                                <span className="block text-[9.5px] text-stone-500 italic mt-0.5">
+                                  +{point.total_case_count - point.case_preview.length} more in this cluster
+                                </span>
+                              )}
+                            </div>
+                          )}
                         </>
                       ) : <span className="font-bold block">{point.label}</span>}
                     </div>

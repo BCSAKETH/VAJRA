@@ -455,7 +455,15 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
             directly in the chat -- no expand step needed. */}
         <div className="text-xs px-4 py-3">
         {effectiveType === "map" ? (() => {
-          const hotspots: { lat: number; lng: number; label?: string }[] = (safeEffectiveData.hotspots || []).filter(
+          // F.15: point_count/dominant_crime/dominant_station/case_preview
+          // are all real fields cluster_hotspots (agent_loop.py) already
+          // attaches -- previously discarded here by this narrower type,
+          // same pattern C.6 already fixed on the standalone Spatial screen.
+          const hotspots: {
+            lat: number; lng: number; label?: string;
+            point_count?: number; dominant_crime?: string | null; dominant_station?: string | null;
+            case_preview?: string[]; total_case_count?: number;
+          }[] = (safeEffectiveData.hotspots || []).filter(
             (h: any) => typeof h?.lat === "number" && typeof h?.lng === "number"
           );
           if (hotspots.length === 0) {
@@ -511,9 +519,34 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                           <CircleMarker center={[marker.lat, marker.lng]} radius={4}
                             pathOptions={{ color: "#161412", weight: 1.5, fillColor: color, fillOpacity: 1 }}>
                             <Popup>
-                              <div className="text-xs font-sans text-stone-900">
-                                <span className="font-bold block">{marker.label || (lang === "en" ? "Hotspot" : "ಹಾಟ್‌ಸ್ಪಾಟ್")}</span>
-                                <span className="font-mono">{marker.lat.toFixed(5)}, {marker.lng.toFixed(5)}</span>
+                              <div className="text-xs font-sans text-stone-900 space-y-1 min-w-[150px] max-w-[220px]">
+                                {marker.point_count ? (
+                                  <>
+                                    <span className="font-bold block">{marker.point_count} {lang === "en" ? "incidents" : "ಘಟನೆಗಳು"}</span>
+                                    {marker.dominant_crime && <span className="block text-[11px]">{lang === "en" ? "Type" : "ಬಗೆ"}: <strong>{marker.dominant_crime}</strong></span>}
+                                    {marker.dominant_station && <span className="block text-[11px]">{lang === "en" ? "Near" : "ಸಮೀಪ"}: <strong>{marker.dominant_station}</strong></span>}
+                                    {marker.case_preview && marker.case_preview.length > 0 && (
+                                      <div className="mt-1.5 pt-1.5 border-t border-stone-300">
+                                        <span className="block text-[10px] font-bold text-stone-600 mb-0.5">
+                                          {lang === "en" ? "Cases in this cluster:" : "ಈ ಸಮೂಹದಲ್ಲಿ ಪ್ರಕರಣಗಳು:"}
+                                        </span>
+                                        <ul className="space-y-0.5">
+                                          {marker.case_preview.map((cn, ci) => (
+                                            <li key={ci} className="font-mono text-[10px] text-stone-700 truncate">{cn}</li>
+                                          ))}
+                                        </ul>
+                                        {typeof marker.total_case_count === "number" && marker.total_case_count > marker.case_preview.length && (
+                                          <span className="block text-[9.5px] text-stone-500 italic mt-0.5">
+                                            +{marker.total_case_count - marker.case_preview.length} {lang === "en" ? "more in this cluster" : "ಇನ್ನಷ್ಟು"}
+                                          </span>
+                                        )}
+                                      </div>
+                                    )}
+                                  </>
+                                ) : (
+                                  <span className="font-bold block">{marker.label || (lang === "en" ? "Hotspot" : "ಹಾಟ್‌ಸ್ಪಾಟ್")}</span>
+                                )}
+                                <span className="font-mono text-stone-500">{marker.lat.toFixed(5)}, {marker.lng.toFixed(5)}</span>
                               </div>
                             </Popup>
                           </CircleMarker>

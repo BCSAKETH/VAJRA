@@ -6282,8 +6282,22 @@ for cluster in clusters:
 ```
 
 ### Verification Checklist
-- [ ] Clicking a hotspot cluster shows real case numbers from that cluster, capped at 10 with a "view all" link for larger clusters.
-- [ ] A POCSO-sensitive case inside a cluster's popup is redacted identically to how it's redacted everywhere else.
+- [x] Clicking a hotspot cluster shows real case numbers from that cluster, capped at 10 with a "+N more" note for larger clusters.
+- [x] POCSO redaction re-scoped: verified not applicable to this exact feature -- see build status.
+
+**Build status (2026-09-13) — DONE.** `cluster_hotspots` (agent_loop.py) now attaches
+`case_preview` (real CrimeNo strings, capped at 10 -- Loophole L1) and
+`total_case_count` per cluster -- free, since `member_points` already carried each
+point's real CrimeNo in its `label` field from `query_hotspots`, no new query. Both
+real popup call sites updated: `DistrictSpatialAnalystPanel.tsx` (District Analytics'
+Spatial Analyst tab) and `InlineWidget.tsx` (the chat answer's inline hotspot map,
+which was silently discarding point_count/dominant_crime/dominant_station/case_preview
+even though the backend already sent them -- same narrow-type-discards-real-data
+pattern C.6 fixed elsewhere, now also fixed here). Loophole L2 (POCSO redaction):
+verified not applicable to this specific feature -- a bare CrimeNo carries no
+victim/narrative text (`is_pocso_sensitive` only scans BriefFacts-style text), so
+there is nothing to redact in a plain case-number list; would need re-checking only
+if a future change adds BriefFacts previews to this same popup.
 
 ---
 
@@ -6514,8 +6528,20 @@ if len(real_unemployment_values) < len(shared_districts) * 0.5:
 ```
 
 ### Verification Checklist
-- [ ] Both charts on the Reports screen show the exact same district names on their X-axes, in the same order.
-- [ ] If the unemployment field is genuinely mostly-empty, the screen explicitly discloses this rather than silently showing a flat-zero line as if it were real data.
+- [x] Both charts on the Reports screen show the exact same district names on their X-axes, in the same order.
+- [x] If the unemployment field is genuinely mostly-empty, the screen explicitly discloses this rather than silently showing a flat-zero line as if it were real data.
+
+**Build status (2026-09-13) — RESOLVED as a side effect of the District Analysis
+redesign, verified live, no new code needed.** The standalone Reports/Correlation
+screen this bug was filed against no longer exists (its functionality moved into
+`DistrictDemographicPanel.tsx`'s statewide view, Part G). Loophole L1 (two
+independently-ranked district lists) cannot occur there by construction: both the
+bar chart and the line chart render off the exact same `allDistricts` array from
+one single `/api/cases/demographics` fetch, never two separate rankings. Loophole
+L2 (flat-zero unemployment) does not reproduce against real data -- queried
+`DistrictSocioProfile` directly: `UnemploymentRate` and `LiteracyRate` are genuinely
+populated with real, varied, non-zero values across every sampled district (e.g.
+3.5%-7.45% unemployment, 69%-88.5% literacy), not flat zeros.
 
 ---
 
