@@ -660,7 +660,13 @@ export const SupervisorDashboardScreen: React.FC = () => {
       // Relative path -- this app is hosted under a subpath (/app/), not
       // the domain root. An absolute "/sw.js" 404'd against the real
       // deployment (confirmed live) because it resolved outside /app/.
-      const reg = await navigator.serviceWorker.register("./sw.js");
+      // register() resolves as soon as the registration exists, but the
+      // worker itself is still "installing"/"activating" at that point --
+      // calling pushManager.subscribe() on it immediately failed live with
+      // "no active Service Worker". navigator.serviceWorker.ready is the
+      // correct wait: it resolves only once a worker is actually active.
+      await navigator.serviceWorker.register("./sw.js");
+      const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(vapid_public_key),
