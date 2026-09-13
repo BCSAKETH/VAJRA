@@ -4597,7 +4597,24 @@ async def create_group(payload: CreateGroupRequest, request: Request, location_c
     if any((r.get("ChatGroup", {}).get("name") or "").strip().lower() == name.lower() for r in existing_rows):
         raise HTTPException(status_code=409, detail="A group with this name already exists.")
     zcql_insert_row("ChatGroup", {"employee_id": employee_id, "name": name, "created_at": datetime.utcnow().isoformat()})
-    return {"status": "created", "name": name}
+    # New: the inline "New group..." action (GroupedSessionList's "Move to group"
+    # submenu) needs this new group's id back immediately, to assign the session
+    # to it without a second round trip. zcql_insert_row (vajra_core.py) doesn't
+    # return anything -- it's a plain ZCQL INSERT -- so this is one immediate
+    # follow-up SELECT, scoped to this officer+name (just inserted, so at most
+    # one real match; ORDER BY ROWID DESC LIMIT 1 as a defensive tie-breaker if
+    # a case-different duplicate somehow existed a moment before this insert).
+    group_id = None
+    try:
+        created_row = catalyst_app.zql().execute_query(
+            f"SELECT ROWID FROM ChatGroup WHERE employee_id = {employee_id} "
+            f"AND name = '{escape_zcql_literal(name)}' ORDER BY ROWID DESC LIMIT 1"
+        )
+        if created_row:
+            group_id = created_row[0].get("ChatGroup", {}).get("ROWID")
+    except Exception as e:
+        logger.warning(f"create_group: could not read back the new group's ROWID (non-fatal, group was still created): {e}")
+    return {"status": "created", "name": name, "group_id": group_id}
 
 
 @app.get("/api/groups")
@@ -4837,6 +4854,38 @@ async def list_tasks(session_id: str, request: Request, location_context: str = 
         return []
 
 
+# §9.5 fix: a dedicated, LIGHTWEIGHT upload endpoint for task-completion
+# evidence -- deliberately NOT a reuse of /api/chat/attachments, which runs
+# a full Qwen-vision/Zia-STT/ffmpeg analysis pipeline on every file. That's
+# real, necessary work for a chat attachment the AI needs to reason about,
+# but pure overkill (and slow) for "attach proof this task was done," which
+# only ever needs to exist and be referenced -- confirmed by
+# _review_task_completion's own scope (it only checks that an attachment
+# WAS provided, never analyzes its content). Storage-only, same
+# `store_attachment` helper the heavier endpoint already uses.
+MAX_TASK_ATTACHMENT_BYTES = 8 * 1024 * 1024  # matches ChatInput.tsx's own cap
+
+
+@app.post("/api/investigations/{session_id}/tasks/upload")
+async def upload_task_attachment(
+    session_id: str, request: Request,
+    file: UploadFile = File(...),
+    location_context: str = Depends(security_firewall),
+):
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not _get_cowork_role(session_id, employee_id, request.state.kgid):
+        raise HTTPException(status_code=403, detail="You do not have access to this investigation.")
+    content = await file.read()
+    if len(content) > MAX_TASK_ATTACHMENT_BYTES:
+        raise HTTPException(status_code=400, detail="File too large (8MB limit).")
+    from catalyst_stratus import store_attachment
+    ext = (file.filename or "evidence").rsplit(".", 1)[-1].lower()[:10] if "." in (file.filename or "") else "bin"
+    stratus_id = store_attachment(content, ext, file.content_type or "application/octet-stream")
+    if not stratus_id:
+        raise HTTPException(status_code=503, detail="Attachment storage is not available right now.")
+    return {"stratus_id": stratus_id, "file_name": file.filename}
+
+
 class CompleteTaskRequest(BaseModel):
     note: str
     attachment_stratus_id: Optional[str] = None
@@ -4977,20 +5026,23 @@ async def search_investigations(q: str, request: Request, location_context: str 
     term = q.strip()
     if len(term) < 2:
         return []
-    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
     if not catalyst_app:
         return []
     safe = escape_zcql_literal(term)
     # Loophole L1: bounded to the officer's OWN investigations only (never a
-    # cross-officer search) and capped, same LIMIT-everywhere pattern used
-    # throughout this codebase.
-    owned = catalyst_app.zql().execute_query(
-        f"SELECT session_id, title FROM ChatSession WHERE employee_id = {employee_id} "
-        f"AND description IS NOT NULL AND description != '' LIMIT 300"
-    )
+    # cross-officer search) -- but "own" means the exact same scope
+    # list_investigations already uses (owned + Cowork participant), not just
+    # ownership. Bug fixed here: this used to query ChatSession directly with
+    # only an `employee_id = X` filter, silently missing every investigation
+    # the officer can see and open from the very same sidebar list because
+    # they're a Cowork participant rather than the owner. Reusing
+    # list_investigations' own result (not a second, narrower re-implementation)
+    # guarantees this search can never drift out of sync with what the officer
+    # can actually see listed.
+    investigations = await list_investigations(request, location_context)
     results = []
-    for row in owned:
-        sid = row["ChatSession"]["session_id"]
+    for inv in investigations:
+        sid = inv["session_id"]
         hits = catalyst_app.zql().execute_query(
             f"SELECT text FROM ChatMessage WHERE session_id = '{escape_zcql_literal(sid)}' AND text LIKE '*{safe}*' LIMIT 1"
         )
@@ -4998,7 +5050,7 @@ async def search_investigations(q: str, request: Request, location_context: str 
             snippet = hits[0].get("ChatMessage", {}).get("text", "")
             # Loophole L2: same redaction any other officer-facing text goes through.
             safe_snippet = redact_pocso_name(snippet) if is_pocso_sensitive(snippet) else snippet
-            results.append({"session_id": sid, "title": row["ChatSession"]["title"], "snippet": safe_snippet[:120]})
+            results.append({"session_id": sid, "title": inv["title"], "snippet": safe_snippet[:120]})
         if len(results) >= 20:
             break
     return results
@@ -6766,26 +6818,34 @@ async def handle_case_inserted_signal(payload: CaseInsertedSignal, request: Requ
             f"repeating modus operandi. Investigative lead, not an identification."
         )
         # §9.8: if this suspect is already named in an active Investigation,
-        # route the alert straight into that thread instead of (or as well
-        # as covering) the general alert feed -- a match a case owner is
-        # actively working should surface where they're already looking.
-        # Falls back to the general ProactiveAlerts row below either way if
-        # no active Investigation names this suspect, so a match is never
-        # silently dropped (Loophole L1's own resolution).
+        # route the alert straight into that thread instead of the general
+        # alert feed -- a match a case owner is actively working should
+        # surface where they're already looking, visible only to that
+        # investigation's own participants (§9.8's own stated purpose and
+        # Verification Checklist: "test as a different, uninvolved officer --
+        # must see nothing"). Bug fixed here: this used to ALSO always fall
+        # through to the general ProactiveAlerts broadcast below regardless
+        # of whether routing succeeded, which meant every officer's alert
+        # bell saw it too -- a real privacy leak, not the "falls back only if
+        # not routed" behavior this comment already claimed. Now genuinely
+        # falls back to the general alert ONLY when no active Investigation
+        # names this suspect, so a match is still never silently dropped
+        # either way (Loophole L1's own resolution, now actually enforced).
         routed = _route_match_to_investigations(primary_accused, message)
 
         # Fire-and-forget after this signal's own work -- never rolls back
         # or blocks the original CaseMaster insert transaction (that already
         # committed before this Signal ever fired), same as the plan's own
         # "must never affect the officer's ability to file the FIR" rule.
-        insert_proactive_alert({
-            "AlertType": "SERIAL_PATTERN_AUTO_MATCH",
-            "Severity": "Warning",
-            "TriggerTime": datetime.utcnow().isoformat(),
-            "IsRead": False,
-            "DistrictID": "0",
-            "AlertMessage": message,
-        })
+        if not routed:
+            insert_proactive_alert({
+                "AlertType": "SERIAL_PATTERN_AUTO_MATCH",
+                "Severity": "Warning",
+                "TriggerTime": datetime.utcnow().isoformat(),
+                "IsRead": False,
+                "DistrictID": "0",
+                "AlertMessage": message,
+            })
         return {"status": "alerted", "match_rate": match_rate, "accused": primary_accused, "routed_to_investigation": routed}
     except Exception as e:
         logger.warning(f"case-inserted signal handler failed for CaseMasterID {cm_id}: {e}")
@@ -7856,6 +7916,34 @@ def _extract_visual_cards_from_message(msg: dict, is_kn: bool):
     return cards
 
 
+# §9.7 fix: dossier generation for a CLOSED investigation is supposed to be
+# frozen -- regenerating it should return the exact same document, not a
+# fresh timestamp/hash every time (confirmed by audit: nothing previously
+# read ChatSession.status back at generation time at all). Caches the
+# actual PDF bytes (not just the hash) keyed by session_id, so a repeat
+# generation is genuinely byte-identical, not merely hash-equal. Same
+# accepted in-memory-only limitation as every other cache in this codebase
+# (_active_session_jti, _syndicate_cache, ...) -- a restart clears it, and
+# the next generation simply re-freezes fresh, which is the honest,
+# acceptable failure mode already established elsewhere.
+_closed_dossier_cache: Dict[str, Dict[str, Any]] = {}  # session_id -> {"pdf_bytes", "media_type", "filename", "engine_header"}
+
+
+def _get_investigation_status(session_id: str) -> Optional[str]:
+    """Real current ChatSession.status for the freeze-cache check above --
+    None if unavailable (column not migrated yet, or session not found),
+    which the caller treats as "not closed" (never wrongly freezes)."""
+    if not catalyst_app or not session_id:
+        return None
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT status FROM ChatSession WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 1"
+        )
+        return (res[0].get("ChatSession", {}).get("status") if res else None) or None
+    except Exception:
+        return None
+
+
 @app.post("/api/chat/export-pdf")
 async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, location_context: str = Depends(security_firewall)):
     """
@@ -7957,6 +8045,21 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
                 "status": "pending_approval", "request_id": req_id, "reasons": review_reasons,
                 "message": "AI pre-screen flagged sensitive content — awaiting supervisor approval.",
             })
+
+    # §9.7 fix: a closed investigation's dossier is frozen -- a cache hit here
+    # returns the exact same bytes generated the first time this investigation
+    # was closed, instead of re-rendering (which would always produce a fresh
+    # timestamp + hash even for identical input). Checked AFTER the approval
+    # gate above, not before -- this only skips the redundant rendering work,
+    # never the security screening an officer must still pass to export.
+    if payload.session_id and _get_investigation_status(payload.session_id) == "closed":
+        _cached = _closed_dossier_cache.get(payload.session_id)
+        if _cached:
+            return Response(
+                content=_cached["pdf_bytes"], media_type=_cached["media_type"],
+                headers={"Content-Disposition": f"attachment; filename={_cached['filename']}",
+                         "X-Engine": _cached["engine_header"], "X-Frozen-Dossier": "true"},
+            )
 
     # --- Attempt 1: Catalyst SmartBrowz (Cloud HTML-to-PDF Engine) ---
     try:
@@ -8071,11 +8174,29 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
                     payload.session_id or f"session-{authed_badge}")
             except Exception as e:
                 logger.warning(f"DOSSIER_EXPORT_HASH audit (smartbrowz) failed: {e}")
+            # §9.6 fix: "export made" is one of the Case Diary's 4 stated
+            # event categories but was never actually fired anywhere --
+            # confirmed by an audit against the real code, not assumed.
+            # Gated to real Investigations only (_is_investigation_session),
+            # same guard every other diary-writing call site already uses --
+            # a plain chat's PDF export never logs a diary entry.
+            if payload.session_id and _is_investigation_session(payload.session_id):
+                _log_diary_entry(payload.session_id, "export_generated",
+                                  f"Generated case dossier/export ({report_lang}).", _emp_id)
+            _sb_filename = f"VAJRA_Report_{str(authed_badge)}_{report_lang}.pdf"
+            # §9.7 fix: freeze this exact PDF for a closed investigation so a
+            # repeat generation returns byte-identical output (checked at
+            # request-start above) instead of a fresh timestamp/hash every time.
+            if payload.session_id and _get_investigation_status(payload.session_id) == "closed":
+                _closed_dossier_cache[payload.session_id] = {
+                    "pdf_bytes": sb_pdf_bytes, "media_type": "application/pdf",
+                    "filename": _sb_filename, "engine_header": "Catalyst-SmartBrowz",
+                }
             return Response(
                 content=sb_pdf_bytes,
                 media_type="application/pdf",
                 headers={
-                    "Content-Disposition": f"attachment; filename=VAJRA_Report_{str(authed_badge)}_{report_lang}.pdf",
+                    "Content-Disposition": f"attachment; filename={_sb_filename}",
                     "X-Engine": "Catalyst-SmartBrowz"
                 }
             )
@@ -8880,10 +9001,21 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         pdf.multi_cell(pdf.w - 74, 4.4, seal_text)
 
         pdf_bytes = pdf.output()
+        _fp_filename = f"VAJRA_Report_{str(authed_badge)}_{report_lang}.pdf"
+        # §9.6/§9.7 fixes, same as the SmartBrowz path above -- the FPDF
+        # fallback must not skip these just because it's the secondary engine.
+        if payload.session_id and _is_investigation_session(payload.session_id):
+            _log_diary_entry(payload.session_id, "export_generated",
+                              f"Generated case dossier/export ({report_lang}, FPDF fallback).", _emp_id)
+        if payload.session_id and _get_investigation_status(payload.session_id) == "closed":
+            _closed_dossier_cache[payload.session_id] = {
+                "pdf_bytes": bytes(pdf_bytes), "media_type": "application/pdf",
+                "filename": _fp_filename, "engine_header": "FPDF-Fallback",
+            }
         return Response(
             content=bytes(pdf_bytes),
             media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename=VAJRA_Report_{str(authed_badge)}_{report_lang}.pdf"}
+            headers={"Content-Disposition": f"attachment; filename={_fp_filename}"}
         )
     except Exception as e:
         logger.error(f"Failed to generate PDF: {e}")

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ChatMessage } from "../AppContext";
 import { translations } from "../i18n";
-import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2 } from "lucide-react";
+import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2, Info } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 import { API_BASE } from "../config";
 
@@ -1040,6 +1040,30 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
       setLoadingAttachmentId(null);
     }
   };
+
+  // §9.8 fix: a "system" message (e.g. an auto-flagged repeat-offender match
+  // routed into this investigation, main.py's _route_match_to_investigations)
+  // is deliberately stored with sender="system" specifically so it never
+  // reads as the AI talking -- confirmed by audit that this safeguard was
+  // dead code (every non-"user" sender rendered identically to "assistant"
+  // here). Rendered as a plain, centered, muted notice strip -- no avatar,
+  // no "VAJRA.AI" label, no left/right alignment -- distinct from both a
+  // real AI answer and an officer's own message.
+  if (message.sender === "system") {
+    return (
+      <div className="w-full flex justify-center animate-fade-in">
+        <div className="max-w-[90%] sm:max-w-[75%] flex items-start gap-2 px-3.5 py-2.5 rounded-xl border border-stone-800 bg-stone-900/40 text-stone-400">
+          <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-stone-500" />
+          <div className="min-w-0">
+            <span className="block text-[9.5px] font-mono uppercase tracking-wider text-stone-550 mb-0.5">
+              {lang === "en" ? "System Notice" : "ಸಿಸ್ಟಮ್ ಸೂಚನೆ"} • {message.timestamp}
+            </span>
+            <span className="text-xs leading-relaxed">{displayText}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={`flex flex-col gap-1.5 w-full animate-fade-in group ${isAI ? "items-start" : "items-end"}`}>

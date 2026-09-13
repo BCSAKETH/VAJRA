@@ -30,14 +30,22 @@ interface FilterSortPanelProps {
   value: FilterSortState;
   onChange: (next: FilterSortState) => void;
   onReset: () => void;
-  showStatus: boolean;
+  // Investigations redesign: replaces the old `showStatus: boolean` --
+  // Status was already correctly gated to Investigations only, but the
+  // panel still showed "Group by"/"Show empty groups" for Investigations
+  // too (stale: investigations no longer use the group mechanism at all,
+  // that's chats-only now). `mode` gates BOTH halves correctly: Status only
+  // for "investigations"; Group by + Show empty groups only for "chats".
+  mode: "chats" | "investigations";
   lang: "en" | "kn";
 }
 
 const selectCls =
   "bg-stone-950/60 border border-stone-800 rounded-md text-[10px] text-stone-300 px-1.5 py-1 focus:outline-none focus:border-[#C79A4E]/50 cursor-pointer";
 
-export const FilterSortPanel: React.FC<FilterSortPanelProps> = ({ value, onChange, onReset, showStatus, lang }) => {
+export const FilterSortPanel: React.FC<FilterSortPanelProps> = ({ value, onChange, onReset, mode, lang }) => {
+  const showStatus = mode === "investigations";
+  const showGroupControls = mode === "chats";
   const row = (label: string, control: React.ReactNode) => (
     <div className="flex items-center justify-between gap-2 px-3 py-1.5">
       <span className="text-[10.5px] text-stone-400">{label}</span>
@@ -91,17 +99,18 @@ export const FilterSortPanel: React.FC<FilterSortPanelProps> = ({ value, onChang
           <option value="month">{lang === "en" ? "This month" : "ಈ ತಿಂಗಳು"}</option>
         </select>
       )}
-      {row(
-        lang === "en" ? "Group by" : "ಗುಂಪು ಮಾಡಿ",
-        <select
-          className={selectCls}
-          value={value.groupBy}
-          onChange={(e) => onChange({ ...value, groupBy: e.target.value as FilterSortState["groupBy"] })}
-        >
-          <option value="custom">{lang === "en" ? "Custom groups" : "ಕಸ್ಟಮ್ ಗುಂಪುಗಳು"}</option>
-          <option value="none">{lang === "en" ? "None" : "ಯಾವುದೂ ಇಲ್ಲ"}</option>
-        </select>
-      )}
+      {showGroupControls &&
+        row(
+          lang === "en" ? "Group by" : "ಗುಂಪು ಮಾಡಿ",
+          <select
+            className={selectCls}
+            value={value.groupBy}
+            onChange={(e) => onChange({ ...value, groupBy: e.target.value as FilterSortState["groupBy"] })}
+          >
+            <option value="custom">{lang === "en" ? "Custom groups" : "ಕಸ್ಟಮ್ ಗುಂಪುಗಳು"}</option>
+            <option value="none">{lang === "en" ? "None" : "ಯಾವುದೂ ಇಲ್ಲ"}</option>
+          </select>
+        )}
       {row(
         lang === "en" ? "Sort by" : "ವಿಂಗಡಿಸಿ",
         <select
@@ -113,23 +122,24 @@ export const FilterSortPanel: React.FC<FilterSortPanelProps> = ({ value, onChang
           <option value="title">{lang === "en" ? "Title" : "ಶೀರ್ಷಿಕೆ"}</option>
         </select>
       )}
-      {row(
-        lang === "en" ? "Show empty groups" : "ಖಾಲಿ ಗುಂಪುಗಳನ್ನು ತೋರಿಸಿ",
-        <button
-          type="button"
-          onClick={() => onChange({ ...value, showEmptyGroups: !value.showEmptyGroups })}
-          className={`w-8 h-4 rounded-full relative transition-colors cursor-pointer ${
-            value.showEmptyGroups ? "bg-[#C79A4E]/70" : "bg-stone-700"
-          }`}
-          aria-pressed={value.showEmptyGroups}
-        >
-          <span
-            className={`absolute top-0.5 w-3 h-3 rounded-full bg-stone-100 transition-all ${
-              value.showEmptyGroups ? "left-4" : "left-0.5"
+      {showGroupControls &&
+        row(
+          lang === "en" ? "Show empty groups" : "ಖಾಲಿ ಗುಂಪುಗಳನ್ನು ತೋರಿಸಿ",
+          <button
+            type="button"
+            onClick={() => onChange({ ...value, showEmptyGroups: !value.showEmptyGroups })}
+            className={`w-8 h-4 rounded-full relative transition-colors cursor-pointer ${
+              value.showEmptyGroups ? "bg-[#C79A4E]/70" : "bg-stone-700"
             }`}
-          />
-        </button>
-      )}
+            aria-pressed={value.showEmptyGroups}
+          >
+            <span
+              className={`absolute top-0.5 w-3 h-3 rounded-full bg-stone-100 transition-all ${
+                value.showEmptyGroups ? "left-4" : "left-0.5"
+              }`}
+            />
+          </button>
+        )}
       <div className="border-t border-stone-800 mt-1 pt-1">
         <button
           onClick={onReset}

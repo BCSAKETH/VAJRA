@@ -1,6 +1,11 @@
-import React, { useEffect, useState } from "react";
-import { X, Plus, CheckCircle2, Circle, Loader2, AlertTriangle } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { X, Plus, CheckCircle2, Circle, Loader2, AlertTriangle, Paperclip, FileCheck } from "lucide-react";
 import { API_BASE } from "../config";
+
+// §9.5 fix: the "forced note + upload" workflow only ever had the note half
+// built -- confirmed by audit, no file-picker existed anywhere in this
+// component despite the backend already accepting attachment_stratus_id.
+const MAX_TASK_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 
 // §9.5 Guided Task Workflow: a supervised task loop, Investigation-only
 // (confirmed with user) -- check a task -> forced note -> AI reviews it,
@@ -36,6 +41,15 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
   // Loophole L4: disabled (not hidden) while a review call is in flight.
   const [isReviewing, setIsReviewing] = useState(false);
   const [lastReview, setLastReview] = useState<{ taskId: number; text: string } | null>(null);
+  // §9.5 fix: real attachment state -- a picked file uploads via the
+  // lightweight storage-only endpoint (not the heavy Qwen/Zia pipeline
+  // /api/chat/attachments runs) the moment it's chosen, so `handleComplete`
+  // just sends the already-resolved stratus_id alongside the note.
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [isUploadingFile, setIsUploadingFile] = useState(false);
+  const [attachmentStratusId, setAttachmentStratusId] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const load = () => {
     setIsLoading(true);
@@ -67,6 +81,41 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
     }
   };
 
+  const handlePickFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // allow re-picking the same file name later
+    if (!file) return;
+    setUploadError(null);
+    if (file.size > MAX_TASK_ATTACHMENT_BYTES) {
+      setUploadError(lang === "en" ? "File too large (8MB limit)." : "ಫೈಲ್ ತುಂಬಾ ದೊಡ್ಡದಾಗಿದೆ (8MB ಮಿತಿ).");
+      return;
+    }
+    setPendingFile(file);
+    setAttachmentStratusId(null);
+    setIsUploadingFile(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch(`${API_BASE}/api/investigations/${sessionId}/tasks/upload`, {
+        method: "POST",
+        headers: authHeaders(),
+        body: formData,
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.stratus_id) {
+        setAttachmentStratusId(data.stratus_id);
+      } else {
+        setUploadError(lang === "en" ? "Upload failed -- you can still complete the task without it." : "ಅಪ್‌ಲೋಡ್ ವಿಫಲವಾಗಿದೆ -- ಅದು ಇಲ್ಲದೆ ಕಾರ್ಯವನ್ನು ಪೂರ್ಣಗೊಳಿಸಬಹುದು.");
+        setPendingFile(null);
+      }
+    } catch {
+      setUploadError(lang === "en" ? "Upload failed -- you can still complete the task without it." : "ಅಪ್‌ಲೋಡ್ ವಿಫಲವಾಗಿದೆ -- ಅದು ಇಲ್ಲದೆ ಕಾರ್ಯವನ್ನು ಪೂರ್ಣಗೊಳಿಸಬಹುದು.");
+      setPendingFile(null);
+    } finally {
+      setIsUploadingFile(false);
+    }
+  };
+
   const handleComplete = async (taskId: number) => {
     // Client-side check is a UX nicety only -- the server enforces the real
     // minimum-content gate regardless (Loophole L1).
@@ -76,12 +125,15 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
       const res = await fetch(`${API_BASE}/api/investigations/${sessionId}/tasks/${taskId}/complete`, {
         method: "POST",
         headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ note: noteDraft.trim() }),
+        body: JSON.stringify({ note: noteDraft.trim(), attachment_stratus_id: attachmentStratusId || undefined }),
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setCompletingId(null);
         setNoteDraft("");
+        setPendingFile(null);
+        setAttachmentStratusId(null);
+        setUploadError(null);
         if (data.follow_up_question) setLastReview({ taskId, text: data.follow_up_question });
         load();
       }
@@ -126,6 +178,9 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
                     if (task.status === "done") return;
                     setCompletingId(completingId === task.ROWID ? null : task.ROWID);
                     setNoteDraft("");
+                    setPendingFile(null);
+                    setAttachmentStratusId(null);
+                    setUploadError(null);
                   }}
                   className="w-full flex items-start gap-2 text-left cursor-pointer disabled:cursor-not-allowed"
                   disabled={task.status === "done"}
@@ -157,9 +212,44 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
                       rows={3}
                       className="w-full bg-stone-950/60 border border-stone-800 focus:border-[#C79A4E]/50 rounded-lg p-2 text-[11px] text-stone-200 focus:outline-none resize-none"
                     />
+                    {/* §9.5 fix: the real "+ upload" half of "forced note +
+                        upload" -- optional, never blocks completion on its
+                        own (the note's own 15-char minimum is the only hard
+                        gate, matching Loophole L3's advisory-only posture). */}
+                    <input ref={fileInputRef} type="file" onChange={handlePickFile} className="hidden" />
+                    {pendingFile ? (
+                      <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-950/40">
+                        <div className="flex items-center gap-1.5 min-w-0 text-[10.5px] text-stone-300">
+                          {isUploadingFile ? (
+                            <Loader2 className="w-3 h-3 shrink-0 animate-spin text-stone-500" />
+                          ) : attachmentStratusId ? (
+                            <FileCheck className="w-3 h-3 shrink-0 text-[#5DCAA5]" />
+                          ) : (
+                            <Paperclip className="w-3 h-3 shrink-0 text-stone-500" />
+                          )}
+                          <span className="truncate">{pendingFile.name}</span>
+                        </div>
+                        <button
+                          onClick={() => { setPendingFile(null); setAttachmentStratusId(null); }}
+                          className="text-stone-600 hover:text-rose-400 cursor-pointer shrink-0"
+                          aria-label={lang === "en" ? "Remove attachment" : "ಲಗತ್ತನ್ನು ತೆಗೆದುಹಾಕಿ"}
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => fileInputRef.current?.click()}
+                        className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg border border-dashed border-stone-800 hover:border-stone-700 text-stone-500 hover:text-stone-300 text-[10.5px] cursor-pointer"
+                      >
+                        <Paperclip className="w-3 h-3" />
+                        {lang === "en" ? "Attach evidence (optional)" : "ಸಾಕ್ಷ್ಯ ಲಗತ್ತಿಸಿ (ಐಚ್ಛಿಕ)"}
+                      </button>
+                    )}
+                    {uploadError && <p className="text-[10px] text-rose-400">{uploadError}</p>}
                     <button
                       onClick={() => handleComplete(task.ROWID)}
-                      disabled={isReviewing || noteDraft.trim().length < 15}
+                      disabled={isReviewing || isUploadingFile || noteDraft.trim().length < 15}
                       className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-[#C79A4E]/10 hover:bg-[#C79A4E]/20 border border-[#C79A4E]/30 text-[#C79A4E] text-[11px] font-bold disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                     >
                       {isReviewing ? <Loader2 className="w-3 h-3 animate-spin" /> : null}

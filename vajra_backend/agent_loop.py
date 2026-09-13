@@ -2204,18 +2204,22 @@ class VajraAgentLoop(CognitiveBrainMixin):
         the officer's UI waiting on a slow LLM turn for what is fundamentally
         a secondary/advisory check.
 
-        attachment_stratus_id is accepted for interface symmetry with the
-        upload flow but not yet analyzed here -- no existing helper in this
-        module turns a bare Stratus file id into ready analysis text outside
-        the dedicated attachment-upload pipeline (av_analysis.py / the
-        /api/chat/attachments endpoint), and inventing a second, parallel
-        analysis path for this one advisory call isn't worth the risk this
-        close to review. The note itself (the real, forced accountability
-        text) is always reviewed regardless.
+        §9.5 fix: attachment_stratus_id was previously accepted "for interface
+        symmetry" but never actually referenced anywhere in this function --
+        confirmed by audit. Scoped deliberately narrow (not a full vision-
+        analysis pipeline): this only tells the reviewing LLM a supporting
+        file WAS attached, so its one-sentence advisory response can
+        genuinely account for that ("note + attached evidence looks
+        complete") instead of silently reviewing the note as if no file
+        existed. No content-level analysis of the file itself happens here --
+        that would need a second, parallel path into av_analysis.py's
+        real image/video pipeline, not worth the risk this close to review
+        for what's an advisory-only check to begin with.
         """
         prompt = (
-            "A police officer just marked an investigative task complete with this note. "
-            "In ONE short sentence, either say it looks complete, or flag ONE specific "
+            "A police officer just marked an investigative task complete with this note"
+            + (" and attached a supporting file as evidence" if attachment_stratus_id else "")
+            + ". In ONE short sentence, either say it looks complete, or flag ONE specific "
             "concrete gap and ask ONE follow-up question. Do not invent details not in the note.\n\n"
             f"NOTE: {note}"
         )
@@ -8176,6 +8180,25 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     citations.append({"type": "Public News/RSS Signal", "id": it.get("evidence_hash", it.get("url", "")),
                                       "details": f"{it.get('source', 'Regional Press')} -- {it.get('url', '')}"})
             self._write_audit_log(employee_id, "OSINT: Viral Trend Scan", f"{district}:{topic}", topic or district, text_result, session_id)
+
+        # §9.6 fix: "query run" is one of the Case Diary's 4 stated event
+        # categories but was never actually fired anywhere -- confirmed by an
+        # audit against the real code, not assumed. This is the ONE shared
+        # point every tool call already funnels through (the whole elif
+        # chain above all builds up to this single return), so logging here
+        # -- rather than at each of the many individual call sites scattered
+        # across run_agent_loop -- can never drift out of sync with what
+        # tools actually ran. Gated to real Investigations only (lazy import
+        # to avoid a circular import with main.py, same pattern already used
+        # for F.10's _route_match_to_investigations) -- a plain chat's tool
+        # calls never write a diary entry.
+        try:
+            from main import _is_investigation_session, _log_diary_entry
+            if _is_investigation_session(session_id):
+                _tool_summary = (text_result or "").strip().replace("\n", " ")[:200] or "(no summary text)"
+                _log_diary_entry(session_id, "tool_call", f"Ran {tool_name}: {_tool_summary}", employee_id)
+        except Exception as _diary_ex:
+            logger.warning(f"§9.6 tool_call diary logging failed (non-fatal): {_diary_ex}")
 
         return {
             "text_result": text_result,

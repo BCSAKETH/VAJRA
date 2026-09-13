@@ -4,7 +4,7 @@ import { API_BASE } from "../config";
 import {
   MessageSquare, Folder, Users, Loader2, MoreVertical, Trash2,
   ChevronDown, ChevronRight as ChevronRightIcon, Filter, Pin, PinOff,
-  Circle, Archive, ArchiveRestore, Copy, FolderInput, FileStack, Pencil,
+  Circle, Archive, ArchiveRestore, Copy, FolderInput, FileStack, Pencil, Plus,
 } from "lucide-react";
 import { FilterSortPanel, FilterSortState, DEFAULT_FILTER_SORT_STATE } from "./FilterSortPanel";
 
@@ -56,6 +56,13 @@ interface GroupedSessionListProps {
   // Only meaningful for kind === "chats": the real Investigations list, used
   // by the "Add to Investigation" submenu picker (§9.3).
   investigationsForPicker?: Investigation[];
+  // Investigations redesign: "sidebar" (default) keeps today's compact
+  // button-row unchanged for every existing caller; "page" renders a bigger
+  // card (title, case_no badge, last-active, role badge) for the new
+  // full-page InvestigationsScreen. All state/handlers/filtering/sorting/
+  // mutation logic below is 100% shared regardless of variant -- only
+  // renderRow's outer JSX branches on it.
+  variant?: "sidebar" | "page";
 }
 
 const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` });
@@ -74,7 +81,7 @@ function loadFilterState(kind: string): FilterSortState {
 
 const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
   kind, items, meta, groups, activeSessionId, onSelectSession, loadingSessionId,
-  isExpanded, onMutated, investigationsForPicker,
+  isExpanded, onMutated, investigationsForPicker, variant = "sidebar",
 }) => {
   const { lang, addToast, requestNewChat } = useApp();
   const [filter, setFilter] = useState<FilterSortState>(() => loadFilterState(kind));
@@ -344,6 +351,40 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
     }
   };
 
+  // Investigations redesign: "Move to group" now offers "New group..."
+  // inline (matching the reference screenshot) instead of requiring the
+  // officer to separately use a header-level "+ group" button first (that
+  // button is being removed from UnifiedSidebar entirely). Creates the
+  // group, then immediately assigns THIS session to it using the id the
+  // create call now returns -- one flow, no second round trip or refetch.
+  const handleCreateGroup = async (sessionId: string) => {
+    setOpenMenuId(null);
+    const name = window.prompt(lang === "en" ? "New group name" : "ಹೊಸ ಗುಂಪಿನ ಹೆಸರು", "");
+    if (!name || !name.trim()) return;
+    setBusyId(sessionId);
+    try {
+      const res = await fetch(`${API_BASE}/api/groups`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ name: name.trim() }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || "Could not create group.");
+      if (!data.group_id) throw new Error("Group created, but its id wasn't returned -- try moving this chat to it from the list once it appears.");
+      const assignRes = await fetch(`${API_BASE}/api/sessions/${sessionId}/group`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({ group_id: data.group_id }),
+      });
+      if (!assignRes.ok) throw new Error("Group created, but couldn't move this chat into it.");
+      onMutated();
+    } catch (err: any) {
+      addToast(lang === "en" ? "Action Failed" : "ಕ್ರಿಯೆ ವಿಫಲವಾಗಿದೆ", err.message || "Could not create group.", "Critical");
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   // ---- row rendering ----
   const renderRow = (item: SessionSummary | Investigation) => {
     const isInvestigation = kind === "investigations";
@@ -363,42 +404,59 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
     const spinnerCls = isInvestigation ? "text-amber-500" : "text-[#C79A4E]";
     const folderCls = isInvestigation ? "text-amber-500" : "text-[#C79A4E]";
 
+    const isPage = variant === "page";
+
     return (
       <div key={item.session_id} className="relative group">
         <button
           onClick={() => onSelectSession(item.session_id)}
           disabled={!!loadingSessionId || isBusy}
           aria-busy={isLoadingThis}
-          className={`w-full text-left flex items-start gap-2 px-2.5 py-2 pr-7 rounded-lg text-xs transition-all cursor-pointer disabled:cursor-wait ${
-            (loadingSessionId && !isLoadingThis) || isBusy ? "opacity-50" : ""
-          } ${
-            isActive ? activeCls : "border border-transparent hover:bg-stone-900/60 text-stone-400 hover:text-stone-200"
-          }`}
+          className={
+            isPage
+              ? `w-full text-left flex items-start gap-3 p-4 pr-9 rounded-xl border transition-all cursor-pointer disabled:cursor-wait ${
+                  (loadingSessionId && !isLoadingThis) || isBusy ? "opacity-50" : ""
+                } ${isActive ? activeCls : "border-stone-850 bg-stone-900/30 hover:bg-stone-900/60 hover:border-stone-800 text-stone-300"}`
+              : `w-full text-left flex items-start gap-2 px-2.5 py-2 pr-7 rounded-lg text-xs transition-all cursor-pointer disabled:cursor-wait ${
+                  (loadingSessionId && !isLoadingThis) || isBusy ? "opacity-50" : ""
+                } ${isActive ? activeCls : "border border-transparent hover:bg-stone-900/60 text-stone-400 hover:text-stone-200"}`
+          }
         >
           {isLoadingThis || isBusy ? (
-            <Loader2 className={`w-3.5 h-3.5 shrink-0 mt-0.5 animate-spin ${spinnerCls}`} />
+            <Loader2 className={`${isPage ? "w-5 h-5" : "w-3.5 h-3.5"} shrink-0 mt-0.5 animate-spin ${spinnerCls}`} />
           ) : isInvestigation ? (
-            <Folder className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${folderCls}`} />
+            <Folder className={`${isPage ? "w-5 h-5" : "w-3.5 h-3.5"} shrink-0 mt-0.5 ${folderCls}`} />
           ) : (
-            <MessageSquare className="w-3.5 h-3.5 shrink-0 mt-0.5 text-stone-500" />
+            <MessageSquare className={`${isPage ? "w-5 h-5" : "w-3.5 h-3.5"} shrink-0 mt-0.5 text-stone-500`} />
           )}
           <div className="min-w-0 flex-1">
-            <div className={`truncate leading-tight flex items-center gap-1 ${m?.is_unread ? "font-bold text-stone-100" : ""}`}>
+            <div className={`truncate leading-tight flex items-center gap-1.5 ${isPage ? "text-sm font-bold" : ""} ${m?.is_unread ? "font-bold text-stone-100" : ""}`}>
               {m?.is_unread && <Circle className="w-1.5 h-1.5 fill-[#C79A4E] text-[#C79A4E] shrink-0" />}
               {item.title || (lang === "en" ? "New Conversation" : "ಹೊಸ ಸಂಭಾಷಣೆ")}
               {m?.is_pinned && <Pin className="w-2.5 h-2.5 text-stone-500 shrink-0" />}
             </div>
+            {isInvestigation && isPage && inv.description && (
+              <div className="text-[11px] text-stone-500 truncate mt-0.5">{inv.description}</div>
+            )}
             {isInvestigation && inv.case_no && (
-              <div className="text-[9px] text-stone-550 font-mono truncate">{inv.case_no}</div>
+              <div className="text-[9px] text-stone-550 font-mono truncate mt-0.5">{inv.case_no}</div>
+            )}
+            {isPage && (
+              <div className="flex items-center gap-2 mt-1.5">
+                <span className="text-[9.5px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border border-stone-800 text-stone-500">
+                  {isInvestigation ? inv.role : (lang === "en" ? "Chat" : "ಚಾಟ್")}
+                </span>
+                <span className="text-[9.5px] text-stone-600 font-mono">{item.last_active_at}</span>
+              </div>
             )}
           </div>
-          {item.is_cowork && <Users className="w-3 h-3 shrink-0 text-[#5DCAA5] mt-0.5" />}
+          {item.is_cowork && <Users className={`${isPage ? "w-4 h-4" : "w-3 h-3"} shrink-0 text-[#5DCAA5] mt-0.5`} />}
         </button>
 
-        {isExpanded && canManage && (
+        {(isPage || isExpanded) && canManage && (
           <button
             onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === item.session_id ? null : item.session_id); }}
-            className="absolute right-1 top-1/2 -translate-y-1/2 p-1 rounded text-stone-600 hover:text-stone-200 hover:bg-stone-800 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+            className={`absolute right-1 ${isPage ? "top-4" : "top-1/2 -translate-y-1/2"} p-1 rounded text-stone-600 hover:text-stone-200 hover:bg-stone-800 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer`}
             aria-label="More options"
           >
             <MoreVertical className="w-3.5 h-3.5" />
@@ -406,9 +464,9 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
         )}
 
         {openMenuId === item.session_id && (
-          <div className="absolute right-1 top-7 z-50 bg-stone-900 border border-stone-800 rounded-lg shadow-2xl py-1 w-44" onClick={(e) => e.stopPropagation()}>
-            <button onClick={() => handleRename(item.session_id, item.title)} className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-stone-300 hover:bg-stone-800 cursor-pointer">
-              <Pencil className="w-3 h-3" /> {lang === "en" ? "Rename" : "ಮರುಹೆಸರಿಸಿ"}
+          <div className={`absolute right-1 ${isPage ? "top-10" : "top-7"} z-50 bg-stone-900 border border-stone-800 rounded-lg shadow-2xl py-1 w-44`} onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => handleCopyId(item.session_id)} className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-stone-300 hover:bg-stone-800 cursor-pointer">
+              <Copy className="w-3 h-3" /> {lang === "en" ? "Copy session ID" : "ಸೆಷನ್ ID ನಕಲಿಸಿ"}
             </button>
             <button onClick={() => handleTogglePin(item.session_id, !!m?.is_pinned)} className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-stone-300 hover:bg-stone-800 cursor-pointer">
               {m?.is_pinned ? <PinOff className="w-3 h-3" /> : <Pin className="w-3 h-3" />} {m?.is_pinned ? (lang === "en" ? "Unpin" : "ಪಿನ್ ತೆಗೆ") : (lang === "en" ? "Pin" : "ಪಿನ್ ಮಾಡಿ")}
@@ -416,7 +474,15 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
             <button onClick={() => handleToggleUnread(item.session_id, !!m?.is_unread)} className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-stone-300 hover:bg-stone-800 cursor-pointer">
               <Circle className="w-3 h-3" /> {m?.is_unread ? (lang === "en" ? "Mark as read" : "ಓದಿದಂತೆ ಗುರುತಿಸಿ") : (lang === "en" ? "Mark as unread" : "ಓದದಂತೆ ಗುರುತಿಸಿ")}
             </button>
-            {groups.length > 0 && (
+            <button onClick={() => handleRename(item.session_id, item.title)} className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-stone-300 hover:bg-stone-800 cursor-pointer">
+              <Pencil className="w-3 h-3" /> {lang === "en" ? "Rename" : "ಮರುಹೆಸರಿಸಿ"}
+            </button>
+            {/* "Move to group" is chats-only -- an investigation is its own
+                category, not a kind of group (confirmed with user). "New
+                group..." is always offered inline here now, not gated on
+                groups.length, matching the reference screenshot -- no
+                separate header-level "+ group" button exists anymore. */}
+            {!isInvestigation && (
               <div className="border-t border-stone-800 my-1 pt-1">
                 <div className="px-3 py-1 text-[9px] text-stone-600 uppercase font-mono">{lang === "en" ? "Move to group" : "ಗುಂಪಿಗೆ ಸರಿಸಿ"}</div>
                 {groups.map((g) => (
@@ -429,6 +495,9 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
                     {lang === "en" ? "Remove from group" : "ಗುಂಪಿನಿಂದ ತೆಗೆ"}
                   </button>
                 )}
+                <button onClick={() => handleCreateGroup(item.session_id)} className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-[#C79A4E] hover:bg-stone-800 cursor-pointer">
+                  <Plus className="w-3 h-3" /> {lang === "en" ? "New group..." : "ಹೊಸ ಗುಂಪು..."}
+                </button>
               </div>
             )}
             {!isInvestigation && (
@@ -464,9 +533,6 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
             <button onClick={() => handleToggleArchive(item.session_id, !!m?.is_archived)} className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-stone-300 hover:bg-stone-800 cursor-pointer">
               {m?.is_archived ? <ArchiveRestore className="w-3 h-3" /> : <Archive className="w-3 h-3" />} {m?.is_archived ? (lang === "en" ? "Unarchive" : "ಆರ್ಕೈವ್ ರದ್ದು") : (lang === "en" ? "Archive" : "ಆರ್ಕೈವ್ ಮಾಡಿ")}
             </button>
-            <button onClick={() => handleCopyId(item.session_id)} className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-stone-300 hover:bg-stone-800 cursor-pointer">
-              <Copy className="w-3 h-3" /> {lang === "en" ? "Copy session ID" : "ಸೆಷನ್ ID ನಕಲಿಸಿ"}
-            </button>
             <button onClick={() => handleDelete(item.session_id, item.title)} className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-rose-400 hover:bg-rose-500/10 cursor-pointer">
               <Trash2 className="w-3 h-3" /> {lang === "en" ? "Delete" : "ಅಳಿಸಿ"}
             </button>
@@ -501,7 +567,7 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
               value={filter}
               onChange={setFilterAndPersist}
               onReset={resetFilter}
-              showStatus={kind === "investigations"}
+              mode={kind === "investigations" ? "investigations" : "chats"}
               lang={lang}
             />
           )}

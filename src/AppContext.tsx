@@ -28,7 +28,8 @@ export type ScreenId =
   | "supervisor"
   | "audit"
   | "settings"
-  | "district_dashboard";
+  | "district_dashboard"
+  | "investigations";
 
 export interface ChatMessage {
   id: string;

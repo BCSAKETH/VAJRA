@@ -2,9 +2,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { useApp, ScreenId } from "../AppContext";
 import { API_BASE } from "../config";
 import {
-  MessageSquarePlus, FolderPlus, Map, UserCheck, Search as SearchIcon, Loader2,
+  MessageSquarePlus, FolderPlus, FolderKanban, Map, UserCheck, Search as SearchIcon, Loader2,
   ChevronLeft, ChevronRight, Shield, IdCard, Building2, X, LogOut,
-  Settings as SettingsIcon, Search, FolderPlus as GroupPlusIcon,
+  Settings as SettingsIcon, Search,
 } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
 import { NewInvestigationModal } from "./NewInvestigationModal";
@@ -114,27 +114,6 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
     return () => { if (searchDebounceRef.current) clearTimeout(searchDebounceRef.current); };
   }, [searchTerm]);
 
-  const handleNewGroup = async () => {
-    const name = window.prompt(lang === "en" ? "New group name" : "ಹೊಸ ಗುಂಪಿನ ಹೆಸರು", "");
-    if (!name || !name.trim()) return;
-    try {
-      const res = await fetch(`${API_BASE}/api/groups`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ name: name.trim() }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || "Could not create group.");
-      }
-      bumpRefresh();
-    } catch (err: any) {
-      // Kept minimal (window.alert) -- this is a rare, low-stakes action and
-      // the sidebar has no toast surface reference of its own here.
-      window.alert(err.message || "Could not create group.");
-    }
-  };
-
   const handleSelectSession = (sessionId: string) => {
     requestChatSessionSelect(sessionId);
     if (currentScreen !== "ai_chat") setCurrentScreen("ai_chat");
@@ -146,6 +125,11 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
   };
 
   const navItems: { id: ScreenId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+    // Investigations redesign: a plain nav destination, like Claude's own
+    // "Projects" sidebar link -- opens the dedicated full-page
+    // InvestigationsScreen. No expansion/group rows live in the sidebar
+    // itself anymore; that entire list moved to the page this opens.
+    { id: "investigations" as ScreenId, label: t.navInvestigations, icon: FolderKanban },
     { id: "district_dashboard", label: t.navDistrictDashboard, icon: Map },
     ...(roleTier === "supervisor" ? [{ id: "supervisor" as ScreenId, label: t.navSupervisor, icon: UserCheck }] : []),
     { id: "fir_search" as ScreenId, label: t.navSearch, icon: SearchIcon },
@@ -271,60 +255,32 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
         </div>
       )}
 
-      {/* Scrollable grouped lists */}
+      {/* Scrollable chat history -- Investigations no longer list here at
+          all (moved to the dedicated page, see the nav item above); only
+          Groups + "Ungrouped" chat history shows in the sidebar now,
+          matching Claude's own left rail. */}
       <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-3">
         {isLoading ? (
           <div className="text-[10px] text-stone-600 text-center py-4 font-mono">{t.loadingLabel}</div>
         ) : (
-          <>
-            <div>
-              <div className="flex items-center justify-between px-1 mb-1">
-                {isExpanded && (
-                  <span className="text-[10px] font-black text-amber-500/80 uppercase tracking-wider">
-                    {lang === "en" ? "Investigations" : "ತನಿಖೆಗಳು"}
-                  </span>
-                )}
-                {isExpanded && (
-                  <button
-                    onClick={handleNewGroup}
-                    title={lang === "en" ? "New group" : "ಹೊಸ ಗುಂಪು"}
-                    className="p-0.5 rounded text-stone-600 hover:text-stone-300 cursor-pointer"
-                  >
-                    <GroupPlusIcon className="w-3 h-3" />
-                  </button>
-                )}
+          <div>
+            {isExpanded && (
+              <div className="text-[10px] font-black text-stone-500 uppercase tracking-wider px-1 mb-1">
+                {lang === "en" ? "Chats" : "ಚಾಟ್‌ಗಳು"}
               </div>
-              <GroupedSessionList
-                kind="investigations"
-                items={investigations}
-                meta={meta}
-                groups={groups}
-                activeSessionId={activeChatSessionId}
-                onSelectSession={handleSelectSession}
-                isExpanded={isExpanded}
-                onMutated={bumpRefresh}
-              />
-            </div>
-
-            <div>
-              {isExpanded && (
-                <div className="text-[10px] font-black text-stone-500 uppercase tracking-wider px-1 mb-1">
-                  {lang === "en" ? "Chats" : "ಚಾಟ್‌ಗಳು"}
-                </div>
-              )}
-              <GroupedSessionList
-                kind="chats"
-                items={sessions}
-                meta={meta}
-                groups={groups}
-                activeSessionId={activeChatSessionId}
-                onSelectSession={handleSelectSession}
-                isExpanded={isExpanded}
-                onMutated={bumpRefresh}
-                investigationsForPicker={investigations}
-              />
-            </div>
-          </>
+            )}
+            <GroupedSessionList
+              kind="chats"
+              items={sessions}
+              meta={meta}
+              groups={groups}
+              activeSessionId={activeChatSessionId}
+              onSelectSession={handleSelectSession}
+              isExpanded={isExpanded}
+              onMutated={bumpRefresh}
+              investigationsForPicker={investigations}
+            />
+          </div>
         )}
       </div>
 

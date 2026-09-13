@@ -39,7 +39,12 @@ const parseServerTimestamp = (ts: string): Date => {
 const mapSessionMessages = (sessionId: string, messages: any[]): ChatMessage[] =>
   messages.map((m: any, idx: number) => ({
     id: `${sessionId}-${idx}`,
-    sender: m.sender === "user" ? "user" : "assistant",
+    // §9.8 fix: this used to coerce EVERY non-"user" sender to "assistant" --
+    // a "system" message (e.g. an auto-flagged repeat-offender match routed
+    // into this investigation) rendered mislabeled as "VAJRA.AI" even though
+    // the backend deliberately stored it as sender="system" specifically to
+    // avoid that. ChatMessage's own type union already allows "system".
+    sender: m.sender === "user" ? "user" : m.sender === "system" ? "system" : "assistant",
     text: m.text,
     textEn: m.text_en,
     textKn: m.text_kn,
@@ -474,7 +479,8 @@ export const AIChatScreen: React.FC = () => {
                 setChatMessages((prev) => {
                   const newMsg: ChatMessage = {
                     id: `sse-${Date.now()}-${Math.random()}`,
-                    sender: payload.sender === "user" ? "user" : "assistant",
+                    // §9.8 fix: same "system" preservation as mapSessionMessages above.
+                    sender: payload.sender === "user" ? "user" : payload.sender === "system" ? "system" : "assistant",
                     text: payload.text,
                     textEn: payload.text_en,
                     textKn: payload.text_kn,
@@ -1365,6 +1371,75 @@ export const AIChatScreen: React.FC = () => {
         { label: lang === "en" ? "Plot crime hotspot coordinates" : "ಅಪರಾಧದ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳನ್ನು ತೋರಿಸಿ", text: "Plot crime hotspot coordinates" },
       ];
 
+  // Empty-chat centered layout: fresh login, "New Chat", or a brand-new
+  // Investigation with no messages yet should center the greeting AND the
+  // composer together as one block, like Claude's own home screen -- not
+  // the composer pinned to the true bottom of the screen with a big empty
+  // gap under the greeting (confirmed live complaint, reference screenshot
+  // of Claude's own "✳ Vajra returns! / How can I help you today?" layout).
+  // The composer JSX itself is identical either way -- only WHERE it
+  // renders changes, so it's extracted once here and inserted into exactly
+  // ONE of the two positions below, never both/duplicated/mounted twice.
+  const isEmptyChat = !loadingSessionId && chatMessages.length === 0;
+  const composerContent = (
+    <div className="max-w-4xl mx-auto space-y-4 w-full">
+      {/* Suggestion Chips */}
+      {chatMessages.length === 0 && (
+        <div className="flex flex-wrap gap-2 justify-center">
+          {suggestionChips.map((chip, idx) => (
+            <button
+              key={idx}
+              onClick={() => handleSend(chip.text)}
+              className="px-3 py-1.5 rounded-full border border-stone-800 hover:border-[#C79A4E]/40 bg-stone-900/50 hover:bg-[#C79A4E]/5 text-[11px] text-stone-450 hover:text-stone-200 transition-all cursor-pointer"
+            >
+              {chip.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Pending attachment preview chips */}
+      {/* Input controls block */}
+      <ChatInput
+        onSend={handleSend}
+        isThinking={isThinking}
+        isUploading={isUploadingAttachments}
+        uploadStatusLabel={uploadStatusLabel}
+        lang={lang}
+        addToast={addToast}
+        answerMode={answerMode}
+        onAnswerModeChange={setAnswerMode}
+      />
+
+      {/* Chat / Cowork mode toggle */}
+      <div className="flex items-center gap-2 justify-center">
+        <div className="inline-flex rounded-lg border border-stone-800 bg-stone-950/50 p-0.5">
+          <button
+            onClick={() => handleToggleCowork("chat")}
+            className={`px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
+              chatMode === "chat" ? "bg-stone-800 text-stone-100" : "text-stone-500 hover:text-stone-300"
+            }`}
+          >
+            {t.chatModeChat}
+          </button>
+          <button
+            onClick={() => handleToggleCowork("cowork")}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
+              chatMode === "cowork" ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"
+            }`}
+          >
+            <Users className="w-3 h-3" /> {t.chatModeCowork}
+          </button>
+        </div>
+        {hasParticipants && (
+          <span className="text-[10px] text-[#C79A4E] font-mono">
+            {t.sharedSessionHint}
+          </span>
+        )}
+      </div>
+    </div>
+  );
+
   return (
     <div className="h-full flex overflow-hidden bg-stone-950/20">
       {/* §9.1: the chat-history/investigations panel is now the global
@@ -1472,22 +1547,31 @@ export const AIChatScreen: React.FC = () => {
             ))}
           </div>
         ) : chatMessages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-center max-w-lg mx-auto space-y-4 animate-fade-in">
-            {/* §9.10 Context-aware greeting -- time/date + officer name (already
-                a global, persisted AppContext value) + a case-load digest that
-                fetches asynchronously and never blocks this greeting from
-                rendering instantly. */}
-            <GreetingHeader />
-            <div className="w-16 h-16 rounded-full bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[#C79A4E] flex items-center justify-center glow-teal">
-              <Sparkles className="w-8 h-8" />
+          <div className="h-full flex flex-col items-center justify-center text-center max-w-4xl mx-auto w-full animate-fade-in">
+            <div className="max-w-lg mx-auto space-y-4">
+              {/* §9.10 Context-aware greeting -- time/date + officer name (already
+                  a global, persisted AppContext value) + a case-load digest that
+                  fetches asynchronously and never blocks this greeting from
+                  rendering instantly. */}
+              <GreetingHeader />
+              <div className="w-16 h-16 rounded-full bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[#C79A4E] flex items-center justify-center glow-teal mx-auto">
+                <Sparkles className="w-8 h-8" />
+              </div>
+              <div className="space-y-1.5">
+                <h2 className="text-base font-bold text-stone-200 uppercase tracking-wider">
+                  {t.chatHubTitle}
+                </h2>
+                <p className="text-xs text-stone-500 leading-relaxed">
+                  {t.chatHubDesc}
+                </p>
+              </div>
             </div>
-            <div className="space-y-1.5">
-              <h2 className="text-base font-bold text-stone-200 uppercase tracking-wider">
-                {t.chatHubTitle}
-              </h2>
-              <p className="text-xs text-stone-500 leading-relaxed">
-                {t.chatHubDesc}
-              </p>
+            {/* Claude-style centered home screen: composer lives right here,
+                inline with the greeting, until the first message sends --
+                not pinned to the true bottom of the screen with a gap under
+                it (see composerContent's own definition above). */}
+            <div className="w-full px-4 mt-8">
+              {composerContent}
             </div>
           </div>
         ) : (
@@ -1583,68 +1667,18 @@ export const AIChatScreen: React.FC = () => {
           hard divider line between the thread and the composer. A soft
           top fade instead (the thread appears to dissolve under it), and
           the composer card itself (ChatInput's own glass-panel border)
-          is the only visible boundary, not an outer strip. */}
-      <div className="relative shrink-0">
-        <div className="pointer-events-none absolute inset-x-0 -top-6 h-6 bg-gradient-to-t from-[#161412] to-transparent" />
-        <div className="p-4 pt-2">
-        <div className="max-w-4xl mx-auto space-y-4">
-          {/* Suggestion Chips */}
-          {chatMessages.length === 0 && (
-            <div className="flex flex-wrap gap-2 justify-center">
-              {suggestionChips.map((chip, idx) => (
-                <button
-                  key={idx}
-                  onClick={() => handleSend(chip.text)}
-                  className="px-3 py-1.5 rounded-full border border-stone-800 hover:border-[#C79A4E]/40 bg-stone-900/50 hover:bg-[#C79A4E]/5 text-[11px] text-stone-450 hover:text-stone-200 transition-all cursor-pointer"
-                >
-                  {chip.label}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {/* Pending attachment preview chips */}
-          {/* Input controls block */}
-          <ChatInput
-            onSend={handleSend}
-            isThinking={isThinking}
-            isUploading={isUploadingAttachments}
-            uploadStatusLabel={uploadStatusLabel}
-            lang={lang}
-            addToast={addToast}
-            answerMode={answerMode}
-            onAnswerModeChange={setAnswerMode}
-          />
-
-          {/* Chat / Cowork mode toggle */}
-          <div className="flex items-center gap-2">
-            <div className="inline-flex rounded-lg border border-stone-800 bg-stone-950/50 p-0.5">
-              <button
-                onClick={() => handleToggleCowork("chat")}
-                className={`px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
-                  chatMode === "chat" ? "bg-stone-800 text-stone-100" : "text-stone-500 hover:text-stone-300"
-                }`}
-              >
-                {t.chatModeChat}
-              </button>
-              <button
-                onClick={() => handleToggleCowork("cowork")}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
-                  chatMode === "cowork" ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"
-                }`}
-              >
-                <Users className="w-3 h-3" /> {t.chatModeCowork}
-              </button>
-            </div>
-            {hasParticipants && (
-              <span className="text-[10px] text-[#C79A4E] font-mono">
-                {t.sharedSessionHint}
-              </span>
-            )}
+          is the only visible boundary, not an outer strip. Only rendered
+          docked-to-the-bottom here once the thread has real messages --
+          for the empty state, composerContent instead renders centered
+          alongside the greeting (above), never both/duplicated at once. */}
+      {!isEmptyChat && (
+        <div className="relative shrink-0">
+          <div className="pointer-events-none absolute inset-x-0 -top-6 h-6 bg-gradient-to-t from-[#161412] to-transparent" />
+          <div className="p-4 pt-2">
+            {composerContent}
           </div>
         </div>
-        </div>
-      </div>
+      )}
 
       {/* Cowork invite panel */}
       {showInvitePanel && (

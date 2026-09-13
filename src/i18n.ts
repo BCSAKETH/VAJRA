@@ -78,6 +78,12 @@ export interface Translations {
   navAudit: string;
   navSettings: string;
   navDistrictDashboard: string;
+  navInvestigations: string;
+  investigationsScreenTitle: string;
+  investigationsScreenDesc: string;
+  investigationsSearchPlaceholder: string;
+  investigationsEmptyState: string;
+  newGroupMenuAction: string;
   chatPlaceholder: string;
   voiceListening: string;
   thinkingIndicator: string;
@@ -222,6 +228,12 @@ export const translations: Record<Language, Translations> = {
     navAudit: "Immutable Audit Ledger",
     navSettings: "System Settings",
     navDistrictDashboard: "District Analytics",
+    navInvestigations: "Investigations",
+    investigationsScreenTitle: "Investigations",
+    investigationsScreenDesc: "Every case you own or collaborate on, in one place.",
+    investigationsSearchPlaceholder: "Search investigations...",
+    investigationsEmptyState: "No Investigations yet. Start one from the sidebar.",
+    newGroupMenuAction: "New group...",
     chatPlaceholder: "Ask VAJRA (e.g. 'Assess conviction risk for Ramesh' or 'Plot crime hotspots')...",
     voiceListening: "Listening to Karnataka voice feed...",
     thinkingIndicator: "VAJRA is reasoning over CCTNS registers...",
@@ -354,6 +366,12 @@ export const translations: Record<Language, Translations> = {
     navAudit: "ಅಸ್ಥಿರವಲ್ಲದ ದಾಖಲೆ ಲಾಗ್",
     navSettings: "ಸಿಸ್ಟಮ್ ಸೆಟ್ಟಿಂಗ್ಗಳು",
     navDistrictDashboard: "ಜಿಲ್ಲಾ ವಿಶ್ಲೇಷಣೆ",
+    navInvestigations: "ತನಿಖೆಗಳು",
+    investigationsScreenTitle: "ತನಿಖೆಗಳು",
+    investigationsScreenDesc: "ನೀವು ಹೊಂದಿರುವ ಅಥವಾ ಸಹಯೋಗಿಸುವ ಪ್ರತಿಯೊಂದು ಪ್ರಕರಣ, ಒಂದೇ ಸ್ಥಳದಲ್ಲಿ.",
+    investigationsSearchPlaceholder: "ತನಿಖೆಗಳನ್ನು ಹುಡುಕಿ...",
+    investigationsEmptyState: "ಇನ್ನೂ ತನಿಖೆಗಳಿಲ್ಲ. ಸೈಡ್‌ಬಾರ್‌ನಿಂದ ಒಂದನ್ನು ಪ್ರಾರಂಭಿಸಿ.",
+    newGroupMenuAction: "ಹೊಸ ಗುಂಪು...",
     chatPlaceholder: "ಪ್ರಶ್ನೆ ಕೇಳಿ (ಉದಾಹರಣೆಗೆ: 'ರಮೇಶ್ ಅಪರಾಧದ ಅಪಾಯ ವಿಶ್ಲೇಷಿಸು' ಅಥವಾ 'ಅಪರಾಧದ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳನ್ನು ತೋರಿಸಿ')...",
     voiceListening: "ಕನ್ನಡ ಧ್ವನಿ ಸಂಜ್ಞೆ ಆಲಿಸಲಾಗುತ್ತಿದೆ...",
     thinkingIndicator: "ವಜ್ರ ಸಿಬ್ಬಂದಿ CCTNS ದಾಖಲೆಗಳನ್ನು ಹುಡುಕುತ್ತಿದ್ದಾರೆ...",
