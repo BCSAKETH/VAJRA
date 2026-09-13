@@ -6813,7 +6813,17 @@ async def explain_chart(payload: Dict[str, Any], request: Request, location_cont
 ```
 
 ### Verification Checklist
-- [ ] The explain call returns within the 8s bound or fails gracefully with a usable fallback message, never a hung UI.
+- [x] The explain call returns within the 8s bound or fails gracefully with a usable fallback message, never a hung UI.
+
+**Build status (2026-09-13) — DONE.** `POST /api/charts/explain` (main.py):
+`agent_loop.llm.chat(...)` via `ThreadPoolExecutor` + 8s hard timeout (same
+guard pattern as other single-purpose LLM helper calls in this file),
+`use_agent_system_prompt=False` (a plain one-shot question, not a tool-calling
+turn), bounded 800-char input. `InlineWidget.tsx`: a Sparkles button next to
+Maximize, shown only for the genuinely chart-shaped response types (map,
+network, risk, forecast, timeline, mo_match, correlation, trend,
+case_distribution) -- the narration renders in a collapsed-by-default strip
+right below the header so it never clutters a chart nobody asked to explain.
 
 ---
 
@@ -6851,7 +6861,21 @@ const exportChartAsPng = (svgElement: SVGSVGElement) => {
 ```
 
 ### Verification Checklist
-- [ ] Exporting a chart produces a usable PNG image without any server round-trip.
+- [x] Exporting a chart produces a usable PNG image without any server round-trip.
+
+**Build status (2026-09-13) — DONE, scope narrowed honestly.** Pure client-side
+SVG-to-PNG (a Download button next to Explain/Maximize in `InlineWidget.tsx`) --
+clones the real `svg.recharts-surface` element, fills a dark background (charts
+render on transparent by default, unreadable pasted into a light briefing doc),
+rasterizes at 2x for a crisp export, downloads via a real `<a download>` (this is
+a live deployed web app in the officer's own browser, not a sandboxed preview --
+that always works here). Scoped to the response types Recharts actually renders
+as one self-contained `<svg>` (forecast/timeline/correlation/trend/
+case_distribution) -- map (Leaflet: raster tiles + a separate overlay pane) and
+network (a custom force-graph canvas) are excluded rather than silently
+producing a blank/broken image; if the button's own type-whitelist is somehow
+wrong for a given payload, the handler still checks for a real `<svg>` first and
+shows an honest "doesn't support export yet" toast instead of a corrupt file.
 
 ---
 

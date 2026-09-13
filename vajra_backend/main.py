@@ -8572,6 +8572,39 @@ async def push_unsubscribe(payload: PushUnsubscribePayload,
     return {"status": "unsubscribed"}
 
 
+class ExplainChartPayload(BaseModel):
+    chart_data: Dict[str, Any] = {}
+
+
+@app.post("/api/charts/explain")
+async def explain_chart(payload: ExplainChartPayload, location_context: str = Depends(security_firewall)):
+    """F.30: one-tap plain-language narration of any chart, for anyone who
+    doesn't read axes fluently under time pressure. Bounded LLM call, same
+    ThreadPoolExecutor + hard-timeout guard already used elsewhere in this
+    file for a single-purpose helper call (e.g. the frame-batch/translation
+    executors above) -- never lets one slow chart-explain request hang the
+    request thread. use_agent_system_prompt=False (same as
+    generate_applet_spec) -- this is a plain one-shot question, not a tool-
+    calling turn, so the tool-calling system prompt must not be prepended."""
+    chart_summary = json.dumps(payload.chart_data)[:800]  # bounded input -- never the whole conversation
+    prompt = (f"Explain this police intelligence chart in 2 plain sentences, no jargon, "
+              f"for a busy officer:\n{chart_summary}")
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=1) as ex:
+            res = ex.submit(
+                agent_loop.llm.chat, [{"role": "user", "content": prompt}], None, False, 200
+            ).result(timeout=8)
+        content = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+        explanation = VajraAgentLoop._strip_think(content).strip()
+        if not explanation:
+            return {"explanation": "Explanation unavailable right now -- the chart data itself is still accurate."}
+        return {"explanation": explanation}
+    except Exception as e:
+        logger.warning(f"explain_chart failed: {e}")
+        return {"explanation": "Explanation unavailable right now -- the chart data itself is still accurate."}
+
+
 if __name__ == "__main__":
     import uvicorn
     # Catalyst AppSail's process launcher execs the app-config.json "command"

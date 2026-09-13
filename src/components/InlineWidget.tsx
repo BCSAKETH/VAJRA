@@ -2,7 +2,8 @@ import React, { useEffect, useState } from "react";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { useApp } from "../AppContext";
-import { Maximize2, ShieldAlert, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart, Newspaper, ExternalLink, Radio, ChevronDown, ChevronRight, Code2, Copy, Check, Sparkles } from "lucide-react";
+import { API_BASE } from "../config";
+import { Maximize2, ShieldAlert, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart, Newspaper, ExternalLink, Radio, ChevronDown, ChevronRight, Code2, Copy, Check, Sparkles, Download } from "lucide-react";
 import { ExpandedOverlay } from "./ExpandedOverlay";
 import { ErrorBoundary } from "./ErrorBoundary";
 
@@ -312,7 +313,16 @@ interface InlineWidgetProps {
 }
 
 const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpand }) => {
-  const { lang } = useApp();
+  const { lang, addToast } = useApp();
+  // F.30: "Explain This Chart" -- hooks declared unconditionally, before the
+  // early `return null` below, per the Rules of Hooks (this component has
+  // no other useState calls to piggyback the ordering on).
+  const [chartExplanation, setChartExplanation] = useState<string | null>(null);
+  const [isExplainingChart, setIsExplainingChart] = useState(false);
+  // F.31: single-chart PNG export -- ref wraps the whole card so the export
+  // handler can find whichever chart's real <svg> is actually rendered
+  // inside it, without each chart type needing its own separate ref.
+  const cardRef = React.useRef<HTMLDivElement>(null);
 
   if (!data || typeof data !== "object") {
     return null;
@@ -348,12 +358,115 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                         effectiveType === "map" ? (mapData || data) : data;
   const safeEffectiveData = (effectiveData && typeof effectiveData === "object") ? effectiveData : {};
 
+  // F.30: only the genuinely chart/graph-shaped types get an "Explain"
+  // button -- the list-shaped types (repeat_offenders, crime_groups,
+  // priority_concerns, case_list) already read as plain language on their
+  // own, nothing chart-specific to narrate.
+  const isExplainableChart = ["map", "network", "risk", "forecast", "timeline", "mo_match", "correlation", "trend", "case_distribution"].includes(effectiveType);
+
+  const handleExplainChart = async () => {
+    setIsExplainingChart(true);
+    setChartExplanation(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/charts/explain`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
+        },
+        body: JSON.stringify({ chart_data: safeEffectiveData }),
+      });
+      const j = await res.json().catch(() => ({}));
+      setChartExplanation(j?.explanation || (lang === "en" ? "Explanation unavailable right now." : "ವಿವರಣೆ ಸದ್ಯಕ್ಕೆ ಲಭ್ಯವಿಲ್ಲ."));
+    } catch {
+      setChartExplanation(lang === "en" ? "Explanation unavailable right now -- the chart data itself is still accurate." : "ವಿವರಣೆ ಸದ್ಯಕ್ಕೆ ಲಭ್ಯವಿಲ್ಲ -- ಚಾರ್ಟ್ ಡೇಟಾ ಇನ್ನೂ ನಿಖರವಾಗಿದೆ.");
+    } finally {
+      setIsExplainingChart(false);
+    }
+  };
+
+  // F.31: only the types Recharts actually renders as a real <svg
+  // class="recharts-surface"> support export -- map (Leaflet: raster tile
+  // images + a separate overlay pane, not one self-contained SVG) and
+  // network (a custom force-graph canvas) are excluded rather than
+  // producing a blank/broken image, matching this app's honesty discipline
+  // (no feature that silently fails is better than not offering it).
+  const isExportableChart = ["forecast", "timeline", "correlation", "trend", "case_distribution"].includes(effectiveType);
+
+  const handleExportChartPng = () => {
+    const svg = cardRef.current?.querySelector("svg.recharts-surface") as SVGSVGElement | null;
+    if (!svg) {
+      addToast(
+        lang === "en" ? "Export Unavailable" : "ರಫ್ತು ಲಭ್ಯವಿಲ್ಲ",
+        lang === "en" ? "This chart type doesn't support image export yet." : "ಈ ಚಾರ್ಟ್ ಪ್ರಕಾರ ಇನ್ನೂ ಚಿತ್ರ ರಫ್ತು ಬೆಂಬಲಿಸುವುದಿಲ್ಲ.",
+        "Info"
+      );
+      return;
+    }
+    try {
+      // Real width/height off the live element -- viewBox-only SVGs (no
+      // explicit width/height attrs) would otherwise rasterize at 0x0.
+      const rect = svg.getBoundingClientRect();
+      const width = Math.max(1, Math.round(rect.width)) || 800;
+      const height = Math.max(1, Math.round(rect.height)) || 500;
+      const clone = svg.cloneNode(true) as SVGSVGElement;
+      clone.setAttribute("width", String(width));
+      clone.setAttribute("height", String(height));
+      clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+      // Recharts renders on a transparent background -- fill white first so
+      // exported PNGs aren't unreadable when pasted into a light-background
+      // briefing document.
+      const bgRect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+      bgRect.setAttribute("width", "100%");
+      bgRect.setAttribute("height", "100%");
+      bgRect.setAttribute("fill", "#211f1d");
+      clone.insertBefore(bgRect, clone.firstChild);
+      const svgData = new XMLSerializer().serializeToString(clone);
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = width * 2; // 2x for a crisp, briefing-quality export
+        canvas.height = height * 2;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        ctx.scale(2, 2);
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob((blob) => {
+          if (!blob) return;
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = `vajra-chart-${effectiveType}-${Date.now()}.png`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }, "image/png");
+      };
+      img.onerror = () => {
+        addToast(
+          lang === "en" ? "Export Failed" : "ರಫ್ತು ವಿಫಲವಾಗಿದೆ",
+          lang === "en" ? "Could not render this chart to an image." : "ಈ ಚಾರ್ಟ್ ಅನ್ನು ಚಿತ್ರಕ್ಕೆ ರೆಂಡರ್ ಮಾಡಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+          "Critical"
+        );
+      };
+      img.src = "data:image/svg+xml;charset=utf-8;base64," + btoa(unescape(encodeURIComponent(svgData)));
+    } catch (e) {
+      console.error(e);
+      addToast(
+        lang === "en" ? "Export Failed" : "ರಫ್ತು ವಿಫಲವಾಗಿದೆ",
+        lang === "en" ? "Could not render this chart to an image." : "ಈ ಚಾರ್ಟ್ ಅನ್ನು ಚಿತ್ರಕ್ಕೆ ರೆಂಡರ್ ಮಾಡಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.",
+        "Critical"
+      );
+    }
+  };
+
   return (
     <ErrorBoundary
       fallbackTitle={lang === "en" ? "Visualization Card" : "ದೃಶ್ಯೀಕರಣ ಕಾರ್ಡ್"}
       fallbackMessage={lang === "en" ? "Unable to render this visual component. Underlying data is preserved." : "ಈ ಘಟಕವನ್ನು ರೆಂಡರ್ ಮಾಡಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ."}
     >
-      <div className="rounded-xl border border-[#C79A4E]/30 bg-stone-950/90 backdrop-blur-md p-0 shadow-[0_4px_30px_rgba(199,154,78,0.08)] animate-fade-in relative overflow-hidden">
+      <div ref={cardRef} className="rounded-xl border border-[#C79A4E]/30 bg-stone-950/90 backdrop-blur-md p-0 shadow-[0_4px_30px_rgba(199,154,78,0.08)] animate-fade-in relative overflow-hidden">
         {/* Header Info — gold gradient strip matching the bespoke card aesthetic */}
         <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-b border-[#C79A4E]/20 bg-gradient-to-r from-[#C79A4E]/10 via-[#C79A4E]/[0.04] to-transparent">
           <div className="flex items-center gap-2 flex-wrap">
@@ -437,8 +550,27 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
             )}
           </div>
 
-          {/* Right action group: Maximize button */}
+          {/* Right action group: Explain + Maximize buttons */}
           <div className="flex items-center gap-2">
+            {isExplainableChart && (
+              <button
+                onClick={handleExplainChart}
+                disabled={isExplainingChart}
+                className="p-1.5 rounded-md border border-transparent hover:border-[#C79A4E]/30 hover:bg-[#C79A4E]/10 text-[#C79A4E]/50 hover:text-[#C79A4E] transition-all cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+                title={lang === "en" ? "Explain this chart" : "ಈ ಚಾರ್ಟ್ ವಿವರಿಸಿ"}
+              >
+                <Sparkles className={`w-3.5 h-3.5 ${isExplainingChart ? "animate-pulse" : ""}`} />
+              </button>
+            )}
+            {isExportableChart && (
+              <button
+                onClick={handleExportChartPng}
+                className="p-1.5 rounded-md border border-transparent hover:border-[#C79A4E]/30 hover:bg-[#C79A4E]/10 text-[#C79A4E]/50 hover:text-[#C79A4E] transition-all cursor-pointer"
+                title={lang === "en" ? "Save chart as image" : "ಚಾರ್ಟ್ ಅನ್ನು ಚಿತ್ರವಾಗಿ ಉಳಿಸಿ"}
+              >
+                <Download className="w-3.5 h-3.5" />
+              </button>
+            )}
             <button
               onClick={onExpand}
               className="p-1.5 rounded-md border border-transparent hover:border-[#C79A4E]/30 hover:bg-[#C79A4E]/10 text-[#C79A4E]/50 hover:text-[#C79A4E] transition-all cursor-pointer"
@@ -448,6 +580,16 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
             </button>
           </div>
         </div>
+
+        {/* F.30: plain-language chart narration, shown right below the
+            header once fetched -- collapsed/absent by default so it never
+            clutters a chart nobody asked to have explained. */}
+        {(isExplainingChart || chartExplanation) && (
+          <div className="px-4 py-2 border-b border-[#C79A4E]/15 bg-[#C79A4E]/[0.03] text-[11px] text-stone-300 leading-relaxed flex items-start gap-2">
+            <Sparkles className="w-3.5 h-3.5 text-[#C79A4E] shrink-0 mt-0.5" />
+            <span>{isExplainingChart ? (lang === "en" ? "Explaining..." : "ವಿವರಿಸಲಾಗುತ್ತಿದೆ...") : chartExplanation}</span>
+          </div>
+        )}
 
         {/* Widget body: the map renders its own Leaflet view inline; every other
             type reuses the SAME rich render as the full-screen view (ExpandedOverlay
