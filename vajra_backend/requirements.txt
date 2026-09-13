@@ -34,3 +34,8 @@ aiosignal==1.4.0
 attrs==26.1.0
 frozenlist==1.8.0
 propcache==0.5.2
+# E.2 (D.3): local offline GeoLite2 lookup for lookup_whois_ip -- no
+# per-lookup external call, no rate limit, a suspect's IP never leaves this
+# server. geoip2's own deps (aiohttp, requests) are already vendored above.
+geoip2==5.3.0
+maxminddb==3.2.0

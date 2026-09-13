@@ -19,6 +19,14 @@ interface ChatInputProps {
   onSend: (text: string, attachments: File[]) => void;
   isThinking: boolean;
   isUploading: boolean;
+  // E.6: real, honest status during an attachment upload -- was previously
+  // a dead disabled input with zero feedback (the pending-attachment chips
+  // clear the instant Send is clicked, before the upload/analysis even
+  // starts, per handleSendClick below). Distinguishes a real transfer
+  // percentage (from XMLHttpRequest's upload.onprogress) from the
+  // server-side analysis phase that follows it -- never a fabricated
+  // percentage for work that can't actually be measured client-side.
+  uploadStatusLabel?: string | null;
   lang: "en" | "kn";
   addToast: (title: string, message: string, severity: "Critical" | "Warning" | "Info" | "Success") => void;
   // 2-MODE CONSOLIDATION (matches implementation_plan.md's real design):
@@ -36,6 +44,7 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
   onSend,
   isThinking,
   isUploading,
+  uploadStatusLabel,
   lang,
   addToast,
   answerMode,
@@ -379,6 +388,16 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
         multiple
         className="hidden"
       />
+
+      {/* E.6: real upload/processing status -- fills the gap left the
+          instant Send clears the attachment chips, before this component
+          had any way to say what's actually happening. */}
+      {isUploading && uploadStatusLabel && (
+        <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-[#C79A4E]/[0.06] border border-[#C79A4E]/25 text-[11px] font-mono text-[#E4C590]">
+          <div className="w-3.5 h-3.5 border-2 border-[#C79A4E]/30 border-t-[#C79A4E] rounded-full animate-spin shrink-0" />
+          <span>{uploadStatusLabel}</span>
+        </div>
+      )}
 
       {/* Pending Attachments Strip */}
       {pendingAttachments.length > 0 && (

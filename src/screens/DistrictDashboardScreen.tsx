@@ -24,6 +24,7 @@ import {
 import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2 } from "lucide-react";
 import { DistrictSpatialAnalystPanel } from "../components/DistrictSpatialAnalystPanel";
 import { DistrictDemographicPanel } from "../components/DistrictDemographicPanel";
+import { ReasonCollectionModal } from "../components/ReasonCollectionModal";
 
 interface DistrictSummaryRow {
   district_id: number;
@@ -198,14 +199,20 @@ export const DistrictDashboardScreen: React.FC = () => {
     if (accessPollRef.current) { window.clearInterval(accessPollRef.current); accessPollRef.current = null; }
   };
 
-  const requestDistrictAccess = async (retryFn: () => void) => {
+  // E.1: written justification collected before a cross-district request is
+  // raised (D.8: the server enforces a real minimum length here too, not
+  // just this modal).
+  const [showDistrictReasonModal, setShowDistrictReasonModal] = useState(false);
+  const [districtReasonRetryFn, setDistrictReasonRetryFn] = useState<(() => void) | null>(null);
+
+  const requestDistrictAccess = async (retryFn: () => void, reason: string) => {
     if (!gatedInfo) return;
     setIsRequestingAccess(true);
     try {
       const res = await fetch(`${API_BASE}/api/district-access/request`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-        body: JSON.stringify({ district_id: gatedInfo.districtId }),
+        body: JSON.stringify({ district_id: gatedInfo.districtId, reason }),
       });
       if (!res.ok) throw new Error("request failed");
       const d = await res.json();
@@ -876,9 +883,12 @@ export const DistrictDashboardScreen: React.FC = () => {
                   ) : (
                     <div className="flex flex-col items-center gap-2">
                       <button
-                        onClick={() => requestDistrictAccess(() =>
-                          selectedStationId !== null ? handleSelectStation(selectedStationId) : handleSelectDistrict(selectedId!)
-                        )}
+                        onClick={() => {
+                          setDistrictReasonRetryFn(() => () =>
+                            selectedStationId !== null ? handleSelectStation(selectedStationId) : handleSelectDistrict(selectedId!)
+                          );
+                          setShowDistrictReasonModal(true);
+                        }}
                         disabled={isRequestingAccess || isEmergencyRequesting}
                         className="px-4 py-2 rounded-lg bg-rose-500/15 border border-rose-500/40 text-rose-300 text-xs font-bold uppercase tracking-wide hover:bg-rose-500/25 disabled:opacity-50 cursor-pointer"
                       >
@@ -1369,6 +1379,22 @@ export const DistrictDashboardScreen: React.FC = () => {
       )}
       </>
       )}
+
+      {/* E.1: written justification before a cross-district access request */}
+      <ReasonCollectionModal
+        isOpen={showDistrictReasonModal}
+        title={lang === "en" ? "Justification Required" : "ಸಮರ್ಥನೆ ಅಗತ್ಯವಿದೆ"}
+        subtitle={
+          lang === "en"
+            ? "This district is outside your home jurisdiction. Provide a real operational reason before requesting supervisor approval."
+            : "ಈ ಜಿಲ್ಲೆ ನಿಮ್ಮ ಸ್ವಂತ ವ್ಯಾಪ್ತಿಯ ಹೊರಗಿದೆ. ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆ ಕೋರುವ ಮೊದಲು ನಿಜವಾದ ಕಾರ್ಯಾಚರಣೆಯ ಕಾರಣ ನೀಡಿ."
+        }
+        onClose={() => setShowDistrictReasonModal(false)}
+        onSubmit={async (reason) => {
+          setShowDistrictReasonModal(false);
+          await requestDistrictAccess(districtReasonRetryFn || (() => {}), reason);
+        }}
+      />
     </div>
   );
 };

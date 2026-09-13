@@ -538,6 +538,45 @@ class VajraAgentLoop(CognitiveBrainMixin):
             }
         },
         {
+            "name": "resolve_ifsc",
+            "description": "Reverse-resolve a bank IFSC code (e.g. SBIN0001234) to the actual bank, branch, and address -- use when the officer has an IFSC code from a bank transfer/mule-account trail and wants to know which branch it belongs to.",
+            "parameters": {
+                "type": "object",
+                "properties": {"ifsc_code": {"type": "string", "description": "The 11-character IFSC code, e.g. SBIN0001234"}},
+                "required": ["ifsc_code"]
+            }
+        },
+        {
+            "name": "resolve_rto_plate",
+            "description": "Resolve an Indian (primarily Karnataka) vehicle registration plate number to its RTO office, district, and police zone -- use for a CCTV-captured or tip-off plate number like 'KA01AB1234' when the officer wants to know its registering jurisdiction. This is NOT search_by_identifier (which looks up a suspect linked to the number in OUR database) -- this only decodes the plate's registering jurisdiction.",
+            "parameters": {
+                "type": "object",
+                "properties": {"plate_number": {"type": "string", "description": "The vehicle registration plate, e.g. KA01AB1234"}},
+                "required": ["plate_number"]
+            }
+        },
+        {
+            "name": "lookup_whois_ip",
+            "description": "Resolve a domain name, hostname, or IP address to a rough public geolocation (country/region/city) for cybercrime/OSINT investigation -- use when the officer has a suspicious domain or IP (e.g. from phishing infrastructure, a scam website, or server logs) and wants to know roughly where it's hosted. Blocks private/internal addresses (SSRF guard).",
+            "parameters": {
+                "type": "object",
+                "properties": {"target": {"type": "string", "description": "A domain name, hostname, or IP address, e.g. example.com or 8.8.8.8"}},
+                "required": ["target"]
+            }
+        },
+        {
+            "name": "scan_viral_social_threats",
+            "description": "Scan recent public news/social coverage for a viral incident (a stunt-riding video, a communal-tension clip, a rumor causing panic, a viral scam/deepfake) that could need proactive police attention -- use for 'is there a viral video about X trending', 'any viral incidents in <district>', 'check for viral trends'. RSS/public-news based only -- not a private-communication search.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "topic": {"type": "string", "description": "Optional topic/keyword to scan for, e.g. 'bike stunt' or 'communal clash'"},
+                    "district": {"type": "string", "description": "District to scope the scan to, default Bengaluru"}
+                },
+                "required": []
+            }
+        },
+        {
             "name": "shared_attribute_links",
             "description": "Find OTHER suspects who share a NAMED suspect's phone number or vehicle -- the hidden syndicate links base co-accused data misses.",
             "parameters": {
@@ -1727,6 +1766,14 @@ class VajraAgentLoop(CognitiveBrainMixin):
         "search_by_identifier": ["phone number belongs", "vehicle number belongs", "whose number", "whose phone",
                                  "whose vehicle", "lookup this number", "search this number", "this phone number",
                                  "this vehicle number"],
+        "resolve_ifsc": ["ifsc", "bank branch", "which branch", "branch code", "micr"],
+        "resolve_rto_plate": ["rto", "registration plate", "number plate", "vehicle plate", "plate number",
+                              "which rto", "registering rto"],
+        "lookup_whois_ip": ["whois", "ip address", "geolocate", "domain owner", "hosted", "server location",
+                            "phishing domain", "phishing site", "scam website", "trace this ip", "resolve this ip"],
+        "scan_viral_social_threats": ["viral video", "viral clip", "trending video", "going viral", "viral incident",
+                                      "viral trend", "social media trend", "stunt video", "bike stunt", "communal clash",
+                                      "communal tension", "rumor", "rumour", "panic spreading"],
         "list_suspects_by_crime_type": ["suspects involved in", "suspects linked to", "who is linked to",
                                         "accused linked to", "suspects for", "list suspects"],
         "get_case_timeline": ["timeline", "chronology", "milestones", "sequence of events", "when did"],
@@ -2471,10 +2518,23 @@ class VajraAgentLoop(CognitiveBrainMixin):
             _lead = _ap[0].strip()
             _att_analysis = _lead.split(":", 1)[1].strip() if ":" in _lead else _lead
             _asked = _ap[1].strip() if len(_ap) > 1 else ""
-            if (not _asked) or _asked.lower() in (
-                "analyze this", "analyse this", "analyze", "analyse", "summarize", "summarise",
-                "what is this", "read this", "explain this", "analyze the attached file",
-                "analyse the attached file", "analyze this file", "analyse this file"):
+            # E.6 (D.4/loophole fix): the original 12-string EXACT match list
+            # missed ordinary natural phrasings ("what is in this video?",
+            # "what does this footage show?") -- those fell through to
+            # routing_query = _asked and crashed into CCTNS suspect/network
+            # tool matching instead of presenting the attachment analysis
+            # (confirmed live: exactly the failure this item fixes).
+            # Broadened to a real regex over the actual media/analysis
+            # vocabulary officers use, plus a short-query heuristic (a
+            # terse follow-up right after an attachment upload is almost
+            # always about the attachment, not a new CCTNS lookup).
+            _is_attachment_query = bool(re.search(
+                r"\b(video|clip|footage|recording|attachment|image|photo|picture|cctv|screen|"
+                r"document|file|audio|describe|summarize|summarise|explain|tell me about|"
+                r"analyze|analyse|read this|what.?s (in|on) (this|it)|what is (this|in|on))\b",
+                _asked, re.IGNORECASE
+            )) if _asked else False
+            if (not _asked) or _is_attachment_query or len(_asked.split()) <= 4:
                 _att_present = True          # nothing specific asked -> just show the analysis
             else:
                 routing_query = _asked        # a real question -> route on the officer's words only
@@ -7708,6 +7768,105 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     except Exception as ex:
                         text_result = f"Could not send the email: {ex}"
                         citations.append({"type": "Email Dispatch", "id": recipient, "details": f"Send failed: {ex}"})
+
+        elif tool_name == "resolve_ifsc":
+            import technical_osint
+            response_type = "text"
+            final_answer = True
+            ifsc_code = str(params.get("ifsc_code") or "").strip()
+            result = technical_osint.resolve_ifsc(ifsc_code)
+            if not result.get("valid"):
+                text_result = result.get("error") or f"Could not resolve IFSC code '{ifsc_code}'."
+                citations.append({"type": "IFSC Lookup", "id": ifsc_code, "details": "Invalid format."})
+            else:
+                lines = [f"**IFSC {result['ifsc']}** -- {result.get('bank', '')}"]
+                if result.get("branch"):
+                    lines.append(f"Branch: {result['branch']}")
+                if result.get("address"):
+                    lines.append(f"Address: {result['address']}")
+                loc_bits = [x for x in (result.get("city"), result.get("district"), result.get("state")) if x]
+                if loc_bits:
+                    lines.append(f"Location: {', '.join(loc_bits)}")
+                if result.get("note"):
+                    lines.append(f"\n_{result['note']}_")
+                text_result = "\n".join(lines)
+                citations.append({"type": "IFSC / Bank Registry", "id": result["ifsc"],
+                                  "details": result.get("source", "Bank routing lookup")})
+            self._write_audit_log(employee_id, "OSINT: IFSC Lookup", ifsc_code, ifsc_code, text_result, session_id)
+
+        elif tool_name == "resolve_rto_plate":
+            import technical_osint
+            response_type = "text"
+            final_answer = True
+            plate = str(params.get("plate_number") or "").strip()
+            result = technical_osint.resolve_rto_plate(plate)
+            if not result.get("valid"):
+                text_result = f"'{plate}' does not look like a valid vehicle registration number."
+            else:
+                lines = [f"**Plate {result['plate']}**"]
+                if result.get("rto_office"):
+                    lines.append(f"Registering RTO: {result['rto_office']}")
+                if result.get("district"):
+                    lines.append(f"District: {result['district']}")
+                if result.get("police_zone"):
+                    lines.append(f"Police Zone: {result['police_zone']}")
+                if result.get("rto"):
+                    lines.append(f"Jurisdiction: {result['rto']} -- {result.get('district', '')}")
+                if result.get("source"):
+                    lines.append(f"\n_{result['source']}_")
+                text_result = "\n".join(lines)
+                citations.append({"type": "RTO Registry", "id": result.get("rto_code") or plate,
+                                  "details": result.get("jurisdiction") or result.get("rto", "")})
+            self._write_audit_log(employee_id, "OSINT: RTO Plate Decode", plate, plate, text_result, session_id)
+
+        elif tool_name == "lookup_whois_ip":
+            import technical_osint
+            response_type = "text"
+            final_answer = True
+            target = str(params.get("target") or "").strip()
+            result = technical_osint.lookup_whois_ip(target)
+            if not result.get("ok"):
+                text_result = result.get("error") or f"Could not resolve '{target}'."
+            else:
+                lines = [f"**{result.get('target', target)}** resolves to `{result.get('ip_address', '')}`"]
+                loc_bits = [x for x in (result.get("city"), result.get("region"), result.get("country")) if x]
+                if loc_bits:
+                    lines.append(f"Approximate location: {', '.join(loc_bits)}")
+                if result.get("note"):
+                    lines.append(result["note"])
+                if result.get("disclaimer"):
+                    lines.append(f"\n_{result['disclaimer']}_")
+                text_result = "\n".join(lines)
+                citations.append({"type": "Passive DNS/GeoIP", "id": result.get("ip_address", target),
+                                  "details": "Local GeoLite2 lookup -- no external call made, target IP never left this server."})
+            self._write_audit_log(employee_id, "OSINT: WHOIS/IP Lookup", target, target, text_result, session_id)
+
+        elif tool_name == "scan_viral_social_threats":
+            import viral_trend_radar
+            response_type = "text"
+            final_answer = True
+            topic = str(params.get("topic") or "").strip()
+            district = str(params.get("district") or "Bengaluru").strip() or "Bengaluru"
+            result = viral_trend_radar.scan_viral_social_threats(topic, district)
+            items = result.get("evidence_items", [])
+            if not items:
+                text_result = (f"No notable viral/trending public-safety incidents found for "
+                               f"{topic or 'general topics'} in {district} in the last scan.")
+            else:
+                lines = [f"**Viral Trend Radar -- {district}** (Threat Level: {result['threat_level']})\n"]
+                for it in items[:5]:
+                    lines.append(
+                        f"- **[{it['category']}, severity {it['severity_score']}]** {it['title']} "
+                        f"({it.get('source', 'press')}, {it.get('published', '')})"
+                    )
+                    if it.get("statutory_sections"):
+                        lines.append(f"  Guidance: {', '.join(it['statutory_sections'])}")
+                lines.append(f"\n_{result['compliance_notice']}_")
+                text_result = "\n".join(lines)
+                for it in items[:5]:
+                    citations.append({"type": "Public News/RSS Signal", "id": it.get("evidence_hash", it.get("url", "")),
+                                      "details": f"{it.get('source', 'Regional Press')} -- {it.get('url', '')}"})
+            self._write_audit_log(employee_id, "OSINT: Viral Trend Scan", f"{district}:{topic}", topic or district, text_result, session_id)
 
         return {
             "text_result": text_result,

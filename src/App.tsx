@@ -4,6 +4,7 @@ import { LoginScreen } from "./screens/LoginScreen";
 import { MainLayout } from "./components/MainLayout";
 import { AIChatScreen } from "./screens/AIChatScreen";
 import { SessionTimeoutGuard } from "./components/SessionTimeoutGuard";
+import { FocusLossCurtain } from "./components/FocusLossCurtain";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
 // Code-split every screen except Login/AIChat (the two every officer hits on
@@ -37,12 +38,7 @@ const AppContent: React.FC = () => {
   const { currentScreen, isAuthenticated, roleTier, lang } = useApp();
 
   if (!isAuthenticated || currentScreen === "login") {
-    return (
-      <>
-        <LoginScreen />
-        <SessionTimeoutGuard />
-      </>
-    );
+    return <LoginScreen />;
   }
 
   // AIChatScreen renders ALWAYS-MOUNTED, hidden via CSS instead of switched
@@ -112,7 +108,6 @@ const AppContent: React.FC = () => {
           </Suspense>
         )}
       </div>
-      <SessionTimeoutGuard />
     </MainLayout>
   );
 };
@@ -121,6 +116,18 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AppProvider>
+        {/* E.4: single global mount (was previously duplicated in both the
+            login-screen branch and the authenticated MainLayout branch of
+            AppContent above) -- a duplicate mount meant two independent
+            copies of this guard's timers/localStorage listeners ran at
+            once. One mount here covers both states since the component
+            itself already no-ops via `if (!isAuthenticated) return;`. */}
+        <SessionTimeoutGuard />
+        {/* E.7: global focus-loss deterrent curtain (D.12 honest half) --
+            single mount here covers every screen; the officer-attribution
+            watermark half stays mounted per-screen (WatermarkOverlay.tsx),
+            as it already was. */}
+        <FocusLossCurtain />
         <AppContent />
       </AppProvider>
     </ErrorBoundary>

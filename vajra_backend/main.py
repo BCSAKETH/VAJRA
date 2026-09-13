@@ -74,6 +74,7 @@ from vajra_core import (
     find_active_pocso_request,
     find_district_access_row,
     create_district_access_request,
+    find_active_district_access_request,
     has_active_district_access_grant,
     DISTRICT_ACCESS_GRANT_HOURS,
     create_emergency_district_access,
@@ -1484,6 +1485,35 @@ async def intelligence_read_page(request: Request, url: str = "", location_conte
     except Exception as e:
         logger.warning(f"read-page failed for {url!r}: {e}")
         return {"ok": False, "url": url, "note": "Could not read this page."}
+
+
+@app.get("/api/osint/viral-threats")
+async def osint_viral_threats(request: Request, topic: str = "", district: str = "Bengaluru",
+                              location_context: str = Depends(security_firewall)):
+    """
+    E.8 (was Finals.md Part IV, mechanism only -- see D.13): RSS-only public
+    signal scan for a viral incident that could need proactive police
+    attention (stunt-riding video, communal-tension clip, panic-causing
+    rumor, viral scam/deepfake). Same RSS pattern already used by this
+    codebase's own /api/intelligence/web-search (internet_signals.py) --
+    see viral_trend_radar.py's module docstring for the open ToS caution on
+    the default feed source. Demand-driven + 15-minute cached (see
+    scan_viral_social_threats), never a continuous poller. Bounded off-
+    thread so a slow feed can't trip the ~30s AppSail request kill.
+    """
+    topic = (topic or "").strip()
+    district = (district or "Bengaluru").strip() or "Bengaluru"
+    try:
+        import viral_trend_radar
+        return await asyncio.wait_for(
+            run_in_threadpool(viral_trend_radar.scan_viral_social_threats, topic, district), timeout=12)
+    except asyncio.TimeoutError:
+        return {"status": "timeout", "topic": topic, "district": district, "evidence_items": [],
+                "note": "Feed source slow -- try again shortly."}
+    except Exception as e:
+        logger.warning(f"osint_viral_threats failed for topic={topic!r} district={district!r}: {e}")
+        return {"status": "error", "topic": topic, "district": district, "evidence_items": [],
+                "note": "Viral trend scan temporarily unavailable."}
 
 
 @app.get("/api/firs")
@@ -7397,12 +7427,50 @@ def _find_export_row(request_id: str):
     return {"rowid": a.get("ROWID"), "meta": meta}
 
 
-def _create_export_request(requester_badge, requester_name, session_id, reasons, summary):
+def _create_export_request(requester_badge, requester_name, session_id, reasons, summary,
+                           officer_reason: str = "", transcript: Optional[List[Dict[str, Any]]] = None):
+    """E.1: `reasons` (plural) is the AI pre-screen's own flagged sensitivity
+    reasons (unchanged from before); `officer_reason` is the NEW, distinct
+    field -- the officer's own typed justification collected by
+    ReasonCollectionModal.tsx, shown to the supervisor in the review modal.
+
+    D.9/D.14 (corrected): the full transcript goes to Stratus via the REAL
+    confirmed API shape (bucket().put_object(), see catalyst_stratus.py's
+    store_attachment -- NOT an invented .upload() method). AlertMessage only
+    ever holds a `transcript_stratus_id` reference, avoiding this project's
+    own `_fit_json` size-cap bug from repeating itself on a long transcript.
+    A failed Stratus write (documented as a real possibility -- see
+    catalyst_stratus.py's own docstring and observations.md finding #13)
+    falls back to the last 20 messages inline rather than silently losing
+    the transcript entirely."""
     request_id = uuid.uuid4().hex[:16]
+    transcript_stratus_id = None
+    transcript_inline_fallback = None
+    if transcript:
+        try:
+            # Reuses the ALREADY-REAL, already-confirmed Stratus bucket
+            # (catalyst_stratus.ATTACHMENTS_BUCKET, used live for evidence
+            # attachments) under a distinct key prefix, rather than a brand
+            # new "export-transcripts" bucket that would need a Catalyst
+            # Console step nobody has taken yet -- same real
+            # bucket().put_object() API D.14 confirmed, zero new
+            # infrastructure dependency.
+            from catalyst_stratus import ATTACHMENTS_BUCKET
+            key = f"export-transcripts/{request_id}.json"
+            bucket = catalyst_app.stratus().bucket(ATTACHMENTS_BUCKET)
+            bucket.put_object(key=key, body=json.dumps(transcript).encode("utf-8"),
+                              options={"content_type": "application/json"})
+            transcript_stratus_id = key
+        except Exception as e:
+            logger.warning(f"Export transcript Stratus store failed, falling back to truncated inline: {e}")
+            transcript_inline_fallback = transcript[-20:]
     meta = {
         "request_id": request_id, "requester_badge": str(requester_badge or ""),
         "requester_name": requester_name or "Officer", "session_id": session_id or "",
         "reasons": reasons, "summary": (summary or "")[:180], "status": "pending",
+        "reason": (officer_reason or "").strip()[:400],
+        "transcript_stratus_id": transcript_stratus_id,
+        "transcript_inline_fallback": transcript_inline_fallback,
         "approver_badge": None, "decided_at": None,
         "created_at": datetime.utcnow().isoformat(),
     }
@@ -7482,6 +7550,11 @@ class PDFExportRequest(BaseModel):
     approver_password: Optional[str] = None
     approval_id: Optional[str] = None
     session_id: Optional[str] = None
+    # E.1: officer-typed written justification, collected via
+    # ReasonCollectionModal.tsx before a held/flagged export is submitted
+    # for supervisor review (D.8 enforces a real server-side minimum here,
+    # not just a disabled frontend button).
+    reason: Optional[str] = None
 
 
 def _add_classified_card(cards: list, p_type: str, data: dict, text: str, citations: list, is_kn: bool):
@@ -7717,12 +7790,30 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
             # client shows "awaiting approval" and polls, supervisors see it live.
             req_id = payload.approval_id
             existing = _find_export_row(req_id) if req_id else None
-            if not existing or existing["meta"].get("status") == "rejected":
+            needs_new_request = not existing or existing["meta"].get("status") == "rejected"
+            if needs_new_request:
+                # E.1/D.8: real minimum-length enforcement on the officer's
+                # written justification, not just a disabled frontend
+                # button. No reason yet -> tell the client to collect one
+                # (ReasonCollectionModal.tsx) instead of creating the
+                # request or 400-ing on a normal first pass; a reason that
+                # WAS supplied but is too short (e.g. a direct API call
+                # bypassing the modal entirely) gets a real 400.
+                clean_reason = (payload.reason or "").strip()
+                if payload.reason is not None and len(clean_reason) < 10:
+                    raise HTTPException(status_code=400,
+                                        detail="Please provide a detailed justification (minimum 10 characters).")
+                if not clean_reason:
+                    return JSONResponse(status_code=202, content={
+                        "status": "reason_required", "reasons": review_reasons,
+                        "message": "AI pre-screen flagged sensitive content — a written justification is required before this can be sent for supervisor approval.",
+                    })
                 _first = next((str(m.get("content") or m.get("text") or "")
                                 for m in (payload.transcript or []) if (m.get("content") or m.get("text"))), "")
                 req_id, _ = _create_export_request(
                     authed_badge, getattr(request.state, "user_profile", {}).get("FirstName"),
-                    payload.session_id, review_reasons, _first)
+                    payload.session_id, review_reasons, _first,
+                    officer_reason=clean_reason, transcript=payload.transcript)
             return JSONResponse(status_code=202, content={
                 "status": "pending_approval", "request_id": req_id, "reasons": review_reasons,
                 "message": "AI pre-screen flagged sensitive content — awaiting supervisor approval.",
@@ -7804,6 +7895,17 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
                 if msg.get("citations"):
                     citations.extend(msg["citations"])
 
+        # D.5: hash computed here (not left to render_dossier_html's internal
+        # fallback) so this exact value can also be written independently to
+        # the server's own AuditLog at generation time -- verifying a PDF
+        # later means comparing its printed hash against this separate
+        # server record, not just checking the PDF agrees with itself.
+        _sb_gen_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        _sb_digest_src = json.dumps(
+            {"badge": authed_badge, "gen": _sb_gen_utc, "t": payload.transcript, "lang": report_lang},
+            ensure_ascii=False, sort_keys=True, default=str
+        )
+        sb_audit_hash = hashlib.sha256(_sb_digest_src.encode("utf-8")).hexdigest()
         html_doc = render_dossier_html(
             title="VAJRA Case Investigation Report",
             case_no=case_no,
@@ -7812,11 +7914,24 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
             panels=panels,
             citations=citations,
             narrative=narrative[:1200] if narrative else "Official automated intelligence report.",
-            lang=report_lang
+            lang=report_lang,
+            audit_hash=sb_audit_hash,
         )
         sb_pdf_bytes = convert_html_to_pdf_smartbrowz(html_doc)
         if sb_pdf_bytes and len(sb_pdf_bytes) > 500:
             logger.info(f"PDF exported successfully via Catalyst SmartBrowz ({len(sb_pdf_bytes)} bytes, lang={report_lang})")
+            try:
+                # D.5: independent server-side record of the printed hash --
+                # uses the real, confirmed AuditLog write path (agent_loop's
+                # _write_audit_log), not an invented table/column shape.
+                _emp_id = (getattr(request.state, "user_profile", {}) or {}).get("EmployeeID") \
+                    or (getattr(request.state, "user_profile", {}) or {}).get("EmployeeId") or 4003385
+                agent_loop._write_audit_log(
+                    _emp_id, "DOSSIER_EXPORT_HASH", case_no or (payload.session_id or "export"),
+                    sb_audit_hash, "PDF export hash recorded (SmartBrowz)",
+                    payload.session_id or f"session-{authed_badge}")
+            except Exception as e:
+                logger.warning(f"DOSSIER_EXPORT_HASH audit (smartbrowz) failed: {e}")
             return Response(
                 content=sb_pdf_bytes,
                 media_type="application/pdf",
@@ -8432,6 +8547,18 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
             ensure_ascii=False, sort_keys=True, default=str
         )
         doc_hash = hashlib.sha256(_digest_src.encode("utf-8")).hexdigest()
+        try:
+            # D.5: independent server-side record of the printed hash, same
+            # as the SmartBrowz path above -- the FPDF fallback must not
+            # skip this just because it's the secondary render engine.
+            _emp_id = (getattr(request.state, "user_profile", {}) or {}).get("EmployeeID") \
+                or (getattr(request.state, "user_profile", {}) or {}).get("EmployeeId") or 4003385
+            agent_loop._write_audit_log(
+                _emp_id, "DOSSIER_EXPORT_HASH", case_no or (payload.session_id or "export"),
+                doc_hash, "PDF export hash recorded (FPDF fallback)",
+                payload.session_id or f"session-{authed_badge}")
+        except Exception as e:
+            logger.warning(f"DOSSIER_EXPORT_HASH audit (fpdf) failed: {e}")
 
         def _emblem(pdf: "FPDF", cx: float, cy: float, r: float):
             pdf.set_draw_color(*GOLD)
@@ -8691,6 +8818,13 @@ async def decide_export(request_id: str, payload: Dict[str, Any] = Body(default=
         raise HTTPException(status_code=404, detail="Export request not found.")
     decision = "approved" if payload.get("approve", True) else "rejected"
     meta = row["meta"]
+    # E.1/D.7: self-approval block -- a supervisor cannot approve their own
+    # submitted request. Real risk in this app specifically: there is
+    # exactly ONE hardcoded supervisor badge (SUPERVISOR_KGIDS), so if that
+    # supervisor is also the requester, nothing else in the queue logic
+    # would ever stop them rubber-stamping their own export.
+    if decision == "approved" and _norm_badge(request.state.kgid) == _norm_badge(meta.get("requester_badge")):
+        raise HTTPException(status_code=403, detail="Dual-Control Violation: you cannot approve your own request.")
     meta["status"] = decision
     meta["approver_badge"] = request.state.kgid
     meta["decided_at"] = datetime.utcnow().isoformat()
@@ -8721,6 +8855,40 @@ async def export_request_status(request_id: str, request: Request = None,
     m = row["meta"]
     return {"status": m.get("status", "pending"), "reasons": m.get("reasons", []),
             "approver": m.get("approver_badge")}
+
+
+@app.get("/api/exports/{request_id}/transcript")
+async def get_export_transcript(request_id: str, request: Request = None,
+                                location_context: str = Depends(security_firewall)):
+    """E.1: powers SupervisorApprovalReviewModal.tsx -- fetches the held
+    export's full conversation transcript by reference (transcript_stratus_id,
+    D.9/D.14), falling back to transcript_inline_fallback if Stratus wasn't
+    reachable at creation time. Never returns a blank transcript just
+    because Stratus had an outage that day. Restricted to the request's own
+    requester or a supervisor -- the same conversation an officer already
+    had, not opened up to every authenticated badge."""
+    row = _find_export_row(request_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Export request not found.")
+    meta = row["meta"]
+    is_sup = getattr(request.state, "role_tier", "officer") == "supervisor"
+    if not is_sup and _norm_badge(request.state.kgid) != _norm_badge(meta.get("requester_badge")):
+        raise HTTPException(status_code=403, detail="Not authorized to view this transcript.")
+    stratus_id = meta.get("transcript_stratus_id")
+    if stratus_id and catalyst_app:
+        try:
+            from catalyst_stratus import ATTACHMENTS_BUCKET
+            bucket = catalyst_app.stratus().bucket(ATTACHMENTS_BUCKET)
+            raw = bucket.get_object(key=stratus_id)  # real SDK returns raw bytes (resp.response.content)
+            if isinstance(raw, (bytes, bytearray)):
+                raw = raw.decode("utf-8")
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return data
+        except Exception as e:
+            logger.warning(f"get_export_transcript: Stratus fetch failed for {stratus_id}: {e}")
+    fallback = meta.get("transcript_inline_fallback")
+    return fallback if isinstance(fallback, list) else []
 
 
 # --- PROFILE IMMUTABILITY: an officer's identity fields (name/station/rank/
@@ -9037,6 +9205,16 @@ async def request_pocso_access(payload: Dict[str, Any] = Body(default={}),
     if not case_no:
         raise HTTPException(status_code=400, detail="case_no is required.")
     badge = getattr(request.state, "kgid", None)
+    # E.1/D.8: real minimum-length enforcement, not just a disabled frontend
+    # button -- but only enforced when this call would actually CREATE a new
+    # request (a duplicate click against an already-pending/approved request
+    # is silently reused by create_pocso_request and must not be blocked
+    # just because the retry happened to carry no reason text).
+    if not find_active_pocso_request(badge, case_no):
+        clean_reason = (payload.get("reason") or "").strip()
+        if len(clean_reason) < 10:
+            raise HTTPException(status_code=400,
+                                detail="Please provide a detailed justification (minimum 10 characters).")
     officer_name = (getattr(request.state, "user_profile", {}) or {}).get("FirstName") or "Officer"
     meta = create_pocso_request(badge, officer_name, case_no, reason=(payload.get("reason") or "").strip())
     return {"status": meta.get("status"), "request_id": meta.get("request_id"), "case_no": case_no}
@@ -9100,6 +9278,9 @@ async def decide_pocso(request_id: str, payload: Dict[str, Any] = Body(default={
         raise HTTPException(status_code=404, detail="Access request not found.")
     decision = "approved" if payload.get("approve", True) else "rejected"
     meta = row["meta"]
+    # E.1/D.7: self-approval block, same rule as export decisions above.
+    if decision == "approved" and _norm_badge(request.state.kgid) == _norm_badge(meta.get("requester_badge")):
+        raise HTTPException(status_code=403, detail="Dual-Control Violation: you cannot approve your own request.")
     meta["status"] = decision
     meta["approver_badge"] = request.state.kgid
     meta["decided_at"] = datetime.utcnow().isoformat()
@@ -9159,6 +9340,16 @@ async def request_district_access(payload: Dict[str, Any] = Body(default={}),
     target_district_id = payload.get("district_id")
     if target_district_id is None:
         raise HTTPException(status_code=400, detail="district_id is required.")
+    badge = getattr(request.state, "kgid", None)
+    # E.1/D.8: real minimum-length enforcement, mirroring the POCSO request
+    # endpoint above -- only enforced for a genuinely NEW request (a
+    # duplicate click reuses the existing pending/approved one and must not
+    # be blocked by a retry with no reason text).
+    if not find_active_district_access_request(badge, target_district_id):
+        clean_reason = (payload.get("reason") or "").strip()
+        if len(clean_reason) < 10:
+            raise HTTPException(status_code=400,
+                                detail="Please provide a detailed justification (minimum 10 characters).")
     target_district_name = ""
     if catalyst_app:
         try:
@@ -9169,7 +9360,7 @@ async def request_district_access(payload: Dict[str, Any] = Body(default={}),
             pass
     officer_name = (getattr(request.state, "user_profile", {}) or {}).get("FirstName") or "Officer"
     meta = create_district_access_request(
-        getattr(request.state, "kgid", None), officer_name,
+        badge, officer_name,
         getattr(request.state, "home_district_id", None), target_district_id, target_district_name,
         reason=(payload.get("reason") or "")
     )
@@ -9289,6 +9480,9 @@ async def decide_district_access(request_id: str, payload: Dict[str, Any] = Body
         raise HTTPException(status_code=404, detail="Access request not found.")
     decision = "approved" if payload.get("approve", True) else "rejected"
     meta = row["meta"]
+    # E.1/D.7: self-approval block, same rule as export/POCSO decisions.
+    if decision == "approved" and _norm_badge(request.state.kgid) == _norm_badge(meta.get("requester_badge")):
+        raise HTTPException(status_code=403, detail="Dual-Control Violation: you cannot approve your own request.")
     meta["status"] = decision
     meta["approver_badge"] = request.state.kgid
     meta["decided_at"] = datetime.utcnow().isoformat()

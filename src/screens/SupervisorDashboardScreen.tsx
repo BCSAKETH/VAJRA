@@ -3,6 +3,7 @@ import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import { TwoPersonApprovalModal } from "../components/TwoPersonApprovalModal";
 import { WatermarkOverlay } from "../components/WatermarkOverlay";
+import { SupervisorApprovalReviewModal } from "../components/SupervisorApprovalReviewModal";
 import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2, Bell, BellOff } from "lucide-react";
 
 // §5.5: web push applicationServerKey must be a Uint8Array, but the backend
@@ -187,6 +188,25 @@ export const SupervisorDashboardScreen: React.FC = () => {
   // pattern as export/POCSO approvals above.
   const [pendingDistrict, setPendingDistrict] = useState<any[]>([]);
   const [decidingDistrictId, setDecidingDistrictId] = useState<string | null>(null);
+
+  // E.1: click-to-inspect high-fidelity review modal -- additive to the
+  // existing quick approve/reject buttons on each card (kept exactly as
+  // they were, so a fast decision on an obviously-fine request still takes
+  // one click); "Inspect" opens the full conversation + written
+  // justification for a genuinely close call.
+  const [reviewModal, setReviewModal] = useState<{ item: any; type: "export" | "pocso" | "district" } | null>(null);
+  const isReviewModalDeciding =
+    !!reviewModal &&
+    ((reviewModal.type === "export" && decidingExportId === String(reviewModal.item?.rowid)) ||
+      (reviewModal.type === "pocso" && decidingPocsoId === String(reviewModal.item?.rowid)) ||
+      (reviewModal.type === "district" && decidingDistrictId === String(reviewModal.item?.rowid)));
+  const handleReviewModalDecision = async (rowid: string, approve: boolean) => {
+    if (!reviewModal) return;
+    if (reviewModal.type === "export") await decideExport(rowid, approve);
+    else if (reviewModal.type === "pocso") await decidePocso(rowid, approve);
+    else await decideDistrict(rowid, approve);
+    setReviewModal(null);
+  };
 
   const fetchPendingDistrict = async () => {
     try {
@@ -767,6 +787,16 @@ export const SupervisorDashboardScreen: React.FC = () => {
       {/* Security watermark overlay */}
       <WatermarkOverlay />
 
+      {/* E.1: high-fidelity click-to-inspect review modal */}
+      <SupervisorApprovalReviewModal
+        isOpen={!!reviewModal}
+        item={reviewModal?.item || null}
+        type={reviewModal?.type || "export"}
+        onClose={() => setReviewModal(null)}
+        onDecision={handleReviewModalDecision}
+        isDeciding={isReviewModalDeciding}
+      />
+
       <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center border-b border-stone-850 pb-4 shrink-0">
         <div className="space-y-1">
           <h2 className="text-base font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">
@@ -846,6 +876,12 @@ export const SupervisorDashboardScreen: React.FC = () => {
                   <div className="text-[10px] text-stone-500 truncate">{p.summary || ""}</div>
                 </div>
                 <button
+                  onClick={() => setReviewModal({ item: p, type: "export" })}
+                  className="px-3 py-1.5 rounded-md bg-stone-800/80 border border-stone-700 text-[11px] font-bold uppercase tracking-wide text-stone-300 hover:bg-stone-700 cursor-pointer"
+                >
+                  {lang === "en" ? "Inspect" : "ಪರಿಶೀಲಿಸಿ"}
+                </button>
+                <button
                   onClick={() => decideExport(String(p.rowid), true)}
                   disabled={decidingExportId === String(p.rowid)}
                   className="px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold uppercase tracking-wide text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 cursor-pointer"
@@ -891,6 +927,12 @@ export const SupervisorDashboardScreen: React.FC = () => {
                   </div>
                   <div className="text-[10px] text-stone-500 truncate">{p.reason || (lang === "en" ? "No reason given" : "ಕಾರಣ ನೀಡಿಲ್ಲ")}</div>
                 </div>
+                <button
+                  onClick={() => setReviewModal({ item: p, type: "pocso" })}
+                  className="px-3 py-1.5 rounded-md bg-stone-800/80 border border-stone-700 text-[11px] font-bold uppercase tracking-wide text-stone-300 hover:bg-stone-700 cursor-pointer"
+                >
+                  {lang === "en" ? "Inspect" : "ಪರಿಶೀಲಿಸಿ"}
+                </button>
                 <button
                   onClick={() => decidePocso(String(p.rowid), true)}
                   disabled={decidingPocsoId === String(p.rowid)}
@@ -961,6 +1003,12 @@ export const SupervisorDashboardScreen: React.FC = () => {
                   </>
                 ) : (
                   <>
+                    <button
+                      onClick={() => setReviewModal({ item: p, type: "district" })}
+                      className="px-3 py-1.5 rounded-md bg-stone-800/80 border border-stone-700 text-[11px] font-bold uppercase tracking-wide text-stone-300 hover:bg-stone-700 cursor-pointer"
+                    >
+                      {lang === "en" ? "Inspect" : "ಪರಿಶೀಲಿಸಿ"}
+                    </button>
                     <button
                       onClick={() => decideDistrict(String(p.rowid), true)}
                       disabled={decidingDistrictId === String(p.rowid)}

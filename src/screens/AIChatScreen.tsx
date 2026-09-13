@@ -9,6 +9,7 @@ import { CaseBoard } from "../components/CaseBoard";
 import { CaseChipStrip } from "../components/CaseChipStrip";
 import { TaskChecklist } from "../components/TaskChecklist";
 import { CaseDiary } from "../components/CaseDiary";
+import { ReasonCollectionModal } from "../components/ReasonCollectionModal";
 import { Download, Sparkles, X, Users, FileText, Globe, Check, MoreVertical, ListChecks, BookText } from "lucide-react";
 
 // ExpandedOverlay pulls in Leaflet + Recharts directly (~250KB+ of the main
@@ -211,6 +212,47 @@ export const AIChatScreen: React.FC = () => {
   const [expandedWidget, setExpandedWidget] = useState<{ type: string; data: any } | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
+  // E.6: real, honest upload status -- a genuine transfer percentage while
+  // bytes are actually going out (XMLHttpRequest.upload.onprogress), then
+  // an explicit "processing" label once the body is fully sent and the
+  // server is doing frame-extraction/Qwen-vision/transcription work that
+  // has no measurable client-side progress. Never a fabricated percentage
+  // for that second phase.
+  const [uploadStatusLabel, setUploadStatusLabel] = useState<string | null>(null);
+
+  // Decoupled from fetch() specifically so upload.onprogress is available
+  // (fetch's streaming request-body progress isn't supported widely enough
+  // to rely on here) -- fixes the "blocking upload freeze" bug where a
+  // multi-MB video attachment left the whole send flow with zero feedback.
+  const uploadAttachmentsWithProgress = (files: File[]): Promise<{ ok: boolean; status: number; json: () => Promise<any> }> =>
+    new Promise((resolve, reject) => {
+      const formData = new FormData();
+      files.forEach((f) => formData.append("files", f));
+      formData.append("lang", lang);
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", `${API_BASE}/api/chat/attachments`);
+      xhr.setRequestHeader("Authorization", `Bearer ${localStorage.getItem("vajra_token") || ""}`);
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+          const pct = Math.round((e.loaded / e.total) * 100);
+          setUploadStatusLabel(
+            lang === "en" ? `Uploading attachment... ${pct}%` : `ಲಗತ್ತು ಅಪ್‌ಲೋಡ್ ಆಗುತ್ತಿದೆ... ${pct}%`
+          );
+        }
+      };
+      xhr.upload.onload = () => {
+        setUploadStatusLabel(
+          lang === "en" ? "Analyzing attachment..." : "ಲಗತ್ತನ್ನು ವಿಶ್ಲೇಷಿಸಲಾಗುತ್ತಿದೆ..."
+        );
+      };
+      xhr.onload = () => {
+        let parsed: any = {};
+        try { parsed = JSON.parse(xhr.responseText || "{}"); } catch { /* non-JSON error body */ }
+        resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, json: async () => parsed });
+      };
+      xhr.onerror = () => reject(new Error("network error"));
+      xhr.send(formData);
+    });
   const [isExportingPdf, setIsExportingPdf] = useState(false);
 
   // Cowork mode: "chat" is today's solo behavior, unchanged. "cowork" shows
@@ -663,15 +705,11 @@ export const AIChatScreen: React.FC = () => {
     let uploadedAttachmentRefs: { file_name: string; type: string; page_count: number; stratus_id?: string; data_uri?: string; page_stratus_ids?: string[] }[] = [];
     if (filesToSend.length > 0) {
       setIsUploadingAttachments(true);
+      setUploadStatusLabel(
+        lang === "en" ? "Uploading attachment... 0%" : "ಲಗತ್ತು ಅಪ್‌ಲೋಡ್ ಆಗುತ್ತಿದೆ... 0%"
+      );
       try {
-        const formData = new FormData();
-        filesToSend.forEach((f) => formData.append("files", f));
-        formData.append("lang", lang);
-        const uploadRes = await fetch(`${API_BASE}/api/chat/attachments`, {
-          method: "POST",
-          headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-          body: formData,
-        });
+        const uploadRes = await uploadAttachmentsWithProgress(filesToSend);
         if (uploadRes.ok) {
           const uploadData = await uploadRes.json();
           uploadedAttachmentRefs = uploadData.attachments || [];
@@ -686,6 +724,7 @@ export const AIChatScreen: React.FC = () => {
             "Critical"
           );
           setIsUploadingAttachments(false);
+          setUploadStatusLabel(null);
           return;
         }
       } catch (err) {
@@ -696,9 +735,11 @@ export const AIChatScreen: React.FC = () => {
           "Critical"
         );
         setIsUploadingAttachments(false);
+        setUploadStatusLabel(null);
         return;
       }
       setIsUploadingAttachments(false);
+      setUploadStatusLabel(null);
     }
 
     // Rendered directly from this call's own HTTP response below, always --
@@ -1133,7 +1174,7 @@ export const AIChatScreen: React.FC = () => {
     citations: m.citations || [],
   }));
 
-  const requestExport = async (targetLang: "en" | "kn", approvalId?: string): Promise<Response> =>
+  const requestExport = async (targetLang: "en" | "kn", approvalId?: string, reason?: string): Promise<Response> =>
     fetch(`${API_BASE}/api/chat/export-pdf`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
@@ -1143,6 +1184,7 @@ export const AIChatScreen: React.FC = () => {
         lang: targetLang,
         session_id: activeSessionId || undefined,
         approval_id: approvalId || activeApprovalId || undefined,
+        reason: reason || undefined,
       }),
     });
 
@@ -1164,15 +1206,31 @@ export const AIChatScreen: React.FC = () => {
     setShowExportModal(true);
   };
 
-  const executeExport = async (targetLang: "en" | "kn") => {
+  // E.1: officer's written justification, collected only when the AI
+  // pre-screen actually flags the export as sensitive (see the
+  // "reason_required" status below) -- an unflagged export never prompts
+  // for one at all.
+  const [showReasonModal, setShowReasonModal] = useState(false);
+  const [reasonModalLang, setReasonModalLang] = useState<"en" | "kn">("en");
+
+  const executeExport = async (targetLang: "en" | "kn", officerReason?: string) => {
     if (isExportingPdf) return;
     setIsExportingPdf(true);
     setShowExportModal(false);
     try {
-      const response = await requestExport(targetLang);
+      const response = await requestExport(targetLang, undefined, officerReason);
       if (response.status === 202) {
-        // AI held it for supervisor approval -- start the live wait.
         const d = await response.json().catch(() => ({}));
+        if (d.status === "reason_required") {
+          // E.1: AI pre-screen flagged this export -- collect a real written
+          // justification before creating the pending-approval request at
+          // all (D.8: the server itself enforces the minimum length too).
+          setIsExportingPdf(false);
+          setReasonModalLang(targetLang);
+          setShowReasonModal(true);
+          return;
+        }
+        // AI held it for supervisor approval -- start the live wait.
         const reqId: string = d.request_id;
         setActiveApprovalId(reqId);
         addToast(
@@ -1234,6 +1292,11 @@ export const AIChatScreen: React.FC = () => {
     } finally {
       setIsExportingPdf(false);
     }
+  };
+
+  const handleReasonSubmit = async (reason: string) => {
+    setShowReasonModal(false);
+    await executeExport(reasonModalLang, reason);
   };
 
   // Built from real accused/district/crime-type values fetched fresh from
@@ -1514,6 +1577,7 @@ export const AIChatScreen: React.FC = () => {
             onSend={handleSend}
             isThinking={isThinking}
             isUploading={isUploadingAttachments}
+            uploadStatusLabel={uploadStatusLabel}
             lang={lang}
             addToast={addToast}
             answerMode={answerMode}
@@ -1666,6 +1730,20 @@ export const AIChatScreen: React.FC = () => {
       {showCaseDiary && activeSessionId && (
         <CaseDiary sessionId={activeSessionId} lang={lang} onClose={() => setShowCaseDiary(false)} />
       )}
+
+      {/* E.1: written justification, only shown when the AI pre-screen
+          actually flags an export as sensitive */}
+      <ReasonCollectionModal
+        isOpen={showReasonModal}
+        title={lang === "en" ? "Justification Required" : "ಸಮರ್ಥನೆ ಅಗತ್ಯವಿದೆ"}
+        subtitle={
+          lang === "en"
+            ? "AI pre-screen flagged this export as sensitive. Provide a real operational justification before it is sent for supervisor approval."
+            : "AI ಪೂರ್ವ-ಪರಿಶೀಲನೆಯು ಈ ರಫ್ತನ್ನು ಸೂಕ್ಷ್ಮವೆಂದು ಗುರುತಿಸಿದೆ. ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗೆ ಕಳುಹಿಸುವ ಮೊದಲು ಕಾರ್ಯಾಚರಣೆಯ ಸಮರ್ಥನೆ ನೀಡಿ."
+        }
+        onClose={() => setShowReasonModal(false)}
+        onSubmit={handleReasonSubmit}
+      />
 
       {/* Language Selection Modal for Official PDF Dossier Export */}
       {showExportModal && (

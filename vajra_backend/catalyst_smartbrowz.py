@@ -405,35 +405,38 @@ def _render_visual_widget_card(panel_type: str, data: Any, lang: str = "en") -> 
     return card_html
 
 
-def _vajra_crest_svg(size_px: int = 44) -> str:
+def _generate_vajra_crest_svg(size: int = 48) -> str:
     """
-    §9.11 VAJRA Crest correction pass: the PDF header was confirmed
-    text-only (no crest graphic at all) -- this embeds the real crest as
-    inline SVG rather than a flattened PNG raster. Reasoning: the PDF path
-    that actually reaches production (Catalyst SmartBrowz, an HTML->PDF
-    browser-based render) draws SVG natively, so there is no real need to
-    rasterize; doing so anyway would need a new dependency this codebase
-    doesn't vendor (cairosvg/svglib -- only Pillow is installed, and Pillow
-    cannot rasterize SVG paths) purely to turn vector back into raster, a
-    strictly worse outcome for a "stays vector" requirement (confirmed via
-    the crest's own Verification Checklist: crisp at 400% zoom).
+    E.5/D.11: single visual source of truth for the PDF's crest -- a direct
+    Python port of src/components/VajraLogo.tsx's REAL, currently-shipped
+    geometry (verified against the live .tsx file, not the paraphrased
+    numbers in the planning doc): 12-point sunburst spikes(12, tipR=23,
+    baseR=18.6, baseHalfAngle=8.5), r=19.4 outer ring / r=18.7 charcoal disc,
+    BOTH ring-text arcs at r=15.2 (top startOffset 12.5% weight 700 size
+    2.85, bottom startOffset 10.5% weight 600 size 2.55), side stars at
+    r=16.6 (outerR 1.7 / innerR 0.75), r=13.4 inner ring @ opacity .65,
+    r=11.5 diamond frame with pin connectors, r=8.1 teal-zigzag inner
+    diamond, and the exact gold vajra-bolt path. If VajraLogo.tsx's
+    constants ever change, this function must change in the same commit
+    (per D.11) so the sidebar/login crest and the PDF crest never drift
+    apart again -- that drift is exactly what D.11 found and fixed.
 
-    The geometry below is a direct Python port of src/components/
-    VajraLogo.tsx's own generation math (same center/radius/angle formulas,
-    not a hand-eyeballed re-drawing) -- Loophole L1 explicitly calls out
-    "measure, don't eyeball," and reusing the exact same procedural
-    generation as the in-app crest is the most literal way to satisfy that
-    for a server-side render that can't share a JS module with the frontend.
-    Kept intentionally static (no per-instance unique ids) -- a PDF page
-    only ever embeds one copy.
+    Supervisor's merge note: an earlier, less complete duplicate of this
+    exact function (§9.11's own crest pass, built in parallel) was found
+    missing the ring-text arcs entirely -- confirmed against the real
+    VajraLogo.tsx (which does render them) before picking this version and
+    discarding that one, rather than keeping two crest implementations that
+    could drift apart (exactly what D.11 already found once).
     """
-    CENTER = 24.0
+    import math
 
-    def polar(angle_deg: float, r: float) -> Tuple[float, float]:
+    CENTER = 24
+
+    def polar(angle_deg, r):
         rad = math.radians(angle_deg - 90)
-        return (CENTER + r * math.cos(rad), CENTER + r * math.sin(rad))
+        return CENTER + r * math.cos(rad), CENTER + r * math.sin(rad)
 
-    def build_spikes(count: int, tip_r: float, base_r: float, base_half_angle: float) -> str:
+    def build_spikes(count, tip_r, base_r, base_half_angle):
         parts = []
         for i in range(count):
             angle = i * 360 / count
@@ -443,16 +446,16 @@ def _vajra_crest_svg(size_px: int = 44) -> str:
             parts.append(f"M{tx:.2f} {ty:.2f} L{b1x:.2f} {b1y:.2f} L{b2x:.2f} {b2y:.2f} Z")
         return " ".join(parts)
 
-    def diamond_vertices(r: float) -> List[Tuple[float, float]]:
+    def diamond_vertices(r):
         return [(CENTER, CENTER - r), (CENTER + r, CENTER), (CENTER, CENTER + r), (CENTER - r, CENTER)]
 
-    def diamond_path(r: float) -> str:
+    def diamond_path(r):
         verts = diamond_vertices(r)
         return "M" + " L".join(f"{x} {y}" for x, y in verts) + " Z"
 
-    def zigzag_diamond_path(r: float, teeth_per_edge: int, depth: float) -> str:
+    def zigzag_diamond_path(r, teeth_per_edge, depth):
         verts = diamond_vertices(r)
-        points: List[Tuple[float, float]] = []
+        points = []
         for e in range(4):
             x0, y0 = verts[e]
             x1, y1 = verts[(e + 1) % 4]
@@ -472,7 +475,7 @@ def _vajra_crest_svg(size_px: int = 44) -> str:
                 points.append((px + nx * offset, py + ny * offset))
         return "M" + " L".join(f"{x:.2f} {y:.2f}" for x, y in points) + " Z"
 
-    def star_path(cx: float, cy: float, outer_r: float, inner_r: float) -> str:
+    def star_path(cx, cy, outer_r, inner_r):
         pts = []
         for i in range(10):
             angle = math.radians(i * 36 - 90)
@@ -481,43 +484,43 @@ def _vajra_crest_svg(size_px: int = 44) -> str:
         return "M" + " L".join(f"{x:.2f} {y:.2f}" for x, y in pts) + " Z"
 
     spikes_path = build_spikes(12, 23, 18.6, 8.5)
-    outer_diamond_r = 11.5
-    outer_diamond = diamond_vertices(outer_diamond_r)
-    outer_diamond_path = diamond_path(outer_diamond_r)
-    inner_diamond_r = 8.1
-    zigzag_path = zigzag_diamond_path(inner_diamond_r, 4, 1.1)
+    outer_diamond_path = diamond_path(11.5)
+    zigzag_path = zigzag_diamond_path(8.1, 4, 1.1)
     star_left_x, star_left_y = polar(270, 16.6)
     star_right_x, star_right_y = polar(90, 16.6)
-    star_left_path = star_path(star_left_x, star_left_y, 1.7, 0.75)
-    star_right_path = star_path(star_right_x, star_right_y, 1.7, 0.75)
-
-    connectors = "".join(
-        f'<line x1="{vx:.2f}" y1="{vy:.2f}" x2="{ex:.2f}" y2="{ey:.2f}" />'
-        for i, (vx, vy) in enumerate(outer_diamond)
-        for ex, ey in [polar(i * 90, outer_diamond_r + 2.3)]
+    star_left = star_path(star_left_x, star_left_y, 1.7, 0.75)
+    star_right = star_path(star_right_x, star_right_y, 1.7, 0.75)
+    pins = "".join(
+        f'<line x1="{vx}" y1="{vy}" x2="{polar(i * 90, 11.5 + 2.3)[0]:.2f}" y2="{polar(i * 90, 11.5 + 2.3)[1]:.2f}"/>'
+        for i, (vx, vy) in enumerate(diamond_vertices(11.5))
     )
-    nodes = "".join(
-        f'<circle cx="{ex:.2f}" cy="{ey:.2f}" r="0.85" />'
+    pin_nodes = "".join(
+        f'<circle cx="{polar(i * 90, 11.5 + 2.3)[0]:.2f}" cy="{polar(i * 90, 11.5 + 2.3)[1]:.2f}" r="0.85"/>'
         for i in range(4)
-        for ex, ey in [polar(i * 90, outer_diamond_r + 2.3)]
     )
-    inner_nodes = "".join(
-        f'<circle cx="{x:.2f}" cy="{y:.2f}" r="0.55" />' for x, y in diamond_vertices(inner_diamond_r)
-    )
+    inner_nodes = "".join(f'<circle cx="{x}" cy="{y}" r="0.55"/>' for x, y in diamond_vertices(8.1))
 
-    return f'''<svg width="{size_px}" height="{size_px}" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
-<g fill="#C79A4E"><path d="{spikes_path}" /></g>
-<circle cx="24" cy="24" r="19.4" fill="none" stroke="#C79A4E" stroke-width="1.1" />
-<circle cx="24" cy="24" r="18.7" fill="#211F1D" />
-<g fill="#C79A4E" stroke="none"><path d="{star_left_path}" /><path d="{star_right_path}" /></g>
-<circle cx="24" cy="24" r="13.4" fill="none" stroke="#C79A4E" stroke-width="0.85" opacity="0.65" />
-<path d="{outer_diamond_path}" fill="none" stroke="#C79A4E" stroke-width="1.5" stroke-linejoin="round" />
-<g stroke="#C79A4E" stroke-width="1" stroke-linecap="round">{connectors}</g>
-<g fill="#C79A4E" stroke="none">{nodes}</g>
-<path d="{zigzag_path}" fill="#211F1D" stroke="#3F8C78" stroke-width="0.7" stroke-linejoin="round" />
-<path d="M26.3 16.6 L20.8 24.7 L24 24.7 L21.7 31.4 L27.6 23 L24.4 23 Z" fill="#C79A4E" stroke="none" />
-<g fill="#C79A4E" stroke="none">{inner_nodes}</g>
-</svg>'''
+    return f"""<svg viewBox="0 0 48 48" width="{size}" height="{size}" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <g fill="#C79A4E"><path d="{spikes_path}"/></g>
+      <circle cx="24" cy="24" r="19.4" stroke="#C79A4E" stroke-width="1.1" fill="none"/>
+      <circle cx="24" cy="24" r="18.7" fill="#211F1D"/>
+      <path id="top-arc-crest" d="M24 24 m-15.2,0 a15.2,15.2 0 1,1 30.4,0" fill="none"/>
+      <path id="bot-arc-crest" d="M24 24 m-15.2,0 a15.2,15.2 0 1,0 30.4,0" fill="none"/>
+      <text font-size="2.85" font-weight="700" letter-spacing="0.28" fill="#C79A4E" font-family="-apple-system, sans-serif">
+        <textPath href="#top-arc-crest" startOffset="12.5%">KARNATAKA STATE POLICE</textPath>
+      </text>
+      <text font-size="2.55" font-weight="600" letter-spacing="0.38" fill="#C79A4E" font-family="-apple-system, sans-serif">
+        <textPath href="#bot-arc-crest" startOffset="10.5%">CRIME INTELLIGENCE</textPath>
+      </text>
+      <g fill="#C79A4E" stroke="none"><path d="{star_left}"/><path d="{star_right}"/></g>
+      <circle cx="24" cy="24" r="13.4" stroke="#C79A4E" stroke-width="0.85" opacity="0.65" fill="none"/>
+      <path d="{outer_diamond_path}" fill="none" stroke="#C79A4E" stroke-width="1.5" stroke-linejoin="round"/>
+      <g stroke="#C79A4E" stroke-width="1" stroke-linecap="round">{pins}</g>
+      <g fill="#C79A4E" stroke="none">{pin_nodes}</g>
+      <path d="{zigzag_path}" fill="#211F1D" stroke="#3F8C78" stroke-width="0.7" stroke-linejoin="round"/>
+      <path d="M26.3 16.6 L20.8 24.7 L24 24.7 L21.7 31.4 L27.6 23 L24.4 23 Z" fill="#C79A4E"/>
+      <g fill="#C79A4E" stroke="none">{inner_nodes}</g>
+    </svg>"""
 
 
 def render_dossier_html(
@@ -533,12 +536,19 @@ def render_dossier_html(
 ) -> str:
     """
     Renders an official, printable Karnataka State Police Intelligence Dossier
-    using clean semantic HTML5 and tailored CSS.
+    using clean semantic HTML5 and tailored CSS. E.5: restores the dark
+    header banner, diagonal watermark, and circular verification seal using
+    the unified D.11 crest geometry above (not a second, separately-typed
+    crest -- that drift is exactly what D.11 found and fixed).
     """
     timestamp = time.strftime("%d %b %Y, %H:%M:%S IST")
     if not audit_hash:
         audit_raw = f"{case_no}:{officer_badge}:{timestamp}:{narrative[:200]}"
         audit_hash = hashlib.sha256(audit_raw.encode("utf-8")).hexdigest()
+
+    header_logo_svg = _generate_vajra_crest_svg(52)
+    seal_logo_svg = _generate_vajra_crest_svg(36)
+    watermark_label = f"KARNATAKA STATE POLICE • CONFIDENTIAL • {officer_badge} • OFFICIAL RECORD"
 
     # Bilingual strings
     is_kn = lang == "kn"
@@ -974,21 +984,63 @@ def render_dossier_html(
         color: #94a3b8;
         font-family: monospace;
     }}
+
+    /* E.5: dark banner header + watermark + verification seal (D.11 crest) */
+    body {{ position: relative; }}
+    .document-watermark {{
+        position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-35deg);
+        font-size: 30pt; font-weight: 900; color: rgba(199, 154, 78, 0.08);
+        letter-spacing: 0.12em; text-transform: uppercase; white-space: nowrap;
+        pointer-events: none; z-index: 0; user-select: none;
+        font-family: -apple-system, sans-serif;
+    }}
+    .content-wrap {{ position: relative; z-index: 1; }}
+    .header-banner {{
+        background: #161412; padding: 14px 18px; display: flex; align-items: center;
+        gap: 14px; border-radius: 6px 6px 0 0; margin-bottom: 0;
+    }}
+    .header-logo {{ flex-shrink: 0; }}
+    .header-text {{ flex: 1; }}
+    .header-title {{ font-size: 15pt; font-weight: 900; color: #f5f5f4; letter-spacing: 0.04em; text-transform: uppercase; line-height: 1.2; }}
+    .header-sub {{ font-size: 8.5pt; font-weight: 600; color: #C79A4E; letter-spacing: 0.03em; margin-top: 2px; }}
+    .classification-bar {{
+        background: #C79A4E; color: #161412; text-align: center; padding: 3px 8px;
+        font-size: 7.5pt; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;
+        margin-bottom: 12px;
+    }}
+    .verification-container {{
+        margin-top: 16px; page-break-inside: avoid; border-top: 1.5px solid #C79A4E;
+        padding-top: 12px; display: flex; justify-content: space-between; align-items: center; gap: 14px;
+    }}
+    .authenticity-box {{ flex: 1; }}
+    .auth-title {{ font-size: 9.5pt; font-weight: 800; color: #1c1917; margin-bottom: 3px; text-transform: uppercase; letter-spacing: 0.03em; }}
+    .auth-text {{ font-size: 7.5pt; color: #57534e; line-height: 1.45; font-family: -apple-system, sans-serif; }}
+    .auth-hash {{ font-family: monospace; color: #1c1917; font-weight: 600; word-break: break-all; }}
+    .seal-badge {{
+        width: 110px; height: 110px; border-radius: 50%; border: 2px solid #C79A4E; padding: 3px;
+        flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    }}
+    .seal-inner {{
+        width: 100%; height: 100%; border-radius: 50%; border: 1px solid #C79A4E;
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        text-align: center; padding: 3px;
+    }}
+    .seal-title {{ font-size: 6pt; font-weight: 800; color: #C79A4E; font-family: monospace; letter-spacing: 0.06em; margin-top: 2px; }}
+    .seal-subtitle {{ font-size: 5pt; font-weight: 700; color: #78716c; font-family: monospace; letter-spacing: 0.05em; }}
+    .seal-status {{ font-size: 4.5pt; font-weight: 800; color: #16a34a; font-family: monospace; letter-spacing: 0.06em; margin-top: 1px; }}
 </style>
 </head>
 <body>
-    <table class="header-table">
-        <tr>
-            <td style="width: 48px; vertical-align: middle; padding-right: 10px;">{_vajra_crest_svg(44)}</td>
-            <td>
-                <div class="logo-title">{ksp_header}</div>
-                <div class="sub-title">{ksp_sub}</div>
-            </td>
-            <td style="text-align: right; vertical-align: middle;">
-                <span class="badge-classified">{badge_label}</span>
-            </td>
-        </tr>
-    </table>
+    <div class="document-watermark">{watermark_label}</div>
+    <div class="content-wrap">
+    <div class="header-banner">
+        <div class="header-logo">{header_logo_svg}</div>
+        <div class="header-text">
+            <div class="header-title">{ksp_header}</div>
+            <div class="header-sub">{ksp_sub}</div>
+        </div>
+    </div>
+    <div class="classification-bar">{badge_label}</div>
 
     <div class="meta-grid">
         <div class="meta-row">
@@ -1008,12 +1060,36 @@ def render_dossier_html(
 
     {citations_html}
 
+    <div class="verification-container">
+        <div class="authenticity-box">
+            <div class="auth-title">Authenticity &amp; Tamper-Evidence</div>
+            <p class="auth-text">
+                System-generated from CCTNS-grounded records by badge <strong>{officer_badge}</strong> at {timestamp}.
+                This document is attributed to the authenticated operator (not a client-supplied name).
+                <br><br>
+                <strong>Integrity hash (SHA-256):</strong><br>
+                <span class="auth-hash">{audit_hash}</span>. Any edit changes this hash. This hash is also recorded
+                independently in the server audit log at generation time (see D.5) — verify against that record, not
+                just against this document's own internal consistency.
+            </p>
+        </div>
+        <div class="seal-badge">
+            <div class="seal-inner">
+                {seal_logo_svg}
+                <div class="seal-title">VAJRA - SCRB</div>
+                <div class="seal-subtitle">OFFICIAL RECORD</div>
+                <div class="seal-status">SYSTEM VERIFIED</div>
+            </div>
+        </div>
+    </div>
+
     <table class="footer-table">
         <tr>
             <td>{footer_left}</td>
             <td style="text-align: right;">{footer_right}</td>
         </tr>
     </table>
+    </div>
 </body>
 </html>
 """
