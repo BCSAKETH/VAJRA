@@ -610,7 +610,50 @@ the B1 mechanism (§2) — genuinely done, no action needed.
   see §7.1 below. Different button, different backend endpoint
   (`/api/alerts/consistency-flags/{id}/review`), different screen section entirely.
 
-### 7.1 CONFIRMED STILL BROKEN — new action items
+### 7.1 STATUS as of 2026-09-13 — re-verified against today's live code
+
+- **#1 + #1b (Two-Person Integrity)** — CONFIRMED FIXED. `ConsistencyFlag` interface
+  in `SupervisorDashboardScreen.tsx` now uses the real backend field names
+  (`rowid, case_id, case_no, recorded_section, suggested_section, confidence_score,
+  reviewed, flagged_at`), every `reviewed` comparison uses `Number(flag.reviewed) === 0`,
+  and `POST /api/alerts/consistency-flags/{id}/review` now requires and verifies
+  `second_supervisor_badge`/`second_supervisor_password` server-side via
+  `_verify_supervisor_approver` (§4.13a's fix). Both stacked bugs closed.
+- **#2 (`EmployeeID` uniqueness)** — CONFIRMED FIXED, both halves. Data: the user's
+  own manual cleanup (C.15) removed 58 duplicate-ID rows, leaving exactly 5 real
+  officers, each verified unique. Schema: `Employee.EmployeeID` now has a real
+  database-level `is_unique: true` constraint (added 2026-09-13 via the Catalyst
+  Datastore API, safe only because the cleanup already made every value unique) --
+  a future duplicate insert is now rejected by Catalyst itself, not just avoided by
+  code discipline. `KGID` remains the actual identity key everywhere in the security
+  model; the handful of remaining `WHERE EmployeeID =` call sites are all
+  post-C.15 defensive/ambiguity-aware reads, not blind trust in uniqueness.
+- **#5 (AI-degraded banner)** — CONFIRMED FIXED (C.16): `AppContext.tsx` reads
+  `llm_service_available` from `/api/health` and drives a real visible indicator.
+- **#7e (3 unreachable screens)** — RESOLVED, but differently than originally
+  proposed. Spatial Analyst and Demographic Correlation are no longer separate nav
+  entries at all -- their functionality was folded into District Analytics as tabs
+  (Part G redesign, 2026-09-13), which is a stronger fix than just adding a nav
+  item (district-scoped instead of disconnected). FIR Search's real gap (its two
+  backend routes never existed) is fixed today -- see below -- and it's now back in
+  `navItems`.
+- **#7f (session-timeout wording)** — CONFIRMED FIXED: `SettingsScreen.tsx` now
+  says "Logs you out of this device... does not remotely invalidate the underlying
+  token -- real server-side revocation is a separate, tracked item," accurate
+  instead of the previous overclaim.
+
+**New fix built today**: `/api/cases/all` and `/api/cases/search` (main.py) --
+these two routes never existed, so FIR Search always 404'd regardless of database
+state ("Security Registry Offline" was permanently shown, real or not). Built for
+real: same District/Unit/CaseCategory join chain as the risk-scoring batch job
+(`_build_fir_records`, shared by both routes), same fail-closed row-level security
+as every other case-listing endpoint (officer sees only their own station,
+supervisor sees all), real Victim/Accused counts via `GROUP BY`, capped at 300
+rows (ZCQL's own per-query cap, newest-first -- this screen has no pagination UI
+yet). Search matches `CrimeNo` OR `BriefFacts` via ZCQL's `*value*` wildcard.
+Re-added to `navItems` now that it's genuinely functional.
+
+### 7.1-orig CONFIRMED STILL BROKEN — new action items (superseded by 7.1 status above, kept for history)
 
 **#1 + #1b — The Two-Person Integrity control has never worked, for two stacked reasons**
 This is bigger than §4.13a already captured. There are actually **two independent bugs**:

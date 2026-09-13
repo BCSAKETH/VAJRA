@@ -108,11 +108,12 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
     ...(roleTier === "supervisor"
       ? [{ id: "supervisor" as ScreenId, label: t.navSupervisor, icon: UserCheck }]
       : []),
-    // fir_search intentionally NOT added -- confirmed its backend endpoints
-    // (/api/cases/search, /api/cases/all) don't exist anywhere in main.py,
-    // so it 404s unconditionally. Making it reachable now would surface a
-    // "new," visibly broken feature, worse than a silently missing one
-    // (C.17 Loophole L1). Fix the data source first, separately.
+    // §7.1 #7e: fir_search was hidden here because its two backend routes
+    // (/api/cases/search, /api/cases/all) never existed -- confirmed fixed
+    // (real routes now built, reusing the same District/Unit/CaseCategory
+    // join chain and row-level security as every other case-listing
+    // endpoint), so it's genuinely safe to surface now.
+    { id: "fir_search" as ScreenId, label: t.navSearch, icon: Search },
   ];
 
   return (

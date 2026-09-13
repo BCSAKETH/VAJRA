@@ -792,6 +792,124 @@ async def get_cases_demographics(request: Request, location_context: str = Depen
         raise HTTPException(status_code=500, detail=f"Failed to compute district demographics: {str(e)}")
 
 
+def _build_fir_records(case_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Shared enrichment for /api/cases/all and /api/cases/search -- backs
+    FIRSearchScreen.tsx (§7.1 #7e: this screen was genuinely broken, its two
+    backend routes never existed at all, always 404ing regardless of the
+    database's real state). Same real join chain as the risk-scoring batch
+    job above (CaseMaster.PoliceStationID -> Unit -> District,
+    CaseCategoryID -> CaseCategory.LookupValue for the real Heinous/Non-
+    Heinous classification, Victim/Accused counts) -- not a second, possibly
+    drifting implementation of that lookup logic."""
+    if not case_rows:
+        return []
+    # District/Unit/CaseCategory are small reference tables (well under
+    # ZCQL's 300-row cap) -- plain single queries, same pattern already used
+    # a few lines above in get_cases_demographics, no pagination needed.
+    districts = {int(d["District"]["DistrictID"]): d["District"]["DistrictName"]
+                 for d in catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District") if d.get("District", {}).get("DistrictID")}
+    units = {int(u["Unit"]["UnitID"]): (u["Unit"].get("UnitName"), u["Unit"].get("DistrictID"))
+             for u in catalyst_app.zql().execute_query("SELECT UnitID, UnitName, DistrictID FROM Unit") if u.get("Unit", {}).get("UnitID")}
+    cats = {int(c["CaseCategory"]["CaseCategoryID"]): c["CaseCategory"].get("LookupValue")
+            for c in catalyst_app.zql().execute_query("SELECT CaseCategoryID, LookupValue FROM CaseCategory") if c.get("CaseCategory", {}).get("CaseCategoryID")}
+    cm_ids = [cm.get("CaseMasterID") for cm in case_rows if cm.get("CaseMasterID") is not None]
+    id_list = ",".join(str(int(c)) for c in cm_ids) or "-1"
+    acc_count: Dict[int, int] = {}
+    try:
+        for r in catalyst_app.zql().execute_query(f"SELECT CaseMasterID, COUNT(ROWID) FROM Accused WHERE CaseMasterID IN ({id_list}) GROUP BY CaseMasterID"):
+            a = r.get("Accused", {})
+            if a.get("CaseMasterID") is not None:
+                acc_count[int(a["CaseMasterID"])] = int(a.get("COUNT(ROWID)") or 0)
+    except Exception as e:
+        logger.warning(f"_build_fir_records: accused count query failed: {e}")
+    vic_count: Dict[int, int] = {}
+    try:
+        for r in catalyst_app.zql().execute_query(f"SELECT CaseMasterID, COUNT(ROWID) FROM Victim WHERE CaseMasterID IN ({id_list}) GROUP BY CaseMasterID"):
+            v = r.get("Victim", {})
+            if v.get("CaseMasterID") is not None:
+                vic_count[int(v["CaseMasterID"])] = int(v.get("COUNT(ROWID)") or 0)
+    except Exception as e:
+        logger.warning(f"_build_fir_records: victim count query failed: {e}")
+
+    out = []
+    for cm in case_rows:
+        cid = cm.get("CaseMasterID")
+        ps = cm.get("PoliceStationID")
+        unit_name, dist_id = (units.get(int(ps), (None, None)) if ps else (None, None))
+        dist_name = districts.get(int(dist_id)) if dist_id else None
+        cat_id = cm.get("CaseCategoryID")
+        out.append({
+            "CaseMasterID": cid,
+            "CrimeNo": cm.get("CrimeNo"),
+            "BriefFacts": cm.get("BriefFacts"),
+            "CrimeRegisteredDate": cm.get("CrimeRegisteredDate"),
+            "DistrictName": dist_name,
+            "UnitName": unit_name,
+            "LookupValue": cats.get(int(cat_id)) if cat_id else None,
+            "VictimCount": vic_count.get(int(cid), 0) if cid is not None else 0,
+            "AccusedCount": acc_count.get(int(cid), 0) if cid is not None else 0,
+        })
+    return out
+
+
+def _fir_rls_clause(request: Request, prefix: str = " WHERE") -> str:
+    """Same fail-closed row-level security as the FIR list endpoint above
+    (line ~1409): a line officer only ever sees their own station's cases,
+    supervisors see all. `prefix` lets a caller that already has a WHERE
+    clause append with " AND" instead."""
+    role = getattr(request.state, "role_tier", "officer")
+    uid = request.state.user_profile.get("UnitID") or request.state.user_profile.get("unitid")
+    if role == "supervisor":
+        return ""
+    if uid is not None and str(uid).isdigit():
+        return f"{prefix} PoliceStationID = {int(uid)}"
+    return f"{prefix} 1=0"  # fail closed: no resolvable jurisdiction -> no rows
+
+
+@app.get("/api/cases/all")
+async def get_cases_all(request: Request, location_context: str = Depends(security_firewall)):
+    """Backs FIRSearchScreen.tsx's default (no search term) view. §7.1 #7e:
+    this route never existed -- the frontend always 404'd, showing "Security
+    Registry Offline" unconditionally regardless of the database's real
+    state. Capped at 300 (ZCQL's own per-query row cap), newest first --
+    this screen has no pagination UI yet, so an unbounded return would just
+    silently truncate at some ZCQL-internal limit anyway; 300 newest is the
+    honest, predictable version of that same cap."""
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    try:
+        rls = _fir_rls_clause(request)
+        rows = catalyst_app.zql().execute_query(
+            f"SELECT CaseMasterID, CrimeNo, BriefFacts, CrimeRegisteredDate, PoliceStationID, CaseCategoryID "
+            f"FROM CaseMaster{rls} ORDER BY ROWID DESC LIMIT 300")
+        return _build_fir_records([r.get("CaseMaster", {}) for r in rows])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to load case registry: {str(e)}")
+
+
+@app.get("/api/cases/search")
+async def get_cases_search(request: Request, query: str = "", location_context: str = Depends(security_firewall)):
+    """Backs FIRSearchScreen.tsx's search box ("Search CrimeNo or facts...").
+    §7.1 #7e: same never-existed route as /api/cases/all above. Matches
+    CrimeNo OR BriefFacts via ZCQL's '*value*' wildcard (its LIKE syntax --
+    confirmed elsewhere in this file, ZCQL does not use SQL's '%')."""
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    q = (query or "").strip()
+    if not q:
+        return await get_cases_all(request, location_context)
+    try:
+        safe_q = escape_zcql_literal(q).replace("*", "")  # strip ZCQL wildcard metacharacters out of raw officer input
+        rls = _fir_rls_clause(request, prefix=" AND")
+        rows = catalyst_app.zql().execute_query(
+            f"SELECT CaseMasterID, CrimeNo, BriefFacts, CrimeRegisteredDate, PoliceStationID, CaseCategoryID "
+            f"FROM CaseMaster WHERE (CrimeNo LIKE '*{safe_q}*' OR BriefFacts LIKE '*{safe_q}*'){rls} "
+            f"ORDER BY ROWID DESC LIMIT 300")
+        return _build_fir_records([r.get("CaseMaster", {}) for r in rows])
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Case search failed: {str(e)}")
+
+
 # Solved/unsolved classification for the district dashboard's outcome pie
 # chart. Fixed vocabulary per spec: solved = {CONVICTED, CHARGESHEETED,
 # CLOSED, COMPROMISED, ACQUITTED, BOUND OVER}; unsolved = {UNDER
