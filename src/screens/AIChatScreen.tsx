@@ -1344,7 +1344,7 @@ export const AIChatScreen: React.FC = () => {
           own local history panel. Session switch/new-chat requests arrive
           via the AppContext bridge (chatSessionSelectRequest/
           newChatRequestNonce, wired above). */}
-      <div className="flex-1 flex flex-col relative overflow-hidden">
+      <div className="flex-1 min-h-0 flex flex-col relative overflow-hidden">
       {/* Security watermark -- already used on Spatial/Supervisor, missing
           here despite chat being the screen most likely to display raw case
           facts, suspect names, and attachment content. */}
@@ -1430,7 +1430,7 @@ export const AIChatScreen: React.FC = () => {
       )}
 
       {/* Messages Thread Container */}
-      <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-6">
+      <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 space-y-6">
         {loadingSessionId ? (
           <div className="max-w-3xl mx-auto space-y-6 animate-fade-in" aria-live="polite" aria-busy="true">
             {[1, 2, 3].map((n) => (

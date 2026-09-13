@@ -38,12 +38,20 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   const isExpanded = isSidebarExpanded || isSidebarHovered;
 
   return (
-    <div className="min-h-screen bg-[var(--color-background-dark)] text-[var(--color-text-primary)] flex flex-col font-sans transition-colors duration-300">
+    <div className="h-screen bg-[var(--color-background-dark)] text-[var(--color-text-primary)] flex flex-col font-sans transition-colors duration-300 overflow-hidden">
       {/* Indian Tricolour Top Accent Strip */}
       <div className="tricolour-strip shrink-0" />
 
-      {/* Main Container */}
-      <div className="flex flex-1 overflow-hidden">
+      {/* Main Container. min-h-0 is required here (and on every nested
+          flex-1 ancestor below down to AIChatScreen's own root) -- without
+          it, a flex item's default auto min-height refuses to shrink below
+          its content's natural size, so a long sidebar list or message
+          thread silently grows this whole row (and therefore the page)
+          taller than the viewport instead of clipping/scrolling internally.
+          Confirmed live: this is exactly what made the sidebar list run off
+          past the bottom of the screen and pushed the composer down to the
+          real (oversized) page bottom instead of the viewport bottom. */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
         {/* §9.1 Unified Sidebar -- one merged panel (nav + grouped chat/
             investigation lists + profile), replacing the old icon-only rail
             + chat-screen-local ChatHistoryPanel. Hover-to-expand handlers
@@ -54,7 +62,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
         </div>
 
         {/* Content Shell */}
-        <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
           {/* Header Bar */}
           <header className="glass-panel border-b border-stone-800 py-3.5 px-6 flex items-center justify-between z-10 shrink-0">
             <div className="flex items-center gap-3">
@@ -118,7 +126,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
               fought that inner region for who owns scrolling and who
               resolves height -- the whole page grew instead of just the
               message list. This is just the bounded frame now. */}
-          <main className="flex-1 overflow-hidden relative bg-[var(--color-background-dark)]">
+          <main className="flex-1 min-h-0 overflow-hidden relative bg-[var(--color-background-dark)]">
             {children}
           </main>
         </div>

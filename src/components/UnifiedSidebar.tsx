@@ -272,7 +272,7 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
       )}
 
       {/* Scrollable grouped lists */}
-      <div className="flex-1 overflow-y-auto p-2 space-y-3">
+      <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-3">
         {isLoading ? (
           <div className="text-[10px] text-stone-600 text-center py-4 font-mono">{t.loadingLabel}</div>
         ) : (
