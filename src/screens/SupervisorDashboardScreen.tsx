@@ -669,10 +669,10 @@ export const SupervisorDashboardScreen: React.FC = () => {
       const reg = await navigator.serviceWorker.ready;
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
-        applicationServerKey: urlBase64ToUint8Array(vapid_public_key),
+        applicationServerKey: urlBase64ToUint8Array(vapid_public_key) as BufferSource,
       });
       const subJson: any = sub.toJSON();
-      await fetch(`${API_BASE}/api/push/subscribe`, {
+      const saveRes = await fetch(`${API_BASE}/api/push/subscribe`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -684,6 +684,16 @@ export const SupervisorDashboardScreen: React.FC = () => {
           auth: subJson.keys.auth,
         }),
       });
+      if (!saveRes.ok) {
+        // Real bug this caught live: the browser-side subscribe can succeed
+        // while the backend save fails (e.g. a schema mismatch) -- without
+        // this check the UI showed "success" while no row was ever saved,
+        // so no alert could ever actually reach this device. Roll back the
+        // browser subscription too, so state doesn't end up split between
+        // "subscribed in this browser" and "known to the server".
+        await sub.unsubscribe();
+        throw new Error("Server could not save this subscription. Please try again.");
+      }
       setPushEnabled(true);
       addToast(
         lang === "en" ? "Push Notifications On" : "ಪುಶ್ ಅಧಿಸೂಚನೆಗಳು ಆನ್",
