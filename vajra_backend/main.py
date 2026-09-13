@@ -68,6 +68,7 @@ from vajra_core import (
     is_request_stale,  # 5.4/C.22
     REQUEST_EXPIRY_HOURS,  # 5.4/C.22
     invalidate_profile_cache,
+    revoke_session_token,  # C.18a
     find_pocso_row,
     POCSO_GRANT_HOURS,
     create_pocso_request,
@@ -641,6 +642,29 @@ async def get_current_officer(
         "designation_id": profile.get("DesignationID"),
         "unit_id": profile.get("UnitID"),
     }
+
+
+@app.post("/api/auth/logout")
+async def logout(
+    request: Request,
+    location_context: str = Depends(security_firewall)
+):
+    """
+    C.18a: real server-side session revocation. Before this endpoint
+    existed, "Sign Out" (Login screen / UnifiedSidebar) only cleared the
+    browser's localStorage (C.18's own finding) -- the JWT itself stayed
+    fully valid server-side for the rest of its natural life, so a leaked
+    or stale copy (a second tab left open, a token captured in transit)
+    kept working after the officer thought they'd signed out. Gated by
+    security_firewall like every other endpoint (the token must still be
+    currently valid to sign ITSELF out -- an already-invalid token has
+    nothing meaningful left to revoke), so this only ever revokes the
+    caller's own current session, never anyone else's.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    jwt_token = auth_header.split(" ", 1)[1] if auth_header.startswith("Bearer ") else ""
+    revoked = revoke_session_token(jwt_token) if jwt_token else False
+    return {"status": "signed_out", "revoked": revoked}
 
 
 @app.get("/api/analytics/crime-trends")

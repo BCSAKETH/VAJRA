@@ -550,6 +550,74 @@ SESSION_TTL_SECONDS = 86400  # 24 hours — extended for hackathon demo sessions
 # production-scale rolling restarts.
 _active_session_jti: Dict[str, str] = {}
 
+# C.18a: real, explicit logout-triggered revocation -- distinct from
+# _active_session_jti above (which only rejects a token once a NEWER LOGIN
+# supersedes it). Before this, "Sign Out" only cleared localStorage
+# client-side (confirmed by C.18's own finding); the JWT itself stayed
+# fully valid server-side for the rest of its natural life if it leaked or
+# was reused from a second tab. Maps jti -> that token's own real exp
+# (epoch seconds), so entries self-prune once naturally expired instead of
+# growing the dict forever -- answers C.18a's own "where does this live /
+# does it grow forever" design question without needing a scheduled
+# cleanup job or a new console table. Same accepted in-memory-only
+# limitation as _active_session_jti (a restart clears it) -- consistent
+# with every other in-process cache in this codebase (_calibration_jobs,
+# _syndicate_cache), not a new class of risk.
+_revoked_jtis: Dict[str, int] = {}
+
+
+def _prune_revoked_jtis() -> None:
+    now = int(time.time())
+    expired = [j for j, exp in _revoked_jtis.items() if exp <= now]
+    for j in expired:
+        _revoked_jtis.pop(j, None)
+
+
+def revoke_session_token(token: str) -> bool:
+    """
+    C.18a: called from POST /api/auth/logout with the officer's OWN current
+    token -- adds its jti to the denylist so verify_session_token rejects it
+    on its very next use, anywhere it's still held (a second tab, a stale
+    background request), not just once a newer login happens to replace it.
+    Never raises: an already-expired/malformed token is simply a no-op
+    (nothing meaningful to revoke), same fail-soft posture as every other
+    session helper here. A pre-existing token with no jti at all can't be
+    individually revoked this way (see verify_session_token's own note on
+    why those are always allowed through) -- it ages out on its own 24h TTL.
+    """
+    if not SESSION_SECRET:
+        return False
+    try:
+        # verify_exp=False: an officer signing out from an ALREADY-expired
+        # session is a legitimate no-op, not an error -- we still want the
+        # decode to succeed so this returns a clean False, not raise.
+        payload = pyjwt.decode(token, SESSION_SECRET, algorithms=["HS256"], options={"verify_exp": False})
+    except pyjwt.PyJWTError as e:
+        logger.info(f"revoke_session_token: could not decode token to revoke (already invalid, no-op): {e}")
+        return False
+    jti, exp = payload.get("jti"), payload.get("exp")
+    if not jti:
+        return False
+    _prune_revoked_jtis()
+    _revoked_jtis[jti] = int(exp) if exp else int(time.time()) + SESSION_TTL_SECONDS
+    return True
+
+
+def is_session_revoked(token: str) -> bool:
+    """True specifically when a token is cryptographically valid and
+    unexpired but was explicitly revoked via logout -- lets security_firewall
+    give an honest, specific reason for this case too (mirrors
+    is_session_superseded's own reasoning for the "logged in elsewhere"
+    case). Never raises."""
+    if not SESSION_SECRET:
+        return False
+    try:
+        payload = pyjwt.decode(token, SESSION_SECRET, algorithms=["HS256"])
+    except pyjwt.PyJWTError:
+        return False
+    jti = payload.get("jti")
+    return bool(jti) and jti in _revoked_jtis
+
 
 def issue_session_token(kgid: str) -> str:
     """
@@ -580,7 +648,8 @@ def issue_session_token(kgid: str) -> str:
 def verify_session_token(token: str) -> Optional[str]:
     """Returns the KGID embedded in a valid, unexpired session token, or
     None -- also None if a newer login for this KGID has since superseded
-    this specific token (single-session enforcement)."""
+    this specific token (single-session enforcement), or if this exact
+    token was explicitly revoked via logout (C.18a)."""
     if not SESSION_SECRET:
         return None
     try:
@@ -596,6 +665,14 @@ def verify_session_token(token: str) -> Optional[str]:
         # current one was issued to a session that has since been replaced
         # by a newer login elsewhere.
         if jti is not None:
+            # C.18a: explicit logout revocation, checked BEFORE the
+            # supersede check -- a revoked token must never verify again
+            # regardless of whether it also happens to still be this
+            # officer's "current" jti (e.g. they signed out without logging
+            # in anywhere else afterward).
+            if jti in _revoked_jtis:
+                logger.info(f"Session token for KGID '{kgid}' rejected -- explicitly revoked (signed out).")
+                return None
             current = _active_session_jti.get(kgid)
             if current is not None and jti != current:
                 logger.info(f"Session token for KGID '{kgid}' rejected -- superseded by a newer login on another device.")
@@ -1104,11 +1181,19 @@ class VajraSecurityFirewall:
             kgid = verify_session_token(jwt_token)
 
             if not kgid:
-                # Single-session enforcement: give a specific, honest reason
-                # for this one distinguishable case instead of a generic
-                # "authentication failed" that reads like a real error when
-                # it's actually expected behavior (the officer logged in
-                # somewhere else, on purpose).
+                # Single-session enforcement / C.18a explicit revocation:
+                # give a specific, honest reason for these two
+                # distinguishable cases instead of a generic "authentication
+                # failed" that reads like a real error when it's actually
+                # expected behavior (the officer signed out, or logged in
+                # somewhere else, on purpose). Revoked checked first -- an
+                # explicit sign-out is the more specific, more likely
+                # real-world case of the two.
+                if is_session_revoked(jwt_token):
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="This session has been signed out. Please sign in again."
+                    )
                 if is_session_superseded(jwt_token):
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,

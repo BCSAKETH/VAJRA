@@ -2890,6 +2890,27 @@ token — real server-side revocation is a separate, tracked item.)"
 
 ## C.18a — Real server-side session revocation (JTI denylist) — NOT BUILT, tracked per C.18's own checklist
 
+### Build status (2026-09-13) — DONE. Answered this item's own 3 open design questions:
+denylist lives in-memory (`_revoked_jtis: Dict[jti, exp]` in `vajra_core.py`, same
+accepted restart-clears-it limitation as `_active_session_jti`/`_calibration_jobs`/
+`_syndicate_cache`) and self-prunes using each token's own `exp` claim rather than
+growing forever; performance is a single dict-membership check, same cost class as
+the existing `_active_session_jti` check it sits right next to in `verify_session_
+token`; scope is explicit self-logout only (a supervisor "kill another officer's
+session" control is a separate, un-requested feature, not built). New `POST /api/
+auth/logout` (main.py, security_firewall-gated so it only ever revokes the caller's
+own current token) calls `revoke_session_token`; `verify_session_token` rejects a
+revoked jti immediately, and `security_firewall` gives an honest, specific 401
+("This session has been signed out. Please sign in again.") for that exact case, not
+a generic error. Frontend's `setIsAuthenticated(false)` (AppContext.tsx) now fires
+this before clearing localStorage. Verified via a standalone reproduction of the full
+flow (fresh token verifies → revoke → same token rejected → a different officer's
+session unaffected → re-login issues a working new token → the OLD revoked token
+stays rejected even after that → a legacy no-jti token still passes through
+untouched → revoking an already-expired token doesn't raise) — all 8 assertions
+passed. TypeScript + Python both compile/parse clean. Live two-browser-session
+confirmation still needs a running backend.
+
 ### 1. Executive Summary
 The item C.18's checklist itself required to exist ("a separate backlog item... for
 real JTI-based server-side revocation") **did not actually exist anywhere in this

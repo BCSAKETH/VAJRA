@@ -429,6 +429,25 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     } else {
       setBadgeNumberState(null);
       setRoleTierState(null);
+      // C.18a: real server-side revocation, not just a client-side clear.
+      // Before this, "Sign Out" only removed the token from THIS browser --
+      // the JWT itself stayed fully valid server-side for the rest of its
+      // natural life, so a copy left in a second tab (or captured in
+      // transit) kept working after the officer thought they'd signed out.
+      // Fire-and-forget: the token is being discarded regardless of
+      // whether this call succeeds, and this path also runs on an
+      // already-expired/401'd token (nothing meaningful to revoke there
+      // either way) -- never blocks the actual sign-out on a network
+      // round trip.
+      const outgoingToken = localStorage.getItem("vajra_token");
+      if (outgoingToken) {
+        fetch(`${API_BASE}/api/auth/logout`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${outgoingToken}` },
+        }).catch(() => {
+          /* best-effort -- the token is being discarded client-side either way */
+        });
+      }
       localStorage.removeItem("vajra_token");
       localStorage.removeItem("vajra_role_tier");
       setCurrentScreenState("login");
