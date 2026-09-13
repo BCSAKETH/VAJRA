@@ -5985,6 +5985,13 @@ for hub in classified_hubs:
 
 ## F.10 — Auto-Notify Investigation on New Financial Pattern
 
+### Build status (2026-09-13) — DONE.
+`detect_financial_ring` (agent_loop.py) now calls `_route_match_to_investigations`
+(main.py, imported lazily to avoid a circular import) the moment a node crosses the
+existing "collection hub" classification threshold (in-degree >= 3), reusing the exact
+same per-entity cooldown discipline as §5.3's `_serial_match_last_alerted` via its own
+parallel `_mule_pattern_last_alerted` dict/`_MULE_PATTERN_COOLDOWN_SECONDS` (6h).
+
 ### 1. Executive Summary
 Extends the already-planned §5.3/§9.8 auto-flag-into-investigations feature to
 financial patterns, not just new case matches.
@@ -6668,6 +6675,14 @@ onto MO-match and risk-score response types specifically, not a new feature.
 ---
 
 ## F.27 — Case Board Auto-Pins Every New Analysis
+
+### Build status (2026-09-13) — DONE, now that §9.4's CaseBoard exists.
+`BOARD_TYPES` (CaseBoard.tsx) extended with `financial_loop` (F.7 round-trip loops,
+disambiguated from the existing generic `financial` entry), `syndicate` (F.11 —
+disambiguated from `cluster_crime_patterns`'s MO clusters, which share the same
+responseType, by requiring `groups[0].threat_score` -- only ever set on a real Louvain
+syndicate run), and `forecast_accuracy` (F.21 -- disambiguated from a plain forecast by
+requiring `forecast[0].accuracy_track_record`).
 
 ### 1. Executive Summary
 Every idea in this Part — a new network pull, a flagged round-trip loop, an MO match —

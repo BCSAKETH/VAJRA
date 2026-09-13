@@ -151,6 +151,18 @@ def _normalize_kanglish(text: str) -> str:
     return out if hit else text
 
 
+# F.10: same in-memory per-entity cooldown discipline as main.py's
+# _serial_match_last_alerted (§5.3) -- lost on restart, an accepted
+# limitation already applied elsewhere in this deployment (_mo_sweep_cache,
+# _syndicate_cache, _active_session_jti). Kept SEPARATE from that dict (a
+# different key namespace: account/holder names, not accused names) so a
+# name that happens to collide between the two signals doesn't cross-
+# suppress the other's alert.
+_mule_pattern_last_alerted: Dict[str, float] = {}
+_MULE_PATTERN_COOLDOWN_SECONDS = 6 * 3600  # 6h -- matches _SERIAL_MATCH_COOLDOWN_SECONDS (main.py)
+_MULE_IN_DEGREE_THRESHOLD = 3  # matches the existing "collection hub" classification threshold just above
+
+
 def _infer_requested_layers(query: str) -> List[str]:
     """
     F.1/F.33: which link-type layer(s) a plain-language query implies should
@@ -4688,6 +4700,38 @@ class VajraAgentLoop(CognitiveBrainMixin):
                                 "Also a known repeat offender (per the scheduled repeat-offender analysis) -- "
                                 "combined signal, review priority raised."
                             )
+
+            # F.10: extends §5.3/§9.8's already-specified auto-flag-into-
+            # investigations mechanism to a newly-classified mule/collection
+            # hub, reusing `_route_match_to_investigations` VERBATIM (not a
+            # second implementation) -- same access model, same "post into
+            # the thread if the name is already under active investigation"
+            # behavior as a serial-MO case match. Loophole L1: same per-
+            # entity cooldown discipline as §5.3's own dedupe
+            # (_serial_match_last_alerted), just keyed on a separate dict
+            # (_mule_pattern_last_alerted) so a repeated detection on the
+            # same account within the window never spams the thread.
+            try:
+                from main import _route_match_to_investigations
+                now = time.time()
+                for node in nodes:
+                    if node.get("role") != "collection hub":
+                        continue
+                    indeg = len(senders_of.get(node["id"], set()))
+                    if indeg < _MULE_IN_DEGREE_THRESHOLD:
+                        continue
+                    last_alerted = _mule_pattern_last_alerted.get(node["id"])
+                    if last_alerted and (now - last_alerted) < _MULE_PATTERN_COOLDOWN_SECONDS:
+                        continue
+                    _mule_pattern_last_alerted[node["id"]] = now
+                    _route_match_to_investigations(
+                        node["id"],
+                        f"New financial mule pattern detected: '{node['id']}' shows {indeg} distinct incoming "
+                        f"senders (collection hub) in the {seed} financial trace."
+                        + (f" {node['cross_flag']}" if node.get("cross_flag") else "")
+                    )
+            except Exception as _f10ex:
+                logger.warning(f"F.10 auto-notify-investigation failed (non-fatal): {_f10ex}")
 
             edges = [{"source": s, "target": rc} for s, rc in edges_set]
 
