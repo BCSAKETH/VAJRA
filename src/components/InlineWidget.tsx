@@ -319,6 +319,10 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
   // no other useState calls to piggyback the ordering on).
   const [chartExplanation, setChartExplanation] = useState<string | null>(null);
   const [isExplainingChart, setIsExplainingChart] = useState(false);
+  // F.14: Hotspot Time-Lapse -- null means "All" (the combined view, same as
+  // before this item). Set to the latest real month once map data with more
+  // than one month arrives (see the effectiveType === "map" render below).
+  const [selectedHotspotMonth, setSelectedHotspotMonth] = useState<string | null>(null);
   // F.31: single-chart PNG export -- ref wraps the whole card so the export
   // handler can find whichever chart's real <svg> is actually rendered
   // inside it, without each chart type needing its own separate ref.
@@ -621,13 +625,28 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
           // are all real fields cluster_hotspots (agent_loop.py) already
           // attaches -- previously discarded here by this narrower type,
           // same pattern C.6 already fixed on the standalone Spatial screen.
-          const hotspots: {
+          type Hotspot = {
             lat: number; lng: number; label?: string;
             point_count?: number; dominant_crime?: string | null; dominant_station?: string | null;
             case_preview?: string[]; total_case_count?: number;
-          }[] = (safeEffectiveData.hotspots || []).filter(
-            (h: any) => typeof h?.lat === "number" && typeof h?.lng === "number"
-          );
+          };
+          // F.14: Hotspot Time-Lapse -- real month-bucketed data already sent
+          // by query_hotspots (agent_loop.py), no extra fetch. Defaults to
+          // the most recent month when more than one is available (derived,
+          // not a render-time setState, to avoid a render loop); "All"
+          // (selectedHotspotMonth === "__all__") shows the combined view.
+          const availableMonths: string[] = Array.isArray(safeEffectiveData.available_months) ? safeEffectiveData.available_months : [];
+          const hotspotsByMonth: Record<string, Hotspot[]> = safeEffectiveData.hotspots_by_month || {};
+          const effectiveMonth = selectedHotspotMonth ?? (availableMonths.length > 1 ? availableMonths[availableMonths.length - 1] : "__all__");
+          const hotspots: Hotspot[] = (
+            effectiveMonth !== "__all__" && hotspotsByMonth[effectiveMonth]
+              ? hotspotsByMonth[effectiveMonth]
+              : (safeEffectiveData.hotspots || [])
+          ).filter((h: any) => typeof h?.lat === "number" && typeof h?.lng === "number");
+          const monthLabel = (m: string) => {
+            const [y, mo] = m.split("-");
+            return new Date(Number(y), Number(mo) - 1, 1).toLocaleString("en-US", { month: "short", year: "numeric" });
+          };
           if (hotspots.length === 0) {
             return (
               <div className="bg-stone-950/65 rounded-lg p-3 font-mono text-[11px] text-stone-400 border border-stone-900">
@@ -651,6 +670,25 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                   <span className="text-stone-500 font-normal">({lang === "en" ? `last ${safeEffectiveData.trend.window_days}d vs prior` : `ಕಳೆದ ${safeEffectiveData.trend.window_days} ದಿನ`})</span>
                 </div>
               ) : null}
+              {availableMonths.length > 1 && (
+                <div className="flex items-center gap-2 bg-stone-950/50 border border-stone-900 rounded-lg px-2.5 py-1.5">
+                  <span className="text-[10px] font-mono font-bold text-[#C79A4E] w-[68px] shrink-0">
+                    {effectiveMonth === "__all__" ? (lang === "en" ? "All months" : "ಎಲ್ಲಾ ತಿಂಗಳು") : monthLabel(effectiveMonth)}
+                  </span>
+                  <input
+                    type="range" min={0} max={availableMonths.length - 1} step={1}
+                    value={effectiveMonth === "__all__" ? availableMonths.length - 1 : availableMonths.indexOf(effectiveMonth)}
+                    onChange={(e) => setSelectedHotspotMonth(availableMonths[parseInt(e.target.value)])}
+                    className="flex-1 h-1 bg-stone-800 rounded-lg appearance-none cursor-pointer accent-[#C79A4E]"
+                  />
+                  <button
+                    onClick={() => setSelectedHotspotMonth("__all__")}
+                    className={`text-[9.5px] font-bold font-mono uppercase shrink-0 px-1.5 py-0.5 rounded ${effectiveMonth === "__all__" ? "text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"}`}
+                  >
+                    {lang === "en" ? "All" : "ಎಲ್ಲಾ"}
+                  </button>
+                </div>
+              )}
               <div className="rounded-lg overflow-hidden border border-stone-800 h-[280px] relative z-0">
                 <MapContainer
                   center={[hotspots[0].lat, hotspots[0].lng]}

@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { MapContainer, TileLayer, CircleMarker, Popup, Circle, Polygon, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, CircleMarker, Popup, Circle, Polygon, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
 import "leaflet.heat";
 import { MapPin, Sliders, AlertTriangle, Flame } from "lucide-react";
@@ -61,6 +61,35 @@ const AutoFitBounds: React.FC<{ points: HotspotPoint[] }> = ({ points }) => {
   return null;
 };
 
+// F.17: Side-by-Side District/Time Comparison -- Loophole L1: two maps at
+// different zoom/pan states make a visual comparison meaningless, so panning
+// or zooming EITHER map (in compare mode) must move both. This lifts the
+// viewport into shared state (owned by the caller, DistrictDashboardScreen)
+// and keeps this one map instance in sync with it -- both panel instances
+// read/write the SAME shared state, so they can never drift apart. Guarded
+// against feedback loops: only calls map.setView when the incoming shared
+// viewport actually differs from this map's own current view.
+const ViewportSync: React.FC<{
+  shared: { center: [number, number]; zoom: number };
+  onChange: (v: { center: [number, number]; zoom: number }) => void;
+}> = ({ shared, onChange }) => {
+  const map = useMapEvents({
+    moveend: () => {
+      const c = map.getCenter();
+      onChange({ center: [c.lat, c.lng], zoom: map.getZoom() });
+    },
+  });
+  useEffect(() => {
+    const cur = map.getCenter();
+    const curZoom = map.getZoom();
+    if (Math.abs(cur.lat - shared.center[0]) > 1e-5 || Math.abs(cur.lng - shared.center[1]) > 1e-5 || curZoom !== shared.zoom) {
+      map.setView(shared.center, shared.zoom, { animate: false });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shared.center[0], shared.center[1], shared.zoom]);
+  return null;
+};
+
 const DAY_LABELS: { value: number; en: string; kn: string }[] = [
   { value: 0, en: "Mon", kn: "ಸೋಮ" }, { value: 1, en: "Tue", kn: "ಮಂಗಳ" }, { value: 2, en: "Wed", kn: "ಬುಧ" },
   { value: 3, en: "Thu", kn: "ಗುರು" }, { value: 4, en: "Fri", kn: "ಶುಕ್ರ" }, { value: 5, en: "Sat", kn: "ಶನಿ" }, { value: 6, en: "Sun", kn: "ಭಾನು" },
@@ -70,7 +99,17 @@ const DAY_LABELS: { value: number; en: string; kn: string }[] = [
  * the standalone Spatial Analyst screen), scoped to ONE district's own
  * cases -- so a district commander gets the same patrol-planning tool
  * without navigating away from the district they're already looking at. */
-export const DistrictSpatialAnalystPanel: React.FC<{ district: string }> = ({ district }) => {
+interface DistrictSpatialAnalystPanelProps {
+  district: string;
+  // F.17: when provided (compare mode), this map's pan/zoom is a controlled
+  // mirror of the shared viewport instead of auto-fitting its own bounds --
+  // undefined/omitted means "standalone" (existing single-map behavior,
+  // completely unchanged).
+  sharedViewport?: { center: [number, number]; zoom: number };
+  onViewportChange?: (v: { center: [number, number]; zoom: number }) => void;
+}
+
+export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelProps> = ({ district, sharedViewport, onViewportChange }) => {
   const [points, setPoints] = useState<HotspotPoint[]>([]);
   const [hexbins, setHexbins] = useState<HexBin[]>([]);
   const [viewMode, setViewMode] = useState<"heat" | "hex">("heat");
@@ -79,6 +118,14 @@ export const DistrictSpatialAnalystPanel: React.FC<{ district: string }> = ({ di
   const [dayOfWeek, setDayOfWeek] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  // F.14: Hotspot Time-Lapse -- real month-bucketed hotspot data from the
+  // SAME /api/cases/spatial-hotspots fetch (query_hotspots, agent_loop.py),
+  // no extra request. `null` selectedMonth means "All" (the combined view,
+  // same as before this item). Defaults to the most recent real month once
+  // data with more than one month arrives.
+  const [hotspotsByMonth, setHotspotsByMonth] = useState<Record<string, HotspotPoint[]>>({});
+  const [availableMonths, setAvailableMonths] = useState<string[]>([]);
+  const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -99,6 +146,10 @@ export const DistrictSpatialAnalystPanel: React.FC<{ district: string }> = ({ di
         const data = await response.json();
         setPoints(data?.hotspots || []);
         setHexbins(data?.hexbins || []);
+        const months: string[] = data?.available_months || [];
+        setHotspotsByMonth(data?.hotspots_by_month || {});
+        setAvailableMonths(months);
+        setSelectedMonth(months.length > 1 ? months[months.length - 1] : null);
       } catch (err: any) {
         if (err?.name === "AbortError") return;
         setErrorMsg(err.message || "Geospatial engine unreachable.");
@@ -108,6 +159,14 @@ export const DistrictSpatialAnalystPanel: React.FC<{ district: string }> = ({ di
     }, 300);
     return () => { clearTimeout(handle); controller.abort(); };
   }, [district, eps, minPts, dayOfWeek]);
+
+  // F.14: when a specific month is scrubbed to, show that month's own
+  // clustered points; "All" (selectedMonth === null) shows the combined view.
+  const displayPoints = selectedMonth && hotspotsByMonth[selectedMonth] ? hotspotsByMonth[selectedMonth] : points;
+  const monthLabel = (m: string) => {
+    const [y, mo] = m.split("-");
+    return new Date(Number(y), Number(mo) - 1, 1).toLocaleString("en-US", { month: "short", year: "numeric" });
+  };
 
   return (
     <div className="flex flex-col lg:flex-row gap-4">
@@ -140,15 +199,46 @@ export const DistrictSpatialAnalystPanel: React.FC<{ district: string }> = ({ di
             ))}
           </div>
         </div>
+        {/* F.14: Hotspot Time-Lapse -- only shown when real data spans more
+            than one month; scrubbing moves selectedMonth, which swaps the
+            rendered point set client-side (all data already fetched, no
+            extra request per scrub). */}
+        {availableMonths.length > 1 && (
+          <div className="space-y-1.5 border-t border-stone-850 pt-3">
+            <label className="flex justify-between text-[10.5px] font-bold text-stone-400 font-mono">
+              <span>Time-Lapse:</span>
+              <span className="text-[#C79A4E]">{selectedMonth ? monthLabel(selectedMonth) : "All"}</span>
+            </label>
+            <input
+              type="range" min={0} max={availableMonths.length - 1} step={1}
+              value={selectedMonth ? availableMonths.indexOf(selectedMonth) : availableMonths.length - 1}
+              onChange={(e) => setSelectedMonth(availableMonths[parseInt(e.target.value)])}
+              className="w-full h-1 bg-stone-800 rounded-lg appearance-none cursor-pointer accent-[#C79A4E]"
+            />
+            <div className="flex justify-between text-[9px] font-mono text-stone-600">
+              <span>{monthLabel(availableMonths[0])}</span>
+              <span>{monthLabel(availableMonths[availableMonths.length - 1])}</span>
+            </div>
+            <button onClick={() => setSelectedMonth(null)} className={`w-full py-1 rounded-md text-[9.5px] font-bold font-mono uppercase transition-colors cursor-pointer ${selectedMonth === null ? "bg-[#C79A4E]/15 border border-[#C79A4E]/40 text-[#C79A4E]" : "bg-stone-900 border border-stone-800 text-stone-500 hover:text-stone-300"}`}>
+              Show All Months
+            </button>
+          </div>
+        )}
         <div className="border-t border-stone-850 pt-3 space-y-2 font-mono text-[10px] text-stone-450">
-          <div className="flex justify-between"><span>Incidents:</span><span className="font-bold text-stone-200">{errorMsg ? "0" : points.reduce((s, p) => s + (p.point_count || 1), 0)}</span></div>
-          <div className="flex justify-between"><span>Clusters:</span><span className="font-bold text-amber-500">{errorMsg ? "0" : points.length}</span></div>
+          <div className="flex justify-between"><span>Incidents:</span><span className="font-bold text-stone-200">{errorMsg ? "0" : displayPoints.reduce((s, p) => s + (p.point_count || 1), 0)}</span></div>
+          <div className="flex justify-between"><span>Clusters:</span><span className="font-bold text-amber-500">{errorMsg ? "0" : displayPoints.length}</span></div>
         </div>
         <div className="border-t border-stone-850 pt-3 space-y-1.5">
           <div className="flex items-center gap-1.5 text-[9.5px] font-mono font-bold text-stone-400 uppercase tracking-wider">
-            <Flame className="w-3 h-3 text-[#C79A4E]" /><span>Density</span>
+            <Flame className="w-3 h-3 text-[#C79A4E]" /><span>Relative Density</span>
           </div>
           <div className="h-1.5 w-full rounded-full" style={{ background: "linear-gradient(90deg, #2f8f4e, #d9c441, #e08a2e, #d9403a)" }} />
+          {/* F.17 Loophole L2: this scale is per-map relative density, not an
+              absolute shared number -- a small district's moderate density
+              can render at the same visual intensity as a large district's
+              genuinely higher one. Stated explicitly so a side-by-side
+              comparison is never misread as an absolute comparison. */}
+          <p className="text-[9px] font-mono text-stone-600 leading-snug">Scale is relative to this map's own data, not an absolute cross-district value.</p>
         </div>
       </div>
 
@@ -161,13 +251,13 @@ export const DistrictSpatialAnalystPanel: React.FC<{ district: string }> = ({ di
           </div>
         ) : isLoading ? (
           <div className="absolute inset-0 flex items-center justify-center bg-stone-950/40 text-stone-400 text-xs font-mono z-10">Loading spatial engine...</div>
-        ) : points.length === 0 ? (
+        ) : displayPoints.length === 0 ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-stone-950/40 text-center p-4 z-10">
             <MapPin className="w-5 h-5 text-stone-600" />
             <p className="text-stone-400 text-xs font-mono font-bold">No hotspots match these filters.</p>
           </div>
         ) : (
-          <MapContainer center={[points[0].lat, points[0].lng]} zoom={11} style={{ height: "100%", width: "100%" }}>
+          <MapContainer center={[displayPoints[0].lat, displayPoints[0].lng]} zoom={11} style={{ height: "100%", width: "100%" }}>
             {/* Real bug found live: CartoDB's dark_all tiles now show an
                 "API KEY REQUIRED" watermark over the map (Carto restricted
                 free anonymous access) -- every other map in this app
@@ -175,7 +265,15 @@ export const DistrictSpatialAnalystPanel: React.FC<{ district: string }> = ({ di
                 already uses plain OpenStreetMap tiles with no key needed;
                 matching that proven-working source here instead. */}
             <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
-            <AutoFitBounds points={points} />
+            {/* F.17: compare mode (sharedViewport provided) locks pan/zoom to
+                the shared state instead of auto-fitting this map's own
+                bounds -- auto-fit-per-side would immediately desync two
+                "synchronized" maps the moment their point sets differ. */}
+            {sharedViewport && onViewportChange ? (
+              <ViewportSync shared={sharedViewport} onChange={onViewportChange} />
+            ) : (
+              <AutoFitBounds points={displayPoints} />
+            )}
             {viewMode === "hex" && hexbins.length > 0 && (() => {
               const maxCount = Math.max(...hexbins.map((h) => h.count), 1);
               return hexbins.map((h) => (
@@ -184,8 +282,8 @@ export const DistrictSpatialAnalystPanel: React.FC<{ district: string }> = ({ di
                 </Polygon>
               ));
             })()}
-            {viewMode === "heat" && <HeatLayer points={points} />}
-            {viewMode === "heat" && points.map((point, i) => (
+            {viewMode === "heat" && <HeatLayer points={displayPoints} />}
+            {viewMode === "heat" && displayPoints.map((point, i) => (
               <React.Fragment key={i}>
                 <Circle center={[point.lat, point.lng]} radius={eps * 111300} pathOptions={{ fillColor: "#C79A4E", color: "rgba(199,154,78,0.3)", weight: 1, fillOpacity: 0.08 }} />
                 <CircleMarker center={[point.lat, point.lng]} radius={6} pathOptions={{ fillColor: "#C79A4E", color: "#211F1D", weight: 1.5, fillOpacity: 0.95 }}>

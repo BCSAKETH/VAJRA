@@ -23,6 +23,7 @@ import os
 import re
 import json
 import uuid
+import hashlib
 import logging
 import time
 import threading
@@ -1875,6 +1876,177 @@ def _fetch_all_syndicate_rows(select_clause: str, table: str, key_col: str = "RO
     return rows
 
 
+# ---- F.11: Syndicate Threat-Score Ranking ----
+# NEW helpers (none of these existed before this pass -- confirmed by grep,
+# same discipline as the L2 cross-check note above). `_get_case_severity` is
+# NOT a fabricated 0-10 scale invented for this feature -- it reuses the one
+# real severity signal already in this codebase, GravityOffenceID, which
+# get_offender_risk's Section 187 BNSS remand threshold already treats as
+# "severe" at >= 4 (agent_loop.py) and _compute_mo_vector already clamps at
+# a max of 10 (`min(gravity_id, 10) / 10.0`). The /10 normalization below is
+# consistent with that existing clamp, not independently confirmed against a
+# live `SELECT MIN(GravityOffenceID), MAX(GravityOffenceID) FROM CaseMaster`
+# in this session (no live DB credentials available here) -- flagged as a
+# manual follow-up in the build report, same caveat as that existing usage.
+def _get_case_severity(case_master_id: Any) -> float:
+    """Real signal, not invented: same GravityOffenceID already used for the
+    Section 187 BNSS remand deadline and the MO vector's severity dimension."""
+    if not catalyst_app or not case_master_id:
+        return 0.0
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT GravityOffenceID FROM CaseMaster WHERE CaseMasterID = {int(case_master_id)} LIMIT 1")
+        gravity = res[0].get("CaseMaster", {}).get("GravityOffenceID") if res else None
+        return float(gravity) if gravity is not None else 0.0
+    except Exception as ex:
+        logging.getLogger("vajra_core").warning(f"_get_case_severity lookup failed for {case_master_id}: {ex}")
+        return 0.0
+
+
+def _cases_for(accused_name: str) -> List[int]:
+    """Real query -- CaseMasterIDs for an accused, same Accused lookup
+    pattern used throughout this file."""
+    if not catalyst_app or not accused_name:
+        return []
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT CaseMasterID FROM Accused WHERE AccusedName = '{escape_zcql_literal(accused_name)}'")
+        return [int(r.get("Accused", {}).get("CaseMasterID")) for r in res if r.get("Accused", {}).get("CaseMasterID")]
+    except Exception as ex:
+        logging.getLogger("vajra_core").warning(f"_cases_for lookup failed for {accused_name}: {ex}")
+        return []
+
+
+def _financial_volume_for(accused_name: str) -> float:
+    """Real query against FinancialTransaction (sender_ref/receiver_ref/amount
+    -- confirmed real columns, docs/SCHEMA.md), not invented."""
+    if not catalyst_app or not accused_name:
+        return 0.0
+    try:
+        esc = escape_zcql_literal(accused_name)
+        res = catalyst_app.zql().execute_query(
+            f"SELECT amount FROM FinancialTransaction WHERE sender_ref = '{esc}' OR receiver_ref = '{esc}'")
+        return sum(float(r.get("FinancialTransaction", {}).get("amount") or 0) for r in res)
+    except Exception as ex:
+        logging.getLogger("vajra_core").warning(f"_financial_volume_for lookup failed for {accused_name}: {ex}")
+        return 0.0
+
+
+# ---- F.12: Cross-District Syndicate Flag ----
+# Shared helper -- the SAME 3-hop resolution agent_loop.py's get_mo_profile
+# cross-jurisdiction chip already used inline (Accused.CaseMasterID ->
+# CaseMaster.PoliceStationID -> Unit.DistrictID -> District.DistrictName;
+# CaseMaster has NO DistrictID column of its own, confirmed by the existing
+# comment at agent_loop.py's get_offender_risk block). Lives here (not
+# agent_loop.py) so both that chip and this module's syndicate clustering can
+# import the ONE implementation instead of keeping two copies that could
+# drift apart -- agent_loop.py already imports several helpers from this
+# module (_compute_mo_vector, escape_zcql_literal, ...), same pattern.
+def _district_for_accused(accused_name: str) -> List[str]:
+    """Real 3-hop district resolution for one accused name. Returns the
+    distinct real district names their cases are registered under."""
+    if not catalyst_app or not accused_name:
+        return []
+    try:
+        esc = escape_zcql_literal(accused_name)
+        all_acc = catalyst_app.zql().execute_query(
+            f"SELECT CaseMasterID FROM Accused WHERE AccusedName LIKE '*{esc}*' LIMIT 100")
+        cm_ids = list({a.get("Accused", {}).get("CaseMasterID") for a in all_acc if a.get("Accused", {}).get("CaseMasterID")})
+        if not cm_ids:
+            return []
+        cm_rows = catalyst_app.zql().execute_query(
+            f"SELECT PoliceStationID FROM CaseMaster WHERE CaseMasterID IN ({','.join(str(c) for c in cm_ids[:100])})")
+        st_ids = list({r.get("CaseMaster", {}).get("PoliceStationID") for r in cm_rows if r.get("CaseMaster", {}).get("PoliceStationID")})
+        if not st_ids:
+            return []
+        u_rows = catalyst_app.zql().execute_query(f"SELECT DistrictID FROM Unit WHERE UnitID IN ({','.join(str(s) for s in st_ids)})")
+        dist_ids = list({u.get("Unit", {}).get("DistrictID") for u in u_rows if u.get("Unit", {}).get("DistrictID")})
+        if not dist_ids:
+            return []
+        d_rows = catalyst_app.zql().execute_query(f"SELECT DistrictName FROM District WHERE DistrictID IN ({','.join(str(d) for d in dist_ids)})")
+        return [d.get("District", {}).get("DistrictName") for d in d_rows if d.get("District", {}).get("DistrictName")]
+    except Exception as ex:
+        logging.getLogger("vajra_core").warning(f"_district_for_accused lookup failed for {accused_name}: {ex}")
+        return []
+
+
+# ---- F.13: "Resembles a Past Busted Syndicate" ----
+# L2: similarity defined concretely as Jaccard overlap of member accused
+# names between a newly-computed cluster and each stored past one -- nothing
+# vaguer. L1: needs real persisted history of past detection runs, which is
+# genuinely NEW state this codebase has never stored before -- requires a new
+# `SyndicateDetectionHistory` Console table (cluster_id VARCHAR, members_json
+# VARCHAR/TEXT, threat_score DOUBLE, cross_district INTEGER (0/1),
+# computed_at VARCHAR ISO timestamp). Until that table exists in the Console,
+# _load_past_syndicate_history/_save_syndicate_run_to_history below fail soft
+# (caught exception, empty list / no-op) -- this feature is wired end-to-end
+# and safe to ship, but produces no real "resembles" matches until the table
+# is created and at least one run has been saved to it.
+def _find_resembling_past_syndicate(new_cluster: Dict[str, Any], past_syndicates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    best_match, best_score = None, 0.0
+    new_members = set(m.lower() for m in new_cluster.get("members", []))
+    if not new_members:
+        return None
+    for past in past_syndicates:
+        past_members = set(m.lower() for m in past.get("members", []))
+        if not past_members:
+            continue
+        overlap = len(new_members & past_members) / max(1, len(new_members | past_members))
+        if overlap > best_score:
+            best_score, best_match = overlap, past
+    if best_match and best_score >= 0.3:  # threshold: at least 30% member overlap
+        return {"resembles": best_match.get("cluster_id"), "overlap_pct": round(best_score * 100, 1)}
+    return None
+
+
+def _load_past_syndicate_history(limit: int = 200) -> List[Dict[str, Any]]:
+    """Reads prior `_compute_syndicate_clusters` runs from SyndicateDetectionHistory.
+    Fails soft (empty list) if the Console table doesn't exist yet -- this
+    is a genuinely new table this session cannot create itself (Console-only
+    step, flagged in the build report)."""
+    if not catalyst_app:
+        return []
+    try:
+        rows = catalyst_app.zql().execute_query(
+            f"SELECT cluster_id, members_json, threat_score FROM SyndicateDetectionHistory "
+            f"ORDER BY computed_at DESC LIMIT {int(limit)}")
+        out = []
+        for r in rows:
+            d = r.get("SyndicateDetectionHistory", {})
+            try:
+                members = json.loads(d.get("members_json") or "[]")
+            except Exception:
+                members = []
+            out.append({"cluster_id": d.get("cluster_id"), "members": members, "threat_score": d.get("threat_score")})
+        return out
+    except Exception as ex:
+        logging.getLogger("vajra_core").warning(f"SyndicateDetectionHistory not available yet (needs Console table): {ex}")
+        return []
+
+
+def _save_syndicate_run_to_history(clusters: List[Dict[str, Any]]) -> None:
+    """Persists this run's clusters for future F.13 comparisons. Fails soft
+    (logged warning, no exception raised) if the table doesn't exist yet."""
+    if not catalyst_app:
+        return
+    now_iso = datetime.utcnow().isoformat()
+    for c in clusters:
+        members = c.get("members", [])
+        cluster_id = hashlib.md5(",".join(sorted(m.lower() for m in members)).encode("utf-8")).hexdigest()[:16]
+        c["cluster_id"] = cluster_id
+        try:
+            zcql_insert_row("SyndicateDetectionHistory", {
+                "cluster_id": cluster_id,
+                "members_json": json.dumps(members),
+                "threat_score": c.get("threat_score", 0.0),
+                "cross_district": 1 if c.get("cross_district") else 0,
+                "computed_at": now_iso,
+            })
+        except Exception as ex:
+            logging.getLogger("vajra_core").warning(f"Could not save syndicate run to history (needs Console table SyndicateDetectionHistory): {ex}")
+            break  # one failure means the table is missing -- don't retry per-cluster
+
+
 def _compute_syndicate_clusters() -> List[Dict[str, Any]]:
     """Background job (Loophole L3) -- never called inline from a live chat
     turn; the ~14,000-row Accused table alone needs ~47 paginated calls,
@@ -1966,7 +2138,54 @@ def _compute_syndicate_clusters() -> List[Dict[str, Any]]:
             "shared_case_count": sum(d.get("shared_case_count", 0) for _, _, d in subgraph_edges if d.get("source") == "shared_case"),
             "synthetic_data_disclosure": has_synthetic_edge,  # Loophole L2 -- checked by frontend before render
         })
-    results.sort(key=lambda g: (len(g["members"]), g["shared_case_count"]), reverse=True)
+
+    # F.11: Syndicate Threat-Score Ranking. Weighted: 50% avg case severity,
+    # 30% total financial volume, 20% member count (L1: severity weighted
+    # heaviest so a large-but-low-severity group can't outrank a small,
+    # genuinely dangerous one). Every component shown alongside the combined
+    # score -- never one opaque number a supervisor can't sanity-check.
+    for cluster in results:
+        member_case_severities = [
+            _get_case_severity(c) for m in cluster["members"] for c in _cases_for(m)
+        ]
+        avg_severity = sum(member_case_severities) / max(1, len(member_case_severities))
+        total_financial_volume = sum(_financial_volume_for(m) for m in cluster["members"])
+        cluster["threat_score"] = round(
+            0.5 * (avg_severity / 10) + 0.3 * min(1.0, total_financial_volume / 1_000_000) + 0.2 * min(1.0, len(cluster["members"]) / 20),
+            3
+        )
+        cluster["threat_components"] = {
+            "avg_case_severity": round(avg_severity, 2),
+            "total_financial_volume": total_financial_volume,
+            "member_count": len(cluster["members"]),
+        }
+
+        # F.12: Cross-District Syndicate Flag. The flag + district-name list
+        # is safe to show statewide (L1); drilling into actual case/member
+        # detail for a cross-district cluster still has to pass through the
+        # normal district-access-control gate wherever that detail is
+        # rendered -- not bypassed here, this only computes the summary flag.
+        member_districts: set = set()
+        for m in cluster["members"]:
+            member_districts.update(_district_for_accused(m))
+        cluster["cross_district"] = len(member_districts) > 1
+        cluster["districts_involved"] = sorted(member_districts) if cluster["cross_district"] else []
+
+    results.sort(key=lambda c: c.get("threat_score", 0.0), reverse=True)
+
+    # F.13: "Resembles a Past Busted Syndicate" -- compare each of THIS run's
+    # clusters against previously-stored runs (loaded before this run's own
+    # clusters are saved below, so a cluster is never compared to itself).
+    # Fails soft to no matches if SyndicateDetectionHistory doesn't exist yet
+    # (Console table, not creatable by this session -- see _load_past_
+    # syndicate_history's own docstring).
+    past_syndicates = _load_past_syndicate_history()
+    if past_syndicates:
+        for cluster in results:
+            resemblance = _find_resembling_past_syndicate(cluster, past_syndicates)
+            if resemblance:
+                cluster["resembles_past_syndicate"] = resemblance
+    _save_syndicate_run_to_history(results)
     return results
 
 
@@ -1984,6 +2203,67 @@ def run_syndicate_detection_job() -> Dict[str, Any]:
         _syndicate_cache["status"] = "error"
         _syndicate_cache["error"] = str(e)
     return _syndicate_cache
+
+
+# ---- F.25: Scheduled Full-Dataset MO Sweep ----
+# Same in-memory cache pattern as _syndicate_cache above (a server restart
+# loses the "known clusters" set, same honest limitation as that precedent).
+# `known_signatures` is internal state (which clusters were already surfaced
+# on a prior sweep, Loophole L2) -- never returned to a caller directly, only
+# via get_cached_mo_sweep() which strips it out.
+_mo_sweep_cache: Dict[str, Any] = {"status": "never_run", "result": None, "computed_at": None, "known_signatures": set()}
+
+
+def get_cached_mo_sweep() -> Dict[str, Any]:
+    """Read-only accessor -- main.py's admin status endpoint calls this,
+    never touches _mo_sweep_cache directly."""
+    return {k: v for k, v in _mo_sweep_cache.items() if k != "known_signatures"}
+
+
+def _mo_cluster_signature(cluster: Dict[str, Any]) -> str:
+    """Stable identity for one MO cluster -- its exact member set. Used only
+    to tell 'the same cluster as last sweep' apart from a genuinely new one
+    (Loophole L2), not shown to any caller."""
+    names = sorted({str(m.get("suspect_name") or m.get("fir_id") or "?") for m in cluster.get("members", [])})
+    return hashlib.md5(",".join(names).encode("utf-8")).hexdigest()
+
+
+def run_mo_sweep_job() -> Dict[str, Any]:
+    """Background job (Loophole L1: real compute, never run inline on a chat
+    turn -- same run_in_threadpool pattern as model-calibration/syndicate-
+    detection). Builds a FRESH MOBehavioralProfiler (not the one cached on
+    the live agent_loop instance for per-request MO lookups) so a sweep
+    reflects the latest data, then runs the exact SAME real HDBSCAN
+    clustering (`cluster_mo_signatures`) agent_loop.py's own on-demand
+    `cluster_crime_patterns` chat tool already uses -- one clustering
+    implementation, never a second parallel one. Loophole L2: only the
+    clusters NOT seen on the previous sweep are reported as 'new'."""
+    _mo_sweep_cache["status"] = "running"
+    try:
+        profiler = MOBehavioralProfiler(catalyst_app=catalyst_app)
+        clusters = profiler.cluster_mo_signatures(min_cluster_size=3)
+        new_signatures = {_mo_cluster_signature(c) for c in clusters}
+        previously_known = _mo_sweep_cache.get("known_signatures") or set()
+        genuinely_new = [c for c in clusters if _mo_cluster_signature(c) not in previously_known]
+        _mo_sweep_cache["known_signatures"] = new_signatures
+        _mo_sweep_cache["status"] = "done"
+        _mo_sweep_cache["result"] = {
+            "new_clusters_found": len(genuinely_new),
+            "total_clusters_found": len(clusters),
+            "new_clusters": [
+                {
+                    "members": sorted({str(m.get("suspect_name") or m.get("fir_id") or "?") for m in c.get("members", [])}),
+                    "size": c.get("size"), "cohesion": c.get("cohesion"),
+                } for c in genuinely_new
+            ],
+            "data_source": profiler.data_source,
+        }
+        _mo_sweep_cache["computed_at"] = datetime.utcnow().isoformat()
+    except Exception as e:
+        logging.getLogger("vajra_core").exception("MO sweep job failed")
+        _mo_sweep_cache["status"] = "error"
+        _mo_sweep_cache["error"] = str(e)
+    return get_cached_mo_sweep()
 
 
 # §5.5/C.23: Push Notifications -- real use case: instant supervisor alert

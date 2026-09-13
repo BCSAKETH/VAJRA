@@ -63,6 +63,8 @@ from vajra_core import (
     insert_proactive_alert,  # C.3: whitelist-checked ProactiveAlerts insert
     run_syndicate_detection_job,  # C.8
     get_cached_syndicate_clusters,  # C.8
+    run_mo_sweep_job,  # F.25
+    get_cached_mo_sweep,  # F.25
     is_request_stale,  # 5.4/C.22
     REQUEST_EXPIRY_HOURS,  # 5.4/C.22
     invalidate_profile_cache,
@@ -723,10 +725,15 @@ async def get_spatial_hotspots(
     # C.7: previously returned a bare array (hotspots only), silently
     # dropping the hexbins/trend fields query_hotspots already computes.
     # Now returns the full shape -- SpatialScreen.tsx updated to match.
+    # F.14: also forwards the real month-bucketed hotspot data query_hotspots
+    # now computes, so DistrictSpatialAnalystPanel.tsx can offer a real
+    # time-lapse slider instead of one frozen snapshot.
     return {
         "hotspots": result_data.get("hotspots") or [],
         "hexbins": result_data.get("hexbins") or [],
         "trend": result_data.get("trend"),
+        "hotspots_by_month": result_data.get("hotspots_by_month") or {},
+        "available_months": result_data.get("available_months") or [],
     }
 
 
@@ -5632,6 +5639,115 @@ async def get_model_calibration_status(job_id: str, request: Request, location_c
     return _calibration_jobs.get(job_id, {"status": "unknown"})
 
 
+# --- F.32: Feed Real Case Outcomes Back Into the Risk Model ---
+# "Convicted"/"Dis/Acq"/"Undetected"/"BoundOver" are real CaseStatusMaster
+# ground-truth outcomes (docs/SCHEMA.md) -- this closes the honest gap that
+# the risk model has no held-out validation set, by slowly building a real
+# one from genuine resolved-case outcomes over time. Build-order dependency
+# (F.99): needs F.19's RiskScoreHistory table to exist AND have logged real
+# predictions before this can report anything beyond "insufficient_data".
+_risk_validation_jobs: Dict[str, Dict[str, Any]] = {}
+
+
+def _validate_risk_model_against_real_outcomes() -> Dict[str, Any]:
+    """Synchronous -- run via run_in_threadpool from the background job
+    below, same pattern as _compute_model_calibration above. CaseStatusID ==
+    3 for CONVICTED is the SAME constant Item 27's model-calibration job
+    above already verified and uses (main.py) -- reused here, not
+    re-derived, so the two features can never quietly disagree on what
+    counts as a real conviction outcome."""
+    if not catalyst_app:
+        return {"status": "error", "error": "Datastore unavailable."}
+    try:
+        status_rows = catalyst_app.zql().execute_query(
+            "SELECT CaseStatusID FROM CaseStatusMaster WHERE CaseStatusName IN ('Convicted', 'Dis/Acq', 'Undetected')")
+        status_ids = [r.get("CaseStatusMaster", {}).get("CaseStatusID") for r in status_rows if r.get("CaseStatusMaster", {}).get("CaseStatusID")]
+        if not status_ids:
+            return {"status": "error", "error": "Could not resolve resolved-case statuses from CaseStatusMaster."}
+        scored_cases = catalyst_app.zql().execute_query(
+            f"SELECT CaseMasterID, CaseStatusID FROM CaseMaster WHERE CaseStatusID IN ({','.join(str(s) for s in status_ids)}) LIMIT 300")
+    except Exception as ex:
+        logger.warning(f"F.32 validation: could not fetch resolved cases: {ex}")
+        return {"status": "error", "error": str(ex)}
+
+    validated: List[Dict[str, Any]] = []
+    for row in scored_cases:
+        cm = row.get("CaseMaster", {})
+        cm_id = cm.get("CaseMasterID")
+        if not cm_id:
+            continue
+        # Predicted risk comes from RiskScoreHistory (F.19), keyed by suspect
+        # name -- resolve this case's accused name(s) first, then look up the
+        # latest logged prediction for each. Fails soft (skips the case) if
+        # RiskScoreHistory doesn't exist yet -- this whole feature is
+        # genuinely blocked on F.19's Console table per F.99.
+        predicted_risk = None
+        try:
+            acc_res = catalyst_app.zql().execute_query(f"SELECT AccusedName FROM Accused WHERE CaseMasterID = {int(cm_id)} LIMIT 5")
+        except Exception:
+            acc_res = []
+        for a in acc_res:
+            name = a.get("Accused", {}).get("AccusedName")
+            if not name:
+                continue
+            try:
+                hist = catalyst_app.zql().execute_query(
+                    f"SELECT risk_score FROM RiskScoreHistory WHERE suspect_name = '{escape_zcql_literal(name)}' "
+                    f"ORDER BY logged_at DESC LIMIT 1")
+                if hist:
+                    predicted_risk = float(hist[0].get("RiskScoreHistory", {}).get("risk_score") or 0) / 100.0
+                    break
+            except Exception as ex2:
+                logger.warning(f"F.32 validation: RiskScoreHistory not available yet (needs Console table): {ex2}")
+                break
+        if predicted_risk is not None:
+            real_outcome = 1 if int(cm.get("CaseStatusID") or 0) == 3 else 0  # 3 == CONVICTED, Item 27's verified constant
+            validated.append({"case_master_id": cm_id, "predicted": predicted_risk, "actual": real_outcome})
+
+    if len(validated) < 10:  # Loophole L2: never a misleadingly precise number from a handful of cases
+        return {
+            "status": "insufficient_data", "sample_size": len(validated),
+            "message": "Too few resolved cases with a prior logged risk prediction to draw a reliable conclusion yet.",
+        }
+    accuracy = sum(1 for v in validated if round(v["predicted"]) == v["actual"]) / len(validated)
+    return {"status": "ok", "sample_size": len(validated), "accuracy": round(accuracy, 3)}
+
+
+async def _run_risk_validation_job(job_id: str) -> None:
+    _risk_validation_jobs[job_id] = {"status": "running", "started_at": time.time()}
+    try:
+        result = await run_in_threadpool(_validate_risk_model_against_real_outcomes)
+        _risk_validation_jobs[job_id] = {"status": "done", "result": result, "finished_at": time.time()}
+    except Exception as e:
+        logger.exception(f"Risk model validation job {job_id} failed")
+        _risk_validation_jobs[job_id] = {"status": "error", "error": str(e), "finished_at": time.time()}
+
+
+@app.post("/api/admin/risk-model/validate-against-outcomes")
+async def start_risk_model_validation(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    F.32: kicks off a background comparison of past logged risk predictions
+    (RiskScoreHistory, F.19) against real case outcomes (CaseStatusMaster
+    ground truth) and returns a job_id immediately. Supervisor-only -- this
+    scores every real resolved case on file, not something an ordinary
+    officer needs.
+    """
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    job_id = f"riskval-{uuid.uuid4().hex[:12]}"
+    task = asyncio.create_task(_run_risk_validation_job(job_id))
+    _BACKGROUND_AI_TASKS.add(task)
+    task.add_done_callback(lambda t: _BACKGROUND_AI_TASKS.discard(t))
+    return {"job_id": job_id, "status": "started"}
+
+
+@app.get("/api/admin/risk-model/validate-against-outcomes/status/{job_id}")
+async def get_risk_model_validation_status(job_id: str, request: Request, location_context: str = Depends(security_firewall)):
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    return _risk_validation_jobs.get(job_id, {"status": "unknown"})
+
+
 # --- C.8: Syndicate Radar, real Louvain community detection ---
 # The compute + cache live in vajra_core.py (run_syndicate_detection_job /
 # get_cached_syndicate_clusters), not here -- agent_loop.py's
@@ -5669,6 +5785,40 @@ async def get_syndicate_detection_status(request: Request, location_context: str
     if getattr(request.state, "role_tier", "officer") != "supervisor":
         raise HTTPException(status_code=403, detail="Supervisor access only.")
     return get_cached_syndicate_clusters()
+
+
+# --- F.25: Scheduled Full-Dataset MO Sweep ---
+# Same background-job shape as C.8's syndicate detection immediately above --
+# the compute + cache live in vajra_core.py (run_mo_sweep_job /
+# get_cached_mo_sweep), reusing the real `cluster_mo_signatures` HDBSCAN
+# clustering agent_loop.py's own on-demand `cluster_crime_patterns` chat tool
+# already calls, never a second parallel clustering implementation.
+async def _run_mo_sweep_job() -> None:
+    await run_in_threadpool(run_mo_sweep_job)
+
+
+@app.post("/api/admin/mo-sweep/run")
+async def start_mo_sweep(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    F.25: kicks off a full-dataset MO-signature sweep as a background task
+    and returns immediately. Supervisor-only -- this is a periodic radar
+    sweep across every real case's MO vector, not something an ordinary
+    officer triggers on demand (they already have the reactive
+    `cluster_crime_patterns` chat tool for that).
+    """
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    task = asyncio.create_task(_run_mo_sweep_job())
+    _BACKGROUND_AI_TASKS.add(task)
+    task.add_done_callback(lambda t: _BACKGROUND_AI_TASKS.discard(t))
+    return {"status": "started"}
+
+
+@app.get("/api/admin/mo-sweep/status")
+async def get_mo_sweep_status(request: Request, location_context: str = Depends(security_firewall)):
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    return get_cached_mo_sweep()
 
 
 # --- §5.3/C.21: Signals -- auto cross-match on new CaseMaster insert ---
