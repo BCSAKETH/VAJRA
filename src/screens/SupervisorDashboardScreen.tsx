@@ -589,7 +589,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
           if (!cancelled) setPushEnabled(false);
           return;
         }
-        const reg = await navigator.serviceWorker.getRegistration("/sw.js");
+        const reg = await navigator.serviceWorker.getRegistration();
         const sub = reg ? await reg.pushManager.getSubscription() : null;
         if (!cancelled) setPushEnabled(!!sub && Notification.permission === "granted");
       } catch {
@@ -608,7 +608,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
     setIsTogglingPush(true);
     try {
       if (pushEnabled) {
-        const reg = await navigator.serviceWorker.getRegistration("/sw.js");
+        const reg = await navigator.serviceWorker.getRegistration();
         const sub = reg ? await reg.pushManager.getSubscription() : null;
         if (sub) {
           const endpoint = sub.endpoint;
@@ -657,7 +657,10 @@ export const SupervisorDashboardScreen: React.FC = () => {
       if (!keyRes.ok) throw new Error("Push notifications are not configured on this server.");
       const { vapid_public_key } = await keyRes.json();
 
-      const reg = await navigator.serviceWorker.register("/sw.js");
+      // Relative path -- this app is hosted under a subpath (/app/), not
+      // the domain root. An absolute "/sw.js" 404'd against the real
+      // deployment (confirmed live) because it resolved outside /app/.
+      const reg = await navigator.serviceWorker.register("./sw.js");
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(vapid_public_key),
