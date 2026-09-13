@@ -3,7 +3,19 @@ import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import { TwoPersonApprovalModal } from "../components/TwoPersonApprovalModal";
 import { WatermarkOverlay } from "../components/WatermarkOverlay";
-import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2 } from "lucide-react";
+import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2, Bell, BellOff } from "lucide-react";
+
+// §5.5: web push applicationServerKey must be a Uint8Array, but the backend
+// hands it over base64url-encoded (the standard VAPID wire format) -- this
+// is the standard decode routine (no library needed for one function).
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; i++) outputArray[i] = rawData.charCodeAt(i);
+  return outputArray;
+}
 
 interface ConsistencyFlag {
   rowid: number;
@@ -82,6 +94,12 @@ export const SupervisorDashboardScreen: React.FC = () => {
   const [ledgerVerified, setLedgerVerified] = useState<boolean | null>(null);
   const [ledgerDetails, setLedgerDetails] = useState<any>(null);
   const [isVerifyingLedger, setIsVerifyingLedger] = useState(false);
+
+  // §5.5: web push subscription state -- null while the initial
+  // registration/permission check is still running, so the button doesn't
+  // flash the wrong label before we actually know.
+  const [pushEnabled, setPushEnabled] = useState<boolean | null>(null);
+  const [isTogglingPush, setIsTogglingPush] = useState(false);
 
   // Feedback Review Board state (model-improvement oversight surface)
   const [feedback, setFeedback] = useState<FeedbackRecord[]>([]);
@@ -560,6 +578,121 @@ export const SupervisorDashboardScreen: React.FC = () => {
     }
   };
 
+  // §5.5: on mount, check whether THIS browser already has a live push
+  // subscription (survives refresh/re-login) -- so the toggle shows the
+  // real current state instead of defaulting to "off" every time.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+          if (!cancelled) setPushEnabled(false);
+          return;
+        }
+        const reg = await navigator.serviceWorker.getRegistration("/sw.js");
+        const sub = reg ? await reg.pushManager.getSubscription() : null;
+        if (!cancelled) setPushEnabled(!!sub && Notification.permission === "granted");
+      } catch {
+        if (!cancelled) setPushEnabled(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // §5.5: toggles browser push on/off for this supervisor. Real fallback
+  // discipline -- the existing polling (pendingExports/pendingPocso/etc.
+  // effects elsewhere in this screen) is untouched either way, so a denied
+  // permission or unsupported browser degrades to exactly today's behavior,
+  // never a silent loss of alerts.
+  const handleTogglePush = async () => {
+    setIsTogglingPush(true);
+    try {
+      if (pushEnabled) {
+        const reg = await navigator.serviceWorker.getRegistration("/sw.js");
+        const sub = reg ? await reg.pushManager.getSubscription() : null;
+        if (sub) {
+          const endpoint = sub.endpoint;
+          await sub.unsubscribe();
+          await fetch(`${API_BASE}/api/push/unsubscribe`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
+            },
+            body: JSON.stringify({ endpoint }),
+          });
+        }
+        setPushEnabled(false);
+        addToast(
+          lang === "en" ? "Push Notifications Off" : "ಪುಶ್ ಅಧಿಸೂಚನೆಗಳು ಆಫ್",
+          lang === "en" ? "You will only see alerts by refreshing this dashboard." : "ಈ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್ ರಿಫ್ರೆಶ್ ಮಾಡುವ ಮೂಲಕ ಮಾತ್ರ ನೀವು ಅಲರ್ಟ್‌ಗಳನ್ನು ನೋಡುತ್ತೀರಿ.",
+          "Info"
+        );
+        return;
+      }
+
+      if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+        addToast(
+          lang === "en" ? "Not Supported" : "ಬೆಂಬಲಿತವಿಲ್ಲ",
+          lang === "en" ? "This browser does not support push notifications." : "ಈ ಬ್ರೌಸರ್ ಪುಶ್ ಅಧಿಸೂಚನೆಗಳನ್ನು ಬೆಂಬಲಿಸುವುದಿಲ್ಲ.",
+          "Critical"
+        );
+        return;
+      }
+
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        addToast(
+          lang === "en" ? "Permission Denied" : "ಅನುಮತಿ ನಿರಾಕರಿಸಲಾಗಿದೆ",
+          lang === "en" ? "Enable notifications in your browser's site settings to use this." : "ಇದನ್ನು ಬಳಸಲು ನಿಮ್ಮ ಬ್ರೌಸರ್‌ನ ಸೈಟ್ ಸೆಟ್ಟಿಂಗ್‌ಗಳಲ್ಲಿ ಅಧಿಸೂಚನೆಗಳನ್ನು ಸಕ್ರಿಯಗೊಳಿಸಿ.",
+          "Critical"
+        );
+        setPushEnabled(false);
+        return;
+      }
+
+      const keyRes = await fetch(`${API_BASE}/api/push/vapid-public-key`, {
+        headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      });
+      if (!keyRes.ok) throw new Error("Push notifications are not configured on this server.");
+      const { vapid_public_key } = await keyRes.json();
+
+      const reg = await navigator.serviceWorker.register("/sw.js");
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapid_public_key),
+      });
+      const subJson: any = sub.toJSON();
+      await fetch(`${API_BASE}/api/push/subscribe`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
+        },
+        body: JSON.stringify({
+          endpoint: subJson.endpoint,
+          p256dh: subJson.keys.p256dh,
+          auth: subJson.keys.auth,
+        }),
+      });
+      setPushEnabled(true);
+      addToast(
+        lang === "en" ? "Push Notifications On" : "ಪುಶ್ ಅಧಿಸೂಚನೆಗಳು ಆನ್",
+        lang === "en" ? "You'll get an instant alert on this device for pending approvals." : "ಬಾಕಿ ಇರುವ ಅನುಮೋದನೆಗಳಿಗಾಗಿ ಈ ಸಾಧನದಲ್ಲಿ ನಿಮಗೆ ತಕ್ಷಣದ ಅಲರ್ಟ್ ಸಿಗುತ್ತದೆ.",
+        "Success"
+      );
+    } catch (err: any) {
+      console.error(err);
+      addToast(
+        lang === "en" ? "Push Setup Failed" : "ಪುಶ್ ಸೆಟಪ್ ವಿಫಲವಾಗಿದೆ",
+        err.message || (lang === "en" ? "Could not enable push notifications." : "ಪುಶ್ ಅಧಿಸೂಚನೆಗಳನ್ನು ಸಕ್ರಿಯಗೊಳಿಸಲಾಗಲಿಲ್ಲ."),
+        "Critical"
+      );
+    } finally {
+      setIsTogglingPush(false);
+    }
+  };
+
   // Trigger double authorization flow
   const handleReviewFlag = (flagId: number) => {
     setSelectedFlagId(flagId);
@@ -626,15 +759,46 @@ export const SupervisorDashboardScreen: React.FC = () => {
           </p>
         </div>
 
-        {/* Ledger Verification Button */}
-        <button
-          onClick={handleVerifyLedger}
-          disabled={isVerifyingLedger || isLoadingAudit}
-          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-stone-900 border border-stone-800 hover:border-[#C79A4E]/40 text-xs font-black uppercase tracking-wider text-[#C79A4E] hover:text-white transition-all disabled:opacity-50 cursor-pointer shadow-md shadow-[#C79A4E]/5"
-        >
-          <ShieldCheck className="w-4 h-4" />
-          <span>{isVerifyingLedger ? t.supervisorVerifyingHashes : t.supervisorVerifyLedger}</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {/* §5.5: Push Notifications toggle -- instant alert on this device
+              for pending approvals, instead of relying on the 5s poll while
+              this tab happens to be open. */}
+          <button
+            onClick={handleTogglePush}
+            disabled={isTogglingPush || pushEnabled === null}
+            title={lang === "en" ? "Push notifications on this device" : "ಈ ಸಾಧನದಲ್ಲಿ ಪುಶ್ ಅಧಿಸೂಚನೆಗಳು"}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-black uppercase tracking-wider transition-all disabled:opacity-50 cursor-pointer shadow-md ${
+              pushEnabled
+                ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-400 hover:border-emerald-500/70"
+                : "bg-stone-900 border-stone-800 hover:border-[#C79A4E]/40 text-stone-400 hover:text-white"
+            }`}
+          >
+            {isTogglingPush ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : pushEnabled ? (
+              <Bell className="w-4 h-4" />
+            ) : (
+              <BellOff className="w-4 h-4" />
+            )}
+            <span>
+              {pushEnabled === null
+                ? "..."
+                : pushEnabled
+                ? (lang === "en" ? "Alerts On" : "ಅಲರ್ಟ್ ಆನ್")
+                : (lang === "en" ? "Enable Alerts" : "ಅಲರ್ಟ್ ಸಕ್ರಿಯಗೊಳಿಸಿ")}
+            </span>
+          </button>
+
+          {/* Ledger Verification Button */}
+          <button
+            onClick={handleVerifyLedger}
+            disabled={isVerifyingLedger || isLoadingAudit}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-stone-900 border border-stone-800 hover:border-[#C79A4E]/40 text-xs font-black uppercase tracking-wider text-[#C79A4E] hover:text-white transition-all disabled:opacity-50 cursor-pointer shadow-md shadow-[#C79A4E]/5"
+          >
+            <ShieldCheck className="w-4 h-4" />
+            <span>{isVerifyingLedger ? t.supervisorVerifyingHashes : t.supervisorVerifyLedger}</span>
+          </button>
+        </div>
       </div>
 
       {/* Live export-approval queue -- the AI pre-screen holds sensitive reports

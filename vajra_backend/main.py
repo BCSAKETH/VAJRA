@@ -82,6 +82,9 @@ from vajra_core import (
     is_pocso_sensitive,
     redact_pocso_name,
     redact_phone_numbers,
+    save_push_subscription,  # 5.5
+    remove_push_subscription,  # 5.5
+    VAPID_PUBLIC_KEY,  # 5.5
 )
 from agent_loop import VajraAgentLoop
 from catalyst_llm import CatalystLLM
@@ -8404,6 +8407,51 @@ async def approvals_history(request: Request, type: str = "all", status: str = "
     out.sort(key=lambda o: o.get("decided_at") or o.get("created_at") or "", reverse=True)
     out = out[:100]
     return {"history": out, "count": len(out)}
+
+
+class PushSubscribePayload(BaseModel):
+    endpoint: str
+    p256dh: str
+    auth: str
+
+
+class PushUnsubscribePayload(BaseModel):
+    endpoint: str
+
+
+@app.get("/api/push/vapid-public-key")
+async def get_vapid_public_key(location_context: str = Depends(security_firewall)):
+    """5.5: the frontend needs this raw key to call PushManager.subscribe().
+    Behind the same auth firewall as every other endpoint -- no reason to
+    expose it to an unauthenticated caller, even though the key itself is
+    not secret by design (only the private key is)."""
+    if not VAPID_PUBLIC_KEY:
+        raise HTTPException(status_code=503, detail="Push notifications not configured on this server.")
+    return {"vapid_public_key": VAPID_PUBLIC_KEY}
+
+
+@app.post("/api/push/subscribe")
+async def push_subscribe(payload: PushSubscribePayload, request: Request,
+                          location_context: str = Depends(security_firewall)):
+    """5.5: registers/updates this browser's push subscription for the
+    logged-in officer/supervisor. Real use case: an instant browser
+    notification instead of waiting on the next poll cycle."""
+    kgid = request.state.kgid
+    ok = save_push_subscription(kgid, payload.endpoint, payload.p256dh, payload.auth)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Could not save push subscription.")
+    return {"status": "subscribed"}
+
+
+@app.post("/api/push/unsubscribe")
+async def push_unsubscribe(payload: PushUnsubscribePayload,
+                            location_context: str = Depends(security_firewall)):
+    """5.5: called when the officer disables notifications in Settings, or
+    the browser itself invalidates the subscription. Never raises on a
+    missing/already-gone row -- unsubscribing twice is a normal, harmless
+    race (two tabs, a slow network retry), not an error."""
+    remove_push_subscription(payload.endpoint)
+    return {"status": "unsubscribed"}
 
 
 if __name__ == "__main__":

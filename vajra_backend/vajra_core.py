@@ -342,6 +342,21 @@ def insert_proactive_alert(row: Dict[str, Any]) -> bool:
         )
         return False
     zcql_insert_row("ProactiveAlerts", row)
+    # 5.5: every ProactiveAlerts write is a real candidate for an instant push
+    # -- this is the ONE integration point (same reasoning as this function's
+    # own whitelist gate), so no call site anywhere needs its own push logic.
+    # These alert types have no per-officer target field (DistrictID only),
+    # so a supervisor-relevant type pushes to every registered supervisor.
+    if alert_type in PUSH_NOTIFY_ALERT_TYPES:
+        try:
+            send_push_to_kgids(
+                SUPERVISOR_KGIDS,
+                title=f"VAJRA: {alert_type.replace('_', ' ').title()}",
+                body=str(row.get("AlertMessage") or "New alert requires your attention."),
+                url="/supervisor",
+            )
+        except Exception as e:
+            logging.getLogger("vajra_core").warning(f"push dispatch failed for {alert_type}: {e}")
     return True
 
 
@@ -1969,3 +1984,106 @@ def run_syndicate_detection_job() -> Dict[str, Any]:
         _syndicate_cache["status"] = "error"
         _syndicate_cache["error"] = str(e)
     return _syndicate_cache
+
+
+# §5.5/C.23: Push Notifications -- real use case: instant supervisor alert
+# instead of a polling delay. Real VAPID keypair generated for this project
+# (not a placeholder) -- VAPID_PUBLIC_KEY/VAPID_PRIVATE_KEY set as env vars,
+# same pattern as SESSION_SECRET/INTERNAL_SIGNAL_SECRET above.
+VAPID_PUBLIC_KEY = os.getenv("VAPID_PUBLIC_KEY", "")
+VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY", "")
+VAPID_CLAIM_EMAIL = os.getenv("VAPID_CLAIM_EMAIL", "mailto:admin@vajra.gov.in")
+
+# Only alert types that genuinely need a supervisor's INSTANT attention (a
+# pending decision, not an informational radar sweep) trigger a push --
+# OSINT_THREAT/REPEAT_OFFENDER/SPATIAL_SPIKE stay polling-only, matching
+# this item's own framing ("instant supervisor alert... for a pending
+# approval"), not every alert type indiscriminately.
+PUSH_NOTIFY_ALERT_TYPES = {
+    "EXPORT_APPROVAL", "POCSO_ACCESS", "DISTRICT_ACCESS", "PROFILE_CHANGE",
+    "SERIAL_PATTERN_AUTO_MATCH",
+}
+
+
+def save_push_subscription(kgid: str, endpoint: str, p256dh: str, auth: str) -> bool:
+    """Upserts one browser's push subscription for this officer/supervisor.
+    A KGID can have multiple live subscriptions (several devices/browsers) --
+    keyed by (kgid, endpoint) so re-subscribing the same browser updates in
+    place rather than accumulating duplicates."""
+    if not catalyst_app:
+        return False
+    try:
+        existing = catalyst_app.zql().execute_query(
+            f"SELECT ROWID FROM PushSubscriptions WHERE kgid = '{escape_zcql_literal(kgid)}' "
+            f"AND endpoint = '{escape_zcql_literal(endpoint)}' LIMIT 1")
+        row = {
+            "kgid": kgid, "endpoint": endpoint, "p256dh": p256dh, "auth": auth,
+            "created_at": datetime.utcnow().isoformat(),
+        }
+        if existing:
+            row["ROWID"] = existing[0].get("PushSubscriptions", {}).get("ROWID")
+            zcql_update_row("PushSubscriptions", row)
+        else:
+            zcql_insert_row("PushSubscriptions", row)
+        return True
+    except Exception as e:
+        logging.getLogger("vajra_core").warning(f"save_push_subscription failed for {kgid}: {e}")
+        return False
+
+
+def remove_push_subscription(endpoint: str) -> None:
+    """Called when a subscription is confirmed dead (410 Gone from the push
+    service) -- prevents a stale browser subscription from being retried
+    forever on every future alert."""
+    if not catalyst_app:
+        return
+    try:
+        rows = catalyst_app.zql().execute_query(
+            f"SELECT ROWID FROM PushSubscriptions WHERE endpoint = '{escape_zcql_literal(endpoint)}' LIMIT 1")
+        if rows:
+            rowid = rows[0].get("PushSubscriptions", {}).get("ROWID")
+            catalyst_app.zql().execute_query(f"DELETE FROM PushSubscriptions WHERE ROWID = {rowid}")
+    except Exception as e:
+        logging.getLogger("vajra_core").warning(f"remove_push_subscription failed for endpoint: {e}")
+
+
+def send_push_to_kgids(kgids, title: str, body: str, url: str = "/") -> None:
+    """Best-effort, never raises -- Loophole (this item's own table):
+    'existing polling stays as the fallback path permanently, push is a
+    latency improvement, never the only delivery mechanism.' A push failure
+    here must never affect the actual alert (which is already safely
+    written by the time this is called) or the caller's own control flow.
+    One dead subscription is removed and skipped, never blocks the rest."""
+    if not catalyst_app or not VAPID_PRIVATE_KEY or not kgids:
+        return
+    try:
+        from pywebpush import webpush, WebPushException
+    except ImportError as ie:
+        logging.getLogger("vajra_core").warning(f"pywebpush unavailable, push skipped: {ie}")
+        return
+    try:
+        id_list = ",".join(f"'{escape_zcql_literal(k)}'" for k in kgids)
+        subs = catalyst_app.zql().execute_query(
+            f"SELECT endpoint, p256dh, auth FROM PushSubscriptions WHERE kgid IN ({id_list})")
+    except Exception as e:
+        logging.getLogger("vajra_core").warning(f"send_push_to_kgids subscription lookup failed: {e}")
+        return
+    payload = json.dumps({"title": title, "body": body, "url": url})
+    for r in subs:
+        s = r.get("PushSubscriptions", {})
+        endpoint = s.get("endpoint")
+        try:
+            webpush(
+                subscription_info={"endpoint": endpoint, "keys": {"p256dh": s.get("p256dh"), "auth": s.get("auth")}},
+                data=payload,
+                vapid_private_key=VAPID_PRIVATE_KEY,
+                vapid_claims={"sub": VAPID_CLAIM_EMAIL},
+            )
+        except WebPushException as we:
+            status = getattr(getattr(we, "response", None), "status_code", None)
+            if status == 410:  # subscription confirmed dead by the push service itself
+                remove_push_subscription(endpoint)
+            else:
+                logging.getLogger("vajra_core").warning(f"webpush failed (status {status}): {we}")
+        except Exception as e:
+            logging.getLogger("vajra_core").warning(f"webpush failed: {e}")
