@@ -271,3 +271,46 @@ Columns (all text):
 - `AccusedName` — matches `Accused.AccusedName`
 - `PhoneNumber` — synthetic
 - `VehicleNumber` — synthetic
+
+---
+
+## Part B (`docs/PLAN_MASTER_BUILD_QUEUE.md` §9.1-§9.10) — NEW tables/columns pending console creation
+
+All code for these endpoints is built and deployed already (see main.py's
+"PART B" section) and fails closed cleanly (empty list / 503, never a raw
+crash) until each item below is created in the Catalyst console — same
+pattern as `Feedback`/`AccusedContact` above. `GET /api/sessions` and
+`GET /api/investigations` deliberately do NOT select any of the new
+`ChatSession` columns below (ZCQL fails an entire SELECT the moment it
+references an unknown column) — a separate `GET /api/sessions/meta`
+endpoint carries them instead, so those two core, heavily-used listing
+endpoints are never at risk from this migration being incomplete.
+
+### New columns on `ChatSession`
+| Column | Type | Default | Used by |
+|---|---|---|---|
+| `group_id` | text/int | empty | §9.2 Grouping |
+| `is_pinned` | int | 0 | §9.3 chat-menu |
+| `is_unread` | int | 0 | §9.3 chat-menu |
+| `is_archived` | int | 0 | §9.3 chat-menu |
+| `status` | text | `"active"` | §9.7 Manage menu, §9.8 auto-flag routing, §9.10 digest |
+
+### `ChatGroup` (NEW)
+`employee_id` (int), `name` (text, ≤60), `created_at` (text, ISO). Keyed
+per-officer (never a global namespace) — §9.2.
+
+### `InvestigationTask` (NEW)
+`session_id` (text), `description` (text, ≤300), `status` (text:
+`pending`/`done`), `completion_note` (text), `completed_by` (int),
+`completed_at` (text, ISO), `ai_flag` (text) — §9.5 Guided Task Workflow.
+
+### `CaseDiaryEntry` (NEW)
+`session_id` (text), `event_type` (text: one of `tool_call`/
+`task_completed`/`member_added`/`case_linked`/`export_generated`),
+`summary` (text, ≤500, POCSO-redacted before write), `employee_id` (int),
+`logged_at` (text, ISO) — §9.6 Case Diary.
+
+### `InvestigationCaseLink` (NEW)
+`session_id` (text), `case_no` (text), `linked_at` (text, ISO) — §9.7
+"Add another case" (fixes the earlier single-`case_no`-field limitation on
+`ChatSession` itself).

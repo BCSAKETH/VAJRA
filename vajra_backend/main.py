@@ -4128,6 +4128,11 @@ async def respond_to_cowork_invitation(invitation_rowid: str, payload: CoworkRes
             "role": role,
             "joined_at": datetime.utcnow().isoformat()
         })
+        # §9.6 Case Diary: only meaningful (and only ever read) for an
+        # Investigation -- _is_investigation_session gates this so a plain
+        # shared quick chat never gets a diary entry (Loophole L1).
+        if _is_investigation_session(inv.get("session_id")):
+            _log_diary_entry(inv.get("session_id"), "member_added", f"Badge {kgid} joined as {role}.", employee_id)
     return {"status": new_status}
 
 
@@ -4358,6 +4363,676 @@ async def list_investigations(request: Request, location_context: str = Depends(
     except Exception as e:
         logger.warning(f"Could not list investigations: {e}")
         return []
+
+
+# ============================================================================
+# PART B (docs/PLAN_MASTER_BUILD_QUEUE.md, §9.1-§9.10) -- Unified Sidebar,
+# Grouping, chat-menu, Case Board (frontend-only, no endpoint needed), Guided
+# Task Workflow, Case Diary, Investigation Manage menu, auto-flag routing,
+# cross-investigation search, and the officer digest for the context-aware
+# greeting. Every ZCQL write below goes through zcql_insert_row/
+# zcql_update_row/escape_zcql_literal (vajra_core.py) -- never a hand-built
+# raw INSERT/UPDATE string -- and every endpoint is security_firewall-gated.
+#
+# SCHEMA GAP (real, flagged honestly, not silently worked around): several of
+# these endpoints depend on tables/columns that do not exist in the live
+# Catalyst console yet and can only be created there (no DDL API exists --
+# see docs/SCHEMA.md's own opening note). Each requirement is called out at
+# its own endpoint below. Until created, the affected endpoint fails closed
+# with a clean 503/empty-list response (never a raw 500/crash) -- same
+# self-healing-fallback rule as everywhere else in this file. Needed:
+#   - `ChatGroup` table: employee_id (int), name (text), created_at (text)
+#   - `ChatSession.group_id` column (text/int, default empty)
+#   - `ChatSession.is_pinned` / `is_unread` / `is_archived` columns (int, default 0)
+#   - `ChatSession.status` column (text, default "active")
+#   - `InvestigationTask` table: session_id (text), description (text),
+#     status (text), completion_note (text), completed_by (int),
+#     completed_at (text), ai_flag (text)
+#   - `CaseDiaryEntry` table: session_id (text), event_type (text),
+#     summary (text), employee_id (int), logged_at (text)
+#   - `InvestigationCaseLink` table: session_id (text), case_no (text),
+#     linked_at (text)
+# ============================================================================
+
+
+def _update_chat_session_by_id(session_id: str, fields: Dict[str, Any]) -> bool:
+    """
+    zcql_update_row (vajra_core.py) requires a ROWID field, not a business
+    key -- it has no idea what `session_id` means. Every Part B endpoint
+    below that patches a ChatSession row goes through this instead of
+    duplicating the SELECT-ROWID-then-UPDATE pattern already used by
+    _bump_chat_session_active above. Returns False (no exception) if the
+    session doesn't exist, so callers can 404 cleanly.
+    """
+    if not catalyst_app:
+        return False
+    existing = catalyst_app.zql().execute_query(
+        f"SELECT ROWID FROM ChatSession WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 1"
+    )
+    if not existing:
+        return False
+    rowid = existing[0].get("ChatSession", {}).get("ROWID")
+    zcql_update_row("ChatSession", {"ROWID": rowid, **fields})
+    return True
+
+
+def _is_investigation_session(session_id: str) -> bool:
+    """True if `session_id` is a real Investigation (non-empty description),
+    not a plain quick chat -- same marker create_investigation/list_investigations
+    already use. Used to gate Case Diary writes so a diary entry is never
+    created for an ordinary chat (§9.6 Loophole L1)."""
+    if not catalyst_app or not session_id:
+        return False
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT description FROM ChatSession WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 1"
+        )
+        return bool(res and (res[0].get("ChatSession", {}).get("description") or "").strip())
+    except Exception:
+        return False
+
+
+# §9.6 Case Diary -- a FIXED whitelist of loggable event types (Loophole L1):
+# casual chat must never leak into the diary, only real investigative events.
+_DIARY_ALLOWED_EVENTS = {"tool_call", "task_completed", "member_added", "case_linked", "export_generated"}
+
+
+def _log_diary_entry(session_id: str, event_type: str, summary: str, employee_id: Optional[int]) -> None:
+    """
+    Writes one immutable Case Diary entry at the moment a real investigative
+    event happens (never derived retroactively from chat history -- Loophole
+    L2: a diary that can silently rewrite its own past has zero evidentiary
+    value). summary passes through the same POCSO redaction every other
+    officer-facing text already goes through (Loophole L3) before being
+    persisted. Non-fatal on any failure (including the CaseDiaryEntry table
+    not existing in the console yet) -- a diary write must never block the
+    real action it's describing.
+    """
+    if event_type not in _DIARY_ALLOWED_EVENTS:
+        logger.warning(f"Rejected diary entry with unrecognized event_type: {event_type!r}")
+        return
+    safe_summary = redact_pocso_name(summary) if is_pocso_sensitive(summary) else summary
+    try:
+        zcql_insert_row("CaseDiaryEntry", {
+            "session_id": session_id, "event_type": event_type, "summary": safe_summary[:500],
+            "employee_id": employee_id or 0, "logged_at": datetime.utcnow().isoformat(),
+        })
+    except Exception as e:
+        logger.warning(f"Diary entry write failed (non-fatal, CaseDiaryEntry table may not exist yet): {e}")
+
+
+# ---- §9.2/§9.3/§9.7 session metadata (group/pin/unread/archive/status) ---
+
+@app.get("/api/sessions/meta")
+async def get_sessions_meta(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Optional per-session metadata (group_id, is_pinned, is_unread,
+    is_archived, status) that GET /api/sessions and GET /api/investigations
+    deliberately do NOT select. ZCQL fails an ENTIRE SELECT the moment it
+    references a column that doesn't exist yet in the live console table
+    (confirmed elsewhere in this codebase -- docs/SCHEMA.md), and those two
+    endpoints are the primary, heavily-used session-listing paths every
+    screen depends on. Adding not-yet-created columns directly to their
+    SELECT would break them completely for every officer the instant this
+    deploys, before the §9.2/§9.3/§9.7 console migration has even happened.
+    This is a separate, isolated, try/except-guarded query instead -- it
+    returns an empty map (never an error) until those columns exist, and the
+    sidebar/menus simply treat every session as ungrouped/unpinned/read/
+    unarchived/active in the meantime (Golden Rule 4: self-healing fallback).
+    """
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not catalyst_app:
+        return {}
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT session_id, group_id, is_pinned, is_unread, is_archived, status FROM ChatSession "
+            f"WHERE employee_id = {employee_id} LIMIT 300"
+        )
+    except Exception as e:
+        logger.warning(f"Session metadata columns not available yet (console migration pending): {e}")
+        return {}
+
+    def _as_bool(v: Any) -> bool:
+        try:
+            return bool(int(v or 0))
+        except (TypeError, ValueError):
+            return False
+
+    out: Dict[str, Any] = {}
+    for r in res:
+        row = r.get("ChatSession", {})
+        sid = row.get("session_id")
+        if sid:
+            out[sid] = {
+                "group_id": row.get("group_id") or None,
+                "is_pinned": _as_bool(row.get("is_pinned")),
+                "is_unread": _as_bool(row.get("is_unread")),
+                "is_archived": _as_bool(row.get("is_archived")),
+                "status": row.get("status") or "active",
+            }
+    return out
+
+
+# ---- §9.2 Grouping System -----------------------------------------------
+
+class CreateGroupRequest(BaseModel):
+    name: str
+
+
+@app.post("/api/groups")
+async def create_group(payload: CreateGroupRequest, request: Request, location_context: str = Depends(security_firewall)):
+    name = payload.name.strip()[:60]
+    if not name:
+        raise HTTPException(status_code=400, detail="Group name is required.")
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    try:
+        # Case-insensitive duplicate check, scoped per-officer (Loophole L2:
+        # ChatGroup is keyed by employee_id+name -- never a global namespace).
+        # ZCQL has no LOWER() -- confirmed live: "Syntax error in given
+        # query" against the real deployed engine, not just undocumented.
+        # Fetch this officer's own groups (a handful, never large) and
+        # compare case-insensitively in Python instead.
+        existing_rows = catalyst_app.zql().execute_query(
+            f"SELECT ROWID, name FROM ChatGroup WHERE employee_id = {employee_id} LIMIT 300"
+        )
+    except Exception as e:
+        logger.error(f"ChatGroup table unavailable (console table not created yet?): {e}")
+        raise HTTPException(status_code=503, detail="Groups are not yet configured on the server.")
+    if any((r.get("ChatGroup", {}).get("name") or "").strip().lower() == name.lower() for r in existing_rows):
+        raise HTTPException(status_code=409, detail="A group with this name already exists.")
+    zcql_insert_row("ChatGroup", {"employee_id": employee_id, "name": name, "created_at": datetime.utcnow().isoformat()})
+    return {"status": "created", "name": name}
+
+
+@app.get("/api/groups")
+async def list_groups(request: Request, location_context: str = Depends(security_firewall)):
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not catalyst_app:
+        return []
+    try:
+        res = catalyst_app.zql().execute_query(f"SELECT ROWID, name FROM ChatGroup WHERE employee_id = {employee_id} ORDER BY name ASC")
+        return [{"group_id": r["ChatGroup"]["ROWID"], "name": r["ChatGroup"]["name"]} for r in res]
+    except Exception as e:
+        logger.warning(f"Could not list groups (ChatGroup table may not exist yet): {e}")
+        return []
+
+
+class AssignGroupRequest(BaseModel):
+    group_id: Optional[int] = None  # None = move back to Ungrouped
+
+
+@app.post("/api/sessions/{session_id}/group")
+async def assign_session_group(session_id: str, payload: AssignGroupRequest, request: Request, location_context: str = Depends(security_firewall)):
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not session_id.startswith(f"sess-{employee_id}-"):
+        raise HTTPException(status_code=403, detail="You do not own this session.")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    try:
+        ok = _update_chat_session_by_id(session_id, {"group_id": payload.group_id if payload.group_id is not None else ""})
+    except Exception as e:
+        logger.error(f"ChatSession.group_id column unavailable (console migration pending?): {e}")
+        raise HTTPException(status_code=503, detail="Groups are not yet configured on the server.")
+    if not ok:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return {"status": "updated", "group_id": payload.group_id}
+
+
+@app.delete("/api/groups/{group_id}")
+async def delete_group(group_id: int, request: Request, location_context: str = Depends(security_firewall)):
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    try:
+        owner_check = catalyst_app.zql().execute_query(f"SELECT employee_id FROM ChatGroup WHERE ROWID = {group_id} LIMIT 1")
+    except Exception as e:
+        logger.error(f"ChatGroup table unavailable (console table not created yet?): {e}")
+        raise HTTPException(status_code=503, detail="Groups are not yet configured on the server.")
+    if not owner_check or str(owner_check[0].get("ChatGroup", {}).get("employee_id")) != str(employee_id):
+        raise HTTPException(status_code=403, detail="You do not own this group.")
+    # Demote every member back to Ungrouped BEFORE deleting the group row --
+    # never a hard-delete-cascade (Loophole L1: ZCQL has no FK cascade
+    # support, and a group deletion must never silently vanish its members).
+    members = catalyst_app.zql().execute_query(f"SELECT session_id FROM ChatSession WHERE group_id = {group_id}")
+    for m in members:
+        sid = m.get("ChatSession", {}).get("session_id")
+        if sid:
+            _update_chat_session_by_id(sid, {"group_id": ""})
+    catalyst_app.zql().execute_query(f"DELETE FROM ChatGroup WHERE ROWID = {group_id}")
+    return {"status": "deleted"}
+
+
+# ---- §9.3 Chat-history 3-dot menu additions ------------------------------
+
+class UpdateSessionRequest(BaseModel):
+    title: Optional[str] = None
+    is_pinned: Optional[bool] = None
+    is_unread: Optional[bool] = None
+    is_archived: Optional[bool] = None
+
+
+@app.patch("/api/sessions/{session_id}")
+async def update_session(session_id: str, payload: UpdateSessionRequest, request: Request, location_context: str = Depends(security_firewall)):
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not session_id.startswith(f"sess-{employee_id}-"):
+        raise HTTPException(status_code=403, detail="You do not own this session.")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    fields: Dict[str, Any] = {}
+    if payload.title is not None:
+        # Loophole L4: same non-empty validation NewInvestigationModal's
+        # title field already uses -- a blank/whitespace title is rejected
+        # server-side, not just by the (bypassable) client check.
+        clean_title = payload.title.strip()[:60]
+        if not clean_title:
+            raise HTTPException(status_code=400, detail="Title cannot be empty.")
+        fields["title"] = clean_title
+    if payload.is_pinned is not None:
+        fields["is_pinned"] = int(payload.is_pinned)
+    if payload.is_unread is not None:
+        fields["is_unread"] = int(payload.is_unread)
+    if payload.is_archived is not None:
+        fields["is_archived"] = int(payload.is_archived)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No fields to update.")
+    try:
+        ok = _update_chat_session_by_id(session_id, fields)
+    except Exception as e:
+        logger.error(f"ChatSession pin/unread/archive columns unavailable (console migration pending?): {e}")
+        raise HTTPException(status_code=503, detail="This action is not yet configured on the server.")
+    if not ok:
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return {"status": "updated"}
+
+
+@app.post("/api/sessions/{session_id}/duplicate-as-investigation")
+async def duplicate_as_investigation(session_id: str, request: Request, location_context: str = Depends(security_firewall)):
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    role = _get_cowork_role(session_id, employee_id, request.state.kgid)
+    if not role:
+        raise HTTPException(status_code=403, detail="You do not have access to this conversation.")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    src = catalyst_app.zql().execute_query(f"SELECT title, description FROM ChatSession WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 1")
+    if not src:
+        raise HTTPException(status_code=404, detail="Source chat not found.")
+    src_row = src[0].get("ChatSession", {})
+    # Loophole L1: a chat that's already an Investigation itself can't be
+    # "duplicated as a new Investigation" -- enforced server-side too, not
+    # just by the frontend hiding the menu item.
+    if (src_row.get("description") or "").strip():
+        raise HTTPException(status_code=400, detail="This conversation is already an Investigation.")
+    src_title = src_row.get("title") or "Untitled chat"
+    # Loophole L2: the copy runs server-side in one pass (not N client round
+    # trips), and only proceeds if the source's own read above already
+    # succeeded -- a source that fails to load never gets a half-duplicated
+    # destination.
+    messages = catalyst_app.zql().execute_query(
+        f"SELECT sender, sender_employee_id, text, response_type, data_json, citations_json, sent_at "
+        f"FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}' ORDER BY sent_at ASC LIMIT 300"
+    )
+    new_session_id = f"sess-{employee_id}-{int(datetime.utcnow().timestamp())}"
+    zcql_insert_row("ChatSession", {
+        "session_id": new_session_id, "employee_id": employee_id,
+        "title": src_title[:60], "description": f"Promoted from a quick chat: {src_title}"[:500],
+        "case_no": "", "created_at": datetime.utcnow().isoformat(), "last_active_at": datetime.utcnow().isoformat(),
+    })
+    copied = 0
+    for m in messages:
+        row = dict(m.get("ChatMessage", {}))
+        row.pop("ROWID", None)
+        row["session_id"] = new_session_id
+        try:
+            zcql_insert_row("ChatMessage", row)
+            copied += 1
+        except Exception as e:
+            logger.warning(f"duplicate-as-investigation: one message failed to copy (non-fatal): {e}")
+    return {"session_id": new_session_id, "status": "duplicated", "messages_copied": copied}
+
+
+class AbsorbChatRequest(BaseModel):
+    source_session_id: str
+
+
+@app.post("/api/investigations/{session_id}/absorb-chat")
+async def absorb_chat_into_investigation(session_id: str, payload: AbsorbChatRequest, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    §9.3's "Add to Investigation" menu item: copies a regular quick chat's
+    messages into an EXISTING investigation's thread. The 9.3 blueprint
+    named this menu item but did not give it its own backend code block
+    (only duplicate-as-investigation and the PATCH endpoint above were
+    specified) -- this is the most conservative real interpretation:
+    non-destructive (the source chat is left exactly as it was, same
+    reasoning already applied to duplicate-as-investigation), never a move
+    or delete the officer didn't explicitly ask for.
+    """
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not session_id.startswith(f"sess-{employee_id}-"):
+        raise HTTPException(status_code=403, detail="You do not own this investigation.")
+    src_role = _get_cowork_role(payload.source_session_id, employee_id, request.state.kgid)
+    if not src_role:
+        raise HTTPException(status_code=403, detail="You do not have access to that conversation.")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    dest = catalyst_app.zql().execute_query(f"SELECT description FROM ChatSession WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 1")
+    if not dest or not (dest[0].get("ChatSession", {}).get("description") or "").strip():
+        raise HTTPException(status_code=400, detail="Target is not an Investigation.")
+    messages = catalyst_app.zql().execute_query(
+        f"SELECT sender, sender_employee_id, text, response_type, data_json, citations_json "
+        f"FROM ChatMessage WHERE session_id = '{escape_zcql_literal(payload.source_session_id)}' ORDER BY sent_at ASC LIMIT 300"
+    )
+    copied = 0
+    for m in messages:
+        row = dict(m.get("ChatMessage", {}))
+        row.pop("ROWID", None)
+        row["session_id"] = session_id
+        row["sent_at"] = datetime.utcnow().isoformat()
+        try:
+            zcql_insert_row("ChatMessage", row)
+            copied += 1
+        except Exception as e:
+            logger.warning(f"absorb-chat: one message failed to copy (non-fatal): {e}")
+    _log_diary_entry(session_id, "case_linked", f"Absorbed {copied} message(s) from another conversation.", employee_id)
+    return {"status": "absorbed", "messages_copied": copied}
+
+
+# ---- §9.5 Guided Task Workflow --------------------------------------------
+
+class CreateTaskRequest(BaseModel):
+    description: str
+
+
+@app.post("/api/investigations/{session_id}/tasks")
+async def create_task(session_id: str, payload: CreateTaskRequest, request: Request, location_context: str = Depends(security_firewall)):
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not _get_cowork_role(session_id, employee_id, request.state.kgid):
+        raise HTTPException(status_code=403, detail="You do not have access to this investigation.")
+    desc = payload.description.strip()[:300]
+    if not desc:
+        raise HTTPException(status_code=400, detail="Task description is required.")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    try:
+        zcql_insert_row("InvestigationTask", {
+            "session_id": session_id, "description": desc, "status": "pending",
+            "created_at": datetime.utcnow().isoformat(),
+        })
+    except Exception as e:
+        logger.error(f"InvestigationTask table unavailable (console table not created yet?): {e}")
+        raise HTTPException(status_code=503, detail="Guided tasks are not yet configured on the server.")
+    return {"status": "created"}
+
+
+@app.get("/api/investigations/{session_id}/tasks")
+async def list_tasks(session_id: str, request: Request, location_context: str = Depends(security_firewall)):
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not _get_cowork_role(session_id, employee_id, request.state.kgid):
+        raise HTTPException(status_code=403, detail="You do not have access to this investigation.")
+    if not catalyst_app:
+        return []
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT ROWID, description, status, completion_note, completed_by, completed_at, ai_flag "
+            f"FROM InvestigationTask WHERE session_id = '{escape_zcql_literal(session_id)}' ORDER BY ROWID ASC LIMIT 300"
+        )
+        return [r.get("InvestigationTask", {}) for r in res]
+    except Exception as e:
+        logger.warning(f"Could not list tasks (InvestigationTask table may not exist yet): {e}")
+        return []
+
+
+class CompleteTaskRequest(BaseModel):
+    note: str
+    attachment_stratus_id: Optional[str] = None
+
+
+@app.post("/api/investigations/{session_id}/tasks/{task_id}/complete")
+async def complete_task(session_id: str, task_id: int, payload: CompleteTaskRequest, request: Request, location_context: str = Depends(security_firewall)):
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not _get_cowork_role(session_id, employee_id, request.state.kgid):
+        raise HTTPException(status_code=403, detail="You do not have access to this investigation.")
+    # Loophole L1: a REAL minimum-content check, not just non-empty -- the
+    # whole point of "forced note" is a real accountability trail, and this
+    # is server-side so a modified/compromised client can't bypass it.
+    note = payload.note.strip()
+    if len(note) < 15:
+        raise HTTPException(status_code=400, detail="Please describe what was actually done (at least a sentence) before closing this task.")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    # Loophole L3/L4: the AI review is advisory only, with an internal 8s
+    # timeout (see _review_task_completion) -- a slow/failed LLM call never
+    # blocks the task from completing.
+    review = await run_in_threadpool(agent_loop._review_task_completion, note, payload.attachment_stratus_id)
+    try:
+        existing = catalyst_app.zql().execute_query(
+            f"SELECT ROWID FROM InvestigationTask WHERE ROWID = {task_id} AND session_id = '{escape_zcql_literal(session_id)}' LIMIT 1"
+        )
+        if not existing:
+            raise HTTPException(status_code=404, detail="Task not found.")
+        zcql_update_row("InvestigationTask", {
+            "ROWID": task_id, "status": "done", "completion_note": note,
+            "completed_by": employee_id, "completed_at": datetime.utcnow().isoformat(),
+            "ai_flag": review.get("flag") or "",
+        })
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"InvestigationTask table unavailable (console table not created yet?): {e}")
+        raise HTTPException(status_code=503, detail="Guided tasks are not yet configured on the server.")
+    _log_diary_entry(session_id, "task_completed", f"Task closed: {note[:200]}", employee_id)
+    return {"status": "done", "ai_flag": review.get("flag"), "follow_up_question": review.get("follow_up_question")}
+
+
+# ---- §9.6 Case Diary read endpoint -----------------------------------------
+
+@app.get("/api/investigations/{session_id}/diary")
+async def get_case_diary(session_id: str, request: Request, location_context: str = Depends(security_firewall)):
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not _get_cowork_role(session_id, employee_id, request.state.kgid):
+        raise HTTPException(status_code=403, detail="You do not have access to this investigation.")
+    if not catalyst_app:
+        return []
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT event_type, summary, employee_id, logged_at FROM CaseDiaryEntry "
+            f"WHERE session_id = '{escape_zcql_literal(session_id)}' ORDER BY logged_at ASC LIMIT 300"
+        )
+        return [r.get("CaseDiaryEntry", {}) for r in res]
+    except Exception as e:
+        logger.warning(f"Could not load case diary (CaseDiaryEntry table may not exist yet): {e}")
+        return []
+
+
+# ---- §9.7 Investigation "Manage" menu --------------------------------------
+
+class UpdateInvestigationStatusRequest(BaseModel):
+    status: str  # "active" or "closed"
+
+
+@app.patch("/api/investigations/{session_id}/status")
+async def update_investigation_status(session_id: str, payload: UpdateInvestigationStatusRequest, request: Request, location_context: str = Depends(security_firewall)):
+    if payload.status not in ("active", "closed"):
+        raise HTTPException(status_code=400, detail="status must be 'active' or 'closed'.")
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    # Loophole L3: closing never deletes data -- it's a status flip on the
+    # same ChatSession row, reversible by its owner at any time.
+    if not session_id.startswith(f"sess-{employee_id}-"):
+        raise HTTPException(status_code=403, detail="Only the owner can change this investigation's status.")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    try:
+        ok = _update_chat_session_by_id(session_id, {"status": payload.status})
+    except Exception as e:
+        logger.error(f"ChatSession.status column unavailable (console migration pending?): {e}")
+        raise HTTPException(status_code=503, detail="Investigation status is not yet configured on the server.")
+    if not ok:
+        raise HTTPException(status_code=404, detail="Investigation not found.")
+    if payload.status == "closed":
+        _log_diary_entry(session_id, "case_linked", "Investigation marked closed.", employee_id)
+    return {"status": payload.status}
+
+
+class AddCaseRequest(BaseModel):
+    case_no: str
+
+
+@app.post("/api/investigations/{session_id}/cases")
+async def add_case_to_investigation(session_id: str, payload: AddCaseRequest, request: Request, location_context: str = Depends(security_firewall)):
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not session_id.startswith(f"sess-{employee_id}-"):
+        raise HTTPException(status_code=403, detail="Only the owner can link additional cases.")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    check = catalyst_app.zql().execute_query(
+        f"SELECT CaseMasterID FROM CaseMaster WHERE CrimeNo = '{escape_zcql_literal(payload.case_no)}' LIMIT 1"
+    )
+    if not check:
+        raise HTTPException(status_code=404, detail="That case number doesn't match any real case.")
+    try:
+        zcql_insert_row("InvestigationCaseLink", {"session_id": session_id, "case_no": payload.case_no, "linked_at": datetime.utcnow().isoformat()})
+    except Exception as e:
+        logger.error(f"InvestigationCaseLink table unavailable (console table not created yet?): {e}")
+        raise HTTPException(status_code=503, detail="Additional case links are not yet configured on the server.")
+    _log_diary_entry(session_id, "case_linked", f"Linked additional case {payload.case_no}.", employee_id)
+    return {"status": "linked", "case_no": payload.case_no}
+
+
+@app.get("/api/investigations/{session_id}/cases")
+async def list_investigation_cases(session_id: str, request: Request, location_context: str = Depends(security_firewall)):
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not _get_cowork_role(session_id, employee_id, request.state.kgid):
+        raise HTTPException(status_code=403, detail="You do not have access to this investigation.")
+    if not catalyst_app:
+        return []
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT case_no, linked_at FROM InvestigationCaseLink WHERE session_id = '{escape_zcql_literal(session_id)}' ORDER BY linked_at ASC LIMIT 300"
+        )
+        return [r.get("InvestigationCaseLink", {}) for r in res]
+    except Exception as e:
+        logger.warning(f"Could not list linked cases (InvestigationCaseLink table may not exist yet): {e}")
+        return []
+
+
+# ---- §9.9 Search across all investigations ---------------------------------
+
+@app.get("/api/investigations/search")
+async def search_investigations(q: str, request: Request, location_context: str = Depends(security_firewall)):
+    term = q.strip()
+    if len(term) < 2:
+        return []
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not catalyst_app:
+        return []
+    safe = escape_zcql_literal(term)
+    # Loophole L1: bounded to the officer's OWN investigations only (never a
+    # cross-officer search) and capped, same LIMIT-everywhere pattern used
+    # throughout this codebase.
+    owned = catalyst_app.zql().execute_query(
+        f"SELECT session_id, title FROM ChatSession WHERE employee_id = {employee_id} "
+        f"AND description IS NOT NULL AND description != '' LIMIT 300"
+    )
+    results = []
+    for row in owned:
+        sid = row["ChatSession"]["session_id"]
+        hits = catalyst_app.zql().execute_query(
+            f"SELECT text FROM ChatMessage WHERE session_id = '{escape_zcql_literal(sid)}' AND text LIKE '*{safe}*' LIMIT 1"
+        )
+        if hits:
+            snippet = hits[0].get("ChatMessage", {}).get("text", "")
+            # Loophole L2: same redaction any other officer-facing text goes through.
+            safe_snippet = redact_pocso_name(snippet) if is_pocso_sensitive(snippet) else snippet
+            results.append({"session_id": sid, "title": row["ChatSession"]["title"], "snippet": safe_snippet[:120]})
+        if len(results) >= 20:
+            break
+    return results
+
+
+# ---- §9.10 Context-aware greeting: officer digest --------------------------
+
+@app.get("/api/officer/digest")
+async def officer_digest(request: Request, location_context: str = Depends(security_firewall)):
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if not catalyst_app:
+        return {"open_investigations": 0, "pending_approvals": 0}
+    try:
+        open_res = catalyst_app.zql().execute_query(
+            f"SELECT COUNT(ROWID) FROM ChatSession WHERE employee_id = {employee_id} "
+            f"AND description IS NOT NULL AND description != '' AND (status = 'active' OR status IS NULL)"
+        )
+        open_count = int(open_res[0].get("ChatSession", {}).get("COUNT(ROWID)") or 0) if open_res else 0
+    except Exception as e:
+        # Loophole L3 corollary: never let this endpoint's failure show up as
+        # a broken greeting -- it always returns a safe default instead.
+        logger.warning(f"officer_digest: open-investigations count failed (status column may not exist yet): {e}")
+        open_count = 0
+
+    # Real gap found on review: this used to hardcode pending_approvals to 0
+    # unconditionally, presented as if it were real data. Supervisors DO have
+    # a real pending queue (the same ProactiveAlerts EXPORT_APPROVAL/
+    # POCSO_ACCESS/DISTRICT_ACCESS rows the Supervisor Dashboard's own
+    # pending-list endpoints count) -- an ordinary officer genuinely has none
+    # (approvals are supervisor-only actions), so 0 stays honest for them.
+    pending_count = 0
+    if getattr(request.state, "role_tier", "officer") == "supervisor" and catalyst_app:
+        try:
+            for alert_type in ("EXPORT_APPROVAL", "POCSO_ACCESS", "DISTRICT_ACCESS"):
+                res = catalyst_app.zql().execute_query(
+                    f"SELECT AlertMessage FROM ProactiveAlerts WHERE AlertType = '{alert_type}' ORDER BY ROWID DESC LIMIT 60")
+                for r in res:
+                    try:
+                        m = json.loads(r.get("ProactiveAlerts", {}).get("AlertMessage") or "{}")
+                    except Exception:
+                        continue
+                    if m.get("status") == "pending" and not is_request_stale(m):
+                        pending_count += 1
+        except Exception as e:
+            logger.warning(f"officer_digest: pending-approvals count failed: {e}")
+            pending_count = 0
+    return {"open_investigations": open_count, "pending_approvals": pending_count}
+
+
+# ---- §9.8 Auto-flag matches routed into the relevant Investigation --------
+
+def _route_match_to_investigations(suspect_name: str, match_summary: str) -> bool:
+    """
+    Reverse lookup: "which active Investigations mention this suspect" --
+    called from handle_case_inserted_signal (§5.3) BEFORE it falls back to a
+    general ProactiveAlerts row, so a high-confidence match involving a
+    suspect already under active investigation lands directly in that
+    investigation's own thread (visible only to its owner/participants, via
+    the SAME ChatMessage table + the SAME _get_cowork_role access model
+    already enforced everywhere else) instead of only the general alert
+    feed. Returns True if routed into at least one investigation; the
+    caller falls back to the general alert on False, so a match is never
+    silently dropped either way (Loophole L1's own resolution).
+    """
+    if not catalyst_app or not suspect_name:
+        return False
+    try:
+        # Loophole L3: only ACTIVE investigations are eligible targets --
+        # `status IS NULL` also matches investigations created before the
+        # status column existed (they default to active).
+        candidates = catalyst_app.zql().execute_query(
+            f"SELECT session_id FROM ChatSession WHERE description IS NOT NULL AND description != '' "
+            f"AND description LIKE '*{escape_zcql_literal(suspect_name)}*' "
+            f"AND (status = 'active' OR status IS NULL) LIMIT 20"
+        )
+    except Exception as e:
+        logger.warning(f"_route_match_to_investigations: lookup failed (status column may not exist yet): {e}")
+        return False
+    routed = False
+    for c in candidates:
+        sid = c.get("ChatSession", {}).get("session_id")
+        if sid:
+            # Loophole L2: posted as a distinct system-style message, not
+            # disguised as the AI mid-conversation -- "system" is already a
+            # valid ChatMessage.sender value (AppContext.tsx's own type union).
+            _persist_chat_message(sid, "system", match_summary, "text", {}, sender_employee_id=None)
+            routed = True
+    return routed
 
 
 class AppletRequest(BaseModel):
@@ -5921,6 +6596,15 @@ async def handle_case_inserted_signal(payload: CaseInsertedSignal, request: Requ
             f"{top_match.get('station', 'Unknown')}) at {match_rate}% MO similarity -- consistent with a "
             f"repeating modus operandi. Investigative lead, not an identification."
         )
+        # §9.8: if this suspect is already named in an active Investigation,
+        # route the alert straight into that thread instead of (or as well
+        # as covering) the general alert feed -- a match a case owner is
+        # actively working should surface where they're already looking.
+        # Falls back to the general ProactiveAlerts row below either way if
+        # no active Investigation names this suspect, so a match is never
+        # silently dropped (Loophole L1's own resolution).
+        routed = _route_match_to_investigations(primary_accused, message)
+
         # Fire-and-forget after this signal's own work -- never rolls back
         # or blocks the original CaseMaster insert transaction (that already
         # committed before this Signal ever fired), same as the plan's own
@@ -5933,7 +6617,7 @@ async def handle_case_inserted_signal(payload: CaseInsertedSignal, request: Requ
             "DistrictID": "0",
             "AlertMessage": message,
         })
-        return {"status": "alerted", "match_rate": match_rate, "accused": primary_accused}
+        return {"status": "alerted", "match_rate": match_rate, "accused": primary_accused, "routed_to_investigation": routed}
     except Exception as e:
         logger.warning(f"case-inserted signal handler failed for CaseMasterID {cm_id}: {e}")
         return {"status": "error", "detail": str(e)}

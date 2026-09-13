@@ -17,6 +17,7 @@ import os
 import re
 import html
 import time
+import math
 import logging
 import hashlib
 import urllib.parse
@@ -402,6 +403,121 @@ def _render_visual_widget_card(panel_type: str, data: Any, lang: str = "en") -> 
         """
 
     return card_html
+
+
+def _vajra_crest_svg(size_px: int = 44) -> str:
+    """
+    §9.11 VAJRA Crest correction pass: the PDF header was confirmed
+    text-only (no crest graphic at all) -- this embeds the real crest as
+    inline SVG rather than a flattened PNG raster. Reasoning: the PDF path
+    that actually reaches production (Catalyst SmartBrowz, an HTML->PDF
+    browser-based render) draws SVG natively, so there is no real need to
+    rasterize; doing so anyway would need a new dependency this codebase
+    doesn't vendor (cairosvg/svglib -- only Pillow is installed, and Pillow
+    cannot rasterize SVG paths) purely to turn vector back into raster, a
+    strictly worse outcome for a "stays vector" requirement (confirmed via
+    the crest's own Verification Checklist: crisp at 400% zoom).
+
+    The geometry below is a direct Python port of src/components/
+    VajraLogo.tsx's own generation math (same center/radius/angle formulas,
+    not a hand-eyeballed re-drawing) -- Loophole L1 explicitly calls out
+    "measure, don't eyeball," and reusing the exact same procedural
+    generation as the in-app crest is the most literal way to satisfy that
+    for a server-side render that can't share a JS module with the frontend.
+    Kept intentionally static (no per-instance unique ids) -- a PDF page
+    only ever embeds one copy.
+    """
+    CENTER = 24.0
+
+    def polar(angle_deg: float, r: float) -> Tuple[float, float]:
+        rad = math.radians(angle_deg - 90)
+        return (CENTER + r * math.cos(rad), CENTER + r * math.sin(rad))
+
+    def build_spikes(count: int, tip_r: float, base_r: float, base_half_angle: float) -> str:
+        parts = []
+        for i in range(count):
+            angle = i * 360 / count
+            tx, ty = polar(angle, tip_r)
+            b1x, b1y = polar(angle - base_half_angle, base_r)
+            b2x, b2y = polar(angle + base_half_angle, base_r)
+            parts.append(f"M{tx:.2f} {ty:.2f} L{b1x:.2f} {b1y:.2f} L{b2x:.2f} {b2y:.2f} Z")
+        return " ".join(parts)
+
+    def diamond_vertices(r: float) -> List[Tuple[float, float]]:
+        return [(CENTER, CENTER - r), (CENTER + r, CENTER), (CENTER, CENTER + r), (CENTER - r, CENTER)]
+
+    def diamond_path(r: float) -> str:
+        verts = diamond_vertices(r)
+        return "M" + " L".join(f"{x} {y}" for x, y in verts) + " Z"
+
+    def zigzag_diamond_path(r: float, teeth_per_edge: int, depth: float) -> str:
+        verts = diamond_vertices(r)
+        points: List[Tuple[float, float]] = []
+        for e in range(4):
+            x0, y0 = verts[e]
+            x1, y1 = verts[(e + 1) % 4]
+            dx, dy = x1 - x0, y1 - y0
+            length = math.hypot(dx, dy)
+            nx, ny = -dy / length, dx / length
+            steps = teeth_per_edge * 2
+            for s in range(steps + 1):
+                if s == 0:
+                    points.append((x0, y0))
+                    continue
+                if s == steps:
+                    continue
+                t = s / steps
+                px, py = x0 + dx * t, y0 + dy * t
+                offset = depth if s % 2 == 1 else -depth * 0.4
+                points.append((px + nx * offset, py + ny * offset))
+        return "M" + " L".join(f"{x:.2f} {y:.2f}" for x, y in points) + " Z"
+
+    def star_path(cx: float, cy: float, outer_r: float, inner_r: float) -> str:
+        pts = []
+        for i in range(10):
+            angle = math.radians(i * 36 - 90)
+            r = outer_r if i % 2 == 0 else inner_r
+            pts.append((cx + r * math.cos(angle), cy + r * math.sin(angle)))
+        return "M" + " L".join(f"{x:.2f} {y:.2f}" for x, y in pts) + " Z"
+
+    spikes_path = build_spikes(12, 23, 18.6, 8.5)
+    outer_diamond_r = 11.5
+    outer_diamond = diamond_vertices(outer_diamond_r)
+    outer_diamond_path = diamond_path(outer_diamond_r)
+    inner_diamond_r = 8.1
+    zigzag_path = zigzag_diamond_path(inner_diamond_r, 4, 1.1)
+    star_left_x, star_left_y = polar(270, 16.6)
+    star_right_x, star_right_y = polar(90, 16.6)
+    star_left_path = star_path(star_left_x, star_left_y, 1.7, 0.75)
+    star_right_path = star_path(star_right_x, star_right_y, 1.7, 0.75)
+
+    connectors = "".join(
+        f'<line x1="{vx:.2f}" y1="{vy:.2f}" x2="{ex:.2f}" y2="{ey:.2f}" />'
+        for i, (vx, vy) in enumerate(outer_diamond)
+        for ex, ey in [polar(i * 90, outer_diamond_r + 2.3)]
+    )
+    nodes = "".join(
+        f'<circle cx="{ex:.2f}" cy="{ey:.2f}" r="0.85" />'
+        for i in range(4)
+        for ex, ey in [polar(i * 90, outer_diamond_r + 2.3)]
+    )
+    inner_nodes = "".join(
+        f'<circle cx="{x:.2f}" cy="{y:.2f}" r="0.55" />' for x, y in diamond_vertices(inner_diamond_r)
+    )
+
+    return f'''<svg width="{size_px}" height="{size_px}" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g fill="#C79A4E"><path d="{spikes_path}" /></g>
+<circle cx="24" cy="24" r="19.4" fill="none" stroke="#C79A4E" stroke-width="1.1" />
+<circle cx="24" cy="24" r="18.7" fill="#211F1D" />
+<g fill="#C79A4E" stroke="none"><path d="{star_left_path}" /><path d="{star_right_path}" /></g>
+<circle cx="24" cy="24" r="13.4" fill="none" stroke="#C79A4E" stroke-width="0.85" opacity="0.65" />
+<path d="{outer_diamond_path}" fill="none" stroke="#C79A4E" stroke-width="1.5" stroke-linejoin="round" />
+<g stroke="#C79A4E" stroke-width="1" stroke-linecap="round">{connectors}</g>
+<g fill="#C79A4E" stroke="none">{nodes}</g>
+<path d="{zigzag_path}" fill="#211F1D" stroke="#3F8C78" stroke-width="0.7" stroke-linejoin="round" />
+<path d="M26.3 16.6 L20.8 24.7 L24 24.7 L21.7 31.4 L27.6 23 L24.4 23 Z" fill="#C79A4E" stroke="none" />
+<g fill="#C79A4E" stroke="none">{inner_nodes}</g>
+</svg>'''
 
 
 def render_dossier_html(
@@ -863,6 +979,7 @@ def render_dossier_html(
 <body>
     <table class="header-table">
         <tr>
+            <td style="width: 48px; vertical-align: middle; padding-right: 10px;">{_vajra_crest_svg(44)}</td>
             <td>
                 <div class="logo-title">{ksp_header}</div>
                 <div class="sub-title">{ksp_sub}</div>
