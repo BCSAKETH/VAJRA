@@ -24,9 +24,7 @@ const parseServerTimestamp = (ts: string): Date => {
 export type ScreenId =
   | "login"
   | "ai_chat"
-  | "spatial"
   | "fir_search"
-  | "reports"
   | "supervisor"
   | "audit"
   | "settings"

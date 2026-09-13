@@ -28,9 +28,7 @@ export interface Translations {
   footerRights: string;
   navLogin: string;
   navChat: string;
-  navSpatial: string;
   navSearch: string;
-  navReports: string;
   navSupervisor: string;
   navAudit: string;
   navSettings: string;
@@ -174,9 +172,7 @@ export const translations: Record<Language, Translations> = {
     footerRights: "© 2026 Karnataka State Police (SCRB). All rights reserved. Class I Classified System.",
     navLogin: "Secure Portal",
     navChat: "AI Copilot Hub",
-    navSpatial: "Spatial Analyst",
     navSearch: "FIR Repository",
-    navReports: "Demographic Correlation",
     navSupervisor: "Supervisor Dashboard",
     navAudit: "Immutable Audit Ledger",
     navSettings: "System Settings",
@@ -308,9 +304,7 @@ export const translations: Record<Language, Translations> = {
     footerRights: "© 2026 ಕರ್ನಾಟಕ ರಾಜ್ಯ ಪೊಲೀಸ್ (SCRB). ಎಲ್ಲ ಹಕ್ಕುಗಳನ್ನು ಕಾಯ್ದಿರಿಸಲಾಗಿದೆ.",
     navLogin: "ಸುರಕ್ಷಿತ ಪ್ರವೇಶ",
     navChat: "AI ಕಾಪೈಲಟ್ ಹಬ್",
-    navSpatial: "ಸ್ಥಳೀಯ ವಿಶ್ಲೇಷಕ",
     navSearch: "FIR ದಾಖಲೆಗಳು",
-    navReports: "ಅಪರಾಧ ಅಂಕಿಅಂಶ",
     navSupervisor: "ಮೇಲ್ವಿಚಾರಕರ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್",
     navAudit: "ಅಸ್ಥಿರವಲ್ಲದ ದಾಖಲೆ ಲಾಗ್",
     navSettings: "ಸಿಸ್ಟಮ್ ಸೆಟ್ಟಿಂಗ್ಗಳು",

@@ -4,9 +4,7 @@ import {
   MessageSquare,
   Map,
   Search,
-  BarChart3,
   UserCheck,
-  FileText,
   Settings,
   LogOut,
   ChevronLeft,
@@ -18,7 +16,6 @@ import {
   Building2,
   X,
   AlertTriangle,
-  MapPin,
 } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
 import { NotificationBellPanel } from "./NotificationBellPanel";
@@ -101,9 +98,13 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   // items, which is where an officer's attention actually belongs day to day.
   const navItems = [
     { id: "ai_chat" as ScreenId, label: t.navChat, icon: MessageSquare },
+    // Part G (district redesign): "spatial" and "reports" removed from this
+    // nav -- Spatial Analyst and Demographic Correlation now live ONLY as
+    // tabs inside District Analytics, scoped to whichever district (or
+    // statewide, with none picked) is selected there. Their screens/routes
+    // are gone too (see AppContext.tsx's ScreenId union and App.tsx's
+    // screen switch) -- there is no longer a way to reach them separately.
     { id: "district_dashboard" as ScreenId, label: t.navDistrictDashboard, icon: Map },
-    { id: "spatial" as ScreenId, label: t.navSpatial, icon: MapPin },      // C.17: fully built, was unreachable
-    { id: "reports" as ScreenId, label: t.navReports, icon: FileText },   // C.17: fully built, was unreachable
     ...(roleTier === "supervisor"
       ? [{ id: "supervisor" as ScreenId, label: t.navSupervisor, icon: UserCheck }]
       : []),

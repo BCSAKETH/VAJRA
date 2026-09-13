@@ -510,6 +510,61 @@ export const DistrictDashboardScreen: React.FC = () => {
         </button>
       </div>
 
+      {/* Part G (district redesign): fixed page-level tab bar -- Spatial
+          Analyst and Demographic Correlation are no longer separate nav
+          screens (see MainLayout.tsx), they live ONLY here. With no
+          district picked yet, these two tabs show the full STATEWIDE
+          picture (same real engines, just no district filter applied);
+          the moment a district is clicked below, switching to either tab
+          narrows automatically to that one district's own data -- the
+          exact same `district`/`detail` selection state drives both. */}
+      <div className="flex items-center gap-1.5 border-b border-stone-850 shrink-0 overflow-x-auto">
+        {([
+          { id: "overview" as const, label: lang === "en" ? "Overview" : "ಅವಲೋಕನ", Icon: LayoutGrid },
+          { id: "spatial" as const, label: lang === "en" ? "Spatial Analyst" : "ಪ್ರಾದೇಶಿಕ ವಿಶ್ಲೇಷಣೆ", Icon: MapPin },
+          { id: "demographic" as const, label: lang === "en" ? "Demographic Correlation" : "ಜನಸಂಖ್ಯಾ ಪರಸ್ಪರ ಸಂಬಂಧ", Icon: BarChart3 },
+        ]).map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setDetailTab(t.id)}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-[11.5px] font-black uppercase tracking-wider font-mono border-b-2 -mb-px transition-colors cursor-pointer whitespace-nowrap ${
+              detailTab === t.id
+                ? "border-[#C79A4E] text-[#C79A4E]"
+                : "border-transparent text-stone-500 hover:text-stone-300"
+            }`}
+          >
+            <t.Icon className="w-3.5 h-3.5" />
+            {t.label}
+            {t.id !== "overview" && (
+              <span className="text-[9px] font-mono normal-case tracking-normal text-stone-600">
+                {selectedId && districtDetailCache ? `· ${districtDetailCache.district}` : `· ${lang === "en" ? "Statewide" : "ರಾಜ್ಯವ್ಯಾಪಿ"}`}
+              </span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {detailTab === "spatial" && (
+        <div className="glass-card p-4 border border-stone-850">
+          <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono mb-3 flex items-center gap-1.5">
+            <MapPin className="w-3.5 h-3.5 text-[#C79A4E]" />
+            {selectedId && districtDetailCache ? districtDetailCache.district : (lang === "en" ? "Statewide — All Districts" : "ರಾಜ್ಯವ್ಯಾಪಿ — ಎಲ್ಲಾ ಜಿಲ್ಲೆಗಳು")}
+            {" — "}{lang === "en" ? "Spatial Hotspot Analysis" : "ಪ್ರಾದೇಶಿಕ ಹಾಟ್‌ಸ್ಪಾಟ್ ವಿಶ್ಲೇಷಣೆ"}
+          </h3>
+          <DistrictSpatialAnalystPanel key={selectedId && districtDetailCache ? districtDetailCache.district : "__statewide__"} district={selectedId && districtDetailCache ? districtDetailCache.district : ""} />
+        </div>
+      )}
+
+      {detailTab === "demographic" && (
+        <DistrictDemographicPanel
+          key={selectedId && districtDetailCache ? districtDetailCache.district : "__statewide__"}
+          district={selectedId && districtDetailCache ? districtDetailCache.district : null}
+          socioChart={selectedId && districtDetailCache ? districtDetailCache.socio_economic_chart : null}
+        />
+      )}
+
+      {detailTab === "overview" && (
+      <>
       {errorMsg ? (
         <div className="flex flex-col items-center justify-center p-6 text-center bg-stone-950/40 rounded-2xl border border-rose-500/10 space-y-3">
           <AlertTriangle className="w-8 h-8 text-rose-500" />
@@ -760,63 +815,74 @@ export const DistrictDashboardScreen: React.FC = () => {
                 </div>
               ) : detail ? (
                 <>
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {/* Station-scoped header, shown INSTEAD of the district Threat
-                      Index hero when drilled into one station -- the hero's
-                      "vs state" math is a district-level comparison and would
-                      misleadingly attribute a whole district's standing to one
-                      station's charts below it. */}
-                  {detail.unit_id ? (
-                    <div className="glass-card p-4 border border-[#C79A4E]/30 lg:col-span-2 flex items-center gap-3 flex-wrap">
-                      <Building2 className="w-5 h-5 text-[#C79A4E] shrink-0" />
-                      <div className="min-w-0">
-                        <div className="text-[9px] font-mono uppercase tracking-widest text-stone-500">
-                          {lang === "en" ? "Police Station" : "ಪೊಲೀಸ್ ಠಾಣೆ"} · {detail.district}
-                        </div>
-                        <div className="text-lg font-black text-stone-100 leading-tight truncate">{detail.station}</div>
+                {/* Station-scoped header, shown INSTEAD of the district Threat
+                    Index hero when drilled into one station -- the hero's
+                    "vs state" math is a district-level comparison and would
+                    misleadingly attribute a whole district's standing to one
+                    station's charts below it. Always visible above the tabs
+                    (it's "where am I" navigation, not tab-specific content). */}
+                {detail.unit_id && (
+                  <div className="glass-card p-4 border border-[#C79A4E]/30 flex items-center gap-3 flex-wrap">
+                    <Building2 className="w-5 h-5 text-[#C79A4E] shrink-0" />
+                    <div className="min-w-0">
+                      <div className="text-[9px] font-mono uppercase tracking-widest text-stone-500">
+                        {lang === "en" ? "Police Station" : "ಪೊಲೀಸ್ ಠಾಣೆ"} · {detail.district}
                       </div>
-                      <button
-                        onClick={handleBackToDistrict}
-                        className="ml-auto shrink-0 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-[11px] font-bold text-stone-300 hover:text-white transition-all cursor-pointer"
-                      >
-                        {lang === "en" ? `← Back to ${detail.district}` : `← ${detail.district} ಗೆ ಹಿಂತಿರುಗಿ`}
-                      </button>
+                      <div className="text-lg font-black text-stone-100 leading-tight truncate">{detail.station}</div>
                     </div>
-                  ) : (
-                    <>
+                    <button
+                      onClick={handleBackToDistrict}
+                      className="ml-auto shrink-0 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-[11px] font-bold text-stone-300 hover:text-white transition-all cursor-pointer"
+                    >
+                      {lang === "en" ? `← Back to ${detail.district}` : `← ${detail.district} ಗೆ ಹಿಂತಿರುಗಿ`}
+                    </button>
+                  </div>
+                )}
+
+                {/* Part G (district redesign): the Overview/Spatial/Demographic
+                    switch now lives ONCE at the top of the whole screen (see
+                    the page-level tab bar) -- this district-detail view no
+                    longer needs its own inner tab bar, it just renders this
+                    district's Overview content whenever the page-level tab
+                    is "overview". */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {/* Police Stations picker — PS-1's "and specific police stations"
                       drill-down, one level below the district grid. Real case
-                      counts (one GROUP BY), sorted busiest-first. */}
-                  <div className="glass-card p-4 border border-stone-850 space-y-2 lg:col-span-2">
-                    <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-2">
-                      <Building2 className="w-3.5 h-3.5 text-[#C79A4E]" />
-                      {detail.district} — {lang === "en" ? "Police Stations" : "ಪೊಲೀಸ್ ಠಾಣೆಗಳು"}
-                    </h3>
-                    {isLoadingStations ? (
-                      <div className="text-[11px] text-stone-500 font-mono py-2">{lang === "en" ? "Loading stations..." : "ಠಾಣೆಗಳು ಲೋಡ್ ಆಗುತ್ತಿವೆ..."}</div>
-                    ) : stations.length === 0 ? (
-                      <div className="text-[11px] text-stone-500 font-mono py-2">{lang === "en" ? "No stations on record for this district." : "ಈ ಜಿಲ್ಲೆಗೆ ಯಾವುದೇ ಠಾಣೆಗಳಿಲ್ಲ."}</div>
-                    ) : (
-                      <div className="overflow-x-auto -mx-1">
-                        <div className="flex flex-wrap gap-2 px-1">
-                          {stations.map((s) => (
-                            <button
-                              key={s.unit_id}
-                              onClick={() => handleSelectStation(s.unit_id)}
-                              disabled={isLoadingStationDetail}
-                              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-stone-800 bg-stone-900/50 hover:bg-stone-800 hover:border-[#C79A4E]/40 transition-all disabled:opacity-50 cursor-pointer"
-                            >
-                              <span className="text-[11px] font-semibold text-stone-200">{s.unit_name}</span>
-                              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-stone-800 text-[#E4C590]">{s.case_count}</span>
-                            </button>
-                          ))}
+                      counts (one GROUP BY), sorted busiest-first. Only shown at
+                      the district level (not while already drilled into one
+                      station -- the back button above covers that case). */}
+                  {!detail.unit_id && (
+                    <div className="glass-card p-4 border border-stone-850 space-y-2 lg:col-span-2">
+                      <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-2">
+                        <Building2 className="w-3.5 h-3.5 text-[#C79A4E]" />
+                        {detail.district} — {lang === "en" ? "Police Stations" : "ಪೊಲೀಸ್ ಠಾಣೆಗಳು"}
+                      </h3>
+                      {isLoadingStations ? (
+                        <div className="text-[11px] text-stone-500 font-mono py-2">{lang === "en" ? "Loading stations..." : "ಠಾಣೆಗಳು ಲೋಡ್ ಆಗುತ್ತಿವೆ..."}</div>
+                      ) : stations.length === 0 ? (
+                        <div className="text-[11px] text-stone-500 font-mono py-2">{lang === "en" ? "No stations on record for this district." : "ಈ ಜಿಲ್ಲೆಗೆ ಯಾವುದೇ ಠಾಣೆಗಳಿಲ್ಲ."}</div>
+                      ) : (
+                        <div className="overflow-x-auto -mx-1">
+                          <div className="flex flex-wrap gap-2 px-1">
+                            {stations.map((s) => (
+                              <button
+                                key={s.unit_id}
+                                onClick={() => handleSelectStation(s.unit_id)}
+                                disabled={isLoadingStationDetail}
+                                className="flex items-center gap-2 px-3 py-2 rounded-lg border border-stone-800 bg-stone-900/50 hover:bg-stone-800 hover:border-[#C79A4E]/40 transition-all disabled:opacity-50 cursor-pointer"
+                              >
+                                <span className="text-[11px] font-semibold text-stone-200">{s.unit_name}</span>
+                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-stone-800 text-[#E4C590]">{s.case_count}</span>
+                              </button>
+                            ))}
+                          </div>
                         </div>
-                      </div>
-                    )}
-                  </div>
+                      )}
+                    </div>
+                  )}
 
-                  {/* Threat Index hero — a transparent composite (load vs state × recent momentum). */}
-                  {(() => {
+                  {/* Threat Index hero — a transparent composite (load vs state × recent momentum). Only at district level, same reasoning as the picker above. */}
+                  {!detail.unit_id && (() => {
                     const stateAvg = rows.length ? Math.round(totalActiveCases / rows.length) : 0;
                     const districtActive = rows.find((r) => r.district_id === selectedId)?.active_cases ?? 0;
                     const vsAvg = stateAvg ? Math.round(((districtActive - stateAvg) / stateAvg) * 100) : 0;
@@ -846,8 +912,6 @@ export const DistrictDashboardScreen: React.FC = () => {
                       </div>
                     );
                   })()}
-                    </>
-                  )}
 
                   {/* 12-month incident trend — the time dimension + benchmark vs state */}
                   {detail.monthly_trend && detail.monthly_trend.length > 0 && (
@@ -894,48 +958,7 @@ export const DistrictDashboardScreen: React.FC = () => {
                       </div>
                     </div>
                   )}
-                </div>
 
-                {/* Part G (district redesign): premium tab bar folding the
-                    standalone Spatial Analyst + Demographic Correlation
-                    screens into this district's own context. */}
-                <div className="flex items-center gap-1.5 border-b border-stone-850 pb-0 overflow-x-auto">
-                  {([
-                    { id: "overview" as const, label: lang === "en" ? "Overview" : "ಅವಲೋಕನ", Icon: LayoutGrid },
-                    { id: "spatial" as const, label: lang === "en" ? "Spatial Analyst" : "ಪ್ರಾದೇಶಿಕ ವಿಶ್ಲೇಷಣೆ", Icon: MapPin },
-                    { id: "demographic" as const, label: lang === "en" ? "Demographic Correlation" : "ಜನಸಂಖ್ಯಾ ಪರಸ್ಪರ ಸಂಬಂಧ", Icon: BarChart3 },
-                  ]).map((t) => (
-                    <button
-                      key={t.id}
-                      onClick={() => setDetailTab(t.id)}
-                      className={`flex items-center gap-1.5 px-3.5 py-2.5 text-[11px] font-black uppercase tracking-wider font-mono border-b-2 -mb-px transition-colors cursor-pointer whitespace-nowrap ${
-                        detailTab === t.id
-                          ? "border-[#C79A4E] text-[#C79A4E]"
-                          : "border-transparent text-stone-500 hover:text-stone-300"
-                      }`}
-                    >
-                      <t.Icon className="w-3.5 h-3.5" />
-                      {t.label}
-                    </button>
-                  ))}
-                </div>
-
-                {detailTab === "spatial" && (
-                  <div className="glass-card p-4 border border-stone-850">
-                    <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono mb-3 flex items-center gap-1.5">
-                      <MapPin className="w-3.5 h-3.5 text-[#C79A4E]" />
-                      {detail.district} — {lang === "en" ? "Spatial Hotspot Analysis" : "ಪ್ರಾದೇಶಿಕ ಹಾಟ್‌ಸ್ಪಾಟ್ ವಿಶ್ಲೇಷಣೆ"}
-                    </h3>
-                    <DistrictSpatialAnalystPanel key={detail.district} district={detail.district} />
-                  </div>
-                )}
-
-                {detailTab === "demographic" && (
-                  <DistrictDemographicPanel key={detail.district} district={detail.district} socioChart={detail.socio_economic_chart} />
-                )}
-
-                {detailTab === "overview" && (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {/* Crime types pie */}
                   <div className="glass-card p-4 border border-stone-850 space-y-2">
                     <div className="flex items-center justify-between">
@@ -1197,7 +1220,6 @@ export const DistrictDashboardScreen: React.FC = () => {
                     </div>
                   )}
                 </div>
-                )}
               </>
               ) : null}
 
@@ -1254,6 +1276,8 @@ export const DistrictDashboardScreen: React.FC = () => {
             </div>
           )}
         </>
+      )}
+      </>
       )}
     </div>
   );

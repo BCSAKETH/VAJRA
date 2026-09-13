@@ -7,13 +7,15 @@ import { SessionTimeoutGuard } from "./components/SessionTimeoutGuard";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 
 // Code-split every screen except Login/AIChat (the two every officer hits on
-// every session) so the initial bundle doesn't pay for Leaflet (Spatial) and
-// Recharts (Reports) -- previously ~970KB loaded upfront regardless of
-// whether a session ever visited those screens. Each import()'s own chunk
-// only downloads the first time that screen is actually opened.
-const SpatialScreen = lazy(() => import("./screens/SpatialScreen").then((m) => ({ default: m.SpatialScreen })));
+// every session) so the initial bundle doesn't pay upfront for chunks a
+// session might never visit. Each import()'s own chunk only downloads the
+// first time that screen is actually opened.
+// Part G (district redesign): SpatialScreen/ReportsScreen removed from here
+// -- their functionality now lives as tabs inside District Analytics
+// (DistrictSpatialAnalystPanel/DistrictDemographicPanel), not as separate
+// routes. Leaflet/Recharts now load as part of DistrictDashboardScreen's
+// own chunk instead.
 const FIRSearchScreen = lazy(() => import("./screens/FIRSearchScreen").then((m) => ({ default: m.FIRSearchScreen })));
-const ReportsScreen = lazy(() => import("./screens/ReportsScreen").then((m) => ({ default: m.ReportsScreen })));
 const SupervisorDashboardScreen = lazy(() =>
   import("./screens/SupervisorDashboardScreen").then((m) => ({ default: m.SupervisorDashboardScreen }))
 );
@@ -53,17 +55,13 @@ const AppContent: React.FC = () => {
   // Every other screen is fine to unmount/remount (no long-lived state to
   // preserve) and stays lazy/code-split as before.
   const isChatActive = currentScreen === "ai_chat" || !(
-    ["spatial", "fir_search", "reports", "supervisor", "audit", "settings", "district_dashboard"].includes(currentScreen)
+    ["fir_search", "supervisor", "audit", "settings", "district_dashboard"].includes(currentScreen)
   );
 
   const renderOtherScreen = () => {
     switch (currentScreen) {
-      case "spatial":
-        return <SpatialScreen />;
       case "fir_search":
         return <FIRSearchScreen />;
-      case "reports":
-        return <ReportsScreen />;
       case "supervisor":
       case "audit":
         if (roleTier !== "supervisor") {
