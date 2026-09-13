@@ -2454,6 +2454,49 @@ def _fit_json(obj: Any, cap: int) -> str:
                 else:
                     _arr = _arr[:-5]
             d[_key] = []
+
+    # CONFIRMED LIVE (real user report, 2026-09-13): a "map" response's text
+    # correctly said "Detected 3 active hotspot clusters", but the persisted
+    # widget showed "No mappable coordinates" -- the payload (hotspots +
+    # trend + hexbins, the latter carrying real H3 polygon boundary
+    # coordinates, plus _zcql_provenance's debug SQL trail) exceeded the cap
+    # and fell all the way to the generic "minimal" whitelist below, which
+    # never listed "hotspots"/"trend"/"hexbins" as worth keeping -- wiping
+    # the entire map even though the actual 3-cluster payload is small. Same
+    # trim-what's-dispensable pattern as financial_transactions/edges above:
+    # _zcql_provenance is debug-only (backs the separate "View Grounding"
+    # button, never the widget itself) so it goes first regardless of
+    # payload shape, then hexbins (an alternative view to hotspots, fully
+    # degradable), then each hotspot's own case_preview list (F.15 -- nice
+    # detail, not essential to plotting the point).
+    if d.get("hotspots") or d.get("hexbins"):
+        if d.get("_zcql_provenance"):
+            d = dict(d)
+            d.pop("_zcql_provenance", None)
+            s = json.dumps(d, ensure_ascii=False, default=str)
+            if len(s) <= cap:
+                return s
+        _hexbins = d.get("hexbins")
+        if isinstance(_hexbins, list) and len(_hexbins) > 0:
+            _hb = list(_hexbins)
+            while _hb:
+                d["hexbins"] = _hb
+                s = json.dumps(d, ensure_ascii=False, default=str)
+                if len(s) <= cap:
+                    return s
+                if len(_hb) <= 5:
+                    _hb = []
+                else:
+                    _hb = _hb[:-5]
+            d["hexbins"] = []
+        _hotspots = d.get("hotspots")
+        if isinstance(_hotspots, list) and len(_hotspots) > 0:
+            d = dict(d)
+            d["hotspots"] = [{**h, "case_preview": []} if isinstance(h, dict) else h for h in _hotspots]
+            s = json.dumps(d, ensure_ascii=False, default=str)
+            if len(s) <= cap:
+                return s
+
     # generate_full_report's composite "risk" payload (see agent_loop.py's
     # generate_full_report -- risk gauge/SHAP as the base dict, with
     # mo_profile/network/repeat_offender_context folded in as "additive
@@ -2566,7 +2609,8 @@ def _fit_json(obj: Any, cap: int) -> str:
                 "nodes", "edges", "hub", "target_suspect", "network", "seed", "max_hop_reached", "_zcql_provenance",
                 "msg_id", "variant_group", "version_index",
                 "suspect", "age", "risk_score", "shap_factors", "aggravating",
-                "mitigating", "remand_status") if d.get(k) is not None}
+                "mitigating", "remand_status",
+                "hotspots", "trend", "hexbins") if d.get(k) is not None}
     s = json.dumps(minimal, ensure_ascii=False, default=str)
     return s if len(s) <= cap else "{}"
 
