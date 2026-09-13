@@ -1,5 +1,50 @@
 export type Language = 'en' | 'kn';
 
+// F.36: chart axis labels (district names) previously rendered raw English
+// values with no Kannada translation layer -- switching the app to Kannada
+// did nothing to a chart's district axis text. A bounded, known set (the 30
+// real districts, matching the exact spellings the District table itself
+// uses -- confirmed via a live query, not the GeoJSON's 4 differently-spelled
+// names), not live/free-text translation. Loophole L2: falls back to the
+// original English name for anything not in this table, never blank.
+export const KARNATAKA_DISTRICT_NAMES_KN: Record<string, string> = {
+  "Bagalkot": "ಬಾಗಲಕೋಟೆ",
+  "Ballari": "ಬಳ್ಳಾರಿ",
+  "Belagavi": "ಬೆಳಗಾವಿ",
+  "Bengaluru Urban": "ಬೆಂಗಳೂರು ನಗರ",
+  "Bengaluru Rural": "ಬೆಂಗಳೂರು ಗ್ರಾಮಾಂತರ",
+  "Bidar": "ಬೀದರ್",
+  "Chamarajanagar": "ಚಾಮರಾಜನಗರ",
+  "Chikkaballapur": "ಚಿಕ್ಕಬಳ್ಳಾಪುರ",
+  "Chikkamagaluru": "ಚಿಕ್ಕಮಗಳೂರು",
+  "Chitradurga": "ಚಿತ್ರದುರ್ಗ",
+  "Dakshina Kannada": "ದಕ್ಷಿಣ ಕನ್ನಡ",
+  "Davanagere": "ದಾವಣಗೆರೆ",
+  "Dharwad": "ಧಾರವಾಡ",
+  "Gadag": "ಗದಗ",
+  "Hassan": "ಹಾಸನ",
+  "Haveri": "ಹಾವೇರಿ",
+  "Kalaburagi": "ಕಲಬುರಗಿ",
+  "Kodagu": "ಕೊಡಗು",
+  "Kolar": "ಕೋಲಾರ",
+  "Koppal": "ಕೊಪ್ಪಳ",
+  "Mandya": "ಮಂಡ್ಯ",
+  "Mysuru": "ಮೈಸೂರು",
+  "Raichur": "ರಾಯಚೂರು",
+  "Ramanagara": "ರಾಮನಗರ",
+  "Shimoga": "ಶಿವಮೊಗ್ಗ",
+  "Tumakuru": "ತುಮಕೂರು",
+  "Udupi": "ಉಡುಪಿ",
+  "Uttara Kannada": "ಉತ್ತರ ಕನ್ನಡ",
+  "Vijayapura": "ವಿಜಯಪುರ",
+  "Yadgir": "ಯಾದಗಿರಿ",
+};
+
+export function localizedDistrictName(name: string | null | undefined, lang: Language): string {
+  if (!name) return "";
+  return lang === "kn" ? (KARNATAKA_DISTRICT_NAMES_KN[name] || name) : name;
+}
+
 export interface Translations {
   title: string;
   subtitle: string;

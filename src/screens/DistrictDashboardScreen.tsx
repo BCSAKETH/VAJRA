@@ -4,6 +4,7 @@ import type { Feature, Geometry } from "geojson";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import karnatakaDistrictsGeo from "../assets/karnataka-districts.json";
+import { localizedDistrictName } from "../i18n";
 import {
   ResponsiveContainer,
   BarChart,
@@ -721,7 +722,8 @@ export const DistrictDashboardScreen: React.FC = () => {
                           fill={active ? "#211F1D" : "rgba(33,31,29,0.55)"}
                           style={{ fontFamily: "'JetBrains Mono', monospace" }}
                         >
-                          {row.district.toUpperCase()}
+                          {/* F.36: Kannada has no letter-case concept -- .toUpperCase() only applies to the English label */}
+                          {lang === "kn" ? localizedDistrictName(row.district, lang) : row.district.toUpperCase()}
                         </text>
                       )}
                     </g>

@@ -7029,8 +7029,24 @@ const localizedLabel = (name: string, lang: string) =>
 ```
 
 ### Verification Checklist
-- [ ] Switching to Kannada shows real Kannada district names on chart axes for the 31 real districts.
-- [ ] A district/category name not yet in the lookup table falls back to its English name, never renders blank.
+- [x] Switching to Kannada shows real Kannada district names on chart axes for the 30 real districts (confirmed 30 via a live query, not 31).
+- [x] A district/category name not yet in the lookup table falls back to its English name, never renders blank.
+
+**Build status (2026-09-13) — DONE.** `KARNATAKA_DISTRICT_NAMES_KN` +
+`localizedDistrictName()` added to `i18n.ts`, keyed by the District table's real
+spellings (confirmed via a live query -- 30 districts, e.g. "Bagalkot"/"Shimoga"/
+"Chamarajanagar", NOT the GeoJSON's 4 differently-spelled variants). Applied to
+every real chart-axis/map-label surface that actually shows district names today
+(the original blueprint's target files, `ExpandedOverlay.tsx`/`InlineWidget.tsx`,
+turned out to have no district-name axes at all when checked -- their charts key
+on `"name"`, not `"district"` -- so this was correctly re-targeted, not
+skipped): `DistrictDemographicPanel.tsx`'s two chart X-axes (`districtLabel`, a
+separate field from the real `district` value so the gold-highlight match logic
+is untouched) and two headings, plus `DistrictDashboardScreen.tsx`'s SVG map
+labels (Kannada has no letter-case, so `.toUpperCase()` only applies to the
+English label). Scope boundary, not a gap: the many OTHER English district-name
+headings throughout the detail panel (e.g. "X — 12-Month Incident Trend") stay
+English -- this item is titled "chart labels," not full-page localization.
 
 ---
 

@@ -4,6 +4,8 @@ import {
 } from "recharts";
 import { TrendingUp, TrendingDown, Minus, Sparkles, BarChart3 } from "lucide-react";
 import { API_BASE } from "../config";
+import { useApp } from "../AppContext";
+import { localizedDistrictName } from "../i18n";
 
 interface DemographicRow {
   district: string;
@@ -47,6 +49,7 @@ export const DistrictDemographicPanel: React.FC<{
   district: string | null;
   socioChart: SocioChart | null;
 }> = ({ district, socioChart }) => {
+  const { lang } = useApp();
   const [allDistricts, setAllDistricts] = useState<DemographicRow[] | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -80,7 +83,13 @@ export const DistrictDemographicPanel: React.FC<{
   // gold (or all gold when no district is picked), so the correlation ("is
   // this a high-crime AND high-unemployment district relative to its
   // peers?") is visually obvious at a glance instead of 30 mental lookups.
-  const chartData = (allDistricts || []).slice().sort((a, b) => b.crimeCount - a.crimeCount);
+  // F.36: `district` stays the real English DB value throughout (used for
+  // the gold-highlight match below) -- `districtLabel` is a separate
+  // display-only field so the Kannada axis text never breaks that match.
+  const chartData = (allDistricts || [])
+    .slice()
+    .sort((a, b) => b.crimeCount - a.crimeCount)
+    .map((r) => ({ ...r, districtLabel: localizedDistrictName(r.district, lang) }));
 
   return (
     <div className="space-y-4">
@@ -117,7 +126,7 @@ export const DistrictDemographicPanel: React.FC<{
             <div className="glass-card p-4 border border-stone-850 space-y-2">
               <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-[#C79A4E]" />
-                {district} — Socio-Economic Profile
+                {localizedDistrictName(district, lang)} — Socio-Economic Profile
               </h3>
               <div className="h-52">
                 <ResponsiveContainer width="100%" height="100%">
@@ -163,7 +172,7 @@ export const DistrictDemographicPanel: React.FC<{
       <div className="glass-card p-4 border border-stone-850 space-y-2">
         <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
           <BarChart3 className="w-3.5 h-3.5 text-[#C79A4E]" />
-          {district ? `Crime Incidence — ${district} vs All Districts` : "Crime Incidence by District — Statewide"}
+          {district ? `Crime Incidence — ${localizedDistrictName(district, lang)} vs All Districts` : "Crime Incidence by District — Statewide"}
         </h3>
         {errorMsg ? (
           <div className="h-52 flex items-center justify-center text-[10px] text-rose-400 font-mono">{errorMsg}</div>
@@ -174,7 +183,7 @@ export const DistrictDemographicPanel: React.FC<{
             <ResponsiveContainer width="100%" height="100%">
               <BarChart data={chartData}>
                 <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
-                <XAxis dataKey="district" stroke="#94A3B8" fontSize={7.5} interval={0} angle={-55} textAnchor="end" height={70} />
+                <XAxis dataKey="districtLabel" stroke="#94A3B8" fontSize={7.5} interval={0} angle={-55} textAnchor="end" height={70} />
                 <YAxis stroke="#94A3B8" fontSize={9.5} />
                 <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b" }} />
                 <Bar dataKey="crimeCount" radius={[4, 4, 0, 0]}>
@@ -201,9 +210,9 @@ export const DistrictDemographicPanel: React.FC<{
           ) : (
             <div className="h-52">
               <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={allDistricts}>
+                <LineChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
-                  <XAxis dataKey="district" stroke="#94A3B8" fontSize={7.5} interval={0} angle={-55} textAnchor="end" height={70} />
+                  <XAxis dataKey="districtLabel" stroke="#94A3B8" fontSize={7.5} interval={0} angle={-55} textAnchor="end" height={70} />
                   <YAxis stroke="#94A3B8" fontSize={9.5} />
                   <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b" }} />
                   <Line type="monotone" dataKey="crimeCount" stroke="#F59E0B" strokeWidth={2.5} name="Incidents" dot={false} />
