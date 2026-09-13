@@ -3,7 +3,6 @@ import { geoMercator, geoPath } from "d3-geo";
 import type { Feature, Geometry } from "geojson";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { MapContainer, TileLayer, CircleMarker, Popup } from "react-leaflet";
 import karnatakaDistrictsGeo from "../assets/karnataka-districts.json";
 import {
   ResponsiveContainer,
@@ -21,7 +20,9 @@ import {
   Area,
   CartesianGrid,
 } from "recharts";
-import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity } from "lucide-react";
+import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid } from "lucide-react";
+import { DistrictSpatialAnalystPanel } from "../components/DistrictSpatialAnalystPanel";
+import { DistrictDemographicPanel } from "../components/DistrictDemographicPanel";
 
 interface DistrictSummaryRow {
   district_id: number;
@@ -170,6 +171,12 @@ export const DistrictDashboardScreen: React.FC = () => {
   // outside the officer's home district returns 403 {gated:true,...} instead
   // of data. gatedInfo holds that state; requestId/requestStatus track the
   // officer's own access-request lifecycle (pending -> approved/rejected).
+  // Part G (district redesign): folds the standalone Spatial Analyst and
+  // Demographic Correlation screens INTO the per-district detail view, tab-
+  // scoped to whichever district/station is currently selected -- instead
+  // of an officer navigating away and having to re-establish which district
+  // they meant on a disconnected page.
+  const [detailTab, setDetailTab] = useState<"overview" | "spatial" | "demographic">("overview");
   const [gatedInfo, setGatedInfo] = useState<{ districtId: number; message: string } | null>(null);
   const [accessRequestId, setAccessRequestId] = useState<string | null>(null);
   const [accessRequestStatus, setAccessRequestStatus] = useState<"idle" | "pending" | "approved" | "rejected">("idle");
@@ -338,6 +345,7 @@ export const DistrictDashboardScreen: React.FC = () => {
 
   const handleSelectDistrict = async (districtId: number) => {
     setSelectedId(districtId);
+    setDetailTab("overview"); // a newly-picked district always opens on Overview, never a stale tab from the previous one
     setIsLoadingDetail(true);
     setDetail(null);
     setDistrictDetailCache(null);
@@ -429,6 +437,7 @@ export const DistrictDashboardScreen: React.FC = () => {
   // the identical panel shape, just scoped to one station.
   const handleSelectStation = async (unitId: number) => {
     setSelectedStationId(unitId);
+    setDetailTab("overview");
     setIsLoadingStationDetail(true);
     setGatedInfo(null);
     setAccessRequestId(null);
@@ -464,6 +473,7 @@ export const DistrictDashboardScreen: React.FC = () => {
   const handleBackToDistrict = () => {
     setSelectedStationId(null);
     setDetail(districtDetailCache);
+    setDetailTab("overview");
   };
 
   const maxCases = Math.max(1, ...rows.map((r) => r.active_cases));
@@ -749,6 +759,7 @@ export const DistrictDashboardScreen: React.FC = () => {
                   )}
                 </div>
               ) : detail ? (
+                <>
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {/* Station-scoped header, shown INSTEAD of the district Threat
                       Index hero when drilled into one station -- the hero's
@@ -883,82 +894,48 @@ export const DistrictDashboardScreen: React.FC = () => {
                       </div>
                     </div>
                   )}
-                  {/* Socio-economic bar chart */}
-                  <div className="glass-card p-4 border border-stone-850 space-y-2">
-                    <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono">
-                      {detail.district} — {lang === "en" ? "Socio-Economic Profile" : "ಸಾಮಾಜಿಕ-ಆರ್ಥಿಕ ಪ್ರೊಫೈಲ್"}
+                </div>
+
+                {/* Part G (district redesign): premium tab bar folding the
+                    standalone Spatial Analyst + Demographic Correlation
+                    screens into this district's own context. */}
+                <div className="flex items-center gap-1.5 border-b border-stone-850 pb-0 overflow-x-auto">
+                  {([
+                    { id: "overview" as const, label: lang === "en" ? "Overview" : "ಅವಲೋಕನ", Icon: LayoutGrid },
+                    { id: "spatial" as const, label: lang === "en" ? "Spatial Analyst" : "ಪ್ರಾದೇಶಿಕ ವಿಶ್ಲೇಷಣೆ", Icon: MapPin },
+                    { id: "demographic" as const, label: lang === "en" ? "Demographic Correlation" : "ಜನಸಂಖ್ಯಾ ಪರಸ್ಪರ ಸಂಬಂಧ", Icon: BarChart3 },
+                  ]).map((t) => (
+                    <button
+                      key={t.id}
+                      onClick={() => setDetailTab(t.id)}
+                      className={`flex items-center gap-1.5 px-3.5 py-2.5 text-[11px] font-black uppercase tracking-wider font-mono border-b-2 -mb-px transition-colors cursor-pointer whitespace-nowrap ${
+                        detailTab === t.id
+                          ? "border-[#C79A4E] text-[#C79A4E]"
+                          : "border-transparent text-stone-500 hover:text-stone-300"
+                      }`}
+                    >
+                      <t.Icon className="w-3.5 h-3.5" />
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+
+                {detailTab === "spatial" && (
+                  <div className="glass-card p-4 border border-stone-850">
+                    <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono mb-3 flex items-center gap-1.5">
+                      <MapPin className="w-3.5 h-3.5 text-[#C79A4E]" />
+                      {detail.district} — {lang === "en" ? "Spatial Hotspot Analysis" : "ಪ್ರಾದೇಶಿಕ ಹಾಟ್‌ಸ್ಪಾಟ್ ವಿಶ್ಲೇಷಣೆ"}
                     </h3>
-                    <div className="h-56">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={detail.socio_economic_chart.data} layout="vertical" margin={{ left: 20, right: 28 }}>
-                          <XAxis type="number" tick={{ fontSize: 9, fill: "#94A3B8" }} />
-                          <YAxis type="category" dataKey="name" width={110} tick={{ fontSize: 9, fill: "#94A3B8" }} />
-                          <Tooltip
-                            cursor={{ fill: "rgba(199,154,78,0.06)" }}
-                            contentStyle={{ background: "#211f1d", border: "1px solid #37332e", fontSize: 11, borderRadius: 8 }}
-                          />
-                          <Bar dataKey="value" fill="#C79A4E" radius={[0, 4, 4, 0]}>
-                            <LabelList
-                              dataKey="value"
-                              position="right"
-                              formatter={(v: number) => (v == null ? "" : v.toFixed(1))}
-                              style={{ fill: "#E4C590", fontSize: 9, fontFamily: "monospace", fontWeight: 700 }}
-                            />
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                    <p className="text-[9px] text-stone-600 italic">{detail.socio_economic_chart.disclaimer}</p>
+                    <DistrictSpatialAnalystPanel key={detail.district} district={detail.district} />
                   </div>
+                )}
 
-                  {/* Hotspot map */}
-                  <div className="glass-card p-4 border border-stone-850 space-y-2">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono">
-                        {lang === "en" ? "High-Crime Hotspots (DBSCAN)" : "ಅಧಿಕ-ಅಪರಾಧ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳು"}
-                      </h3>
-                      {detail.hotspots.length > 0 && (
-                        <span className="flex items-center gap-1 text-[9px] font-mono text-stone-500">
-                          <span className="w-2 h-2 rounded-full bg-[#C79A4E] border border-stone-950 shrink-0" />
-                          {detail.hotspots.length} {lang === "en" ? "clusters" : "ಸಮೂಹಗಳು"}
-                        </span>
-                      )}
-                    </div>
-                    {detail.hotspots.length === 0 ? (
-                      <div className="h-56 flex items-center justify-center text-[10px] text-stone-600 font-mono text-center px-4">
-                        {lang === "en" ? "No dense clusters detected in this district's sample." : "ಈ ಜಿಲ್ಲೆಯಲ್ಲಿ ದಟ್ಟವಾದ ಸಮೂಹಗಳು ಕಂಡುಬಂದಿಲ್ಲ."}
-                      </div>
-                    ) : (
-                      <div className="h-56 rounded-lg overflow-hidden">
-                        <MapContainer
-                          key={detail.district_id}
-                          center={[detail.hotspots[0].lat, detail.hotspots[0].lng]}
-                          zoom={10}
-                          style={{ height: "100%", width: "100%" }}
-                          scrollWheelZoom={false}
-                        >
-                          <TileLayer
-                            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
-                            subdomains="abcd"
-                            attribution="&copy; OpenStreetMap &copy; CARTO"
-                          />
-                          {detail.hotspots.map((h, i) => (
-                            <CircleMarker
-                              key={i}
-                              center={[h.lat, h.lng]}
-                              radius={7}
-                              pathOptions={{ fillColor: "#C79A4E", color: "#211F1D", weight: 1.5, fillOpacity: 0.9 }}
-                            >
-                              <Popup>
-                                <span className="text-xs text-stone-900">{h.label}</span>
-                              </Popup>
-                            </CircleMarker>
-                          ))}
-                        </MapContainer>
-                      </div>
-                    )}
-                  </div>
+                {detailTab === "demographic" && (
+                  <DistrictDemographicPanel key={detail.district} district={detail.district} socioChart={detail.socio_economic_chart} />
+                )}
 
+                {detailTab === "overview" && (
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
                   {/* Crime types pie */}
                   <div className="glass-card p-4 border border-stone-850 space-y-2">
                     <div className="flex items-center justify-between">
@@ -1220,6 +1197,8 @@ export const DistrictDashboardScreen: React.FC = () => {
                     </div>
                   )}
                 </div>
+                )}
+              </>
               ) : null}
 
               {/* ===== OPEN-SOURCE SIGNALS lane — the trust boundary made visible.
