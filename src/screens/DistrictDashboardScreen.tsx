@@ -343,6 +343,28 @@ export const DistrictDashboardScreen: React.FC = () => {
     return () => window.removeEventListener("focus", onFocus);
   }, [fetchSummary]);
 
+  // Real gap this closed: clicking a district worked, but clicking that
+  // SAME district again did nothing visible -- handleSelectDistrict just
+  // re-fetched identical data, so there was no way to back out to the
+  // statewide view except a full page refresh. Clicking an
+  // already-selected district now toggles it OFF instead.
+  const handleToggleDistrict = (districtId: number) => {
+    if (selectedId === districtId) {
+      setSelectedId(null);
+      setDetail(null);
+      setDistrictDetailCache(null);
+      setSelectedStationId(null);
+      setStations([]);
+      setGatedInfo(null);
+      setAccessRequestId(null);
+      setAccessRequestStatus("idle");
+      stopAccessPoll();
+      setDetailTab("overview");
+    } else {
+      handleSelectDistrict(districtId);
+    }
+  };
+
   const handleSelectDistrict = async (districtId: number) => {
     setSelectedId(districtId);
     setDetailTab("overview"); // a newly-picked district always opens on Overview, never a stale tab from the previous one
@@ -686,7 +708,7 @@ export const DistrictDashboardScreen: React.FC = () => {
                         style={active ? { filter: "drop-shadow(0 0 10px rgba(228,197,144,0.65))" } : undefined}
                         onMouseEnter={() => row && setHoveredId(row.district_id)}
                         onMouseLeave={() => setHoveredId(null)}
-                        onClick={() => row && handleSelectDistrict(row.district_id)}
+                        onClick={() => row && handleToggleDistrict(row.district_id)}
                       />
                       {row && (
                         <text
