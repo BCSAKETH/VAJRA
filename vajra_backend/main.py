@@ -8587,8 +8587,17 @@ async def explain_chart(payload: ExplainChartPayload, location_context: str = De
     generate_applet_spec) -- this is a plain one-shot question, not a tool-
     calling turn, so the tool-calling system prompt must not be prepended."""
     chart_summary = json.dumps(payload.chart_data)[:800]  # bounded input -- never the whole conversation
-    prompt = (f"Explain this police intelligence chart in 2 plain sentences, no jargon, "
-              f"for a busy officer:\n{chart_summary}")
+    # Real bug found live: with a vague one-shot prompt, this model (same
+    # crm-di-glm47b_30b_it noted in catalyst_llm.py) restated the prompt's
+    # own Input/Task/Constraints structure back as its "answer" instead of
+    # producing the 2 sentences -- confirmed live via a real hotspot query.
+    # Explicit "output ONLY / do not restate" framing (soft phrasing, never
+    # the word "strictly" -- that specific word is documented elsewhere in
+    # this codebase to trigger a canned refusal from this same model).
+    prompt = (f"Chart data (JSON): {chart_summary}\n\n"
+              f"Write exactly 2 plain-English sentences telling a busy police officer what this chart shows, "
+              f"no jargon. Output only those 2 sentences -- do not repeat this instruction, the JSON, or any "
+              f"labels like 'Input' or 'Task' back in your answer.")
     try:
         from concurrent.futures import ThreadPoolExecutor
         with ThreadPoolExecutor(max_workers=1) as ex:

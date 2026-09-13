@@ -367,6 +367,26 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
   const handleExplainChart = async () => {
     setIsExplainingChart(true);
     setChartExplanation(null);
+    // Real bug found live: `safeEffectiveData` carries internal-only debug
+    // fields (e.g. _zcql_provenance -- the raw SQL trail behind the
+    // separate "View Grounding" button) alongside the real chart fields.
+    // When the actual chart is thin/empty (e.g. a hotspot query with zero
+    // mappable coordinates), that debug JSON dominates the 800-char budget
+    // server-side, and the model ends up narrating SQL queries instead of
+    // the chart. Strip every internal-only key before sending.
+    const { _zcql_provenance, panels, citations, ...chartOnlyData } = safeEffectiveData as Record<string, any>;
+    // Honest early-exit: a chart with genuinely nothing in it (e.g. a
+    // hotspot query with zero mappable coordinates) has nothing to
+    // narrate -- asking the LLM anyway just invites it to hallucinate
+    // something out of near-empty JSON, worse than a plain "no data" note.
+    const hasRealContent = Object.values(chartOnlyData).some(
+      (v) => (Array.isArray(v) && v.length > 0) || (typeof v === "number") || (typeof v === "string" && v.trim().length > 0)
+    );
+    if (!hasRealContent) {
+      setChartExplanation(lang === "en" ? "Nothing to explain -- this chart has no data for the current query." : "ವಿವರಿಸಲು ಏನೂ ಇಲ್ಲ -- ಈ ಚಾರ್ಟ್‌ನಲ್ಲಿ ಪ್ರಸ್ತುತ ಪ್ರಶ್ನೆಗೆ ಯಾವುದೇ ಡೇಟಾ ಇಲ್ಲ.");
+      setIsExplainingChart(false);
+      return;
+    }
     try {
       const res = await fetch(`${API_BASE}/api/charts/explain`, {
         method: "POST",
@@ -374,7 +394,7 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
           "Content-Type": "application/json",
           "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`,
         },
-        body: JSON.stringify({ chart_data: safeEffectiveData }),
+        body: JSON.stringify({ chart_data: chartOnlyData }),
       });
       const j = await res.json().catch(() => ({}));
       setChartExplanation(j?.explanation || (lang === "en" ? "Explanation unavailable right now." : "ವಿವರಣೆ ಸದ್ಯಕ್ಕೆ ಲಭ್ಯವಿಲ್ಲ."));
