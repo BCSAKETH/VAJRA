@@ -3183,6 +3183,19 @@ class VajraAgentLoop(CognitiveBrainMixin):
                             data_payload.update(tool_output["data"])
                         else:
                             data_payload = tool_output["data"]
+                    # TEMP DIAGNOSTIC (2026-09-13): live report that a "map"
+                    # response's persisted data_json has no hotspots/trend/
+                    # hexbins at all despite the text claiming real clusters
+                    # were found. Confirmed via ChatMessage.data_json directly.
+                    # This traces exactly which tool call(s) ran and what each
+                    # one's data/data_payload looked like, to pinpoint where
+                    # it's lost -- remove once the real cause is found.
+                    if tool_name == "query_hotspots" or (isinstance(tool_output.get("data"), dict) and "hotspots" in tool_output.get("data", {})):
+                        logging.getLogger("vajra_diag").warning(
+                            f"HOTSPOT-DIAG tool={tool_name} tool_output.data keys={list((tool_output.get('data') or {}).keys())} "
+                            f"hotspots_len={len((tool_output.get('data') or {}).get('hotspots') or [])} "
+                            f"data_payload_keys_after_merge={list(data_payload.keys()) if isinstance(data_payload, dict) else type(data_payload)}"
+                        )
                     if tool_output.get("text_result"):
                         last_tool_text_result = tool_output["text_result"]
 
@@ -3344,6 +3357,15 @@ class VajraAgentLoop(CognitiveBrainMixin):
         history.append({"role": "assistant", "content": response_text})
         context["messages"] = history
         session_memory.update_session_context(session_id, context)
+
+        # TEMP DIAGNOSTIC (2026-09-13): see the matching comment above --
+        # confirms whether data_payload still has hotspots at the exact
+        # point run_agent_loop returns to main.py's chat_endpoint.
+        if response_type == "map":
+            logging.getLogger("vajra_diag").warning(
+                f"HOTSPOT-DIAG final response_type=map data_payload_keys={list(data_payload.keys()) if isinstance(data_payload, dict) else type(data_payload)} "
+                f"ai_unavailable={ai_unavailable}"
+            )
 
         return {
             "text": response_text,
