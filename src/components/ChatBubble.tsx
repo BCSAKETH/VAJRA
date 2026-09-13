@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ChatMessage } from "../AppContext";
 import { translations } from "../i18n";
-import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil } from "lucide-react";
+import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2 } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 import { API_BASE } from "../config";
 
@@ -36,6 +36,12 @@ interface ChatBubbleProps {
   totalVariants?: number;
   activeVariantIndex?: number;
   onCycleVariant?: (direction: 1 | -1) => void;
+  // E.1: read-only rendering for SupervisorApprovalReviewModal.tsx -- shows
+  // the message exactly as the officer saw it (POCSO redaction included,
+  // per Loophole L3: unmasked token issued only after approval) without
+  // exposing interactive controls that only make sense for the officer who
+  // owns the conversation (e.g. the POCSO "Request Access" trigger).
+  isReviewMode?: boolean;
 }
 
 // Panel types that InlineWidget can render as a visual (everything else in a
@@ -414,7 +420,7 @@ const speakText = (text: string, lang: "en" | "kn", onEnd: () => void): SpeakRes
 
 export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   message, lang, voicePersona, onExpandWidget, onRetry, onQuickReply, addToast, isLast,
-  onEditMessage, onRetryVariant, totalVariants, activeVariantIndex, onCycleVariant,
+  onEditMessage, onRetryVariant, totalVariants, activeVariantIndex, onCycleVariant, isReviewMode,
 }) => {
   const t = translations[lang];
   const isAI = message.sender === "assistant";
@@ -1128,10 +1134,33 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                 // initial fetch light even though the full blob is already
                 // in memory (needed for auth -- a plain <video src> can't
                 // send the Bearer header this endpoint requires).
+                // E.6: a click-to-expand corner button opens the SAME
+                // full-screen viewingVideoUrl portal already used by the
+                // fallback (loading) chip below -- this inline player
+                // previously had no way to go full-screen at all, only
+                // the small 240px inline box with native browser controls.
                 if (isVideo && previewUrl) {
                   return (
-                    <div key={i} className="rounded-lg overflow-hidden border border-stone-800 bg-stone-950/40">
+                    <div key={i} className="relative group rounded-lg overflow-hidden border border-stone-800 bg-stone-950/40">
                       <video controls preload="metadata" src={previewUrl} className="h-40 w-auto max-w-[240px]" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Fetches a FRESH object URL when a stratus_id
+                          // exists (mirrors handleViewVideoAttachment)
+                          // rather than reusing the cached previewUrls[]
+                          // blob URL directly -- the lightbox's close
+                          // handler revokes whatever URL it was given, and
+                          // revoking the SHARED cached URL would break this
+                          // inline player the next time it re-renders.
+                          if (a.stratus_id) handleViewVideoAttachment(a.stratus_id);
+                          else setViewingVideoUrl(previewUrl);
+                        }}
+                        title={lang === "en" ? "Expand video" : "ವೀಡಿಯೊ ವಿಸ್ತರಿಸಿ"}
+                        className="absolute top-1.5 right-1.5 p-1.5 rounded-lg bg-stone-950/80 border border-stone-750 text-stone-300 opacity-0 group-hover:opacity-100 hover:border-[#C79A4E] hover:text-[#C79A4E] transition-all cursor-pointer"
+                      >
+                        <Maximize2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   );
                 }
@@ -1256,7 +1285,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                     ? (lang === "en" ? "🔍 View Search Details" : "🔍 ಹುಡುಕಾಟ ವಿವರಗಳನ್ನು ವೀಕ್ಷಿಸಿ")
                     : (lang === "en" ? "🔍 View Grounding & ZCQL Provenance" : "🔍 ಆಧಾರ ಮತ್ತು ZCQL ಪುರಾವೆ ವೀಕ್ಷಿಸಿ")}
                 </button>
-                {message.data?.pocso_redacted && message.data?.case_no && (
+                {!isReviewMode && message.data?.pocso_redacted && message.data?.case_no && (
                   pocsoReqStatus === "pending" ? (
                     <span className="flex items-center gap-1 text-[10px] font-mono text-amber-400">
                       <Loader2 className="w-2.5 h-2.5 animate-spin" />

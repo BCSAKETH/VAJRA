@@ -434,6 +434,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // E.4: cross-tab logout sync -- logging out (via SessionTimeoutGuard, a
+  // 401, or an explicit sign-out) in one tab previously left every other
+  // open tab still showing an authenticated screen with a dead token until
+  // its own next API call happened to 401. The "storage" event fires in
+  // every OTHER tab the instant vajra_auth changes in this one, so all of
+  // them switch to Login within milliseconds instead of staying stale.
+  useEffect(() => {
+    const handleStorageSync = (e: StorageEvent) => {
+      if (e.key === "vajra_auth") {
+        const isAuth = e.newValue === "true";
+        setIsAuthenticatedState(isAuth);
+        if (!isAuth) {
+          setCurrentScreenState("login");
+          setBadgeNumberState(null);
+          setRoleTierState(null);
+        }
+      }
+    };
+    window.addEventListener("storage", handleStorageSync);
+    return () => window.removeEventListener("storage", handleStorageSync);
+  }, []);
+
   const setBadgeNumber = (badge: string | null) => {
     setBadgeNumberState(badge);
   };
