@@ -151,6 +151,25 @@ def _normalize_kanglish(text: str) -> str:
     return out if hit else text
 
 
+def _infer_requested_layers(query: str) -> List[str]:
+    """
+    F.1/F.33: which link-type layer(s) a plain-language query implies should
+    open ON in the combined network view -- co-accused, financial, and/or
+    phone/vehicle. Only ever picks the DEFAULT starting selection; the
+    frontend's toggle bar stays fully interactive regardless (Loophole L2 --
+    a wrong guess costs one click, never blocks access to the other layers).
+    """
+    q = (query or "").lower()
+    layers: List[str] = []
+    if any(w in q for w in ("money", "financial", "transaction", "fund", "account", "upi", "hawala", "mule")):
+        layers.append("financial")
+    if any(w in q for w in ("phone", "vehicle", "contact", "number", "plate")):
+        layers.append("phone_vehicle")
+    if not layers or any(w in q for w in ("connected", "network", "associate", "co-accused", "syndicate")):
+        layers.append("co_accused")
+    return layers or ["co_accused"]
+
+
 class VajraAgentLoop(CognitiveBrainMixin):
     """
     Intelligent Agent Loop with Tool Registry, multi-turn session memory resolution,
@@ -232,6 +251,18 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     "suspect_name": {"type": "string", "description": "The name of the suspect offender"}
                 },
                 "required": ["suspect_name"]
+            }
+        },
+        {
+            "name": "trace_connection_path",
+            "description": "F.3: Given TWO named people, find and highlight the shortest chain of co-accused connections between them (e.g. 'how is Ramesh connected to Suresh?', 'connection between X and Y'). Use only when the question names two distinct people to connect, not a single suspect's own network.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name_a": {"type": "string", "description": "The first person's name"},
+                    "name_b": {"type": "string", "description": "The second person's name"}
+                },
+                "required": ["name_a", "name_b"]
             }
         },
         {
@@ -1495,6 +1526,28 @@ class VajraAgentLoop(CognitiveBrainMixin):
         _yb = re.search(r"(?:last|past|previous)\s+(\d{1,2})\s+year", q)
         years_back_g = int(_yb.group(1)) if _yb else 0
 
+        # F.3: "how is X connected to Y?" / "connection between X and Y" --
+        # checked BEFORE the generic single-name "connected to" pattern below
+        # (which would otherwise win first and route to query_graph_network
+        # with only one of the two names). Requires TWO distinct Title-Case
+        # names either side of an explicit two-party connector phrase, so a
+        # normal single-suspect "connected to" question is never misrouted.
+        _pair = (
+            # (?i:...) scopes case-insensitivity to just the fixed keyword
+            # parts -- the [A-Z] name-capture groups must stay CASE-SENSITIVE
+            # (a real "How is ramesh connected to X" with a lowercase name
+            # isn't a well-formed proper name and is safely left to the
+            # generic single-name "connected to" pattern instead).
+            re.search(r"(?i:how\s+(?:is|are))\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)\s+(?i:connected|linked|related)\s+(?i:to)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)", query)
+            or re.search(r"(?i:connection\s+between)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)\s+(?i:and)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)", query)
+            or re.search(r"(?i:link\s+between)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)\s+(?i:and)\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*)", query)
+        )
+        if _pair:
+            name_a, name_b = _pair.group(1).strip(), _pair.group(2).strip()
+            if name_a.lower() not in self._NAME_STOPWORDS and name_b.lower() not in self._NAME_STOPWORDS and name_a.lower() != name_b.lower():
+                logger.warning(f"Keyword-router fallback matched 'trace_connection_path' with params name_a={name_a!r}, name_b={name_b!r} for query: {query!r}")
+                return {"tool": "trace_connection_path", "parameters": {"name_a": name_a, "name_b": name_b}}
+
         # (keywords, tool_name, params, required_guess) -- required_guess is
         # checked truthy before this pattern is allowed to match at all.
         patterns: List[Tuple[List[str], str, Dict[str, Any], str]] = [
@@ -1542,7 +1595,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             (["network", "syndicate", "co-accused", "connections for", "connections of", "connected to",
               "connected with", "associated with", "crimes associated", "crimes connected", "crimes linked",
               "main crimes", "crimes involving", "involved in", "linked to", "crimes is", "crimes does",
-              "crimes of", "cases associated", "cases connected", "ಸಂಪರ್ಕ", "ಜಾಲ", "ಸಂಘಟಿತ"], "query_graph_network", {"suspect_name": name}, name),
+              "crimes of", "cases associated", "cases connected", "ಸಂಪರ್ಕ", "ಜಾಲ", "ಸಂಘಟಿತ"], "query_graph_network", {"suspect_name": name, "requested_layers": _infer_requested_layers(query)}, name),
             (["mo profile", "modus operandi", "behavioral profile", "behaviour profile"], "get_mo_profile", {"suspect_name": name}, name),
             (["tell me about", "who is", "information on", "details on", "profile of", "about suspect", "brief me on",
               "dossier on", "investigation dossier", "full dossier on", "dossier for", "suspect dossier", "dossier of", "complete profile of"], "generate_full_report", {"suspect_name": name, "user_query": query}, name),
@@ -1666,7 +1719,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             if has("money laundering", "mule", "financial ring", "laundering trail", "money trail"):
                 return None
             if has("network", "connection", "syndicate", "co-accused", "linked", "connected to", "associate"):
-                facets.append(("query_graph_network", {"suspect_name": name}))
+                facets.append(("query_graph_network", {"suspect_name": name, "requested_layers": _infer_requested_layers(query)}))
             if has("risk", "conviction", "recidiv", "re-offend", "reoffend", "dangerous", "threat"):
                 facets.append(("get_offender_risk", {"suspect_name": name}))
             if has("mo ", "modus operandi", "behavioral", "behaviour", "method of"):
@@ -1733,6 +1786,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
                              "suggest section", "section for", "sections for", "sections apply"],
         "query_graph_network": ["network", "syndicate", "co-accused", "connection", "connected to", "linked",
                                 "associate", "gang member", "crimes is", "crimes does", "accomplice"],
+        "trace_connection_path": ["how is", "how are", "connection between", "link between", "connected to each other",
+                                  "connected to one another", "shortest connection", "chain of connections"],
         "query_financial_links": ["financial", "money trail", "transaction", "bank account", "payment"],
         "detect_financial_ring": ["money laundering", "hawala", "mule account", "financial ring",
                                   "money network", "laundering", "money ring"],
@@ -1848,6 +1903,49 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 filtered.append(ws_tool)
         logger.info(f"Tool pre-filter: {len(filtered)}/{len(self.TOOLS)} tools sent to GLM -> {[t['name'] for t in filtered]}")
         return filtered
+
+    def _compute_repeat_offenders_list(self, district: str = "") -> List[Dict[str, Any]]:
+        """
+        Shared repeat-offenders computation, factored out so `get_repeat_
+        offenders` and F.9's mule-vs-repeat-offender cross-check both read
+        the SAME real data the SAME way (no drift between two independently
+        maintained copies). Reads from ProactiveAlerts (populated by the
+        scheduled repeat-offender detection job), not a live per-request
+        Accused-table scan -- unchanged from the original implementation
+        this was extracted from, just no longer duplicated inline.
+        """
+        offenders: List[Dict[str, Any]] = []
+        if not catalyst_app:
+            return offenders
+        try:
+            dist_id = None
+            if district:
+                d_res = catalyst_app.zql().execute_query(f"SELECT DistrictID FROM District WHERE DistrictName LIKE '*{district}*' LIMIT 1")
+                if d_res:
+                    dist_id = d_res[0].get("District", {}).get("DistrictID")
+            alert_res = catalyst_app.zql().execute_query(
+                "SELECT DistrictID, AlertMessage, Severity, TriggerTime FROM ProactiveAlerts "
+                "WHERE AlertType = 'REPEAT_OFFENDER' ORDER BY TriggerTime DESC LIMIT 100"
+            )
+            district_res = catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")
+            district_names = {d.get("District", {}).get("DistrictID"): d.get("District", {}).get("DistrictName") for d in district_res}
+            for r in alert_res:
+                a = r.get("ProactiveAlerts", {})
+                d_id = a.get("DistrictID")
+                if dist_id and str(d_id) != str(dist_id):
+                    continue
+                m = re.search(r"Suspect '(.+?)' detected in (\d+) separate cases", a.get("AlertMessage") or "")
+                if m:
+                    offenders.append({
+                        "suspect": m.group(1),
+                        "case_count": int(m.group(2)),
+                        "district": district_names.get(d_id, "Unknown"),
+                        "severity": a.get("Severity")
+                    })
+        except Exception as ex:
+            logger.warning(f"_compute_repeat_offenders_list query failed: {ex}")
+        offenders.sort(key=lambda x: x["case_count"], reverse=True)
+        return offenders
 
     def _fuzzy_accused_match(self, name: str, cutoff: float = 0.82) -> str:
         """
@@ -4181,8 +4279,17 @@ class VajraAgentLoop(CognitiveBrainMixin):
         elif tool_name == "query_graph_network":
             suspect = self.sanitize_sql_input(params.get("suspect_name", ""))
             response_type = "network"
+            # F.1/F.33: which layer(s) the combined view opens with checked
+            # ON -- pre-computed by the router from the officer's actual
+            # query text (Loophole L2 still applies: the frontend toggle bar
+            # stays fully interactive regardless, so a wrong guess here only
+            # costs one click). Falls back to co-accused-only when called
+            # without a query-derived hint (e.g. generate_full_report's
+            # internal sub-call, or the LLM tool-calling path, which doesn't
+            # pass this param).
+            requested_layers = params.get("requested_layers") or ["co_accused"]
             network_info = graph_rag.get_criminal_network(suspect)
-            
+
             # Combine financial transaction links -- filtered to this
             # suspect's actual linked cases. Previously pulled the first 10
             # FinancialTransaction rows globally with no WHERE clause at all,
@@ -4205,8 +4312,54 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         })
                 except Exception as ex:
                     logger.warning(f"Financial query fallback error: {ex}")
-            
+
+            # F.1/F.33: fold the financial transactions into the SAME
+            # combined nodes/edges payload as genuinely new
+            # "financial_account" nodes (Loophole L4: kept OFF the existing
+            # suspect/case/person/phone/vehicle color vocabulary
+            # NetworkGraph.tsx already renders -- "case" already means a
+            # linked CrimeNo there, not a money-trail account, so reusing it
+            # would be its own new bug), tagged with a "financial" layer for
+            # the toggle bar. De-duplicated by real-world entity LABEL
+            # (Loophole L1) against whatever co-accused/phone/vehicle nodes
+            # already exist -- a name that happens to also be a financial
+            # sender/receiver ref renders once, keeping its original
+            # (co-accused) color, not twice.
+            if not network_info.get("ambiguous_match"):
+                existing_by_label: Dict[str, Dict[str, Any]] = {}
+                for n in network_info.get("nodes", []):
+                    lk = str(n.get("label", "")).strip().lower()
+                    if lk:
+                        existing_by_label.setdefault(lk, n)
+
+                def _fin_node_id(party: Any) -> Optional[str]:
+                    if not party:
+                        return None
+                    lk = str(party).strip().lower()
+                    existing = existing_by_label.get(lk)
+                    if existing:
+                        layers = existing.setdefault("layers", [existing.get("layer", "co_accused")])
+                        if "financial" not in layers:
+                            layers.append("financial")
+                        return existing["id"]
+                    node = {"id": f"fin_{lk}", "label": str(party), "type": "financial_account", "layer": "financial"}
+                    network_info.setdefault("nodes", []).append(node)
+                    existing_by_label[lk] = node
+                    return node["id"]
+
+                for txn in fin_txns:
+                    s_id, r_id = _fin_node_id(txn.get("sender")), _fin_node_id(txn.get("receiver"))
+                    if s_id and r_id:
+                        amt = txn.get("amount")
+                        network_info.setdefault("edges", []).append({
+                            "source": s_id, "target": r_id, "layer": "financial",
+                            "label": f"₹{amt:,.0f}" if isinstance(amt, (int, float)) else None,
+                            "amount": amt, "txn_time": txn.get("txn_time"),
+                        })
+
             network_info["financial_transactions"] = fin_txns
+            network_info["active_layers"] = requested_layers
+            network_info["primary_entity"] = suspect  # Loophole L3: always shown regardless of any active filter
             data = network_info
             if network_info.get("ambiguous_match"):
                 # Confirmed live: "ramesh" fuzzy-matched ~15 distinct real
@@ -4266,6 +4419,63 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 text_result = "\n".join(net_lines)
                 citations.append({"type": "GraphRAG Syndicate Map", "id": suspect, "details": "Traversed co-accused links + degree centrality"})
             self._write_audit_log(employee_id, "Relational GraphRAG Traversal", suspect, f"Traced network of {suspect}", text_result, session_id)
+
+        # 5b. trace_connection_path (F.3) -- "how is X connected to Y?"
+        elif tool_name == "trace_connection_path":
+            name_a = self.sanitize_sql_input(params.get("name_a", ""))
+            name_b = self.sanitize_sql_input(params.get("name_b", ""))
+            path_result = graph_rag.find_shortest_connection(name_a, name_b, max_hops=4)
+            if path_result.get("ambiguous_match"):
+                # Loophole L3: applies to EITHER end, not just the starting name.
+                response_type = "text"
+                amb_name = path_result.get("ambiguous_name", "")
+                cands = path_result.get("candidate_names", [])
+                text_result = (
+                    f"'{amb_name}' matches multiple different people in the database, not one person "
+                    f"(found {len(cands)}+ others with this name or a name containing it: "
+                    f"{', '.join(cands[:5])}{'...' if len(cands) > 5 else ''}). "
+                    f"Please provide a fuller name (e.g. full first and last name) to trace a specific connection."
+                )
+                data = path_result
+                citations.append({"type": "GraphRAG Shortest-Path Trace", "id": f"{name_a} <-> {name_b}", "details": "Ambiguous name -- not traced"})
+            elif not path_result.get("found"):
+                # Loophole L1: explicit "no connection found," never a
+                # blank/confusing graph.
+                response_type = "text"
+                text_result = path_result.get("message") or f"No connection found between '{name_a}' and '{name_b}'."
+                data = path_result
+                citations.append({"type": "GraphRAG Shortest-Path Trace", "id": f"{name_a} <-> {name_b}", "details": "BFS co-accused search, up to 4 hops, no path found"})
+            else:
+                response_type = "network"
+                path = path_result.get("path", [])
+                hops = path_result.get("hops", len(path) - 1)
+                other_count = path_result.get("other_paths_same_length", 0)
+                nodes = [
+                    {"id": f"path_{i}", "label": nm,
+                     "type": "suspect" if i in (0, len(path) - 1) else "person", "layer": "co_accused"}
+                    for i, nm in enumerate(path)
+                ]
+                edges = [{"source": f"path_{i}", "target": f"path_{i + 1}", "layer": "co_accused"} for i in range(len(path) - 1)]
+                data = {
+                    "nodes": nodes, "edges": edges, "path": path, "hops": hops,
+                    "primary_entity": name_a, "target_suspect": f"{name_a} ↔ {name_b}",
+                    "other_paths_same_length": other_count,
+                }
+                chain = " → ".join(path)
+                # Loophole L2: shows the first path found, and explicitly
+                # notes when other equally-short paths exist rather than
+                # presenting this one as the only connection.
+                other_note = (
+                    f" {other_count} other path{'s' if other_count != 1 else ''} of the same length also exist(s) between them."
+                    if other_count > 0 else ""
+                )
+                text_result = (
+                    f"# \U0001F517 CONNECTION TRACE: {name_a.upper()} ↔ {name_b.upper()}\n\n"
+                    f"**Shortest path found ({hops} hop{'s' if hops != 1 else ''}):** {chain}\n\n"
+                    f"This is the shortest chain of co-accused links found between the two.{other_note}"
+                )
+                citations.append({"type": "GraphRAG Shortest-Path Trace", "id": f"{name_a} <-> {name_b}", "details": f"BFS co-accused traversal, {hops} hop(s)"})
+            self._write_audit_log(employee_id, "Shortest-Path Connection Trace", f"{name_a} <-> {name_b}", f"Trace connection between {name_a} and {name_b}", text_result, session_id)
 
         # 6. query_financial_links
         elif tool_name == "query_financial_links":
@@ -4447,8 +4657,81 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     "label": n,
                     "sublabel": f"in {indeg} / out {outdeg} · hop {hop_of.get(n, '?')}",
                     "type": "suspect" if n == seed else ("case" if role in ("collection hub", "distribution hub") else "person"),
+                    "role": role,
                 })
+
+            # F.9: cross-check classified hubs (collection/distribution)
+            # against the Repeat Offenders list. Loophole L1: resolves each
+            # hub's raw account/sender-receiver reference via the SAME
+            # fuzzy-match-then-disambiguate helper already used elsewhere for
+            # suspect lookups (`_fuzzy_accused_match` -- exact substring
+            # first, difflib fallback only above a strict cutoff), never a
+            # naive string-equality join. If this dataset's sender_ref/
+            # receiver_ref values are opaque account codes rather than real
+            # accused names, this safely finds nothing (no false positives)
+            # rather than guessing.
+            try:
+                repeat_offender_names = {
+                    str(o.get("suspect", "")).strip().lower()
+                    for o in self._compute_repeat_offenders_list()
+                    if o.get("suspect")
+                }
+            except Exception as _rex:
+                logger.warning(f"F.9 repeat-offender cross-check lookup failed: {_rex}")
+                repeat_offender_names = set()
+            if repeat_offender_names:
+                for node in nodes:
+                    if node.get("role") in ("collection hub", "distribution hub"):
+                        candidate = self._fuzzy_accused_match(node["label"])
+                        if candidate and candidate.strip().lower() in repeat_offender_names:
+                            node["cross_flag"] = (
+                                "Also a known repeat offender (per the scheduled repeat-offender analysis) -- "
+                                "combined signal, review priority raised."
+                            )
+
             edges = [{"source": s, "target": rc} for s, rc in edges_set]
+
+            # F.7: flag financial round-trip loops on the SAME already-built
+            # graph (Loophole L2 -- no second walk of the transaction table).
+            # Loophole L1: excludes any cycle passing through an already-
+            # classified high-volume hub (a large legitimate clearing
+            # account would otherwise false-positive as "laundering" just
+            # for having many connections) -- only a cycle of distinct,
+            # low-transaction-count accounts is reported.
+            round_trip_loops: List[List[str]] = []
+            try:
+                hub_account_ids = {n["id"] for n in nodes if n.get("role") in ("collection hub", "distribution hub")}
+                graph_adj: Dict[str, List[str]] = {}
+                for s, rc in edges_set:
+                    graph_adj.setdefault(s, []).append(rc)
+
+                def _find_round_trip_loops() -> List[List[str]]:
+                    cycles: List[List[str]] = []
+
+                    def dfs(start: str, current: str, path: List[str], seen: set):
+                        if len(cycles) >= 5 or len(path) > 6:  # bounded: matches MAX_HOPS, caps reported loops
+                            return
+                        for neighbor in graph_adj.get(current, []):
+                            if len(cycles) >= 5:
+                                return
+                            if neighbor in hub_account_ids:
+                                continue  # Loophole L1
+                            if neighbor == start and len(path) >= 2:
+                                cycles.append(path + [neighbor])
+                            elif neighbor not in seen:
+                                dfs(start, neighbor, path + [neighbor], seen | {neighbor})
+
+                    for node_id in graph_adj:
+                        if node_id in hub_account_ids:
+                            continue  # Loophole L1: never start a loop search from an excluded hub either
+                        if len(cycles) >= 5:
+                            break
+                        dfs(node_id, node_id, [node_id], {node_id})
+                    return cycles[:5]
+
+                round_trip_loops = _find_round_trip_loops()
+            except Exception as _lex:
+                logger.warning(f"F.7 round-trip loop detection failed: {_lex}")
             tx_records.sort(key=lambda t: t.get("txn_time") or "", reverse=True)
             seen_pairs = set()
             representatives, extras = [], []
@@ -4458,7 +4741,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 seen_pairs.add(pair)
             tx_records = representatives + extras
             data = {"nodes": nodes, "edges": edges, "seed": seed, "max_hop_reached": deepest_hop_reached,
-                    "financial_transactions": tx_records[:60]}
+                    "financial_transactions": tx_records[:60], "round_trip_loops": round_trip_loops}
 
             if not all_nodes:
                 fin_lines = [
@@ -4519,6 +4802,24 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         fin_lines.append(f"  - **{acct}** (Hop {hop_of.get(acct, '?')}): Disburses to **{deg} distinct destinations** [DIST-PAYOUT].")
                 if not top_c and not top_d:
                     fin_lines.append("- **Flow Classification:** Point-to-point transfers; no extreme centralized fan-in/fan-out hub identified.")
+
+                # F.9: any hub also confirmed on the Repeat Offenders list.
+                cross_flagged = [n for n in nodes if n.get("cross_flag")]
+                if cross_flagged:
+                    fin_lines.append("")
+                    fin_lines.append("### \U0001F6A8 Cross-Referenced Repeat Offender Signal (F.9)")
+                    for n in cross_flagged:
+                        fin_lines.append(f"- **{n['label']}**: {n['cross_flag']}")
+
+                # F.7: round-trip (money-laundering-signature) loops flagged
+                # on this same graph, excluding any cycle through an
+                # already-classified high-volume hub (Loophole L1).
+                if round_trip_loops:
+                    fin_lines.append("")
+                    fin_lines.append("### \U0001F501 Round-Trip Loops Flagged (F.7)")
+                    fin_lines.append("Money that leaves an account and eventually returns through a chain of others -- a classic layering/laundering signature:")
+                    for loop in round_trip_loops:
+                        fin_lines.append(f"  - {' → '.join(loop)}")
 
                 fin_lines.append("")
                 fin_lines.append("### ⚖️ Statutory Violations & Freezing Mandates")
@@ -6208,43 +6509,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 _top_n = 15
             _top_n = max(1, min(_top_n, 50))
             response_type = "repeat_offenders"
-            offenders = []
-            if catalyst_app:
-                try:
-                    dist_id = None
-                    if district:
-                        d_res = catalyst_app.zql().execute_query(f"SELECT DistrictID FROM District WHERE DistrictName LIKE '*{district}*' LIMIT 1")
-                        if d_res:
-                            dist_id = d_res[0].get("District", {}).get("DistrictID")
-                    # Reads from ProactiveAlerts (populated by the scheduled
-                    # repeat-offender detection job -- see
-                    # functions/proactive_alerts/index.py) rather than
-                    # recomputing at request time: the Accused table has
-                    # ~14,000 rows, needing ~47 paginated 300-row ZCQL calls to
-                    # scan in full, which is far too slow for an interactive
-                    # chat turn on top of an already-slow GLM round-trip.
-                    alert_res = catalyst_app.zql().execute_query(
-                        "SELECT DistrictID, AlertMessage, Severity, TriggerTime FROM ProactiveAlerts "
-                        "WHERE AlertType = 'REPEAT_OFFENDER' ORDER BY TriggerTime DESC LIMIT 100"
-                    )
-                    district_res = catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")
-                    district_names = {d.get("District", {}).get("DistrictID"): d.get("District", {}).get("DistrictName") for d in district_res}
-                    for r in alert_res:
-                        a = r.get("ProactiveAlerts", {})
-                        d_id = a.get("DistrictID")
-                        if dist_id and str(d_id) != str(dist_id):
-                            continue
-                        m = re.search(r"Suspect '(.+?)' detected in (\d+) separate cases", a.get("AlertMessage") or "")
-                        if m:
-                            offenders.append({
-                                "suspect": m.group(1),
-                                "case_count": int(m.group(2)),
-                                "district": district_names.get(d_id, "Unknown"),
-                                "severity": a.get("Severity")
-                            })
-                except Exception as ex:
-                    logger.warning(f"get_repeat_offenders query failed: {ex}")
-            offenders.sort(key=lambda x: x["case_count"], reverse=True)
+            offenders = self._compute_repeat_offenders_list(district)
             offenders = offenders[:_top_n]
             data = {"offenders": offenders, "district_filter": district or None, "requested_top_n": _top_n}
             if offenders:

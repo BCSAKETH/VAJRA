@@ -310,9 +310,13 @@ interface InlineWidgetProps {
   type: string;
   data: any;
   onExpand: () => void;
+  // F.23: threaded down to the inline ExpandedOverlay render below so a
+  // repeat-offender row shown directly in chat (not just the full-screen
+  // view) can also jump straight to that person's network.
+  onFollowUpQuery?: (text: string) => void;
 }
 
-const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpand }) => {
+const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpand, onFollowUpQuery }) => {
   const { lang, addToast } = useApp();
   // F.30: "Explain This Chart" -- hooks declared unconditionally, before the
   // early `return null` below, per the Rules of Hooks (this component has
@@ -763,7 +767,7 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
         ) : effectiveType === "news" ? (
           <NewsView data={safeEffectiveData} lang={lang} />
         ) : (
-          <ExpandedOverlay inline type={effectiveType} data={safeEffectiveData} onClose={() => {}} />
+          <ExpandedOverlay inline type={effectiveType} data={safeEffectiveData} onClose={() => {}} onFollowUpQuery={onFollowUpQuery} />
         )}
         </div>
       </div>

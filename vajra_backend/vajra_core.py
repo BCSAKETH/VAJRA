@@ -1460,10 +1460,18 @@ class VajraGraphRAG:
     def __init__(self):
         pass
 
-    def get_criminal_network(self, suspect_name: str) -> Dict[str, Any]:
+    def get_criminal_network(self, suspect_name: str, max_hops: int = 1) -> Dict[str, Any]:
         """
         Retrieves co-conspirator and related incident links by querying the
         live Catalyst tables using ZCQL.
+
+        max_hops=1 (default) preserves the exact original single-hop
+        behavior below, unchanged. max_hops=2/3 additionally walks OUTWARD
+        from the 1-hop co-accused via `_get_1hop_co_accused` (F.2), bounded
+        by MAX_HOPS_WALK/MAX_VISITED_WALK the same way `detect_financial_ring`
+        bounds its own multi-hop walk (agent_loop.py), and skipping any
+        ambiguous name encountered mid-walk rather than risking a false merge
+        (Loophole L3, same guard as the 1-hop case below).
         """
         if catalyst_app:
             try:
@@ -1529,14 +1537,38 @@ class VajraGraphRAG:
                     co_query = f"SELECT AccusedName, CaseMasterID FROM Accused WHERE CaseMasterID IN ({case_ids_str})"
                     co_res = catalyst_app.zql().execute_query(co_query)
                     co_accused_names = list(set([r.get("Accused", {}).get("AccusedName") for r in co_res if suspect_name.lower() not in r.get("Accused", {}).get("AccusedName").lower()]))
-                    
+
+                    # F.4/F.5: which of the suspect's shared CaseMasterIDs each
+                    # co-accused actually appears in -- real per-pair overlap,
+                    # not an assumption that every co-accused shares every
+                    # case. Feeds edge "weight" (shared-case COUNT) and
+                    # "first_seen" (earliest shared case's real registered
+                    # date) below, both derived from data already fetched
+                    # here -- no new query, no new storage.
+                    co_case_ids: Dict[str, List[Any]] = {}
+                    for r in co_res:
+                        rd = r.get("Accused", {})
+                        nm, cid2 = rd.get("AccusedName"), rd.get("CaseMasterID")
+                        if nm and cid2 is not None and suspect_name.lower() not in nm.lower():
+                            co_case_ids.setdefault(nm, []).append(cid2)
+
                     # 3. Retrieve case details from CaseMaster
                     cases_query = f"""
-                        SELECT CrimeNo, PoliceStationID
+                        SELECT CaseMasterID, CrimeNo, PoliceStationID, CrimeRegisteredDate
                         FROM CaseMaster
                         WHERE CaseMasterID IN ({case_ids_str})
                     """
                     cases_res = catalyst_app.zql().execute_query(cases_query)
+                    # F.5: CaseMasterID -> CrimeRegisteredDate, real column
+                    # (docs/SCHEMA.md), used below as each edge's "first seen"
+                    # date -- the earliest shared case's date, per the item's
+                    # own defined convention (Loophole L2).
+                    case_date_by_id: Dict[Any, Any] = {}
+                    for c in cases_res:
+                        cm_data0 = c.get("CaseMaster", {})
+                        cmid = cm_data0.get("CaseMasterID")
+                        if cmid is not None and cm_data0.get("CrimeRegisteredDate"):
+                            case_date_by_id[cmid] = cm_data0.get("CrimeRegisteredDate")
 
                     # Batch-fetch every station name in one call instead of one
                     # ZCQL round-trip per linked case -- a suspect with, say, 5
@@ -1564,7 +1596,14 @@ class VajraGraphRAG:
                     # backward compat with any caller still reading them) --
                     # the suspect is the root, cases are 1st-degree nodes,
                     # co-accused sharing those cases are 2nd-degree nodes.
-                    nodes = [{"id": "suspect", "label": suspect_name, "type": "suspect"}]
+                    # F.1: "layer" tags every node/edge with which of the
+                    # combined-view toggle groups it belongs to (co_accused /
+                    # financial / phone_vehicle) -- kept SEPARATE from "type"
+                    # (which stays on the existing color/legend vocabulary
+                    # NetworkGraph.tsx already renders: suspect/case/person/
+                    # phone/vehicle/financial_account) so toggling a layer
+                    # on/off never changes how a node is colored.
+                    nodes = [{"id": "suspect", "label": suspect_name, "type": "suspect", "layer": "co_accused"}]
                     edges = []
                     for c in cases_res:
                         cm_data = c.get("CaseMaster", {})
@@ -1574,17 +1613,30 @@ class VajraGraphRAG:
                         linked_cases.append(f"{crime_no} ({unit_name})")
 
                         case_node_id = f"case_{crime_no}"
-                        nodes.append({"id": case_node_id, "label": crime_no, "sublabel": unit_name, "type": "case"})
-                        edges.append({"source": "suspect", "target": case_node_id})
+                        nodes.append({"id": case_node_id, "label": crime_no, "sublabel": unit_name, "type": "case", "layer": "co_accused"})
+                        edges.append({"source": "suspect", "target": case_node_id, "layer": "co_accused"})
 
                     for co in co_accused_names:
                         co_node_id = f"person_{co}"
-                        nodes.append({"id": co_node_id, "label": co, "type": "person"})
+                        nodes.append({"id": co_node_id, "label": co, "type": "person", "layer": "co_accused", "hop": 1})
+                        # F.4: real shared-case COUNT between the suspect and
+                        # this specific co-accused (not every case the
+                        # suspect has -- only the ones this person actually
+                        # co-appears in, per co_case_ids built above).
+                        # F.5: "first seen" = the earliest of those shared
+                        # cases' real CrimeRegisteredDate -- both derived from
+                        # data already fetched, no new query/storage.
+                        shared_ids = list(dict.fromkeys(co_case_ids.get(co, [])))
+                        shared_dates = [case_date_by_id[cid2] for cid2 in shared_ids if cid2 in case_date_by_id]
                         # Link each co-accused to the first case node (best-effort;
                         # a precise per-case link would need the co-accused's own
                         # CaseMasterID carried through from the co_query above)
                         if len(nodes) > 1:
-                            edges.append({"source": nodes[1]["id"], "target": co_node_id})
+                            edges.append({
+                                "source": nodes[1]["id"], "target": co_node_id, "layer": "co_accused",
+                                "weight": len(shared_ids) or 1,
+                                "first_seen": min(shared_dates) if shared_dates else None,
+                            })
 
                     # Degree centrality (deterministic, no networkx -> respects the
                     # vendor disk cap): count the edges touching each node. The
@@ -1605,6 +1657,18 @@ class VajraGraphRAG:
                     )[:8]
                     person_centrality = [c for c in centrality if c["type"] in ("suspect", "person")]
                     hub = person_centrality[0] if person_centrality else (centrality[0] if centrality else None)
+
+                    # F.6: attach each node's own normalized degree centrality
+                    # (same `deg` counts computed just above -- no extra
+                    # query) so the frontend can blend it with an individual
+                    # risk score WHEN one is available for that node, without
+                    # ever implying a risk value that was never actually
+                    # computed (real per-node risk scoring stays a separate,
+                    # explicit get_offender_risk call -- not fabricated here).
+                    max_deg = max(deg.values()) if deg else 0
+                    if max_deg > 0:
+                        for n in nodes:
+                            n["centrality"] = round(deg.get(n["id"], 0) / max_deg, 3)
 
                     # SHARED-ATTRIBUTE (Tier-2) LINKS: people connected by a
                     # shared phone or vehicle across DIFFERENT cases -- the
@@ -1633,11 +1697,63 @@ class VajraGraphRAG:
                                     if onm and onm.lower() not in seen:
                                         seen.add(onm.lower())
                                         nid = f"shared_{len(nodes)}"
-                                        nodes.append({"id": nid, "label": onm, "type": "shared_link", "sublabel": f"shared {attr_kind}"})
-                                        edges.append({"source": "suspect", "target": nid, "kind": "shared_attribute", "label": f"shared {attr_kind}"})
+                                        # F.1/L4: node "type" uses the real,
+                                        # already-existing phone/vehicle
+                                        # vocabulary NetworkGraph.tsx colors
+                                        # (NODE_COLORS/NODE_TYPE_LABELS
+                                        # already define both, previously
+                                        # unused since every shared-attribute
+                                        # node was tagged the generic
+                                        # "shared_link" instead) -- "layer"
+                                        # (phone_vehicle) is the separate,
+                                        # new field the toggle bar filters on.
+                                        nodes.append({"id": nid, "label": onm, "type": attr_kind, "layer": "phone_vehicle", "sublabel": f"shared {attr_kind}"})
+                                        edges.append({"source": "suspect", "target": nid, "kind": "shared_attribute", "label": f"shared {attr_kind}", "layer": "phone_vehicle"})
                                         shared_links.append({"name": onm, "via": attr_kind, "value": attr_val})
                     except Exception as e:
                         logger.info(f"Shared-attribute linking skipped (AccusedContact not seeded?): {e}")
+
+                    # F.2: multi-hop walk (2nd/3rd degree) OUTWARD from the
+                    # already-computed 1-hop co-accused, bounded exactly like
+                    # `detect_financial_ring`'s own multi-hop walk
+                    # (agent_loop.py: MAX_HOPS/MAX_VISITED) -- Loophole L1.
+                    # max_hops=1 (the default) never enters this block, so
+                    # every existing caller's behavior is completely
+                    # unchanged. 2nd/3rd-degree edges carry "hop" >= 2 so the
+                    # frontend can render them visually distinct (dashed/
+                    # faded) from direct 1-hop links -- Loophole L2.
+                    hops_walked = 1
+                    if max_hops > 1:
+                        MAX_HOPS_WALK = min(max_hops, 3)
+                        MAX_VISITED_WALK = 60
+                        id_for_name: Dict[str, str] = {suspect_name.lower(): "suspect"}
+                        for co in co_accused_names:
+                            id_for_name[co.lower()] = f"person_{co}"
+                        visited_names = set(id_for_name.keys())
+                        frontier = list(co_accused_names)
+                        hop = 1
+                        while frontier and hop < MAX_HOPS_WALK and len(visited_names) < MAX_VISITED_WALK:
+                            next_frontier: List[str] = []
+                            for nm in frontier:
+                                if len(visited_names) >= MAX_VISITED_WALK:
+                                    break
+                                hop_result = self._get_1hop_co_accused(nm)
+                                if hop_result.get("ambiguous_match"):
+                                    continue  # L3: skip ambiguous hubs entirely, never silently merge
+                                src_id = id_for_name.get(nm.lower(), f"person_{nm}")
+                                for co_name in hop_result.get("co_accused_names", []):
+                                    key = co_name.lower()
+                                    if key in visited_names or len(visited_names) >= MAX_VISITED_WALK:
+                                        continue
+                                    visited_names.add(key)
+                                    nid = f"hop{hop + 1}_{co_name}"
+                                    id_for_name[key] = nid
+                                    nodes.append({"id": nid, "label": co_name, "type": "person", "layer": "co_accused", "hop": hop + 1})
+                                    edges.append({"source": src_id, "target": nid, "layer": "co_accused", "hop": hop + 1})
+                                    next_frontier.append(co_name)
+                            frontier = next_frontier
+                            hop += 1
+                        hops_walked = hop
 
                     return {
                         "target_suspect": suspect_name,
@@ -1650,12 +1766,131 @@ class VajraGraphRAG:
                         "centrality": centrality,
                         "hub": hub,
                         "shared_links": shared_links,
-                        "case_ids": case_ids
+                        "case_ids": case_ids,
+                        "hops_walked": hops_walked
                     }
             except Exception as e:
                 logger.error(f"Failed to perform Zoho Catalyst relational GraphRAG trace: {e}")
 
         return self._fallback_result(suspect_name)
+
+    def _get_1hop_co_accused(self, name: str) -> Dict[str, Any]:
+        """
+        Lightweight single-hop co-accused lookup shared by the multi-hop walk
+        (F.2, above) and the shortest-connection search (F.3, below). Mirrors
+        `get_criminal_network`'s own ambiguous-name guard exactly (a common
+        name -- e.g. "Ramesh" -- LIKE-matching several DISTINCT real people
+        must never be silently merged into one fake path/network), but skips
+        the heavier station/centrality/shared-attribute enrichment a full
+        single-suspect network view needs -- callers here only need "who is
+        this person's direct co-accused," repeated across many hops.
+        """
+        if not catalyst_app or not name or not name.strip():
+            return {"ambiguous_match": False, "co_accused_names": [], "case_ids": []}
+        try:
+            _sn = str(name).replace("'", "''")
+            accused_res = catalyst_app.zql().execute_query(
+                f"SELECT AccusedName, CaseMasterID FROM Accused WHERE AccusedName LIKE '*{_sn}*'")
+            if not accused_res:
+                return {"ambiguous_match": False, "co_accused_names": [], "case_ids": []}
+            distinct_names: Dict[str, List[Any]] = {}
+            for r in accused_res:
+                a = r.get("Accused", {})
+                nm, cid = a.get("AccusedName"), a.get("CaseMasterID")
+                if nm and cid is not None:
+                    distinct_names.setdefault(nm, []).append(cid)
+            if len(distinct_names) > 1:
+                exact = next((n for n in distinct_names if n.lower() == name.lower()), None)
+                if not exact:
+                    others = sorted(n for n in distinct_names if n.lower() != name.lower())
+                    return {"ambiguous_match": True, "candidate_names": others[:10], "co_accused_names": [], "case_ids": []}
+                case_ids = distinct_names[exact]
+            else:
+                case_ids = list(distinct_names.values())[0] if distinct_names else []
+            if not case_ids:
+                return {"ambiguous_match": False, "co_accused_names": [], "case_ids": []}
+            case_ids_str = ",".join(map(str, case_ids))
+            co_res = catalyst_app.zql().execute_query(
+                f"SELECT AccusedName, CaseMasterID FROM Accused WHERE CaseMasterID IN ({case_ids_str})")
+            seen = set()
+            co_names: List[str] = []
+            for r in co_res:
+                nm = r.get("Accused", {}).get("AccusedName")
+                if nm and nm.lower() != name.lower() and nm.lower() not in seen:
+                    seen.add(nm.lower())
+                    co_names.append(nm)
+            return {"ambiguous_match": False, "co_accused_names": co_names, "case_ids": case_ids}
+        except Exception as e:
+            logger.warning(f"_get_1hop_co_accused failed for {name!r}: {e}")
+            return {"ambiguous_match": False, "co_accused_names": [], "case_ids": []}
+
+    def find_shortest_connection(self, name_a: str, name_b: str, max_hops: int = 4) -> Dict[str, Any]:
+        """
+        F.3 -- "How is X connected to Y?" Breadth-first search outward from
+        name_a until name_b is found or max_hops is exhausted, reusing the
+        SAME 1-hop co-accused lookup (and its ambiguous-name guard, Loophole
+        L3) as the F.2 multi-hop walk above -- both ends of the search are
+        subject to it, not just the starting name.
+        """
+        from collections import deque
+        if not name_a or not name_a.strip() or not name_b or not name_b.strip():
+            return {"found": False, "message": "Both names are required to trace a connection."}
+        start_result = self._get_1hop_co_accused(name_a)
+        if start_result.get("ambiguous_match"):
+            return {"found": False, "ambiguous_match": True, "ambiguous_name": name_a,
+                    "candidate_names": start_result.get("candidate_names", []),
+                    "message": f"'{name_a}' matches multiple different people -- please provide a fuller name."}
+        end_check = self._get_1hop_co_accused(name_b)
+        if end_check.get("ambiguous_match"):
+            return {"found": False, "ambiguous_match": True, "ambiguous_name": name_b,
+                    "candidate_names": end_check.get("candidate_names", []),
+                    "message": f"'{name_b}' matches multiple different people -- please provide a fuller name."}
+
+        visited: Dict[str, Optional[str]] = {name_a.lower(): None}  # name(lower) -> parent name
+        queue = deque([name_a])
+        hop = 0
+        MAX_VISITED = 60  # same bounding discipline as F.2/detect_financial_ring
+
+        while queue and hop < max_hops and len(visited) < MAX_VISITED:
+            matches_this_hop: List[str] = []  # Loophole L2: collect ALL matches at this hop depth
+            level_size = len(queue)
+            for _ in range(level_size):
+                current = queue.popleft()
+                hop_result = self._get_1hop_co_accused(current)
+                if hop_result.get("ambiguous_match"):
+                    continue  # Loophole L3: skip ambiguous mid-chain hubs entirely
+                for co_name in hop_result.get("co_accused_names", []):
+                    key = co_name.lower()
+                    if key == name_b.lower():
+                        if key not in visited:
+                            visited[key] = current
+                        matches_this_hop.append(current)  # this specific parent, for path reconstruction
+                    elif key not in visited and len(visited) < MAX_VISITED:
+                        visited[key] = current
+                        queue.append(co_name)
+            if matches_this_hop:
+                # Reconstruct the FIRST match's path; the rest are reported
+                # as a count only (Loophole L2 -- never silently pick one and
+                # present it as the only connection, but also never dump
+                # every equally-short path as if it were needed).
+                first_parent = matches_this_hop[0]
+                path = [name_b, first_parent]
+                node = first_parent
+                while node.lower() != name_a.lower():
+                    parent = visited.get(node.lower())
+                    if parent is None:
+                        break  # reached name_a (its own parent is None) or an unexpected gap -- stop safely
+                    path.append(parent)
+                    node = parent
+                return {
+                    "found": True,
+                    "path": list(reversed(path)),
+                    "hops": hop + 1,
+                    "other_paths_same_length": max(0, len(matches_this_hop) - 1),
+                }
+            hop += 1
+
+        return {"found": False, "message": f"No connection found between '{name_a}' and '{name_b}' within {max_hops} hops."}
 
     def _fallback_result(self, suspect_name: str) -> Dict[str, Any]:
         return {

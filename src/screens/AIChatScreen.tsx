@@ -210,6 +210,14 @@ export const AIChatScreen: React.FC = () => {
   }, []);
 
   const [expandedWidget, setExpandedWidget] = useState<{ type: string; data: any } | null>(null);
+  // F.34: this officer's own "last viewed this network" timestamp for the
+  // CURRENT Investigation, fetched right before showing the full-screen
+  // network view so newly-appeared nodes/edges can be badged, then updated
+  // once the officer has actually seen it. Scoped to the deliberate
+  // full-screen "open" action (matches the item's own "reopening an
+  // Investigation's network view" framing) -- the inline chat widget that
+  // renders automatically isn't treated as a deliberate "visit."
+  const [networkNewSince, setNetworkNewSince] = useState<string | null>(null);
   const [pendingAttachments, setPendingAttachments] = useState<File[]>([]);
   const [isUploadingAttachments, setIsUploadingAttachments] = useState(false);
   // E.6: real, honest upload status -- a genuine transfer percentage while
@@ -681,6 +689,27 @@ export const AIChatScreen: React.FC = () => {
   }, []);
 
   // Submit Text Query to Copilot Agent Loop
+  // F.34: fetches this officer's own last-viewed timestamp for the current
+  // Investigation's network BEFORE marking it viewed (sequenced, not fired
+  // in parallel, so the mark-viewed write can never race ahead of the read
+  // and make everything look "not new"), then records this visit. Fails
+  // silently if NetworkViewState (a new Console table this feature needs)
+  // doesn't exist yet -- badging is a nice-to-have, never worth blocking or
+  // erroring the network view itself over.
+  const openNetworkWidget = useCallback(async () => {
+    const sid = activeSessionIdRef.current;
+    if (!sid) { setNetworkNewSince(null); return; }
+    const authHeader = { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` };
+    try {
+      const res = await fetch(`${API_BASE}/api/investigations/${sid}/network-new-since`, { headers: authHeader });
+      const j = await res.json().catch(() => ({}));
+      setNetworkNewSince(j?.last_viewed_at || null);
+    } catch {
+      setNetworkNewSince(null);
+    }
+    fetch(`${API_BASE}/api/investigations/${sid}/network-viewed`, { method: "POST", headers: authHeader }).catch(() => {});
+  }, []);
+
   const handleSend = useCallback(async (
     textToSend: string,
     filesToSend: File[] = [],
@@ -1478,7 +1507,10 @@ export const AIChatScreen: React.FC = () => {
               message={msg}
               lang={lang}
               voicePersona={voicePersona}
-              onExpandWidget={(widgetType, widgetData) => setExpandedWidget({ type: widgetType as any, data: widgetData })}
+              onExpandWidget={(widgetType, widgetData) => {
+                setExpandedWidget({ type: widgetType as any, data: widgetData });
+                if (widgetType === "network") openNetworkWidget(); else setNetworkNewSince(null);
+              }}
               onRetry={msg.retryText ? () => handleSend(msg.retryText!) : undefined}
               onQuickReply={(text) => handleSend(text)}
               addToast={addToast}
@@ -1881,6 +1913,8 @@ export const AIChatScreen: React.FC = () => {
             type={expandedWidget.type}
             data={expandedWidget.data}
             onClose={() => setExpandedWidget(null)}
+            onFollowUpQuery={(text) => { setExpandedWidget(null); handleSend(text); }}
+            networkNewSinceTimestamp={networkNewSince}
           />
         </Suspense>
       )}
