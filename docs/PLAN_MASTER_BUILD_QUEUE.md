@@ -4865,6 +4865,17 @@ zcql_insert_row("AuditLog", {
 
 ## E.6 — Real-Time Attachment Upload & Video Intelligence Pipeline (was Finals.md Part IX)
 
+### Build status (2026-09-13) — DONE, verified against the live code (built in an
+earlier session, confirmed still present and wired end-to-end during this pass):
+real `XMLHttpRequest` upload-progress (`ChatInput.tsx`'s `uploadStatusLabel`), a
+video-expand-to-lightbox button on the inline player (`ChatBubble.tsx`, reusing the
+same full-screen `viewingVideoUrl` portal), server-side keyframe extraction as the
+PRIMARY path (`main.py` calls `av_analysis.extract_video_frames` -- real ffmpeg-backed
+extraction, not client-supplied images) with client-side extraction as an explicit
+fallback only (D.4), and a broadened attachment-intent regex in `agent_loop.py` that
+correctly routes natural phrasings ("what is in this video?") instead of falling
+through to CCTNS tool routing.
+
 ### 1. Executive Summary
 Fixes 3 real UX bugs: blocking upload with zero feedback, no way to expand a video
 attachment full-screen, and a rigid keyword list that made natural questions like
@@ -5272,6 +5283,16 @@ export default FocusLossCurtain;
 ---
 
 ## E.8 — Viral Trend Radar: RSS Ingestion + Severity Scoring (was Finals.md Part IV, mechanism only)
+
+### Build status (2026-09-13) — DONE, verified live. `viral_trend_radar.py` (real RSS
+ingestion via Google News search RSS, SHA-256 evidence hashing, dedup, deterministic
+keyword severity scoring, 15-min demand-driven cache) is fully wired into both
+`agent_loop.py`'s `scan_viral_social_threats` tool and `main.py`'s async wrapper. Named
+KSP desks/addresses and the claimed slang lexicon deliberately NOT reproduced per D.13.
+**Open item carried forward, not silently dropped:** the module's own docstring flags
+that the default feed (Google News RSS) restricts use to "personal, non-commercial"
+purposes -- same ToS-tier concern D.3 found with ip-api.com. `RSS_FEED_TEMPLATE` is a
+single swappable constant if a direct-publisher feed is preferred for production use.
 
 ### 1. Executive Summary
 Per D.13: the ingestion/scoring/hashing mechanism merges as designed — real,
@@ -6554,6 +6575,11 @@ populated with real, varied, non-zero values across every sampled district (e.g.
 
 ## F.23 — Repeat Offender → Jump to Network
 
+### Build status (2026-09-13) — DONE. `ExpandedOverlay.tsx`'s repeat_offenders list
+already dispatches `onFollowUpQuery(`show network for ${o.suspect}`)` per-row, exactly
+per this item's own blueprint (falls back to plain text when no follow-up handler is
+wired, e.g. a standalone view opened without chat context).
+
 ### 1. Executive Summary
 Connects two tools that are oddly separate today — one tap from a repeat-offender
 name straight into their full network graph.
@@ -6584,6 +6610,14 @@ name straight into their full network graph.
 ---
 
 ## F.24 — Richer MO Fingerprint (Weapon/Entry/Escape Method)
+
+### Build status (2026-09-13) — BLOCKED, feasibility check done honestly (per this
+item's own L1 gate). Queried every column on `CaseMaster` and `Inv_OccuranceTime`
+directly via the Catalyst console: no weapon/entry-method/escape-method column exists
+anywhere in the schema -- the only free-text field is `CaseMaster.BriefFacts`. Adding
+these dimensions would require an NLP extraction/normalization pass over BriefFacts
+first (its own separate, riskier project: unreliable extraction from free text is worse
+than no signal), not a direct vector addition. Parked, not built.
 
 ### 1. Executive Summary
 Current MO vector uses only 5 basic dimensions. Adding weapon type, entry method, and
