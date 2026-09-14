@@ -1204,6 +1204,17 @@ class VajraSecurityFirewall:
                     detail="Security Access Violation: Session authentication failed."
                 )
 
+            # Check supervisor account suspension / deletion killswitch
+            try:
+                from officer_governance import is_officer_session_revoked
+                if is_officer_session_revoked(kgid):
+                    raise HTTPException(
+                        status_code=status.HTTP_401_UNAUTHORIZED,
+                        detail="Session Revoked: Account has been suspended or terminated by Supervisor."
+                    )
+            except ImportError:
+                pass
+
             # 3. Resolve the officer's profile -- from the in-process cache if
             # a recent lookup already did this (see PROFILE_CACHE_TTL_SECONDS
             # above), otherwise via the real 4-query chain and cache the result.
@@ -1305,6 +1316,10 @@ class VajraSecurityFirewall:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Security Access Violation: Session verification failed."
             )
+
+
+# Default singleton instance of the firewall dependency
+security_firewall = VajraSecurityFirewall()
 
 
 def _compute_mo_vector(latitude: float, gravity_id: int, day_of_week: int, accused_count: int, crime_head_id: int) -> np.ndarray:

@@ -108,6 +108,10 @@ app = FastAPI(
     version="2.0.0"
 )
 
+# Officer Personnel Governance & Access Control Router (KPA §23, BNSS §126)
+import officer_governance
+app.include_router(officer_governance.router)
+
 # NOTE: CORSMiddleware intentionally removed.
 # Zoho ZGS (the AppSail reverse-proxy gateway) already injects CORS headers
 # on every response. Adding FastAPI's CORSMiddleware on top causes duplicate
@@ -571,11 +575,24 @@ async def login(payload: AuthRequest):
         _record_login_failure(payload.badge_no)
         raise HTTPException(status_code=401, detail="Invalid Credentials: Badge Number or password incorrect.")
 
-    stored_hash = cred_res[0].get("OfficerCredentials", {}).get("PasswordHash")
+    raw_hash = cred_res[0].get("OfficerCredentials", {}).get("PasswordHash") or ""
+    parsed = officer_governance.parse_credential_status(raw_hash)
+    stored_hash = parsed.get("clean_hash", raw_hash)
+
     if not stored_hash or not bcrypt.checkpw(payload.password.encode("utf-8"), stored_hash.encode("utf-8")):
         _record_login_failure(payload.badge_no)
         raise HTTPException(status_code=401, detail="Invalid Credentials: Badge Number or password incorrect.")
     _clear_login_attempts(payload.badge_no)
+
+    # Intercept blocked accounts immediately
+    if parsed.get("is_blocked"):
+        blocked_by = parsed.get("blocked_by_name") or "Supervisor"
+        reason = parsed.get("reason") or "Administrative Suspension under KPA 1963 §23"
+        blocked_at = parsed.get("blocked_at") or ""
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Account Suspended: Your access has been suspended by {blocked_by}. Reason: {reason}."
+        )
 
     from vajra_core import issue_session_token, derive_role_tier
     # Previously returned the raw shared Catalyst admin access token as the

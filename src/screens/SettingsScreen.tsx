@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { Settings, ShieldCheck, Database, Languages, Clock, User, IdCard, MapPin, Lock, Pencil, X, Hourglass, Mic2, Mail } from "lucide-react";
+import { Settings, ShieldCheck, Database, Languages, Clock, User, IdCard, MapPin, Lock, Pencil, X, Hourglass, Mic2, Mail, KeyRound } from "lucide-react";
+import { ChangePasswordModal } from "../components/ChangePasswordModal";
 
 interface OfficerProfile {
   kgid: string;
@@ -69,6 +70,7 @@ export const SettingsScreen: React.FC = () => {
   // real KSP transfer-order/promotion-order workflow this stands in for,
   // not a casual self-edit box.
   const [isRequestOpen, setIsRequestOpen] = useState(false);
+  const [isChangePasswordOpen, setIsChangePasswordOpen] = useState(false);
   const [reasonDraft, setReasonDraft] = useState("");
   const [isSubmittingRequest, setIsSubmittingRequest] = useState(false);
   const [myRequest, setMyRequest] = useState<any | null>(null);
@@ -263,20 +265,29 @@ export const SettingsScreen: React.FC = () => {
                   {lang === "en" ? "Read-only" : "ಓದಲು-ಮಾತ್ರ"}
                 </span>
               </h3>
-              {!myRequest || myRequest.status !== "pending" ? (
+              <div className="flex items-center gap-2">
                 <button
-                  onClick={openRequestModal}
-                  className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-[#C79A4E] hover:text-[#E4C590] border border-[#C79A4E]/30 hover:border-[#C79A4E]/60 rounded-md px-2 py-1 cursor-pointer transition-colors"
+                  onClick={() => setIsChangePasswordOpen(true)}
+                  className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-stone-300 hover:text-white border border-stone-700 hover:border-stone-500 rounded-md px-2 py-1 cursor-pointer transition-colors"
                 >
-                  <Pencil className="w-3 h-3" />
-                  {lang === "en" ? "Request Profile Modification" : "ಪ್ರೊಫೈಲ್ ಬದಲಾವಣೆ ಕೋರಿ"}
+                  <KeyRound className="w-3 h-3 text-[#C79A4E]" />
+                  {lang === "en" ? "Change Password" : "ರಹಸ್ಯಪದ ಬದಲಿಸಿ"}
                 </button>
-              ) : (
-                <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-amber-400 border border-amber-500/30 rounded-md px-2 py-1">
-                  <Hourglass className="w-3 h-3" />
-                  {lang === "en" ? "Pending review" : "ಪರಿಶೀಲನೆ ಬಾಕಿ"}
-                </span>
-              )}
+                {!myRequest || myRequest.status !== "pending" ? (
+                  <button
+                    onClick={openRequestModal}
+                    className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-[#C79A4E] hover:text-[#E4C590] border border-[#C79A4E]/30 hover:border-[#C79A4E]/60 rounded-md px-2 py-1 cursor-pointer transition-colors"
+                  >
+                    <Pencil className="w-3 h-3" />
+                    {lang === "en" ? "Request Profile Modification" : "ಪ್ರೊಫೈಲ್ ಬದಲಾವಣೆ ಕೋರಿ"}
+                  </button>
+                ) : (
+                  <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-amber-400 border border-amber-500/30 rounded-md px-2 py-1">
+                    <Hourglass className="w-3 h-3" />
+                    {lang === "en" ? "Pending review" : "ಪರಿಶೀಲನೆ ಬಾಕಿ"}
+                  </span>
+                )}
+              </div>
             </div>
             {myRequest && myRequest.status === "pending" && (
               <div className="bg-amber-500/[0.06] border border-amber-500/25 rounded-lg px-3 py-2 text-[10.5px] text-amber-300/90 font-mono">
@@ -641,6 +652,12 @@ export const SettingsScreen: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Self-Service Password Reset Modal */}
+      <ChangePasswordModal
+        isOpen={isChangePasswordOpen}
+        onClose={() => setIsChangePasswordOpen(false)}
+      />
     </div>
   );
 };
