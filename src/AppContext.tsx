@@ -103,6 +103,8 @@ interface AppContextType {
   setOfficerName: (name: string | null) => void;
   roleTier: "officer" | "supervisor" | null;
   setRoleTier: (tier: "officer" | "supervisor" | null) => void;
+  mustChangePassword: boolean;
+  setMustChangePassword: (mustChange: boolean) => void;
   isDbConnected: boolean;
   setIsDbConnected: (connected: boolean) => void;
   llmServiceAvailable: boolean; // C.16: was fetched from /api/health and discarded
@@ -207,6 +209,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
       localStorage.setItem("vajra_role_tier", tier);
     } else {
       localStorage.removeItem("vajra_role_tier");
+    }
+  };
+
+  const [mustChangePassword, setMustChangePasswordState] = useState<boolean>(() => {
+    return localStorage.getItem("vajra_must_change_pwd") === "true";
+  });
+  const setMustChangePassword = (mustChange: boolean) => {
+    setMustChangePasswordState(mustChange);
+    if (mustChange) {
+      localStorage.setItem("vajra_must_change_pwd", "true");
+    } else {
+      localStorage.removeItem("vajra_must_change_pwd");
     }
   };
 
@@ -498,6 +512,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
       }
       localStorage.removeItem("vajra_token");
       localStorage.removeItem("vajra_role_tier");
+      localStorage.removeItem("vajra_must_change_pwd");
+      setMustChangePasswordState(false);
       setCurrentScreenState("login");
     }
   };
@@ -578,6 +594,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         setOfficerName,
         roleTier: roleTierState,
         setRoleTier,
+        mustChangePassword,
+        setMustChangePassword,
         isDbConnected,
         setIsDbConnected,
         llmServiceAvailable,

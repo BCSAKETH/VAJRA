@@ -626,6 +626,7 @@ async def login(payload: AuthRequest):
         "token_type": "Bearer",
         "expires_in": 3600,
         "role_tier": role_tier,
+        "must_change_password": bool(parsed.get("is_first_login", False)),
         "user": {
             "id": f"{payload.badge_no}_user",
             "badge_no": payload.badge_no,

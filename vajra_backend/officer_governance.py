@@ -92,19 +92,34 @@ class ChangePasswordPayload(BaseModel):
     confirm_new_password: str = Field(..., min_length=6, max_length=64)
 
 
+class AssignStationPayload(BaseModel):
+    unit_id: int = Field(..., ge=1, le=100, description="Target Police Station / Unit ID")
+    reason: Optional[str] = Field(default="Administrative Station Transfer under KPA 1963", max_length=255)
+
+
 # ---------------------------------------------------------------------------
 # HELPER: PARSE PASSWORD HASH FOR BLOCK METADATA
 # ---------------------------------------------------------------------------
 def parse_credential_status(raw_hash: str) -> Dict[str, Any]:
     """
-    Inspects stored PasswordHash to detect $BLOCKED: prefix packaging.
-    Format 1: $BLOCKED:{b64_json}${clean_hash}
-    Format 2: $BLOCKED:{supervisor_kgid}:{sup_name}:{blocked_at}:{reason}${clean_hash}
+    Inspects stored PasswordHash to detect $BLOCKED: or $FIRST_LOGIN: packaging.
+    Format 1: $FIRST_LOGIN:{clean_hash}
+    Format 2: $BLOCKED:{b64_json}:{clean_hash}
+    Format 3: $BLOCKED:{b64_json}:$FIRST_LOGIN:{clean_hash}
     """
     if not raw_hash:
-        return {"is_blocked": False, "clean_hash": ""}
+        return {"is_blocked": False, "is_first_login": False, "clean_hash": ""}
+
+    is_blocked = False
+    is_first_login = False
+    blocked_by_kgid = ""
+    blocked_by_name = "Supervisor"
+    blocked_at = ""
+    reason = "Administrative Suspension under KPA 1963 §23"
+    clean_hash = raw_hash
 
     if raw_hash.startswith("$BLOCKED:"):
+        is_blocked = True
         try:
             rest = raw_hash[len("$BLOCKED:"):]
             if ":" in rest and not rest.startswith("{"):
@@ -124,41 +139,42 @@ def parse_credential_status(raw_hash: str) -> Dict[str, Any]:
                 meta_str = rest
                 clean_hash = ""
 
-            clean_hash = clean_hash.lstrip("$")
-            if clean_hash:
-                clean_hash = "$" + clean_hash
-
             # Check if base64 json
             if "{" in meta_str or not ":" in meta_str:
                 try:
                     meta = json.loads(base64.urlsafe_b64decode(meta_str.encode("ascii")).decode("utf-8"))
-                    return {
-                        "is_blocked": True,
-                        "clean_hash": clean_hash,
-                        "blocked_by_kgid": meta.get("supervisor_kgid", ""),
-                        "blocked_by_name": meta.get("supervisor_name", "Supervisor"),
-                        "blocked_at": meta.get("blocked_at", ""),
-                        "reason": meta.get("reason", "Administrative Suspension under KPA 1963 §23")
-                    }
+                    blocked_by_kgid = meta.get("supervisor_kgid", "")
+                    blocked_by_name = meta.get("supervisor_name", "Supervisor")
+                    blocked_at = meta.get("blocked_at", "")
+                    reason = meta.get("reason", "Administrative Suspension under KPA 1963 §23")
                 except Exception:
                     pass
-
-            # Colon-separated fallback
-            subparts = meta_str.split(":", 3)
-            return {
-                "is_blocked": True,
-                "clean_hash": clean_hash,
-                "blocked_by_kgid": subparts[0] if len(subparts) > 0 else "SUPERVISOR",
-                "blocked_by_name": subparts[1] if len(subparts) > 1 else "Supervisor",
-                "blocked_at": subparts[2] if len(subparts) > 2 else "",
-                "reason": subparts[3] if len(subparts) > 3 else "Administrative Suspension under KPA 1963 §23"
-            }
+            else:
+                subparts = meta_str.split(":", 3)
+                blocked_by_kgid = subparts[0] if len(subparts) > 0 else "SUPERVISOR"
+                blocked_by_name = subparts[1] if len(subparts) > 1 else "Supervisor"
+                blocked_at = subparts[2] if len(subparts) > 2 else ""
+                reason = subparts[3] if len(subparts) > 3 else "Administrative Suspension under KPA 1963 §23"
         except Exception as e:
             logger.warning(f"Failed to parse $BLOCKED metadata: {e}")
-            return {"is_blocked": True, "clean_hash": raw_hash}
+            clean_hash = raw_hash
 
-    clean_raw = raw_hash.lstrip("$")
-    return {"is_blocked": False, "clean_hash": f"${clean_raw}" if clean_raw else ""}
+    if clean_hash.startswith("$FIRST_LOGIN:"):
+        is_first_login = True
+        clean_hash = clean_hash[len("$FIRST_LOGIN:"):]
+
+    clean_raw = clean_hash.lstrip("$")
+    clean_hash = f"${clean_raw}" if clean_raw else ""
+
+    return {
+        "is_blocked": is_blocked,
+        "is_first_login": is_first_login,
+        "clean_hash": clean_hash,
+        "blocked_by_kgid": blocked_by_kgid,
+        "blocked_by_name": blocked_by_name,
+        "blocked_at": blocked_at,
+        "reason": reason
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -316,10 +332,10 @@ async def create_officer_account(
     }
     zcql_insert_row("Employee", employee_row)
 
-    # Insert into OfficerCredentials table
+    # Insert into OfficerCredentials table with mandatory $FIRST_LOGIN: requirement
     cred_row = {
         "KGID": payload.badge_no.strip(),
-        "PasswordHash": hashed_pw
+        "PasswordHash": f"$FIRST_LOGIN:{hashed_pw}"
     }
     zcql_insert_row("OfficerCredentials", cred_row)
 
@@ -724,4 +740,150 @@ async def change_password(
     return {
         "success": True,
         "message": "Password updated successfully. Please use your new password for subsequent logins."
+    }
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 7: LIST POLICE STATIONS (For Onboarding & Station Assignment)
+# ---------------------------------------------------------------------------
+FALLBACK_POLICE_STATIONS = [
+    {"unit_id": 21, "name": "Amengad PS", "district_id": 21},
+    {"unit_id": 22, "name": "Badami PS", "district_id": 22},
+    {"unit_id": 29, "name": "Bagalkot Town PS", "district_id": 29},
+    {"unit_id": 15, "name": "Banashankari PS", "district_id": 15},
+    {"unit_id": 9, "name": "Basavanagudi PS", "district_id": 9},
+    {"unit_id": 23, "name": "Bilgi PS", "district_id": 23},
+    {"unit_id": 1, "name": "Cubbon Park PS", "district_id": 1},
+    {"unit_id": 13, "name": "Electronic City PS", "district_id": 13},
+    {"unit_id": 24, "name": "Guledgudda PS", "district_id": 24},
+    {"unit_id": 18, "name": "Hebbal PS", "district_id": 18},
+    {"unit_id": 6, "name": "HSR Layout PS", "district_id": 6},
+    {"unit_id": 25, "name": "Hunagund PS", "district_id": 25},
+    {"unit_id": 30, "name": "Ilkal PS", "district_id": 30},
+    {"unit_id": 2, "name": "Indiranagar PS", "district_id": 2},
+    {"unit_id": 26, "name": "Jamkhandi PS", "district_id": 26},
+    {"unit_id": 5, "name": "Jayanagar PS", "district_id": 5},
+    {"unit_id": 3, "name": "Koramangala PS", "district_id": 3},
+    {"unit_id": 17, "name": "KR Puram PS", "district_id": 17},
+    {"unit_id": 10, "name": "Malleswaram PS", "district_id": 10},
+    {"unit_id": 7, "name": "Marathahalli PS", "district_id": 7},
+    {"unit_id": 27, "name": "Mudhol PS", "district_id": 27},
+    {"unit_id": 12, "name": "Peenya PS", "district_id": 12},
+    {"unit_id": 28, "name": "Rabakavi PS", "district_id": 28},
+    {"unit_id": 8, "name": "Rajajinagar PS", "district_id": 8},
+    {"unit_id": 19, "name": "RT Nagar PS", "district_id": 19},
+    {"unit_id": 20, "name": "Sadashivanagar PS", "district_id": 20},
+    {"unit_id": 4, "name": "Whitefield PS", "district_id": 4},
+    {"unit_id": 14, "name": "Yelahanka PS", "district_id": 14},
+    {"unit_id": 11, "name": "Yeshwantpur PS", "district_id": 11},
+    {"unit_id": 16, "name": "Vijayanagar PS", "district_id": 16}
+]
+
+
+@router.get("/api/supervisor/police-stations")
+@router.get("/api/governance/police-stations")
+async def list_police_stations(
+    request: Request,
+    location_context: str = Depends(security_firewall)
+):
+    """Returns all available Police Stations for onboarding and station transfers."""
+    stations = []
+    if catalyst_app:
+        try:
+            rows = catalyst_app.zql().execute_query("SELECT UnitID, UnitName, DistrictID FROM Unit")
+            for r in rows:
+                u = r.get("Unit", {})
+                uid = u.get("UnitID")
+                uname = u.get("UnitName")
+                did = u.get("DistrictID")
+                if uid and uname:
+                    stations.append({
+                        "unit_id": int(uid),
+                        "name": str(uname).strip(),
+                        "district_id": int(did) if did else int(uid)
+                    })
+        except Exception as e:
+            logger.warning(f"Error querying Unit table for police stations: {e}")
+
+    if not stations:
+        stations = list(FALLBACK_POLICE_STATIONS)
+
+    stations.sort(key=lambda s: s["name"])
+    return {"police_stations": stations, "total": len(stations)}
+
+
+# ---------------------------------------------------------------------------
+# ENDPOINT 8: ASSIGN / REASSIGN OFFICER POLICE STATION (Supervisor Only)
+# ---------------------------------------------------------------------------
+@router.post("/api/supervisor/officers/{badge}/assign-station")
+@router.post("/api/governance/officers/{badge}/assign-station")
+async def assign_officer_station(
+    badge: str,
+    payload: AssignStationPayload,
+    request: Request,
+    location_context: str = Depends(security_firewall)
+):
+    """Reassigns an officer to a specific Police Station with audit logging."""
+    role_tier = getattr(request.state, "role_tier", "officer")
+    supervisor_kgid = str(getattr(request.state, "kgid", "")).strip()
+    if role_tier != "supervisor" and supervisor_kgid not in SUPERVISOR_KGIDS:
+        raise HTTPException(status_code=403, detail="Supervisor-tier clearance required.")
+
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+
+    clean_badge = escape_zcql_literal(badge.strip())
+    emp_res = catalyst_app.zql().execute_query(
+        f"SELECT ROWID, FirstName, UnitID FROM Employee WHERE KGID = '{clean_badge}'"
+    )
+    if not emp_res:
+        raise HTTPException(status_code=404, detail=f"Officer with badge {badge} not found in Employee directory.")
+
+    emp_row = emp_res[0].get("Employee", {})
+    emp_rowid = emp_row.get("ROWID")
+    officer_name = emp_row.get("FirstName", f"Officer {badge}")
+    old_unit_id = emp_row.get("UnitID")
+
+    # Resolve Unit Name and DistrictID
+    new_unit_name = f"Police Station #{payload.unit_id}"
+    district_id = payload.unit_id
+    try:
+        unit_res = catalyst_app.zql().execute_query(
+            f"SELECT UnitName, DistrictID FROM Unit WHERE UnitID = {payload.unit_id}"
+        )
+        if unit_res:
+            unit_data = unit_res[0].get("Unit", {})
+            new_unit_name = unit_data.get("UnitName", new_unit_name)
+            district_id = int(unit_data.get("DistrictID") or payload.unit_id)
+    except Exception as e:
+        logger.warning(f"Could not resolve Unit {payload.unit_id}: {e}")
+
+    # Update Employee
+    update_data = {
+        "ROWID": emp_rowid,
+        "UnitID": payload.unit_id,
+        "DistrictID": district_id
+    }
+    zcql_update_row("Employee", update_data)
+
+    # Immutable Audit Log
+    try:
+        from main import agent_loop
+        agent_loop._write_audit_log(
+            employee_id=int(badge) if badge.isdigit() else 0,
+            action_type="OFFICER_STATION_TRANSFERRED",
+            target=f"Officer {badge} ({officer_name})",
+            query=f"Police Station reassigned from Unit {old_unit_id} to {new_unit_name} (UnitID {payload.unit_id}) by Supervisor {supervisor_kgid}. Reason: {payload.reason}",
+            response="STATION_REASSIGNED - Verified in Employee directory",
+            session_id=f"admin-transfer-{int(time.time())}"
+        )
+    except Exception as e:
+        logger.warning(f"Audit log write failed during station transfer: {e}")
+
+    return {
+        "success": True,
+        "message": f"Officer {officer_name} successfully assigned to {new_unit_name}.",
+        "badge_no": badge,
+        "unit_id": payload.unit_id,
+        "unit_name": new_unit_name
     }

@@ -902,7 +902,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
       {/* Command Center strip -- moved to the TOP (was buried two-thirds down
           the page), every number real, every tile clickable (scrolls to AND
           opens its section). */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 shrink-0">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 shrink-0">
         <button onClick={() => scrollToSection("approvals")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-[#C79A4E]/30 transition-colors cursor-pointer">
           <div className="w-9 h-9 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 flex items-center justify-center shrink-0">
             <Hourglass className="w-4.5 h-4.5 text-[#C79A4E]" />
@@ -956,6 +956,19 @@ export const SupervisorDashboardScreen: React.FC = () => {
             </div>
             <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
               {lang === "en" ? "Officers Flagged" : "ಗುರುತಿಸಲಾದ ಅಧಿಕಾರಿಗಳು"}
+            </div>
+          </div>
+        </button>
+        <button onClick={() => scrollToSection("personnel")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-[#C79A4E]/30 transition-colors cursor-pointer">
+          <div className="w-9 h-9 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 flex items-center justify-center shrink-0">
+            <Users className="w-4.5 h-4.5 text-[#C79A4E]" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-sm font-black text-stone-100 font-mono leading-tight">
+              {lang === "en" ? "Manage" : "ನಿರ್ವಹಣೆ"}
+            </div>
+            <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
+              {lang === "en" ? "Personnel Roster" : "ಸಿಬ್ಬಂದಿ ಪಟ್ಟಿ"}
             </div>
           </div>
         </button>
@@ -1796,7 +1809,9 @@ export const SupervisorDashboardScreen: React.FC = () => {
       </div>
 
       {/* Personnel Governance & Account Administration */}
-      <PersonnelGovernancePanel />
+      <div ref={(el) => { sectionRefs.current.personnel = el; }}>
+        <PersonnelGovernancePanel />
+      </div>
       </div>
 
       {/* Two Person Integrity Credential Check */}

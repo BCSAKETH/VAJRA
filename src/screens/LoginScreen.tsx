@@ -13,6 +13,7 @@ export const LoginScreen: React.FC = () => {
     setBadgeNumber,
     setOfficerName,
     setRoleTier,
+    setMustChangePassword,
     setGlobalLoading,
     addToast,
   } = useApp();
@@ -77,6 +78,7 @@ export const LoginScreen: React.FC = () => {
       localStorage.setItem("vajra_badge", badgeInput);
 
       // Success Authentication
+      setMustChangePassword(Boolean(data.must_change_password));
       setIsAuthenticated(true);
       setBadgeNumber(badgeInput);
       setRoleTier(data.role_tier === "supervisor" ? "supervisor" : "officer");

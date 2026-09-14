@@ -6,6 +6,7 @@ import { AIChatScreen } from "./screens/AIChatScreen";
 import { SessionTimeoutGuard } from "./components/SessionTimeoutGuard";
 import { FocusLossCurtain } from "./components/FocusLossCurtain";
 import { ErrorBoundary } from "./components/ErrorBoundary";
+import { ChangePasswordModal } from "./components/ChangePasswordModal";
 
 // Code-split every screen except Login/AIChat (the two every officer hits on
 // every session) so the initial bundle doesn't pay upfront for chunks a
@@ -42,7 +43,7 @@ const ScreenLoadingFallback: React.FC = () => (
 );
 
 const AppContent: React.FC = () => {
-  const { currentScreen, isAuthenticated, roleTier, lang } = useApp();
+  const { currentScreen, isAuthenticated, roleTier, lang, mustChangePassword, setMustChangePassword } = useApp();
 
   if (!isAuthenticated || currentScreen === "login") {
     return <LoginScreen />;
@@ -117,6 +118,13 @@ const AppContent: React.FC = () => {
           </Suspense>
         )}
       </div>
+      {mustChangePassword && (
+        <ChangePasswordModal
+          isOpen={true}
+          isMandatory={true}
+          onClose={() => setMustChangePassword(false)}
+        />
+      )}
     </MainLayout>
   );
 };

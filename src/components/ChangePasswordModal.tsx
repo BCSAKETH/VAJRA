@@ -6,9 +6,10 @@ import { API_BASE } from "../config";
 interface ChangePasswordModalProps {
   isOpen: boolean;
   onClose: () => void;
+  isMandatory?: boolean;
 }
 
-export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen, onClose }) => {
+export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen, onClose, isMandatory = false }) => {
   const { lang, addToast } = useApp();
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -95,20 +96,34 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen
           <div className="flex items-center gap-2 text-[#C79A4E]">
             <KeyRound className="w-5 h-5" />
             <h3 className="text-sm font-black uppercase tracking-wider text-stone-100">
-              {lang === "en" ? "Reset Logon Password" : "ಲಾಗಿನ್ ರಹಸ್ಯಪದವನ್ನು ಮರುಹೊಂದಿಸಿ"}
+              {isMandatory
+                ? (lang === "en" ? "Mandatory Password Initialization" : "ಕಡ್ಡಾಯ ರಹಸ್ಯಪದ ಪ್ರಾರಂಭಿಸುವಿಕೆ")
+                : (lang === "en" ? "Reset Logon Password" : "ಲಾಗಿನ್ ರಹಸ್ಯಪದವನ್ನು ಮರುಹೊಂದಿಸಿ")}
             </h3>
           </div>
-          <button
-            onClick={onClose}
-            className="text-stone-500 hover:text-stone-300 transition-colors p-1 cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          {!isMandatory && (
+            <button
+              onClick={onClose}
+              className="text-stone-500 hover:text-stone-300 transition-colors p-1 cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         {/* Security Alert / Advisory */}
         <div className="bg-[#C79A4E]/[0.06] border border-[#C79A4E]/25 rounded-lg p-3 text-[11px] font-sans text-stone-300 leading-relaxed">
-          {lang === "en" ? (
+          {isMandatory ? (
+            lang === "en" ? (
+              <>
+                <span className="text-amber-400 font-bold">First-Time Logon Policy:</span> Your account was provisioned with a temporary administrative password. You must set a private, secure password before accessing VAJRA intelligence systems.
+              </>
+            ) : (
+              <>
+                <span className="text-amber-400 font-bold">ಮೊದಲ ಲಾಗಿನ್ ನೀತಿ:</span> ನಿಮ್ಮ ಖಾತೆಯನ್ನು ತಾತ್ಕಾಲಿಕ ಆಡಳಿತಾತ್ಮಕ ರಹಸ್ಯಪದದೊಂದಿಗೆ ರಚಿಸಲಾಗಿದೆ. ವಜ್ರ ವ್ಯವಸ್ಥೆಯನ್ನು ಬಳಸುವ ಮೊದಲು ನೀವು ಹೊಸ ಖಾಸಗಿ ರಹಸ್ಯಪದವನ್ನು ಹೊಂದಿಸಬೇಕು.
+              </>
+            )
+          ) : lang === "en" ? (
             <>
               Modifying your logon credentials will be{" "}
               <span className="text-[#C79A4E] font-bold">permanently recorded</span> in the Supervisor Audit Ledger under BSA 2023 §63.
