@@ -37,6 +37,26 @@ const HEAT_GRADIENT: Record<number, string> = {
   1.0: "#d9403a",
 };
 
+// Free, unmetered, watermark-free basemap providers (ESRI Canvas / Satellite / OSM)
+const BASEMAP_TILES = {
+  dark: {
+    base: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ",
+    maxZoom: 16,
+  },
+  satellite: {
+    base: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+    overlay: "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
+    attribution: "Tiles &copy; Esri, i-cubed, USDA, USGS, GeoEye",
+    maxZoom: 19,
+  },
+  osm: {
+    base: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+    attribution: "&copy; OpenStreetMap contributors",
+    maxZoom: 19,
+  },
+};
+
 const HeatLayer: React.FC<{ points: HotspotPoint[] }> = ({ points }) => {
   const map = useMap();
   useEffect(() => {
@@ -53,9 +73,17 @@ const HeatLayer: React.FC<{ points: HotspotPoint[] }> = ({ points }) => {
 const AutoFitBounds: React.FC<{ points: HotspotPoint[] }> = ({ points }) => {
   const map = useMap();
   useEffect(() => {
-    if (points.length === 0) return;
-    if (points.length === 1) { map.setView([points[0].lat, points[0].lng], 13); return; }
+    // Invalidate map size on mount/tab change to prevent grey unrendered tiles
+    const t1 = setTimeout(() => { try { map.invalidateSize(); } catch {} }, 150);
+    const t2 = setTimeout(() => { try { map.invalidateSize(); } catch {} }, 400);
+
+    if (points.length === 0) return () => { clearTimeout(t1); clearTimeout(t2); };
+    if (points.length === 1) {
+      map.setView([points[0].lat, points[0].lng], 13);
+      return () => { clearTimeout(t1); clearTimeout(t2); };
+    }
     map.fitBounds(L.latLngBounds(points.map((p) => [p.lat, p.lng] as [number, number])), { padding: [32, 32], maxZoom: 14 });
+    return () => { clearTimeout(t1); clearTimeout(t2); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [map, points]);
   return null;
@@ -126,6 +154,10 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
   const [hotspotsByMonth, setHotspotsByMonth] = useState<Record<string, HotspotPoint[]>>({});
   const [availableMonths, setAvailableMonths] = useState<string[]>([]);
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+
+  // Basemap & 3D Perspective controls (Section 11 & 12)
+  const [basemapMode, setBasemapMode] = useState<"dark" | "satellite" | "osm">("dark");
+  const [is3DMode, setIs3DMode] = useState<boolean>(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -228,6 +260,56 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
           <div className="flex justify-between"><span>Incidents:</span><span className="font-bold text-stone-200">{errorMsg ? "0" : displayPoints.reduce((s, p) => s + (p.point_count || 1), 0)}</span></div>
           <div className="flex justify-between"><span>Clusters:</span><span className="font-bold text-amber-500">{errorMsg ? "0" : displayPoints.length}</span></div>
         </div>
+
+        {/* Basemap & 3D Mode Layer Switcher */}
+        <div className="border-t border-stone-850 pt-3 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="text-[10.5px] font-bold text-stone-400 font-mono">Basemap Layer:</span>
+            <button
+              onClick={() => setIs3DMode(!is3DMode)}
+              className={`px-1.5 py-0.5 rounded text-[9px] font-mono border transition-all cursor-pointer ${
+                is3DMode
+                  ? "bg-[#C79A4E] text-stone-950 font-black border-[#C79A4E] shadow-sm shadow-[#C79A4E]/30"
+                  : "bg-stone-900 text-stone-400 border-stone-800 hover:text-stone-200"
+              }`}
+              title="Toggle 3D Command-Center Perspective"
+            >
+              3D {is3DMode ? "ON" : "OFF"}
+            </button>
+          </div>
+          <div className="grid grid-cols-3 gap-1">
+            <button
+              onClick={() => setBasemapMode("dark")}
+              className={`py-1 rounded text-[9.5px] font-bold font-mono uppercase transition-colors cursor-pointer ${
+                basemapMode === "dark"
+                  ? "bg-[#C79A4E]/15 border border-[#C79A4E]/40 text-[#C79A4E]"
+                  : "bg-stone-900 border border-stone-800 text-stone-500 hover:text-stone-300"
+              }`}
+            >
+              Tactical
+            </button>
+            <button
+              onClick={() => setBasemapMode("satellite")}
+              className={`py-1 rounded text-[9.5px] font-bold font-mono uppercase transition-colors cursor-pointer ${
+                basemapMode === "satellite"
+                  ? "bg-[#C79A4E]/15 border border-[#C79A4E]/40 text-[#C79A4E]"
+                  : "bg-stone-900 border border-stone-800 text-stone-500 hover:text-stone-300"
+              }`}
+            >
+              Satellite
+            </button>
+            <button
+              onClick={() => setBasemapMode("osm")}
+              className={`py-1 rounded text-[9.5px] font-bold font-mono uppercase transition-colors cursor-pointer ${
+                basemapMode === "osm"
+                  ? "bg-[#C79A4E]/15 border border-[#C79A4E]/40 text-[#C79A4E]"
+                  : "bg-stone-900 border border-stone-800 text-stone-500 hover:text-stone-300"
+              }`}
+            >
+              OSM
+            </button>
+          </div>
+        </div>
         <div className="border-t border-stone-850 pt-3 space-y-1.5">
           <div className="flex items-center gap-1.5 text-[9.5px] font-mono font-bold text-stone-400 uppercase tracking-wider">
             <Flame className="w-3 h-3 text-[#C79A4E]" /><span>Relative Density</span>
@@ -243,7 +325,18 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
       </div>
 
       {/* Map */}
-      <div className="flex-1 min-h-[420px] rounded-xl overflow-hidden border border-stone-850 relative">
+      <div
+        className="flex-1 min-h-[420px] rounded-xl overflow-hidden border border-stone-850 relative transition-all duration-700 ease-out"
+        style={{ perspective: is3DMode ? "900px" : "none", background: "#161412" }}
+      >
+        <div
+          className="w-full h-full transition-transform duration-700 ease-out"
+          style={{
+            transform: is3DMode ? "rotateX(42deg) scale(1.06)" : "rotateX(0deg) scale(1)",
+            transformOrigin: "center 75%",
+            height: "100%",
+          }}
+        >
         {errorMsg ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-stone-950/90 z-10 text-center p-4">
             <AlertTriangle className="w-6 h-6 text-rose-500" />
@@ -257,14 +350,21 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
             <p className="text-stone-400 text-xs font-mono font-bold">No hotspots match these filters.</p>
           </div>
         ) : (
-          <MapContainer center={[displayPoints[0].lat, displayPoints[0].lng]} zoom={11} style={{ height: "100%", width: "100%" }}>
-            {/* Real bug found live: CartoDB's dark_all tiles now show an
-                "API KEY REQUIRED" watermark over the map (Carto restricted
-                free anonymous access) -- every other map in this app
-                (InlineWidget.tsx, ExpandedOverlay.tsx, AppletPanel.tsx)
-                already uses plain OpenStreetMap tiles with no key needed;
-                matching that proven-working source here instead. */}
-            <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          <MapContainer key={`${district}-${basemapMode}`} center={[displayPoints[0].lat, displayPoints[0].lng]} zoom={11} style={{ height: "100%", width: "100%", background: "#161412" }}>
+            {/* Watermark-Free High-Performance Basemap Tiles */}
+            <TileLayer
+              url={BASEMAP_TILES[basemapMode].base}
+              attribution={BASEMAP_TILES[basemapMode].attribution}
+              maxZoom={BASEMAP_TILES[basemapMode].maxZoom}
+            />
+            {basemapMode === "satellite" && (
+              <TileLayer
+                url={BASEMAP_TILES.satellite.overlay!}
+                attribution=""
+                maxZoom={19}
+                opacity={0.85}
+              />
+            )}
             {/* F.17: compare mode (sharedViewport provided) locks pan/zoom to
                 the shared state instead of auto-fitting this map's own
                 bounds -- auto-fit-per-side would immediately desync two
@@ -278,46 +378,90 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
               const maxCount = Math.max(...hexbins.map((h) => h.count), 1);
               return hexbins.map((h) => (
                 <Polygon key={h.h3_index} positions={h.boundary} pathOptions={{ fillColor: "#C79A4E", color: "#C79A4E", weight: 1, fillOpacity: 0.15 + 0.55 * (h.count / maxCount), opacity: 0.5 }}>
-                  <Popup><div className="text-xs font-sans text-stone-900"><span className="font-bold block">{h.count} incidents</span></div></Popup>
+                  <Popup>
+                    <div className="text-xs font-sans text-stone-900" style={{ transform: is3DMode ? "rotateX(-42deg)" : "none", transformOrigin: "bottom center" }}>
+                      <span className="font-bold block">{h.count} incidents</span>
+                    </div>
+                  </Popup>
                 </Polygon>
               ));
             })()}
             {viewMode === "heat" && <HeatLayer points={displayPoints} />}
-            {viewMode === "heat" && displayPoints.map((point, i) => (
-              <React.Fragment key={i}>
-                <Circle center={[point.lat, point.lng]} radius={eps * 111300} pathOptions={{ fillColor: "#C79A4E", color: "rgba(199,154,78,0.3)", weight: 1, fillOpacity: 0.08 }} />
-                <CircleMarker center={[point.lat, point.lng]} radius={6} pathOptions={{ fillColor: "#C79A4E", color: "#211F1D", weight: 1.5, fillOpacity: 0.95 }}>
-                  <Popup>
-                    <div className="text-xs font-sans text-stone-900 space-y-1 min-w-[170px] max-w-[220px]">
-                      {point.point_count ? (
-                        <>
-                          <span className="font-bold block">{point.point_count} incidents</span>
-                          {point.dominant_crime && <span className="block text-[11px]">Type: <strong>{point.dominant_crime}</strong></span>}
-                          {point.dominant_station && <span className="block text-[11px]">Near: <strong>{point.dominant_station}</strong></span>}
-                          {/* F.15: real case numbers from this cluster, not just a location blob */}
-                          {point.case_preview && point.case_preview.length > 0 && (
-                            <div className="mt-1.5 pt-1.5 border-t border-stone-300">
-                              <span className="block text-[10px] font-bold text-stone-600 mb-0.5">Cases in this cluster:</span>
-                              <ul className="space-y-0.5">
-                                {point.case_preview.map((cn, ci) => (
-                                  <li key={ci} className="font-mono text-[10px] text-stone-700 truncate">{cn}</li>
-                                ))}
-                              </ul>
-                              {typeof point.total_case_count === "number" && point.total_case_count > point.case_preview.length && (
-                                <span className="block text-[9.5px] text-stone-500 italic mt-0.5">
-                                  +{point.total_case_count - point.case_preview.length} more in this cluster
-                                </span>
-                              )}
-                            </div>
-                          )}
-                        </>
-                      ) : <span className="font-bold block">{point.label}</span>}
-                    </div>
-                  </Popup>
-                </CircleMarker>
-              </React.Fragment>
-            ))}
+            {viewMode === "heat" && displayPoints.map((point, i) => {
+              const isSat = basemapMode === "satellite";
+              return (
+                <React.Fragment key={i}>
+                  {/* 3D Volumetric Depth Ring */}
+                  {is3DMode && (
+                    <CircleMarker
+                      center={[point.lat, point.lng]}
+                      radius={14}
+                      pathOptions={{
+                        fillColor: isSat ? "#FFFFFF" : "#C79A4E",
+                        color: isSat ? "#FFFFFF" : "#C79A4E",
+                        weight: 1,
+                        fillOpacity: 0.18,
+                        opacity: 0.4,
+                      }}
+                    />
+                  )}
+                  <Circle center={[point.lat, point.lng]} radius={eps * 111300} pathOptions={{ fillColor: "#C79A4E", color: "rgba(199,154,78,0.3)", weight: 1, fillOpacity: 0.08 }} />
+                  <CircleMarker
+                    center={[point.lat, point.lng]}
+                    radius={6}
+                    pathOptions={{
+                      fillColor: "#C79A4E",
+                      color: isSat ? "#FFFFFF" : "#211F1D",
+                      weight: isSat ? 2.5 : 1.5,
+                      fillOpacity: 0.95,
+                    }}
+                  >
+                    <Popup>
+                      <div
+                        className="text-xs font-sans text-stone-900 space-y-1 min-w-[170px] max-w-[220px]"
+                        style={{
+                          transform: is3DMode ? "rotateX(-42deg)" : "none",
+                          transformOrigin: "bottom center",
+                        }}
+                      >
+                        {point.point_count ? (
+                          <>
+                            <span className="font-bold block">{point.point_count} incidents</span>
+                            {point.dominant_crime && <span className="block text-[11px]">Type: <strong>{point.dominant_crime}</strong></span>}
+                            {point.dominant_station && <span className="block text-[11px]">Near: <strong>{point.dominant_station}</strong></span>}
+                            {/* F.15: real case numbers from this cluster, not just a location blob */}
+                            {point.case_preview && point.case_preview.length > 0 && (
+                              <div className="mt-1.5 pt-1.5 border-t border-stone-300">
+                                <span className="block text-[10px] font-bold text-stone-600 mb-0.5">Cases in this cluster:</span>
+                                <ul className="space-y-0.5">
+                                  {point.case_preview.map((cn, ci) => (
+                                    <li key={ci} className="font-mono text-[10px] text-stone-700 truncate">{cn}</li>
+                                  ))}
+                                </ul>
+                                {typeof point.total_case_count === "number" && point.total_case_count > point.case_preview.length && (
+                                  <span className="block text-[9.5px] text-stone-500 italic mt-0.5">
+                                    +{point.total_case_count - point.case_preview.length} more in this cluster
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </>
+                        ) : <span className="font-bold block">{point.label}</span>}
+                      </div>
+                    </Popup>
+                  </CircleMarker>
+                </React.Fragment>
+              );
+            })}
           </MapContainer>
+        )}
+        </div>
+
+        {/* Metadata HUD Overlay */}
+        {basemapMode === "satellite" && (
+          <div className="absolute bottom-2 left-2 z-[400] bg-stone-950/85 backdrop-blur-md px-2 py-0.5 rounded border border-stone-800 text-[8.5px] font-mono text-stone-400 pointer-events-none">
+            🛰️ ESRI World Imagery • Sub-Meter Aerial
+          </div>
         )}
       </div>
     </div>

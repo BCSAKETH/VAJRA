@@ -1199,17 +1199,46 @@ def _compute_dashboard_panels(unit_ids: List[Any]) -> Dict[str, Any]:
     unit_filter = f" WHERE PoliceStationID IN ({','.join(str(u) for u in unit_ids)})" if unit_ids else " WHERE 1=0"
 
     # 1. Hotspots -- reuses the SAME cluster_hotspots DBSCAN helper the chat
-    # agent's query_hotspots tool uses (see agent_loop.py). Never reimplemented.
+    # agent's query_hotspots tool uses (see agent_loop.py). Enriched with dominant crime and station.
     coords = []
+    ch_lookup: Dict[Any, str] = {}
+    try:
+        ch_res = catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead")
+        ch_lookup = {r.get("CrimeHead", {}).get("CrimeHeadID"): r.get("CrimeHead", {}).get("CrimeGroupName") for r in ch_res}
+    except Exception:
+        pass
+    ps_lookup: Dict[Any, str] = {}
+    try:
+        ps_res = catalyst_app.zql().execute_query("SELECT PoliceStationID, StationName FROM PoliceStation")
+        ps_lookup = {r.get("PoliceStation", {}).get("PoliceStationID"): r.get("PoliceStation", {}).get("StationName") for r in ps_res}
+    except Exception:
+        pass
+
     map_res = catalyst_app.zql().execute_query(
-        f"SELECT Latitude, Longitude, CrimeNo FROM CaseMaster{unit_filter} AND Latitude IS NOT NULL LIMIT 300"
-        if unit_ids else f"SELECT Latitude, Longitude, CrimeNo FROM CaseMaster{unit_filter}"
+        f"SELECT Latitude, Longitude, CrimeNo, CrimeMajorHeadID, PoliceStationID FROM CaseMaster{unit_filter} AND Latitude IS NOT NULL LIMIT 300"
+        if unit_ids else f"SELECT Latitude, Longitude, CrimeNo, CrimeMajorHeadID, PoliceStationID FROM CaseMaster{unit_filter}"
     )
     for r in map_res:
         cm = r.get("CaseMaster", {})
-        lat, lng = cm.get("latitude"), cm.get("longitude")
+        lat = cm.get("latitude") or cm.get("Latitude")
+        lng = cm.get("longitude") or cm.get("Longitude")
         if lat is not None and lng is not None:
-            coords.append({"lat": float(lat), "lng": float(lng), "label": cm.get("CrimeNo")})
+            try:
+                f_lat, f_lng = float(lat), float(lng)
+                # L67, L68: Karnataka Coordinate Sanity Guardrail:
+                # 11.5 <= lat <= 18.5, 74.0 <= lng <= 78.6. Eliminates (0,0) and ocean coordinates.
+                if 11.5 <= f_lat <= 18.5 and 74.0 <= f_lng <= 78.6:
+                    head_id = cm.get("CrimeMajorHeadID")
+                    station_id = cm.get("PoliceStationID")
+                    coords.append({
+                        "lat": f_lat,
+                        "lng": f_lng,
+                        "label": cm.get("CrimeNo"),
+                        "crime_head_name": ch_lookup.get(head_id),
+                        "station_name": ps_lookup.get(station_id),
+                    })
+            except (ValueError, TypeError):
+                continue
     hotspots = agent_loop.cluster_hotspots(coords) if coords else []
 
     # 2. Crime-type pie -- direct GROUP BY + CrimeHead name lookup, scoped to

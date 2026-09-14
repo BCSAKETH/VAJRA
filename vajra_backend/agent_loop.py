@@ -5135,17 +5135,24 @@ class VajraAgentLoop(CognitiveBrainMixin):
                             f"FROM CaseMaster {where_clause} LIMIT 300")
                     for r in map_res:
                         cm = r.get("CaseMaster", {})
-                        lat = cm.get("latitude")
-                        lng = cm.get("longitude")
+                        lat = cm.get("latitude") or cm.get("Latitude")
+                        lng = cm.get("longitude") or cm.get("Longitude")
                         if lat is not None and lng is not None:
-                            coordinates.append({
-                                "lat": float(lat),
-                                "lng": float(lng),
-                                "label": cm.get("CrimeNo"),
-                                "crime_head_name": crime_names_by_id.get(str(cm.get("CrimeMajorHeadID"))),
-                                "station_name": station_names_by_id.get(str(cm.get("PoliceStationID"))),
-                                "registered_date": cm.get("CrimeRegisteredDate"),
-                            })
+                            try:
+                                f_lat, f_lng = float(lat), float(lng)
+                                # L67, L68: Karnataka Coordinate Sanity Guardrail:
+                                # 11.5 <= lat <= 18.5, 74.0 <= lng <= 78.6. Eliminates (0,0) and ocean coordinates.
+                                if 11.5 <= f_lat <= 18.5 and 74.0 <= f_lng <= 78.6:
+                                    coordinates.append({
+                                        "lat": f_lat,
+                                        "lng": f_lng,
+                                        "label": cm.get("CrimeNo"),
+                                        "crime_head_name": crime_names_by_id.get(str(cm.get("CrimeMajorHeadID"))),
+                                        "station_name": station_names_by_id.get(str(cm.get("PoliceStationID"))),
+                                        "registered_date": cm.get("CrimeRegisteredDate"),
+                                    })
+                            except (ValueError, TypeError):
+                                continue
                 except Exception as ex:
                     logger.error(f"Failed to fetch coordinates for hotspot: {ex}")
 

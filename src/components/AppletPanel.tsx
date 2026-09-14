@@ -194,7 +194,11 @@ const MapCard: React.FC<AppletComponentSpec> = ({ title, data }) => {
     <CardShell title={title}>
       <div className="h-48 rounded-lg overflow-hidden">
         <MapContainer center={center} zoom={10} style={{ height: "100%", width: "100%" }} scrollWheelZoom={false}>
-          <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+          <TileLayer
+            url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
+            attribution="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ"
+            maxZoom={16}
+          />
           <MapFitter points={points} />
           {points.map((p, idx) => (
             <CircleMarker
