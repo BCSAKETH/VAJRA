@@ -16,6 +16,7 @@ import {
 } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
+import { BASEMAP_TILES } from "../lib/basemap";
 
 // Same fix as ExpandedOverlay's CHART_COLORS: the old 10-color palette
 // repeated via index % length past 10 categories, making distant categories
@@ -195,9 +196,9 @@ const MapCard: React.FC<AppletComponentSpec> = ({ title, data }) => {
       <div className="h-48 rounded-lg overflow-hidden">
         <MapContainer center={center} zoom={10} style={{ height: "100%", width: "100%" }} scrollWheelZoom={false}>
           <TileLayer
-            url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
-            attribution="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ"
-            maxZoom={16}
+            url={BASEMAP_TILES.street.base}
+            attribution={BASEMAP_TILES.street.attribution}
+            maxZoom={BASEMAP_TILES.street.maxZoom}
           />
           <MapFitter points={points} />
           {points.map((p, idx) => (

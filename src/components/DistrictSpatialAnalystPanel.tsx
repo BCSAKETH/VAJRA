@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { MapContainer, TileLayer, CircleMarker, Popup, Circle, Polygon, useMap, useMapEvents } from "react-leaflet";
 import L from "leaflet";
+import { BASEMAP_TILES, BasemapMode } from "../lib/basemap";
 import "leaflet.heat";
 import { MapPin, Sliders, AlertTriangle, Flame } from "lucide-react";
 import { API_BASE } from "../config";
@@ -37,25 +38,7 @@ const HEAT_GRADIENT: Record<number, string> = {
   1.0: "#d9403a",
 };
 
-// Free, unmetered, watermark-free basemap providers (ESRI Canvas / Satellite / OSM)
-const BASEMAP_TILES = {
-  dark: {
-    base: "https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}",
-    attribution: "Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ",
-    maxZoom: 16,
-  },
-  satellite: {
-    base: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-    overlay: "https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}",
-    attribution: "Tiles &copy; Esri, i-cubed, USDA, USGS, GeoEye",
-    maxZoom: 19,
-  },
-  osm: {
-    base: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-    attribution: "&copy; OpenStreetMap contributors",
-    maxZoom: 19,
-  },
-};
+
 
 const HeatLayer: React.FC<{ points: HotspotPoint[] }> = ({ points }) => {
   const map = useMap();
@@ -156,7 +139,7 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
 
   // Basemap & 3D Perspective controls (Section 11 & 12)
-  const [basemapMode, setBasemapMode] = useState<"dark" | "satellite" | "osm">("dark");
+  const [basemapMode, setBasemapMode] = useState<BasemapMode>("street");
   const [is3DMode, setIs3DMode] = useState<boolean>(false);
 
   useEffect(() => {
@@ -279,14 +262,15 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
           </div>
           <div className="grid grid-cols-3 gap-1">
             <button
-              onClick={() => setBasemapMode("dark")}
+              onClick={() => setBasemapMode("street")}
               className={`py-1 rounded text-[9.5px] font-bold font-mono uppercase transition-colors cursor-pointer ${
-                basemapMode === "dark"
+                basemapMode === "street"
                   ? "bg-[#C79A4E]/15 border border-[#C79A4E]/40 text-[#C79A4E]"
                   : "bg-stone-900 border border-stone-800 text-stone-500 hover:text-stone-300"
               }`}
+              title="High-Visibility Street View (OpenStreetMap)"
             >
-              Tactical
+              Street
             </button>
             <button
               onClick={() => setBasemapMode("satellite")}
@@ -295,18 +279,20 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
                   ? "bg-[#C79A4E]/15 border border-[#C79A4E]/40 text-[#C79A4E]"
                   : "bg-stone-900 border border-stone-800 text-stone-500 hover:text-stone-300"
               }`}
+              title="Aerial Satellite Hybrid View with Boundaries"
             >
               Satellite
             </button>
             <button
-              onClick={() => setBasemapMode("osm")}
+              onClick={() => setBasemapMode("dark")}
               className={`py-1 rounded text-[9.5px] font-bold font-mono uppercase transition-colors cursor-pointer ${
-                basemapMode === "osm"
+                basemapMode === "dark"
                   ? "bg-[#C79A4E]/15 border border-[#C79A4E]/40 text-[#C79A4E]"
                   : "bg-stone-900 border border-stone-800 text-stone-500 hover:text-stone-300"
               }`}
+              title="Tactical Dark View with Legible Reference Labels"
             >
-              OSM
+              Tactical
             </button>
           </div>
         </div>
@@ -357,9 +343,9 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
               attribution={BASEMAP_TILES[basemapMode].attribution}
               maxZoom={BASEMAP_TILES[basemapMode].maxZoom}
             />
-            {basemapMode === "satellite" && (
+            {BASEMAP_TILES[basemapMode].overlay && (
               <TileLayer
-                url={BASEMAP_TILES.satellite.overlay!}
+                url={BASEMAP_TILES[basemapMode].overlay!}
                 attribution=""
                 maxZoom={19}
                 opacity={0.85}

@@ -38,6 +38,9 @@ const InlineMapFitter: React.FC<{ points: { lat: number; lng: number }[] }> = ({
   return null;
 };
 
+import { BASEMAP_TILES, BasemapMode } from "../lib/basemap";
+
+
 // Colour + arrow encode MOMENTUM (rising = danger, falling = good, else muted)
 // so an officer reads the concern board at a glance without parsing numbers.
 const momColor = (g: number) => (g > 3 ? "#E24B4A" : g < -3 ? "#5DCAA5" : "#A8A096");
@@ -327,6 +330,10 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
   // before this item). Set to the latest real month once map data with more
   // than one month arrives (see the effectiveType === "map" render below).
   const [selectedHotspotMonth, setSelectedHotspotMonth] = useState<string | null>(null);
+
+  // Basemap & 3D Layer mode for maps (defaults to high-visibility "street" view)
+  const [mapBasemap, setMapBasemap] = useState<"street" | "satellite" | "dark">("street");
+  const [isMap3D, setIsMap3D] = useState<boolean>(false);
   // F.31: single-chart PNG export -- ref wraps the whole card so the export
   // handler can find whichever chart's real <svg> is actually rendered
   // inside it, without each chart type needing its own separate ref.
@@ -660,13 +667,59 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
           }
           return (
             <div className="space-y-2">
-              <p className="text-stone-400">
-                {lang === "en" ? (
-                  <><span className="font-bold text-stone-200">{hotspots.length}</span> hotspot cluster{hotspots.length === 1 ? "" : "s"} plotted.</>
-                ) : (
-                  <><span className="font-bold text-stone-200">{hotspots.length}</span> ಹಾಟ್‌ಸ್ಪಾಟ್ ಸಮೂಹಗಳನ್ನು ಗುರುತಿಸಲಾಗಿದೆ.</>
-                )}
-              </p>
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="text-stone-400 text-xs font-mono">
+                  {lang === "en" ? (
+                    <><span className="font-bold text-stone-200">{hotspots.length}</span> hotspot cluster{hotspots.length === 1 ? "" : "s"} plotted.</>
+                  ) : (
+                    <><span className="font-bold text-stone-200">{hotspots.length}</span> ಹಾಟ್‌ಸ್ಪಾಟ್ ಸಮೂಹಗಳನ್ನು ಗುರುತಿಸಲಾಗಿದೆ.</>
+                  )}
+                </p>
+
+                {/* Basemap (Street/Satellite/Dark) & 3D Layer Toggles */}
+                <div className="flex items-center gap-1.5">
+                  <div className="flex items-center bg-stone-900/90 border border-stone-800 rounded p-0.5 text-[9px] font-mono shadow-sm">
+                    <button
+                      onClick={() => setMapBasemap("street")}
+                      className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
+                        mapBasemap === "street" ? "bg-[#C79A4E]/20 text-[#C79A4E] font-bold" : "text-stone-400 hover:text-stone-200"
+                      }`}
+                      title="High-Visibility Street View"
+                    >
+                      {lang === "en" ? "Street" : "ಬೀದಿ"}
+                    </button>
+                    <button
+                      onClick={() => setMapBasemap("satellite")}
+                      className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
+                        mapBasemap === "satellite" ? "bg-[#C79A4E]/20 text-[#C79A4E] font-bold" : "text-stone-400 hover:text-stone-200"
+                      }`}
+                      title="Aerial Satellite Hybrid View"
+                    >
+                      {lang === "en" ? "Satellite" : "ಉಪಗ್ರಹ"}
+                    </button>
+                    <button
+                      onClick={() => setMapBasemap("dark")}
+                      className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
+                        mapBasemap === "dark" ? "bg-[#C79A4E]/20 text-[#C79A4E] font-bold" : "text-stone-400 hover:text-stone-200"
+                      }`}
+                      title="Tactical Dark View"
+                    >
+                      {lang === "en" ? "Dark" : "ಕಪ್ಪು"}
+                    </button>
+                  </div>
+                  <button
+                    onClick={() => setIsMap3D(!isMap3D)}
+                    className={`px-2 py-0.5 rounded text-[9px] font-mono border transition-all cursor-pointer flex items-center gap-1 ${
+                      isMap3D
+                        ? "bg-[#C79A4E] text-stone-950 font-black border-[#C79A4E] shadow-sm shadow-[#C79A4E]/30"
+                        : "bg-stone-900/90 text-stone-400 border-stone-800 hover:border-stone-700"
+                    }`}
+                    title={isMap3D ? "Switch to Flat 2D View" : "Switch to 3D Command-Center Tilt"}
+                  >
+                    3D
+                  </button>
+                </div>
+              </div>
               {safeEffectiveData.trend && (safeEffectiveData.trend.recent || safeEffectiveData.trend.prior) ? (
                 <div className={`text-[11px] font-mono font-bold flex items-center gap-1 ${safeEffectiveData.trend.direction === "rising" ? "text-rose-400" : safeEffectiveData.trend.direction === "falling" ? "text-[#5DCAA5]" : "text-stone-400"}`}>
                   <span>{safeEffectiveData.trend.direction === "rising" ? "▲" : safeEffectiveData.trend.direction === "falling" ? "▼" : "▬"}</span>
@@ -693,18 +746,38 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                   </button>
                 </div>
               )}
-              <div className="rounded-lg overflow-hidden border border-stone-800 h-[280px] relative z-0">
+              <div
+                className="rounded-lg overflow-hidden border border-stone-800 h-[280px] relative z-0 transition-all duration-700 ease-out"
+                style={{ perspective: isMap3D ? "900px" : "none", background: "#161412" }}
+              >
+                <div
+                  className="w-full h-full transition-transform duration-700 ease-out"
+                  style={{
+                    transform: isMap3D ? "rotateX(42deg) scale(1.06)" : "rotateX(0deg) scale(1)",
+                    transformOrigin: "center 75%",
+                    height: "100%",
+                  }}
+                >
                 <MapContainer
+                  key={`${hotspots[0]?.lat}-${hotspots[0]?.lng}-${mapBasemap}`}
                   center={[hotspots[0].lat, hotspots[0].lng]}
                   zoom={12}
                   scrollWheelZoom={false}
                   style={{ height: "100%", width: "100%", background: "#161412" }}
                 >
                   <TileLayer
-                    url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
-                    attribution="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ"
-                    maxZoom={16}
+                    url={BASEMAP_TILES[mapBasemap].base}
+                    attribution={BASEMAP_TILES[mapBasemap].attribution}
+                    maxZoom={BASEMAP_TILES[mapBasemap].maxZoom}
                   />
+                  {BASEMAP_TILES[mapBasemap].overlay && (
+                    <TileLayer
+                      url={BASEMAP_TILES[mapBasemap].overlay!}
+                      attribution=""
+                      maxZoom={19}
+                      opacity={0.85}
+                    />
+                  )}
                   <InlineMapFitter points={hotspots} />
                   {(() => {
                     const counts = hotspots.map((h) => {
@@ -712,6 +785,7 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                       return m ? parseInt(m[1], 10) : 0;
                     });
                     const maxC = Math.max(1, ...counts);
+                    const isSat = mapBasemap === "satellite";
                     return hotspots.map((marker, idx) => {
                       const c = counts[idx];
                       const intensity = c ? c / maxC : 0.35;
@@ -719,12 +793,37 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                       const halo = c ? Math.min(18, 7 + c * 0.5) : 8;
                       return (
                         <React.Fragment key={idx}>
+                          {/* 3D Volumetric Depth Ring */}
+                          {isMap3D && (
+                            <CircleMarker
+                              center={[marker.lat, marker.lng]}
+                              radius={halo + 6}
+                              pathOptions={{
+                                color: isSat ? "#FFFFFF" : color,
+                                weight: 1,
+                                fillColor: isSat ? "#FFFFFF" : color,
+                                fillOpacity: 0.15,
+                                opacity: 0.4,
+                              }}
+                            />
+                          )}
                           <CircleMarker center={[marker.lat, marker.lng]} radius={halo}
                             pathOptions={{ color, weight: 1, fillColor: color, fillOpacity: 0.1, opacity: 0.35 }} />
                           <CircleMarker center={[marker.lat, marker.lng]} radius={4}
-                            pathOptions={{ color: "#161412", weight: 1.5, fillColor: color, fillOpacity: 1 }}>
+                            pathOptions={{
+                              color: isSat ? "#FFFFFF" : "#161412",
+                              weight: isSat ? 2 : 1.5,
+                              fillColor: color,
+                              fillOpacity: 1,
+                            }}>
                             <Popup>
-                              <div className="text-xs font-sans text-stone-900 space-y-1 min-w-[150px] max-w-[220px]">
+                              <div
+                                className="text-xs font-sans text-stone-900 space-y-1 min-w-[150px] max-w-[220px]"
+                                style={{
+                                  transform: isMap3D ? "rotateX(-42deg)" : "none",
+                                  transformOrigin: "bottom center",
+                                }}
+                              >
                                 {marker.point_count ? (
                                   <>
                                     <span className="font-bold block">{marker.point_count} {lang === "en" ? "incidents" : "ಘಟನೆಗಳು"}</span>
@@ -760,6 +859,14 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                     });
                   })()}
                 </MapContainer>
+                </div>
+
+                {/* Satellite HUD Overlay */}
+                {mapBasemap === "satellite" && (
+                  <div className="absolute bottom-2 left-2 z-[400] bg-stone-950/85 backdrop-blur-md px-2 py-0.5 rounded border border-stone-800 text-[8.5px] font-mono text-stone-400 pointer-events-none">
+                    🛰️ ESRI World Imagery • Sub-Meter Aerial
+                  </div>
+                )}
               </div>
             </div>
           );

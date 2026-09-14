@@ -8,6 +8,7 @@ import { WatermarkOverlay } from "./WatermarkOverlay";
 import { NetworkGraph } from "./NetworkGraph";
 import { downloadJson, downloadHotspotsAsGeoJson, downloadSvgAsPng } from "../lib/widgetExport";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { BASEMAP_TILES, BasemapMode } from "../lib/basemap";
 
 // Confirmed live: the old 10-color palette repeats via index % length once a
 // breakdown has more than 10 categories (real crime-type distributions
@@ -313,6 +314,10 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                     type === "map" ? (mapData || rawData) : rawData;
   const data = (rawTarget && typeof rawTarget === "object") ? rawTarget : {};
 
+  // Basemap & 3D Layer mode for maps (defaults to high-visibility "street" view)
+  const [mapBasemap, setMapBasemap] = useState<BasemapMode>("street");
+  const [isMap3D, setIsMap3D] = useState<boolean>(false);
+
   // ESC key dismiss
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -535,69 +540,155 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
         <div ref={contentRef} className={inline ? "flex-1 overflow-y-auto overflow-x-hidden" : "flex-1 p-6 overflow-y-auto bg-stone-950/15"}>
           {type === "map" && (() => {
             const hotspots: { lat: number; lng: number; label?: string }[] = data.hotspots || [];
+            const isSat = mapBasemap === "satellite";
             return (
-              <div className="h-full flex flex-col gap-4">
-                <p className="text-xs text-stone-400">
-                  {lang === "en" ? "Interactive DBSCAN/KDE Map showing clusters of past cases in selected district." : "ಆಯ್ದ ಜಿಲ್ಲೆಯಲ್ಲಿನ ಹಿಂದಿನ ಪ್ರಕರಣಗಳ ಸಮೂಹಗಳನ್ನು ತೋರಿಸುವ ಇಂಟರಾಕ್ಟಿವ್ DBSCAN/KDE ನಕ್ಷೆ."}
-                </p>
-                <div className="flex-1 rounded-xl overflow-hidden border border-stone-800 min-h-[300px] relative z-0">
-                  <MapContainer
-                    center={hotspots[0] ? [hotspots[0].lat, hotspots[0].lng] : [12.9716, 77.5946]}
-                    zoom={12}
-                    style={{ height: "100%", width: "100%" }}
+              <div className="h-full flex flex-col gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs text-stone-400">
+                    {lang === "en" ? "Interactive DBSCAN/KDE Map showing clusters of past cases in selected district." : "ಆಯ್ದ ಜಿಲ್ಲೆಯಲ್ಲಿನ ಹಿಂದಿನ ಪ್ರಕರಣಗಳ ಸಮೂಹಗಳನ್ನು ತೋರಿಸುವ ಇಂಟರಾಕ್ಟಿವ್ DBSCAN/KDE ನಕ್ಷೆ."}
+                  </p>
+                  {/* Basemap (Street/Satellite/Dark) & 3D Layer Toggles */}
+                  <div className="flex items-center gap-1.5">
+                    <div className="flex items-center bg-stone-900/90 border border-stone-800 rounded p-0.5 text-[10px] font-mono shadow-sm">
+                      <button
+                        type="button"
+                        onClick={() => setMapBasemap("street")}
+                        className={`px-2.5 py-1 rounded transition-all cursor-pointer ${
+                          mapBasemap === "street" ? "bg-[#C79A4E]/20 text-[#C79A4E] font-bold" : "text-stone-400 hover:text-stone-200"
+                        }`}
+                        title="High-Visibility Street View"
+                      >
+                        {lang === "en" ? "Street" : "ಬೀದಿ"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMapBasemap("satellite")}
+                        className={`px-2.5 py-1 rounded transition-all cursor-pointer ${
+                          mapBasemap === "satellite" ? "bg-[#C79A4E]/20 text-[#C79A4E] font-bold" : "text-stone-400 hover:text-stone-200"
+                        }`}
+                        title="Aerial Satellite Hybrid View"
+                      >
+                        {lang === "en" ? "Satellite" : "ಉಪಗ್ರಹ"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMapBasemap("dark")}
+                        className={`px-2.5 py-1 rounded transition-all cursor-pointer ${
+                          mapBasemap === "dark" ? "bg-[#C79A4E]/20 text-[#C79A4E] font-bold" : "text-stone-400 hover:text-stone-200"
+                        }`}
+                        title="Tactical Dark View"
+                      >
+                        {lang === "en" ? "Dark" : "ಕಪ್ಪು"}
+                      </button>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsMap3D(!isMap3D)}
+                      className={`px-2.5 py-1 rounded text-[10px] font-mono border transition-all cursor-pointer flex items-center gap-1 ${
+                        isMap3D
+                          ? "bg-[#C79A4E] text-stone-950 font-black border-[#C79A4E] shadow-sm shadow-[#C79A4E]/30"
+                          : "bg-stone-900/90 text-stone-400 border-stone-800 hover:border-stone-700"
+                      }`}
+                      title={isMap3D ? "Switch to Flat 2D View" : "Switch to 3D Command-Center Tilt"}
+                    >
+                      3D
+                    </button>
+                  </div>
+                </div>
+
+                <div
+                  className="flex-1 rounded-xl overflow-hidden border border-stone-800 min-h-[350px] relative z-0 transition-all duration-700 ease-out"
+                  style={{ perspective: isMap3D ? "900px" : "none", background: "#161412" }}
+                >
+                  <div
+                    className="w-full h-full transition-transform duration-700 ease-out"
+                    style={{
+                      transform: isMap3D ? "rotateX(42deg) scale(1.06)" : "rotateX(0deg) scale(1)",
+                      transformOrigin: "center 75%",
+                      height: "100%",
+                    }}
                   >
-                    <TileLayer
-                      url="https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}"
-                      attribution="Tiles &copy; Esri &mdash; Esri, DeLorme, NAVTEQ"
-                      maxZoom={16}
-                    />
-                    <MapSizeAndBoundsFixer points={hotspots} />
-                    {(() => {
-                      // Same severity-intensity logic as the inline chat map
-                      // (InlineWidget.tsx) -- confirmed live this expanded
-                      // view was scaling CIRCLE SIZE by incident count but
-                      // hardcoding every circle to the identical gold color,
-                      // so nothing here visually distinguished a genuinely
-                      // hot cluster from a quiet one once you opened it. Both
-                      // views now read the same way: red = hottest relative
-                      // to the others on screen, gold = coolest.
-                      const counts = hotspots.map((h) => {
-                        const m = h.label?.match(/\((\d+)\s*incidents?\)/i);
-                        return m ? parseInt(m[1], 10) : 0;
-                      });
-                      const maxC = Math.max(1, ...counts);
-                      return hotspots.map((marker, idx) => {
-                        const incidentCount = counts[idx] || null;
-                        const radius = incidentCount ? Math.min(28, 10 + incidentCount * 1.5) : 12;
-                        const intensity = incidentCount ? incidentCount / maxC : 0.35;
-                        const color = intensity > 0.66 ? "#E24B4A" : intensity > 0.33 ? "#E4C590" : "#C79A4E";
-                        return (
-                        <CircleMarker
-                          key={idx}
-                          center={[marker.lat, marker.lng]}
-                          radius={radius}
-                          pathOptions={{
-                            color,
-                            weight: 2,
-                            fillColor: color,
-                            fillOpacity: 0.35,
-                          }}
-                        >
-                          <Popup>
-                            <div className="text-xs font-sans text-stone-900">
-                              <span className="font-bold block">{marker.label}</span>
-                              Location: {marker.lat.toFixed(5)}, {marker.lng.toFixed(5)}
-                            </div>
-                          </Popup>
-                        </CircleMarker>
-                        );
-                      });
-                    })()}
-                  </MapContainer>
+                    <MapContainer
+                      key={`${hotspots[0]?.lat}-${hotspots[0]?.lng}-${mapBasemap}`}
+                      center={hotspots[0] ? [hotspots[0].lat, hotspots[0].lng] : [12.9716, 77.5946]}
+                      zoom={12}
+                      style={{ height: "100%", width: "100%", background: "#161412" }}
+                    >
+                      <TileLayer
+                        url={BASEMAP_TILES[mapBasemap].base}
+                        attribution={BASEMAP_TILES[mapBasemap].attribution}
+                        maxZoom={BASEMAP_TILES[mapBasemap].maxZoom}
+                      />
+                      {BASEMAP_TILES[mapBasemap].overlay && (
+                        <TileLayer
+                          url={BASEMAP_TILES[mapBasemap].overlay!}
+                          attribution=""
+                          maxZoom={19}
+                          opacity={0.85}
+                        />
+                      )}
+                      <MapSizeAndBoundsFixer points={hotspots} />
+                      {(() => {
+                        const counts = hotspots.map((h) => {
+                          const m = h.label?.match(/\((\d+)\s*incidents?\)/i);
+                          return m ? parseInt(m[1], 10) : 0;
+                        });
+                        const maxC = Math.max(1, ...counts);
+                        return hotspots.map((marker, idx) => {
+                          const incidentCount = counts[idx] || null;
+                          const radius = incidentCount ? Math.min(28, 10 + incidentCount * 1.5) : 12;
+                          const intensity = incidentCount ? incidentCount / maxC : 0.35;
+                          const color = intensity > 0.66 ? "#E24B4A" : intensity > 0.33 ? "#E4C590" : "#C79A4E";
+                          return (
+                            <React.Fragment key={idx}>
+                              {/* 3D Depth ring */}
+                              {isMap3D && (
+                                <CircleMarker
+                                  center={[marker.lat, marker.lng]}
+                                  radius={radius + 6}
+                                  pathOptions={{
+                                    color: isSat ? "#FFFFFF" : color,
+                                    weight: 1,
+                                    fillColor: isSat ? "#FFFFFF" : color,
+                                    fillOpacity: 0.15,
+                                    opacity: 0.4,
+                                  }}
+                                />
+                              )}
+                              <CircleMarker
+                                center={[marker.lat, marker.lng]}
+                                radius={radius}
+                                pathOptions={{
+                                  color: isSat ? "#FFFFFF" : color,
+                                  weight: isSat ? 2 : 1.5,
+                                  fillColor: color,
+                                  fillOpacity: 0.35,
+                                }}
+                              >
+                                <Popup>
+                                  <div
+                                    className="text-xs font-sans text-stone-900"
+                                    style={{
+                                      transform: isMap3D ? "rotateX(-42deg)" : "none",
+                                      transformOrigin: "bottom center",
+                                    }}
+                                  >
+                                    <span className="font-bold block">{marker.label}</span>
+                                    Location: {marker.lat.toFixed(5)}, {marker.lng.toFixed(5)}
+                                  </div>
+                                </Popup>
+                              </CircleMarker>
+                            </React.Fragment>
+                          );
+                        });
+                      })()}
+                    </MapContainer>
+                  </div>
                 </div>
               </div>
             );
           })()}
+
 
           {type === "network" && (
             <div className="h-full flex flex-col md:flex-row gap-6">
