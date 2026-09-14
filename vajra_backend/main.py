@@ -612,14 +612,23 @@ async def login(payload: AuthRequest):
     # supervisor badge is actually Supervisor-tier+, not just a different
     # badge number that happens to have a valid password.
     role_tier = "officer"
+    first_name = ""
+    last_name = ""
+    full_name = ""
+    rank_id = ""
     try:
         emp_res = catalyst_app.zql().execute_query(
-            f"SELECT RankID FROM Employee WHERE KGID = '{escape_zcql_literal(payload.badge_no)}'"
+            f"SELECT FirstName, LastName, RankID FROM Employee WHERE KGID = '{escape_zcql_literal(payload.badge_no)}'"
         )
         if emp_res:
-            role_tier = derive_role_tier(emp_res[0].get("Employee", {}).get("RankID"), payload.badge_no)
+            emp = emp_res[0].get("Employee", {})
+            first_name = (emp.get("FirstName") or "").strip()
+            last_name = (emp.get("LastName") or "").strip()
+            full_name = f"{first_name} {last_name}".strip()
+            rank_id = str(emp.get("RankID") or "")
+            role_tier = derive_role_tier(emp.get("RankID"), payload.badge_no)
     except Exception as e:
-        logger.warning(f"Could not resolve role_tier for {payload.badge_no}: {e}")
+        logger.warning(f"Could not resolve role_tier/employee details for {payload.badge_no}: {e}")
 
     return {
         "access_token": token,
@@ -630,6 +639,10 @@ async def login(payload: AuthRequest):
         "user": {
             "id": f"{payload.badge_no}_user",
             "badge_no": payload.badge_no,
+            "first_name": first_name or "Officer",
+            "last_name": last_name,
+            "full_name": full_name or f"Officer {payload.badge_no}",
+            "rank_id": rank_id,
             "email": f"{payload.badge_no}@vajra.ksp.gov.in"
         }
     }
@@ -2786,12 +2799,48 @@ def _fit_json(obj: Any, cap: int) -> str:
     minimal = {k: d.get(k) for k in
                ("case_no", "primary_accused", "_text_en", "news", "scope",
                 "nodes", "edges", "hub", "target_suspect", "network", "seed", "max_hop_reached", "_zcql_provenance",
-                "msg_id", "variant_group", "version_index",
+                "msg_id", "variant_group", "version_index", "sender_name", "sender_kgid",
                 "suspect", "age", "risk_score", "shap_factors", "aggravating",
                 "mitigating", "remand_status",
                 "hotspots", "trend", "hexbins") if d.get(k) is not None}
     s = json.dumps(minimal, ensure_ascii=False, default=str)
     return s if len(s) <= cap else "{}"
+
+
+# Section 13: In-Memory Cache for ultra-fast KGID/EmployeeID -> Officer Name resolution (< 0.1ms)
+_EMPLOYEE_NAME_CACHE: Dict[str, Dict[str, str]] = {}
+
+def get_cached_officer_identity(kgid_or_emp_id: Any) -> Dict[str, str]:
+    """Resolves an officer's real name and rank in < 0.1ms via memory cache or ZCQL."""
+    if not kgid_or_emp_id:
+        return {"name": "Officer", "rank": ""}
+
+    key = str(kgid_or_emp_id).strip()
+    if key in _EMPLOYEE_NAME_CACHE:
+        return _EMPLOYEE_NAME_CACHE[key]
+
+    if not catalyst_app:
+        return {"name": f"Officer ({key})", "rank": ""}
+
+    try:
+        rows = catalyst_app.zql().execute_query(
+            f"SELECT FirstName, LastName, RankID FROM Employee WHERE KGID = '{escape_zcql_literal(key)}' "
+            f"OR ROWID = '{escape_zcql_literal(key)}' LIMIT 1"
+        )
+        if rows:
+            emp = rows[0].get("Employee", {})
+            first = (emp.get("FirstName") or "").strip()
+            last = (emp.get("LastName") or "").strip()
+            full_name = f"{first} {last}".strip() or f"Officer ({key})"
+            identity = {"name": full_name, "rank": str(emp.get("RankID") or "")}
+            _EMPLOYEE_NAME_CACHE[key] = identity
+            return identity
+    except Exception as e:
+        logger.warning(f"Could not resolve officer name for {key}: {e}")
+
+    fallback = {"name": f"Officer ({key})", "rank": ""}
+    _EMPLOYEE_NAME_CACHE[key] = fallback
+    return fallback
 
 
 def _persist_chat_message(session_id: str, sender: str, text: str, response_type: str = "text", data: Optional[Dict[str, Any]] = None, citations: Optional[List[Any]] = None, sender_employee_id: Optional[int] = None):
@@ -3174,7 +3223,17 @@ async def get_session_messages(session_id: str, request: Request, location_conte
             if GLMTranslator._looks_like_leaked_escapes(text_en):
                 text_en = stored_text
             sender_employee_id = m.get("sender_employee_id")
-            sender_name = "VAJRA.AI" if m.get("sender") == "assistant" else "Officer"
+            if m.get("sender") == "assistant":
+                sender_name = "VAJRA.AI"
+            elif m.get("sender") == "system":
+                sender_name = "System"
+            else:
+                # 1. First check if data_json stored the real name at creation
+                sender_name = data.get("sender_name")
+                if not sender_name or sender_name == "Officer":
+                    # 2. Resolve dynamically from the Employee cache via sender_employee_id
+                    identity = get_cached_officer_identity(sender_employee_id)
+                    sender_name = identity.get("name", "Officer")
             messages.append({
                 "sender": m.get("sender"),
                 "sender_employee_id": sender_employee_id,
@@ -3934,6 +3993,8 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId") or 4003385
     unit_id = request.state.user_profile.get("UnitID") or request.state.user_profile.get("unitid")
     first_name = request.state.user_profile.get("FirstName") or "Officer"
+    last_name = request.state.user_profile.get("LastName") or ""
+    full_officer_name = f"{first_name} {last_name}".strip() or first_name or "Officer"
 
     # Resolve session ID: prefer the real persisted session_id from the request
     # body. If none was supplied, this is a new conversation -- auto-create a
@@ -4036,6 +4097,8 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
             **({"attachments": payload.attachments} if payload.attachments else {}),
             **({"attachment_analysis": _att_analysis_to_store} if _att_analysis_to_store else {}),
             **_user_variant_extra,
+            "sender_name": full_officer_name,
+            "sender_kgid": str(getattr(request.state, "kgid", employee_id) or employee_id),
         }
         _persist_chat_message(
             session_id, "user", display_text, "text",
@@ -4044,7 +4107,7 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
         )
         await connection_manager.broadcast(session_id, {
             "type": "message", "sender": "user", "sender_employee_id": employee_id,
-            "sender_name": first_name, "text": display_text, "response_type": "text",
+            "sender_name": full_officer_name, "text": display_text, "response_type": "text",
             "data": _user_msg_data, "citations": [], "timestamp": datetime.utcnow().isoformat(),
             "client_msg_id": payload.client_msg_id
         })

@@ -1515,10 +1515,8 @@ export const AIChatScreen: React.FC = () => {
           via the AppContext bridge (chatSessionSelectRequest/
           newChatRequestNonce, wired above). */}
       <div className="flex-1 min-h-0 flex flex-col relative overflow-hidden">
-      {/* Security watermark -- already used on Spatial/Supervisor, missing
-          here despite chat being the screen most likely to display raw case
-          facts, suspect names, and attachment content. */}
-      <WatermarkOverlay />
+      {/* Forensic watermark: activates once dialogue commences (Section 13.5) */}
+      {chatMessages.length > 0 && <WatermarkOverlay />}
       {/* Header export action button + §9.5/§9.6/§9.7 Investigation-only controls */}
       <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
         {isActiveInvestigation && (

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { ChatMessage } from "../AppContext";
+import { ChatMessage, useApp } from "../AppContext";
 import { translations } from "../i18n";
 import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2, Info, Pin, PinOff } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
@@ -432,6 +432,25 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
 }) => {
   const t = translations[lang];
   const isAI = message.sender === "assistant";
+  const { officerName, badgeNumber } = useApp();
+
+  // Section 13: Resolve verified officer identity and badge for forensic attribution
+  const resolveSenderLabel = (): string => {
+    if (isAI) {
+      return "VAJRA.AI";
+    }
+    let name = message.senderName ? message.senderName.trim() : "";
+    if (!name || name.toLowerCase() === "officer") {
+      name = officerName ? officerName.trim() : "";
+    }
+    const badge = message.senderEmployeeId || badgeNumber || "";
+    const badgeSuffix = badge ? ` • KSP-${badge}` : "";
+
+    if (name) {
+      return `${name.toUpperCase()}${badgeSuffix}`;
+    }
+    return badge ? `OFFICER (KSP-${badge})` : "INVESTIGATING OFFICER";
+  };
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [copied, setCopied] = useState(false);
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
@@ -1083,9 +1102,13 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
 
   return (
     <div className={`flex flex-col gap-1.5 w-full animate-fade-in group ${isAI ? "items-start" : "items-end"}`}>
-      {/* Sender Label */}
-      <span className="text-[10px] text-stone-500 font-semibold px-2 font-mono flex items-center gap-1.5">
-        {isAI ? "VAJRA.AI" : (message.senderName ? message.senderName.toUpperCase() : "INVESTIGATOR")} • {message.timestamp}
+      {/* Forensically Bound Sender Attribution Label */}
+      <span className="text-[10px] text-stone-400 font-semibold px-2 font-mono flex items-center gap-1.5 tracking-wide">
+        <span className={isAI ? "text-[#C79A4E] font-bold" : "text-stone-300 font-bold"}>
+          {resolveSenderLabel()}
+        </span>
+        <span className="text-stone-600">•</span>
+        <span className="text-stone-500 font-normal">{message.timestamp}</span>
       </span>
 
       {/* Bubble Container */}

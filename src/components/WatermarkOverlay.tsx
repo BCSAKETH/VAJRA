@@ -15,7 +15,7 @@ import { useApp } from "../AppContext";
 // so a single hardcoded DOM id would collide. Each instance gets its own
 // id via useId() instead.
 export const WatermarkOverlay: React.FC = () => {
-  const { badgeNumber, officerName, isAuthenticated } = useApp();
+  const { badgeNumber, officerName, roleTier, isAuthenticated } = useApp();
   const uid = useId().replace(/:/g, "");
   const [currentUtc, setCurrentUtc] = useState<string>(() =>
     new Date().toISOString().substring(0, 19).replace("T", " ")
@@ -32,44 +32,63 @@ export const WatermarkOverlay: React.FC = () => {
     return () => clearInterval(timer);
   }, [isAuthenticated]);
 
-  // Tamper resistance: if this node is ever removed from the document
-  // (e.g. a tech-savvy user deleting it via DevTools), force React to
-  // recreate it rather than silently leaving the watermark gone. Watches
-  // document.body with subtree:true since this overlay is mounted deep
-  // inside a screen's own component tree, not as a direct body child.
+  // Section 13: Enhanced Anti-Tamper Protection (L111)
+  // If an adversary attempts to delete the node or alter style (display: none / opacity: 0)
+  // via DevTools before screenshotting, immediately restore it.
   useEffect(() => {
     if (!isAuthenticated) return;
-    const observer = new MutationObserver(() => {
+    const target = containerRef.current;
+    if (!target) return;
+
+    const observer = new MutationObserver((mutations) => {
       if (containerRef.current && !containerRef.current.isConnected) {
         setRemountKey((k) => k + 1);
+        return;
+      }
+      for (const mutation of mutations) {
+        if (mutation.type === "attributes") {
+          if (target.style.display === "none" || target.style.visibility === "hidden" || target.style.opacity === "0") {
+            target.style.display = "flex";
+            target.style.visibility = "visible";
+            target.style.opacity = "0.045";
+          }
+        }
       }
     });
+
     observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(target, { attributes: true, attributeFilter: ["style", "class"] });
     return () => observer.disconnect();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, remountKey]);
 
   if (!isAuthenticated) return null;
 
-  const officerBadge = badgeNumber || "KSP-UNKNOWN";
-  const name = officerName || "OFFICER";
-  const watermarkString = `${officerBadge} • ${name} • KSP CCTNS • ${currentUtc} UTC • CONFIDENTIAL`;
+  const displayName = officerName ? officerName.toUpperCase() : "OFFICER";
+  const badgeDisplay = badgeNumber ? `KSP-${badgeNumber}` : "KSP-AUTHORIZED";
+  const rankPrefix = roleTier === "supervisor" ? "SUPERVISORY " : "";
+  const watermarkString = `${rankPrefix}${displayName} (${badgeDisplay}) • OFFICIAL SECURITY COPY • SECURE CCTNS DIALOUT • ${currentUtc} UTC`;
 
   return (
     <div
       key={remountKey}
       ref={containerRef}
       id={`vajra-watermark-${uid}`}
-      className="absolute inset-0 pointer-events-none z-40 overflow-hidden select-none flex flex-col justify-around"
-      style={{ opacity: 0.045, mixBlendMode: "difference" }}
+      className="absolute inset-0 pointer-events-none z-40 overflow-hidden select-none flex flex-col justify-around print:opacity-[0.08]"
+      style={{
+        display: "flex",
+        visibility: "visible",
+        opacity: 0.045,
+        mixBlendMode: "difference",
+      }}
       aria-hidden="true"
     >
-      {Array.from({ length: 12 }).map((_, rowIndex) => (
+      {Array.from({ length: 14 }).map((_, rowIndex) => (
         <div
           key={rowIndex}
           className="whitespace-nowrap flex justify-around text-xs font-mono font-black tracking-widest text-[#C79A4E]"
           style={{
-            transform: rowIndex % 2 === 0 ? "rotate(-18deg) translateX(-5%)" : "rotate(-18deg) translateX(5%)",
+            transform: rowIndex % 2 === 0 ? "rotate(-18deg) translateX(-8%)" : "rotate(-18deg) translateX(8%)",
+            textShadow: "0 0 1px rgba(0, 0, 0, 0.6)",
           }}
         >
           {Array.from({ length: 4 }).map((_, colIndex) => (
