@@ -15,6 +15,11 @@ export interface FilterSortState {
   sortBy: "last_active" | "title";
   showEmptyGroups: boolean;
   status: "all" | "active" | "closed"; // only ever read/shown for Investigations
+  // "View all conversations" page only (see allowArchivedFilter below) --
+  // archived chats are otherwise permanently invisible everywhere, this is
+  // the one real place that can show them. Off means "hide archived" (the
+  // existing behavior everywhere else), on means "archived only".
+  showArchived: boolean;
 }
 
 export const DEFAULT_FILTER_SORT_STATE: FilterSortState = {
@@ -24,6 +29,7 @@ export const DEFAULT_FILTER_SORT_STATE: FilterSortState = {
   sortBy: "last_active",
   showEmptyGroups: false,
   status: "all",
+  showArchived: false,
 };
 
 interface FilterSortPanelProps {
@@ -38,12 +44,14 @@ interface FilterSortPanelProps {
   // for "investigations"; Group by + Show empty groups only for "chats".
   mode: "chats" | "investigations";
   lang: "en" | "kn";
+  // "View all conversations" page only -- see FilterSortState.showArchived.
+  allowArchivedFilter?: boolean;
 }
 
 const selectCls =
   "bg-stone-950/60 border border-stone-800 rounded-md text-[10px] text-stone-300 px-1.5 py-1 focus:outline-none focus:border-[#C79A4E]/50 cursor-pointer";
 
-export const FilterSortPanel: React.FC<FilterSortPanelProps> = ({ value, onChange, onReset, mode, lang }) => {
+export const FilterSortPanel: React.FC<FilterSortPanelProps> = ({ value, onChange, onReset, mode, lang, allowArchivedFilter }) => {
   const showStatus = mode === "investigations";
   const showGroupControls = mode === "chats";
   const row = (label: string, control: React.ReactNode) => (
@@ -122,6 +130,24 @@ export const FilterSortPanel: React.FC<FilterSortPanelProps> = ({ value, onChang
           <option value="title">{lang === "en" ? "Title" : "ಶೀರ್ಷಿಕೆ"}</option>
         </select>
       )}
+      {allowArchivedFilter &&
+        row(
+          lang === "en" ? "Archived only" : "ಆರ್ಕೈವ್ ಮಾಡಿದವು ಮಾತ್ರ",
+          <button
+            type="button"
+            onClick={() => onChange({ ...value, showArchived: !value.showArchived })}
+            className={`w-8 h-4 rounded-full relative transition-colors cursor-pointer ${
+              value.showArchived ? "bg-[#C79A4E]/70" : "bg-stone-700"
+            }`}
+            aria-pressed={value.showArchived}
+          >
+            <span
+              className={`absolute top-0.5 w-3 h-3 rounded-full bg-stone-100 transition-all ${
+                value.showArchived ? "left-4" : "left-0.5"
+              }`}
+            />
+          </button>
+        )}
       {showGroupControls &&
         row(
           lang === "en" ? "Show empty groups" : "ಖಾಲಿ ಗುಂಪುಗಳನ್ನು ತೋರಿಸಿ",

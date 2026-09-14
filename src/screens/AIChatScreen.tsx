@@ -10,7 +10,7 @@ import { CaseChipStrip } from "../components/CaseChipStrip";
 import { TaskChecklist } from "../components/TaskChecklist";
 import { CaseDiary } from "../components/CaseDiary";
 import { ReasonCollectionModal } from "../components/ReasonCollectionModal";
-import { Download, Sparkles, X, Users, FileText, Globe, Check, MoreVertical, ListChecks, BookText } from "lucide-react";
+import { Download, Sparkles, X, Users, FileText, Globe, Check, MoreVertical, ListChecks, BookText, Pin, ChevronDown, ChevronUp } from "lucide-react";
 
 // ExpandedOverlay pulls in Leaflet + Recharts directly (~250KB+ of the main
 // bundle) but only ever renders when a widget is actually expanded -- most
@@ -66,6 +66,8 @@ const mapSessionMessages = (sessionId: string, messages: any[]): ChatMessage[] =
     msgId: m.data?.msg_id,
     variantGroup: m.data?.variant_group,
     versionIndex: m.data?.version_index,
+    // WhatsApp-style message pin -- same data_json convention as msgId above.
+    isPinned: !!m.data?.is_pinned,
   }));
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
@@ -496,6 +498,12 @@ export const AIChatScreen: React.FC = () => {
                   return [...prev, newMsg];
                 });
                 if (payload.sender === "assistant") clearPending(activeSessionId ?? "__new__");
+                // Cowork live-push fix: the sidebar's chat list only refetches
+                // on an explicit action today -- a partner's message arriving
+                // live here should also move this session to the top /
+                // update its last-active time in the sidebar without the
+                // officer needing to click anything.
+                bumpChatSessionsRefresh();
               } catch {
                 // ignore one malformed SSE frame -- the next one still works
               }
@@ -670,6 +678,13 @@ export const AIChatScreen: React.FC = () => {
     return { displayMessages: chatMessages.filter((m) => !skip.has(m.id)), variantMeta: meta };
   }, [chatMessages, activeVariantOverride]);
 
+  // Pinned-messages strip -- WhatsApp-style, only when 1+ pinned messages
+  // exist in this conversation. Clicking a preview reuses the existing
+  // jump-to-and-highlight mechanism (handleJumpToMessage below), no new
+  // scroll logic needed.
+  const pinnedMessages = useMemo(() => chatMessages.filter((m) => m.isPinned && m.msgId), [chatMessages]);
+  const [pinnedStripExpanded, setPinnedStripExpanded] = useState(false);
+
   const handleCycleVariant = useCallback((group: string, direction: 1 | -1) => {
     setActiveVariantOverride((prev) => {
       const userTotal = variantMeta[`${group}::user`]?.total || 1;
@@ -693,6 +708,24 @@ export const AIChatScreen: React.FC = () => {
     handleSend(originalQuestionText, [], { retryOfMsgId: msgId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // WhatsApp-style message pin -- optimistic local flip, then persists
+  // server-side via the existing msg_id-in-data_json convention. Reverts on
+  // failure so the UI never lies about what's actually saved.
+  const handleTogglePin = useCallback((msgId: string, currentlyPinned: boolean) => {
+    const sid = activeSessionIdRef.current;
+    if (!sid) return;
+    setChatMessages((prev) => prev.map((m) => (m.msgId === msgId ? { ...m, isPinned: !currentlyPinned } : m)));
+    fetch(`${API_BASE}/api/sessions/${sid}/messages/${msgId}/pin`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      body: JSON.stringify({ pinned: !currentlyPinned }),
+    }).catch(() => {
+      setChatMessages((prev) => prev.map((m) => (m.msgId === msgId ? { ...m, isPinned: currentlyPinned } : m)));
+      addToast({ id: `pin-fail-${Date.now()}`, title: lang === "en" ? "Pin failed" : "ಪಿನ್ ವಿಫಲವಾಗಿದೆ", message: lang === "en" ? "Could not update this message. Try again." : "ಈ ಸಂದೇಶವನ್ನು ನವೀಕರಿಸಲಾಗಲಿಲ್ಲ. ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.", severity: "Warning", timestamp: new Date().toISOString() });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lang]);
 
   // Submit Text Query to Copilot Agent Loop
   // F.34: fetches this officer's own last-viewed timestamp for the current
@@ -1533,6 +1566,45 @@ export const AIChatScreen: React.FC = () => {
         </div>
       )}
 
+      {/* WhatsApp-style pinned-messages strip -- only when 1+ messages are
+          pinned. Collapsed shows a count; expanded lists short previews,
+          clicking one jumps to and highlights the real message below (no
+          separate fetch/re-render, same mechanism the Case Board uses). */}
+      {pinnedMessages.length > 0 && (
+        <div className="px-4 sm:px-6 pt-3">
+          <div className="max-w-3xl mx-auto rounded-lg border border-[#C79A4E]/25 bg-[#C79A4E]/[0.06] overflow-hidden">
+            <button
+              onClick={() => setPinnedStripExpanded((v) => !v)}
+              className="w-full flex items-center gap-2 px-3 py-2 text-left cursor-pointer"
+            >
+              <Pin className="w-3.5 h-3.5 text-[#C79A4E] shrink-0" />
+              <span className="text-xs font-bold text-[#C79A4E] font-mono">
+                {pinnedMessages.length} {lang === "en" ? "pinned" : "ಪಿನ್ ಮಾಡಲಾಗಿದೆ"}
+              </span>
+              {pinnedStripExpanded ? (
+                <ChevronUp className="w-3.5 h-3.5 text-stone-500 ml-auto shrink-0" />
+              ) : (
+                <ChevronDown className="w-3.5 h-3.5 text-stone-500 ml-auto shrink-0" />
+              )}
+            </button>
+            {pinnedStripExpanded && (
+              <div className="border-t border-[#C79A4E]/20 divide-y divide-[#C79A4E]/10">
+                {pinnedMessages.map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => handleJumpToMessage(m.msgId!)}
+                    className="w-full text-left px-3 py-2 text-xs text-stone-400 hover:bg-[#C79A4E]/10 transition-colors cursor-pointer truncate"
+                  >
+                    <span className="text-stone-600 font-mono mr-1.5">{m.sender === "user" ? (lang === "en" ? "You:" : "ನೀವು:") : "VAJRA.AI:"}</span>
+                    {m.text}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Messages Thread Container */}
       <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 space-y-6">
         {loadingSessionId ? (
@@ -1612,6 +1684,7 @@ export const AIChatScreen: React.FC = () => {
               totalVariants={vmeta?.total}
               activeVariantIndex={vmeta?.activeIndex}
               onCycleVariant={msg.variantGroup ? (dir) => handleCycleVariant(msg.variantGroup!, dir) : undefined}
+              onTogglePin={msg.msgId ? () => handleTogglePin(msg.msgId!, !!msg.isPinned) : undefined}
             />
             </div>
             );

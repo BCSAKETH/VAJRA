@@ -2,9 +2,9 @@ import React, { useEffect, useRef, useState } from "react";
 import { useApp, ScreenId } from "../AppContext";
 import { API_BASE } from "../config";
 import {
-  MessageSquarePlus, FolderKanban, Map, UserCheck, Search as SearchIcon, Loader2,
+  MessageSquarePlus, FolderKanban, Map, UserCheck, Loader2,
   ChevronLeft, ChevronRight, Shield, IdCard, Building2, X, LogOut,
-  Settings as SettingsIcon, Search,
+  Settings as SettingsIcon, Search, LayoutList,
 } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
 import { GroupedSessionList, SessionSummary, Investigation, SessionMetaEntry, GroupInfo } from "./GroupedSessionList";
@@ -130,7 +130,6 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
     { id: "investigations" as ScreenId, label: t.navInvestigations, icon: FolderKanban },
     { id: "district_dashboard", label: t.navDistrictDashboard, icon: Map },
     ...(roleTier === "supervisor" ? [{ id: "supervisor" as ScreenId, label: t.navSupervisor, icon: UserCheck }] : []),
-    { id: "fir_search" as ScreenId, label: t.navSearch, icon: SearchIcon },
   ];
 
   // ---- profile popover (moved verbatim from MainLayout.tsx) ----
@@ -271,6 +270,15 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
               onMutated={bumpRefresh}
               investigationsForPicker={investigations}
             />
+            {sessions.length > 0 && (
+              <button
+                onClick={() => setCurrentScreen("all_chats")}
+                className="w-full flex items-center gap-2 px-2 py-2 mt-1 rounded-lg text-[11px] text-stone-500 hover:bg-stone-800/40 hover:text-stone-300 transition-colors cursor-pointer"
+              >
+                <LayoutList className="w-3.5 h-3.5 shrink-0" />
+                {isExpanded && <span className="truncate">{lang === "en" ? "View all conversations" : "ಎಲ್ಲಾ ಸಂಭಾಷಣೆಗಳನ್ನು ವೀಕ್ಷಿಸಿ"}</span>}
+              </button>
+            )}
           </div>
         )}
       </div>

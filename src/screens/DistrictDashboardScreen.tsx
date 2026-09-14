@@ -21,9 +21,10 @@ import {
   Area,
   CartesianGrid,
 } from "recharts";
-import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2 } from "lucide-react";
+import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2, FolderOpen } from "lucide-react";
 import { DistrictSpatialAnalystPanel } from "../components/DistrictSpatialAnalystPanel";
 import { DistrictDemographicPanel } from "../components/DistrictDemographicPanel";
+import { DistrictFIRPanel } from "../components/DistrictFIRPanel";
 import { ReasonCollectionModal } from "../components/ReasonCollectionModal";
 
 interface DistrictSummaryRow {
@@ -187,7 +188,7 @@ export const DistrictDashboardScreen: React.FC = () => {
   // scoped to whichever district/station is currently selected -- instead
   // of an officer navigating away and having to re-establish which district
   // they meant on a disconnected page.
-  const [detailTab, setDetailTab] = useState<"overview" | "spatial" | "demographic">("overview");
+  const [detailTab, setDetailTab] = useState<"overview" | "spatial" | "demographic" | "fir">("overview");
   const [gatedInfo, setGatedInfo] = useState<{ districtId: number; message: string } | null>(null);
   const [accessRequestId, setAccessRequestId] = useState<string | null>(null);
   const [accessRequestStatus, setAccessRequestStatus] = useState<"idle" | "pending" | "approved" | "rejected">("idle");
@@ -562,6 +563,7 @@ export const DistrictDashboardScreen: React.FC = () => {
           { id: "overview" as const, label: lang === "en" ? "Overview" : "ಅವಲೋಕನ", Icon: LayoutGrid },
           { id: "spatial" as const, label: lang === "en" ? "Spatial Analyst" : "ಪ್ರಾದೇಶಿಕ ವಿಶ್ಲೇಷಣೆ", Icon: MapPin },
           { id: "demographic" as const, label: lang === "en" ? "Demographic Correlation" : "ಜನಸಂಖ್ಯಾ ಪರಸ್ಪರ ಸಂಬಂಧ", Icon: BarChart3 },
+          { id: "fir" as const, label: lang === "en" ? "Case Registry" : "ಪ್ರಕರಣ ರಿಜಿಸ್ಟ್ರಿ", Icon: FolderOpen },
         ]).map((t) => (
           <button
             key={t.id}
@@ -656,6 +658,16 @@ export const DistrictDashboardScreen: React.FC = () => {
           key={selectedId && districtDetailCache ? districtDetailCache.district : "__statewide__"}
           district={selectedId && districtDetailCache ? districtDetailCache.district : null}
           socioChart={selectedId && districtDetailCache ? districtDetailCache.socio_economic_chart : null}
+        />
+      )}
+
+      {/* FIR fold-in (Part G): retired "FIR Repository" as a standalone nav
+          screen, same statewide-first/district-scoped pattern as Spatial/
+          Demographic above. */}
+      {detailTab === "fir" && (
+        <DistrictFIRPanel
+          key={selectedId && districtDetailCache ? districtDetailCache.district : "__statewide__"}
+          district={selectedId && districtDetailCache ? districtDetailCache.district : null}
         />
       )}
 

@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useApp } from "../AppContext";
-import { Sun, Moon, AlertTriangle } from "lucide-react";
+import { Sun, Moon, AlertTriangle, ChevronLeft, ChevronRight } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
 import { NotificationBellPanel } from "./NotificationBellPanel";
 import { ToastContainer } from "./ToastContainer";
@@ -21,6 +21,10 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
     theme,
     setTheme,
     llmServiceAvailable, // C.16
+    goBack,
+    goForward,
+    canGoBack,
+    canGoForward,
   } = useApp();
 
   // §9.1 Unified Sidebar: nav rail, grouped chat/investigation lists, and
@@ -66,6 +70,28 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
           {/* Header Bar */}
           <header className="glass-panel border-b border-stone-800 py-3.5 px-6 flex items-center justify-between z-10 shrink-0">
             <div className="flex items-center gap-3">
+              {/* Back/Forward screen navigation -- browser-back-button-style,
+                  scoped to in-app screen switches only. */}
+              <div className="hidden sm:flex items-center gap-1 mr-1">
+                <button
+                  onClick={goBack}
+                  disabled={!canGoBack}
+                  aria-label="Back"
+                  title={lang === "en" ? "Back" : "ಹಿಂದೆ"}
+                  className="p-1.5 rounded-lg border border-stone-800 hover:border-stone-700 bg-stone-900/60 hover:bg-stone-850/80 text-stone-400 hover:text-stone-200 transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={goForward}
+                  disabled={!canGoForward}
+                  aria-label="Forward"
+                  title={lang === "en" ? "Forward" : "ಮುಂದೆ"}
+                  className="p-1.5 rounded-lg border border-stone-800 hover:border-stone-700 bg-stone-900/60 hover:bg-stone-850/80 text-stone-400 hover:text-stone-200 transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
               <VajraLogo animated={false} size={20} className="md:hidden" />
               <div className="min-w-0">
                 <h1 className="text-sm font-bold text-stone-200 tracking-wide truncate">

@@ -5,6 +5,7 @@ import {
   MessageSquare, Folder, Users, Loader2, MoreVertical, Trash2,
   ChevronDown, ChevronRight as ChevronRightIcon, Filter, Pin, PinOff,
   Circle, Archive, ArchiveRestore, Copy, FolderInput, FileStack, Pencil, Plus,
+  Check, CheckSquare, Square,
 } from "lucide-react";
 import { FilterSortPanel, FilterSortState, DEFAULT_FILTER_SORT_STATE } from "./FilterSortPanel";
 
@@ -67,6 +68,29 @@ interface GroupedSessionListProps {
 
 const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` });
 
+// Relative timestamps ("2 days ago") for `variant="page"` rows -- both here
+// and on the Investigations page, for the same "feels like a real product"
+// consistency the reference (Claude's own Chats page) has.
+function formatRelativeTime(iso: string, lang: "en" | "kn"): string {
+  if (!iso) return "";
+  const t = new Date(/Z$|[+-]\d{2}:?\d{2}$/.test(iso) ? iso : `${iso}Z`).getTime();
+  if (Number.isNaN(t)) return iso;
+  const diffSec = Math.round((Date.now() - t) / 1000);
+  if (diffSec < 60) return lang === "en" ? "just now" : "ಈಗಷ್ಟೇ";
+  const mins = Math.round(diffSec / 60);
+  if (mins < 60) return lang === "en" ? `${mins}m ago` : `${mins} ನಿ ಹಿಂದೆ`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return lang === "en" ? `${hours}h ago` : `${hours} ಗಂ ಹಿಂದೆ`;
+  const days = Math.round(hours / 24);
+  if (days < 7) return lang === "en" ? `${days}d ago` : `${days} ದಿನ ಹಿಂದೆ`;
+  const weeks = Math.round(days / 7);
+  if (weeks < 5) return lang === "en" ? `${weeks}w ago` : `${weeks} ವಾರ ಹಿಂದೆ`;
+  const months = Math.round(days / 30);
+  if (months < 12) return lang === "en" ? `${months}mo ago` : `${months} ತಿಂಗಳ ಹಿಂದೆ`;
+  const years = Math.round(days / 365);
+  return lang === "en" ? `${years}y ago` : `${years} ವರ್ಷ ಹಿಂದೆ`;
+}
+
 const FILTER_STORAGE_KEY = (kind: string) => `vajra_filtersort_${kind}`;
 
 function loadFilterState(kind: string): FilterSortState {
@@ -90,6 +114,22 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
   const [showAddToInvestigationFor, setShowAddToInvestigationFor] = useState<string | null>(null);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  // "View all conversations" page only: select-mode + bulk delete, and the
+  // "Archived only" filter toggle -- both genuinely new capabilities, gated
+  // to this one page so every other GroupedSessionList caller (sidebar,
+  // Investigations page) renders exactly as before.
+  const isAllChatsPage = variant === "page" && kind === "chats";
+  const [selectMode, setSelectMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const toggleSelected = (sessionId: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(sessionId)) next.delete(sessionId);
+      else next.add(sessionId);
+      return next;
+    });
 
   useEffect(() => {
     localStorage.setItem(FILTER_STORAGE_KEY(kind), JSON.stringify(filter));
@@ -115,7 +155,14 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
   const filtered = useMemo(() => {
     return items.filter((it) => {
       const m = meta[it.session_id];
-      if (m?.is_archived) return false; // archived items never show in the live list
+      // Archived items never show in the live list -- EXCEPT on the "View
+      // all conversations" page with "Archived only" switched on, the one
+      // real place an officer can ever see them again.
+      if (filter.showArchived) {
+        if (!m?.is_archived) return false;
+      } else if (m?.is_archived) {
+        return false;
+      }
       if (filter.type === "solo" && it.is_cowork) return false;
       if (filter.type === "cowork" && !it.is_cowork) return false;
       if (kind === "investigations" && filter.status !== "all") {
@@ -330,6 +377,43 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
     }
   };
 
+  // "View all conversations" bulk delete -- confirms once (same pattern
+  // every other destructive action here uses), then calls the EXISTING
+  // per-session DELETE once per selected id. These are officer-scoped, small
+  // lists -- not worth a new bulk endpoint for.
+  const handleBulkDelete = async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    const confirmed = window.confirm(
+      lang === "en"
+        ? `Delete ${ids.length} conversation${ids.length > 1 ? "s" : ""}? This cannot be undone.`
+        : `${ids.length} ಸಂಭಾಷಣೆ(ಗಳನ್ನು) ಅಳಿಸುವುದೇ? ಇದನ್ನು ರದ್ದುಗೊಳಿಸಲಾಗುವುದಿಲ್ಲ.`
+    );
+    if (!confirmed) return;
+    setIsBulkDeleting(true);
+    let failCount = 0;
+    for (const sessionId of ids) {
+      try {
+        const res = await fetch(`${API_BASE}/api/sessions/${sessionId}`, { method: "DELETE", headers: authHeaders() });
+        if (!res.ok) failCount += 1;
+        else if (sessionId === activeSessionId) requestNewChat();
+      } catch {
+        failCount += 1;
+      }
+    }
+    setIsBulkDeleting(false);
+    setSelectedIds(new Set());
+    setSelectMode(false);
+    onMutated();
+    if (failCount > 0) {
+      addToast(
+        lang === "en" ? "Some Deletions Failed" : "ಕೆಲವು ಅಳಿಸುವಿಕೆಗಳು ವಿಫಲವಾಗಿವೆ",
+        lang === "en" ? `${failCount} of ${ids.length} could not be deleted.` : `${ids.length} ರಲ್ಲಿ ${failCount} ಅಳಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ.`,
+        "Warning"
+      );
+    }
+  };
+
   const handleAssignGroup = async (sessionId: string, groupId: number | null) => {
     setOpenMenuId(null);
     setBusyId(sessionId);
@@ -405,24 +489,31 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
     const folderCls = isInvestigation ? "text-amber-500" : "text-[#C79A4E]";
 
     const isPage = variant === "page";
+    const isSelected = selectedIds.has(item.session_id);
 
     return (
       <div key={item.session_id} className="relative group">
         <button
-          onClick={() => onSelectSession(item.session_id)}
-          disabled={!!loadingSessionId || isBusy}
+          onClick={() => (selectMode ? toggleSelected(item.session_id) : onSelectSession(item.session_id))}
+          disabled={!selectMode && (!!loadingSessionId || isBusy)}
           aria-busy={isLoadingThis}
           className={
             isPage
               ? `w-full text-left flex items-start gap-3 p-4 pr-9 rounded-xl border transition-all cursor-pointer disabled:cursor-wait ${
                   (loadingSessionId && !isLoadingThis) || isBusy ? "opacity-50" : ""
-                } ${isActive ? activeCls : "border-stone-850 bg-stone-900/30 hover:bg-stone-900/60 hover:border-stone-800 text-stone-300"}`
+                } ${isSelected ? "bg-[#C79A4E]/10 border-[#C79A4E]/40 text-stone-100" : isActive ? activeCls : "border-stone-850 bg-stone-900/30 hover:bg-stone-900/60 hover:border-stone-800 text-stone-300"}`
               : `w-full text-left flex items-start gap-2 px-2.5 py-2 pr-7 rounded-lg text-xs transition-all cursor-pointer disabled:cursor-wait ${
                   (loadingSessionId && !isLoadingThis) || isBusy ? "opacity-50" : ""
                 } ${isActive ? activeCls : "border border-transparent hover:bg-stone-900/60 text-stone-400 hover:text-stone-200"}`
           }
         >
-          {isLoadingThis || isBusy ? (
+          {selectMode ? (
+            <span
+              className={`w-4 h-4 rounded border shrink-0 mt-0.5 flex items-center justify-center ${isSelected ? "bg-[#C79A4E] border-[#C79A4E]" : "border-stone-600"}`}
+            >
+              {isSelected && <Check className="w-3 h-3 text-stone-950" />}
+            </span>
+          ) : isLoadingThis || isBusy ? (
             <Loader2 className={`${isPage ? "w-5 h-5" : "w-3.5 h-3.5"} shrink-0 mt-0.5 animate-spin ${spinnerCls}`} />
           ) : isInvestigation ? (
             <Folder className={`${isPage ? "w-5 h-5" : "w-3.5 h-3.5"} shrink-0 mt-0.5 ${folderCls}`} />
@@ -446,14 +537,14 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
                 <span className="text-[9.5px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border border-stone-800 text-stone-500">
                   {isInvestigation ? inv.role : (lang === "en" ? "Chat" : "ಚಾಟ್")}
                 </span>
-                <span className="text-[9.5px] text-stone-600 font-mono">{item.last_active_at}</span>
+                <span className="text-[9.5px] text-stone-600 font-mono">{formatRelativeTime(item.last_active_at, lang)}</span>
               </div>
             )}
           </div>
           {item.is_cowork && <Users className={`${isPage ? "w-4 h-4" : "w-3 h-3"} shrink-0 text-[#5DCAA5] mt-0.5`} />}
         </button>
 
-        {(isPage || isExpanded) && canManage && (
+        {!selectMode && (isPage || isExpanded) && canManage && (
           <button
             onClick={(e) => { e.stopPropagation(); setOpenMenuId(openMenuId === item.session_id ? null : item.session_id); }}
             className={`absolute right-1 ${isPage ? "top-4" : "top-1/2 -translate-y-1/2"} p-1 rounded text-stone-600 hover:text-stone-200 hover:bg-stone-800 opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer`}
@@ -553,7 +644,44 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
         <div className="fixed inset-0 z-40" onClick={() => { setOpenMenuId(null); setShowAddToInvestigationFor(null); setShowFilterPanel(false); }} />
       )}
       {isExpanded && items.length > 0 && (
-        <div className="relative flex justify-end px-1 mb-1">
+        <div className="relative flex items-center justify-between gap-2 px-1 mb-1">
+          {isAllChatsPage ? (
+            selectMode ? (
+              <div className="flex items-center gap-2 flex-1">
+                <button
+                  onClick={() => setSelectedIds(selectedIds.size === sorted.length ? new Set() : new Set(sorted.map((it) => it.session_id)))}
+                  className="flex items-center gap-1.5 text-[11px] text-stone-400 hover:text-stone-200 cursor-pointer"
+                >
+                  {selectedIds.size === sorted.length && sorted.length > 0 ? <CheckSquare className="w-3.5 h-3.5" /> : <Square className="w-3.5 h-3.5" />}
+                  {lang === "en" ? "Select all" : "ಎಲ್ಲಾ ಆಯ್ಕೆಮಾಡಿ"}
+                </button>
+                <button
+                  onClick={handleBulkDelete}
+                  disabled={selectedIds.size === 0 || isBulkDeleting}
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-rose-500/10 border border-rose-500/40 text-[11px] font-bold text-rose-300 hover:bg-rose-500/20 disabled:opacity-40 cursor-pointer"
+                >
+                  <Trash2 className="w-3 h-3" />
+                  {lang === "en" ? `Delete (${selectedIds.size})` : `ಅಳಿಸಿ (${selectedIds.size})`}
+                </button>
+                <button
+                  onClick={() => { setSelectMode(false); setSelectedIds(new Set()); }}
+                  className="text-[11px] text-stone-500 hover:text-stone-300 cursor-pointer ml-auto"
+                >
+                  {lang === "en" ? "Cancel" : "ರದ್ದುಮಾಡಿ"}
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => setSelectMode(true)}
+                className="flex items-center gap-1.5 text-[11px] text-stone-500 hover:text-stone-300 cursor-pointer"
+              >
+                <CheckSquare className="w-3.5 h-3.5" />
+                {lang === "en" ? "Select" : "ಆಯ್ಕೆಮಾಡಿ"}
+              </button>
+            )
+          ) : (
+            <span />
+          )}
           <button
             onClick={(e) => { e.stopPropagation(); setShowFilterPanel((v) => !v); }}
             className="p-1 rounded-md text-stone-600 hover:text-stone-300 hover:bg-stone-800/60 cursor-pointer"
@@ -569,6 +697,7 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
               onReset={resetFilter}
               mode={kind === "investigations" ? "investigations" : "chats"}
               lang={lang}
+              allowArchivedFilter={isAllChatsPage}
             />
           )}
         </div>

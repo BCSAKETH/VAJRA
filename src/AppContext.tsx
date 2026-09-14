@@ -5,6 +5,7 @@ import React, {
   ReactNode,
   useEffect,
   useCallback,
+  useRef,
 } from "react";
 import { Language, Translations, translations } from "./i18n";
 import { API_BASE } from "./config";
@@ -24,12 +25,12 @@ const parseServerTimestamp = (ts: string): Date => {
 export type ScreenId =
   | "login"
   | "ai_chat"
-  | "fir_search"
   | "supervisor"
   | "audit"
   | "settings"
   | "district_dashboard"
-  | "investigations";
+  | "investigations"
+  | "all_chats";
 
 export interface ChatMessage {
   id: string;
@@ -66,6 +67,10 @@ export interface ChatMessage {
   msgId?: string;
   variantGroup?: string;
   versionIndex?: number;
+  // WhatsApp-style pin on a single message (distinct from the existing
+  // session-level pin in the sidebar). Persisted server-side inside this
+  // message's own data_json blob, same convention msgId already uses.
+  isPinned?: boolean;
 }
 
 export interface ToastMessage {
@@ -83,6 +88,13 @@ interface AppContextType {
   t: Translations;
   currentScreen: ScreenId;
   setCurrentScreen: (screen: ScreenId) => void;
+  // Back/Forward screen navigation -- browser-back-button-style, scoped to
+  // in-app screen switches only (not sub-state like which District is
+  // selected within a screen).
+  goBack: () => void;
+  goForward: () => void;
+  canGoBack: boolean;
+  canGoForward: boolean;
   isAuthenticated: boolean;
   setIsAuthenticated: (auth: boolean) => void;
   badgeNumber: string | null;
@@ -413,14 +425,49 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     setLangState(newLang);
   };
 
+  // Back/Forward screen navigation -- a small in-memory history stack
+  // (browser-back-button-style), scoped to in-app screen switches only.
+  // isHistoryNavRef suppresses re-pushing history while goBack/goForward
+  // themselves are driving setCurrentScreenState.
+  const [screenHistory, setScreenHistory] = useState<ScreenId[]>([]);
+  const [screenForward, setScreenForward] = useState<ScreenId[]>([]);
+  const isHistoryNavRef = useRef(false);
+
   const setCurrentScreen = (screen: ScreenId) => {
     if (!isAuthenticated && screen !== "login") {
       setCurrentScreenState("login");
-    } else if (isAuthenticated && screen === "login") {
-      setCurrentScreenState("ai_chat");
-    } else {
-      setCurrentScreenState(screen);
+      return;
     }
+    if (isAuthenticated && screen === "login") {
+      setCurrentScreenState("ai_chat");
+      return;
+    }
+    if (screen === currentScreen) return;
+    if (!isHistoryNavRef.current) {
+      setScreenHistory((prev) => [...prev, currentScreen].slice(-50));
+      setScreenForward([]);
+    }
+    setCurrentScreenState(screen);
+  };
+
+  const goBack = () => {
+    if (screenHistory.length === 0) return;
+    const target = screenHistory[screenHistory.length - 1];
+    setScreenHistory((prev) => prev.slice(0, -1));
+    setScreenForward((prev) => [currentScreen, ...prev].slice(0, 50));
+    isHistoryNavRef.current = true;
+    setCurrentScreenState(target);
+    isHistoryNavRef.current = false;
+  };
+
+  const goForward = () => {
+    if (screenForward.length === 0) return;
+    const target = screenForward[0];
+    setScreenForward((prev) => prev.slice(1));
+    setScreenHistory((prev) => [...prev, currentScreen].slice(-50));
+    isHistoryNavRef.current = true;
+    setCurrentScreenState(target);
+    isHistoryNavRef.current = false;
   };
 
   const setIsAuthenticated = (auth: boolean) => {
@@ -519,6 +566,10 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         t,
         currentScreen,
         setCurrentScreen,
+        goBack,
+        goForward,
+        canGoBack: screenHistory.length > 0,
+        canGoForward: screenForward.length > 0,
         isAuthenticated,
         setIsAuthenticated,
         badgeNumber,

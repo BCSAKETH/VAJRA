@@ -4,7 +4,48 @@ import { API_BASE } from "../config";
 import { TwoPersonApprovalModal } from "../components/TwoPersonApprovalModal";
 import { WatermarkOverlay } from "../components/WatermarkOverlay";
 import { SupervisorApprovalReviewModal } from "../components/SupervisorApprovalReviewModal";
-import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2, Bell, BellOff } from "lucide-react";
+import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2, Bell, BellOff, ChevronDown, ChevronRight, Hourglass } from "lucide-react";
+
+// Supervisor Dashboard redesign: one shared collapsible-section header,
+// reused by all 6 accordion panels (Approvals/History/Ledger/Consistency
+// Flags/Audit Ledger Explorer/Feedback/Officer Oversight) instead of each
+// copy-pasting its own header markup -- the header row itself was ALREADY
+// byte-for-byte identical across 4 of these panels before this redesign
+// (confirmed by audit), so this only formalizes what was already a de facto
+// shared pattern. `onRefresh` gets its own stopPropagation so refreshing a
+// panel never also toggles its collapse state.
+const SectionHeader: React.FC<{
+  icon: React.ReactNode;
+  title: React.ReactNode;
+  isOpen: boolean;
+  onToggle: () => void;
+  onRefresh?: () => void;
+  isRefreshing?: boolean;
+  extra?: React.ReactNode;
+}> = ({ icon, title, isOpen, onToggle, onRefresh, isRefreshing, extra }) => (
+  <button
+    onClick={onToggle}
+    className="w-full flex items-center justify-between border-b border-stone-850 pb-2 cursor-pointer text-left"
+  >
+    <span className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
+      {isOpen ? <ChevronDown className="w-3.5 h-3.5 text-stone-500 shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 text-stone-500 shrink-0" />}
+      {icon}
+      {title}
+    </span>
+    <span className="flex items-center gap-3">
+      {extra}
+      {onRefresh && (
+        <span
+          role="button"
+          onClick={(e) => { e.stopPropagation(); onRefresh(); }}
+          className="text-stone-500 hover:text-[#C79A4E] transition-colors cursor-pointer"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
+        </span>
+      )}
+    </span>
+  </button>
+);
 
 // §5.5: web push applicationServerKey must be a Uint8Array, but the backend
 // hands it over base64url-encoded (the standard VAPID wire format) -- this
@@ -782,8 +823,32 @@ export const SupervisorDashboardScreen: React.FC = () => {
     }
   };
 
+  // Redesign: the 4 separate approval-queue cards merge into one card with a
+  // tab row (Exports/POCSO/District/Profile) -- District's distinct
+  // break-glass Acknowledge/Revoke item rendering is copied over completely
+  // unchanged, this only changes the outer container.
+  const [activeApprovalTab, setActiveApprovalTab] = useState<"exports" | "pocso" | "district" | "profile">("exports");
+  const totalPendingApprovals = pendingExports.length + pendingPocso.length + pendingDistrict.length + pendingProfile.length;
+
+  // Every major section becomes a collapsible accordion panel -- collapsed
+  // by default except Approvals (the actionable work, opens by default per
+  // the same "surface what needs attention" logic as the Command Center
+  // strip itself).
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
+    approvals: true, history: false, ledger: false, flags: false, auditExplorer: false, feedback: false, officers: false,
+  });
+  const toggleSection = (key: string) => setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  // Command Center strip: every tile is a real button -- clicking one
+  // smooth-scrolls to AND opens its section, instead of leaving the officer
+  // to hunt for where a number lives.
+  const scrollToAndExpand = (key: string) => {
+    setOpenSections((prev) => ({ ...prev, [key]: true }));
+    setTimeout(() => sectionRefs.current[key]?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  };
+
   return (
-    <div className="h-full flex flex-col p-6 space-y-6 bg-stone-950/20 overflow-y-auto">
+    <div className="h-full flex flex-col p-6 space-y-5 bg-stone-950/20 overflow-y-auto">
       {/* Security watermark overlay */}
       <WatermarkOverlay />
 
@@ -850,94 +915,165 @@ export const SupervisorDashboardScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Live export-approval queue -- the AI pre-screen holds sensitive reports
-          here; this polls every 5s so the count + list update with no refresh. */}
-      {pendingExports.length > 0 && (
-        <div className="shrink-0 rounded-xl border border-[#C79A4E]/40 bg-[#C79A4E]/[0.06] p-4 space-y-3">
-          <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-[#C79A4E]" />
-            <span className="text-xs font-black uppercase tracking-wider text-[#C79A4E] font-mono">
-              {lang === "en" ? "Export approvals" : "ರಫ್ತು ಅನುಮೋದನೆಗಳು"}
-            </span>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-[#C79A4E] text-stone-950 font-bold">
-              {pendingExports.length}
-            </span>
-            <span className="text-[10px] text-stone-500 font-mono">
-              {lang === "en" ? "AI flagged — needs your sign-off" : "AI ಗುರುತಿಸಿದೆ — ನಿಮ್ಮ ಅನುಮೋದನೆ ಬೇಕು"}
-            </span>
+      {/* Command Center strip -- moved to the TOP (was buried two-thirds down
+          the page), every number real, every tile clickable (scrolls to AND
+          opens its section). */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 shrink-0">
+        <button onClick={() => scrollToAndExpand("approvals")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-[#C79A4E]/30 transition-colors cursor-pointer">
+          <div className="w-9 h-9 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 flex items-center justify-center shrink-0">
+            <Hourglass className="w-4.5 h-4.5 text-[#C79A4E]" />
           </div>
-          <div className="space-y-2">
-            {pendingExports.map((p) => (
-              <div key={p.rowid} className="flex items-center gap-3 rounded-lg bg-stone-950/40 border border-stone-800 px-3 py-2.5">
-                <div className="min-w-0 flex-1">
-                  <div className="text-[12px] text-stone-200 font-mono truncate">
-                    {lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ"} {p.requester_badge} · {(p.reasons || []).join(", ")}
-                  </div>
-                  <div className="text-[10px] text-stone-500 truncate">{p.summary || ""}</div>
-                </div>
-                <button
-                  onClick={() => setReviewModal({ item: p, type: "export" })}
-                  className="px-3 py-1.5 rounded-md bg-stone-800/80 border border-stone-700 text-[11px] font-bold uppercase tracking-wide text-stone-300 hover:bg-stone-700 cursor-pointer"
-                >
-                  {lang === "en" ? "Inspect" : "ಪರಿಶೀಲಿಸಿ"}
-                </button>
-                <button
-                  onClick={() => decideExport(String(p.rowid), true)}
-                  disabled={decidingExportId === String(p.rowid)}
-                  className="px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold uppercase tracking-wide text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 cursor-pointer"
-                >
-                  {lang === "en" ? "Approve" : "ಅನುಮೋದಿಸಿ"}
-                </button>
-                <button
-                  onClick={() => decideExport(String(p.rowid), false)}
-                  disabled={decidingExportId === String(p.rowid)}
-                  className="px-3 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/40 text-[11px] font-bold uppercase tracking-wide text-rose-300 hover:bg-rose-500/20 disabled:opacity-50 cursor-pointer"
-                >
-                  {lang === "en" ? "Reject" : "ತಿರಸ್ಕರಿಸಿ"}
-                </button>
-              </div>
-            ))}
+          <div className="min-w-0">
+            <div className="text-lg font-black text-stone-100 font-mono leading-tight">{totalPendingApprovals}</div>
+            <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
+              {lang === "en" ? "Pending Approvals" : "ಬಾಕಿ ಅನುಮೋದನೆಗಳು"}
+            </div>
           </div>
-        </div>
-      )}
+        </button>
+        <button onClick={() => scrollToAndExpand("flags")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-amber-500/30 transition-colors cursor-pointer">
+          <div className="w-9 h-9 rounded-lg bg-amber-500/10 border border-amber-500/25 flex items-center justify-center shrink-0">
+            <AlertTriangle className="w-4.5 h-4.5 text-amber-500" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-lg font-black text-stone-100 font-mono leading-tight">
+              {isLoadingFlags ? "—" : flags.filter((f) => Number(f.reviewed) === 0).length}
+            </div>
+            <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
+              {lang === "en" ? "Pending Flags" : "ಬಾಕಿ ಫ್ಲ್ಯಾಗ್‌ಗಳು"}
+            </div>
+          </div>
+        </button>
+        <button onClick={() => scrollToAndExpand("ledger")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-stone-700 transition-colors cursor-pointer">
+          <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 border ${
+            ledgerVerified === null ? "bg-stone-800/50 border-stone-700" : ledgerVerified ? "bg-emerald-500/10 border-emerald-500/25" : "bg-rose-500/10 border-rose-500/25"
+          }`}>
+            <ShieldCheck className={`w-4.5 h-4.5 ${ledgerVerified === null ? "text-stone-400" : ledgerVerified ? "text-emerald-500" : "text-rose-500"}`} />
+          </div>
+          <div className="min-w-0">
+            <div className={`text-[11px] font-black font-mono leading-tight truncate ${ledgerVerified === null ? "text-stone-400" : ledgerVerified ? "text-emerald-500" : "text-rose-500"}`}>
+              {ledgerVerified === null
+                ? (lang === "en" ? "Not Verified" : "ಪರಿಶೀಲಿಸಿಲ್ಲ")
+                : ledgerVerified
+                  ? (lang === "en" ? "Chain Intact" : "ಸರಪಳಿ ಸುರಕ್ಷಿತ")
+                  : (lang === "en" ? "Inconsistent" : "ಅಸಮಂಜಸ")}
+            </div>
+            <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
+              {lang === "en" ? "Ledger Status" : "ಲೆಡ್ಜರ್ ಸ್ಥಿತಿ"}
+            </div>
+          </div>
+        </button>
+        <button onClick={() => scrollToAndExpand("officers")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-rose-500/30 transition-colors cursor-pointer">
+          <div className="w-9 h-9 rounded-lg bg-rose-500/10 border border-rose-500/25 flex items-center justify-center shrink-0">
+            <ShieldAlert className="w-4.5 h-4.5 text-rose-450" />
+          </div>
+          <div className="min-w-0">
+            <div className="text-lg font-black text-stone-100 font-mono leading-tight">
+              {isLoadingOfficers ? "—" : officers.filter((o) => o.flagged).length}
+            </div>
+            <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
+              {lang === "en" ? "Officers Flagged" : "ಗುರುತಿಸಲಾದ ಅಧಿಕಾರಿಗಳು"}
+            </div>
+          </div>
+        </button>
+      </div>
 
-      {/* Live POCSO access-request queue -- an officer who genuinely needs a
-          redacted victim identity requests time-boxed access here; polls
-          every 5s like the export queue above. */}
-      {pendingPocso.length > 0 && (
-        <div className="shrink-0 rounded-xl border border-rose-500/40 bg-rose-500/[0.06] p-4 space-y-3">
-          <div className="flex items-center gap-2">
-            <ShieldAlert className="w-4 h-4 text-rose-400" />
-            <span className="text-xs font-black uppercase tracking-wider text-rose-300 font-mono">
-              {lang === "en" ? "POCSO access requests" : "POCSO ಪ್ರವೇಶ ವಿನಂತಿಗಳು"}
-            </span>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-rose-400 text-stone-950 font-bold">
-              {pendingPocso.length}
-            </span>
-            <span className="text-[10px] text-stone-500 font-mono">
-              {lang === "en" ? "Section 74 JJA — victim identity is masked" : "ವಿಭಾಗ 74 JJA — ಬಲಿಪಶು ಗುರುತು ಮರೆಮಾಡಲಾಗಿದೆ"}
-            </span>
-          </div>
-          <div className="space-y-2">
-            {pendingPocso.map((p) => (
-              <div key={p.rowid} className="flex items-center gap-3 rounded-lg bg-stone-950/40 border border-stone-800 px-3 py-2.5">
-                <div className="min-w-0 flex-1">
-                  <div className="text-[12px] text-stone-200 font-mono truncate">
-                    {lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ"} {p.requester_badge} ({p.requester_name || ""}) · {lang === "en" ? "case" : "ಪ್ರಕರಣ"} {p.case_no}
-                  </div>
-                  <div className="text-[10px] text-stone-500 truncate">{p.reason || (lang === "en" ? "No reason given" : "ಕಾರಣ ನೀಡಿಲ್ಲ")}</div>
-                </div>
+      {/* Approvals Queue -- merged from 4 separate cards into ONE with a tab
+          row (Exports/POCSO/District/Profile). District's distinct
+          break-glass Acknowledge/Revoke item rendering is unchanged, only
+          the outer container changed. Open by default (the actionable work). */}
+      <div ref={(el) => { sectionRefs.current.approvals = el; }} className="shrink-0 rounded-xl border border-stone-800 bg-stone-900/30 p-4 space-y-3">
+        <SectionHeader
+          icon={<Hourglass className="w-4 h-4 text-[#C79A4E]" />}
+          title={<span>{lang === "en" ? "Approvals Queue" : "ಅನುಮೋದನೆ ಸಾಲು"} <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-[#C79A4E]/20 text-[#C79A4E] ml-1">{totalPendingApprovals}</span></span>}
+          isOpen={openSections.approvals}
+          onToggle={() => toggleSection("approvals")}
+        />
+        {openSections.approvals && (
+          <>
+            <div className="flex items-center gap-1.5 flex-wrap pt-1">
+              {([
+                { id: "exports" as const, label: lang === "en" ? "Exports" : "ರಫ್ತು", count: pendingExports.length, accent: "text-[#C79A4E]", activeBg: "bg-[#C79A4E]/15 border-[#C79A4E]/40" },
+                { id: "pocso" as const, label: "POCSO", count: pendingPocso.length, accent: "text-fuchsia-300", activeBg: "bg-fuchsia-500/15 border-fuchsia-500/40" },
+                { id: "district" as const, label: lang === "en" ? "District" : "ಜಿಲ್ಲೆ", count: pendingDistrict.length, accent: "text-sky-300", activeBg: "bg-sky-500/15 border-sky-500/40" },
+                { id: "profile" as const, label: lang === "en" ? "Profile" : "ಪ್ರೊಫೈಲ್", count: pendingProfile.length, accent: "text-teal-300", activeBg: "bg-teal-500/15 border-teal-500/40" },
+              ]).map((tab) => (
                 <button
-                  onClick={() => setReviewModal({ item: p, type: "pocso" })}
-                  className="px-3 py-1.5 rounded-md bg-stone-800/80 border border-stone-700 text-[11px] font-bold uppercase tracking-wide text-stone-300 hover:bg-stone-700 cursor-pointer"
+                  key={tab.id}
+                  onClick={() => setActiveApprovalTab(tab.id)}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-[11px] font-bold uppercase tracking-wide cursor-pointer transition-all ${
+                    activeApprovalTab === tab.id ? `${tab.activeBg} ${tab.accent}` : "border-stone-800 text-stone-500 hover:text-stone-300 hover:border-stone-700"
+                  }`}
                 >
-                  {lang === "en" ? "Inspect" : "ಪರಿಶೀಲಿಸಿ"}
+                  {tab.label} <span className="font-mono">({tab.count})</span>
                 </button>
-                <button
-                  onClick={() => decidePocso(String(p.rowid), true)}
-                  disabled={decidingPocsoId === String(p.rowid)}
-                  className="px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold uppercase tracking-wide text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 cursor-pointer"
-                >
+              ))}
+            </div>
+
+            {activeApprovalTab === "exports" && (
+              pendingExports.length === 0 ? (
+                <div className="py-8 text-center text-xs font-mono text-stone-550">{lang === "en" ? "No pending export approvals." : "ಬಾಕಿ ರಫ್ತು ಅನುಮೋದನೆಗಳಿಲ್ಲ."}</div>
+              ) : (
+              <div className="space-y-2">
+                <div className="text-[10px] text-stone-500 font-mono pb-1">{lang === "en" ? "AI flagged — needs your sign-off" : "AI ಗುರುತಿಸಿದೆ — ನಿಮ್ಮ ಅನುಮೋದನೆ ಬೇಕು"}</div>
+                {pendingExports.map((p) => (
+                  <div key={p.rowid} className="flex items-center gap-3 rounded-lg bg-stone-950/40 border border-stone-800 px-3 py-2.5">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[12px] text-stone-200 font-mono truncate">
+                        {lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ"} {p.requester_badge} · {(p.reasons || []).join(", ")}
+                      </div>
+                      <div className="text-[10px] text-stone-500 truncate">{p.summary || ""}</div>
+                    </div>
+                    <button
+                      onClick={() => setReviewModal({ item: p, type: "export" })}
+                      className="px-3 py-1.5 rounded-md bg-stone-800/80 border border-stone-700 text-[11px] font-bold uppercase tracking-wide text-stone-300 hover:bg-stone-700 cursor-pointer"
+                    >
+                      {lang === "en" ? "Inspect" : "ಪರಿಶೀಲಿಸಿ"}
+                    </button>
+                    <button
+                      onClick={() => decideExport(String(p.rowid), true)}
+                      disabled={decidingExportId === String(p.rowid)}
+                      className="px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold uppercase tracking-wide text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 cursor-pointer"
+                    >
+                      {lang === "en" ? "Approve" : "ಅನುಮೋದಿಸಿ"}
+                    </button>
+                    <button
+                      onClick={() => decideExport(String(p.rowid), false)}
+                      disabled={decidingExportId === String(p.rowid)}
+                      className="px-3 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/40 text-[11px] font-bold uppercase tracking-wide text-rose-300 hover:bg-rose-500/20 disabled:opacity-50 cursor-pointer"
+                    >
+                      {lang === "en" ? "Reject" : "ತಿರಸ್ಕರಿಸಿ"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+              )
+            )}
+
+            {activeApprovalTab === "pocso" && (
+              pendingPocso.length === 0 ? (
+                <div className="py-8 text-center text-xs font-mono text-stone-550">{lang === "en" ? "No pending POCSO access requests." : "ಬಾಕಿ POCSO ಪ್ರವೇಶ ವಿನಂತಿಗಳಿಲ್ಲ."}</div>
+              ) : (
+              <div className="space-y-2">
+                <div className="text-[10px] text-stone-500 font-mono pb-1">{lang === "en" ? "Section 74 JJA — victim identity is masked" : "ವಿಭಾಗ 74 JJA — ಬಲಿಪಶು ಗುರುತು ಮರೆಮಾಡಲಾಗಿದೆ"}</div>
+                {pendingPocso.map((p) => (
+                  <div key={p.rowid} className="flex items-center gap-3 rounded-lg bg-stone-950/40 border border-stone-800 px-3 py-2.5">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[12px] text-stone-200 font-mono truncate">
+                        {lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ"} {p.requester_badge} ({p.requester_name || ""}) · {lang === "en" ? "case" : "ಪ್ರಕರಣ"} {p.case_no}
+                      </div>
+                      <div className="text-[10px] text-stone-500 truncate">{p.reason || (lang === "en" ? "No reason given" : "ಕಾರಣ ನೀಡಿಲ್ಲ")}</div>
+                    </div>
+                    <button
+                      onClick={() => setReviewModal({ item: p, type: "pocso" })}
+                      className="px-3 py-1.5 rounded-md bg-stone-800/80 border border-stone-700 text-[11px] font-bold uppercase tracking-wide text-stone-300 hover:bg-stone-700 cursor-pointer"
+                    >
+                      {lang === "en" ? "Inspect" : "ಪರಿಶೀಲಿಸಿ"}
+                    </button>
+                    <button
+                      onClick={() => decidePocso(String(p.rowid), true)}
+                      disabled={decidingPocsoId === String(p.rowid)}
+                      className="px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold uppercase tracking-wide text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 cursor-pointer"
+                    >
                   {lang === "en" ? "Approve" : "ಅನುಮೋದಿಸಿ"}
                 </button>
                 <button
@@ -950,27 +1086,15 @@ export const SupervisorDashboardScreen: React.FC = () => {
               </div>
             ))}
           </div>
-        </div>
-      )}
+              )
+            )}
 
-      {/* Live inter-district access queue (Part C item #7) -- an officer
-          asking about a district outside their own jurisdiction requests
-          time-boxed access here; polls every 5s like the queues above. */}
-      {pendingDistrict.length > 0 && (
-        <div className="shrink-0 rounded-xl border border-sky-500/40 bg-sky-500/[0.06] p-4 space-y-3">
-          <div className="flex items-center gap-2">
-            <ShieldAlert className="w-4 h-4 text-sky-400" />
-            <span className="text-xs font-black uppercase tracking-wider text-sky-300 font-mono">
-              {lang === "en" ? "District access requests" : "ಜಿಲ್ಲಾ ಪ್ರವೇಶ ವಿನಂತಿಗಳು"}
-            </span>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-sky-400 text-stone-950 font-bold">
-              {pendingDistrict.length}
-            </span>
-            <span className="text-[10px] text-stone-500 font-mono">
-              {lang === "en" ? "Outside the officer's home jurisdiction" : "ಅಧಿಕಾರಿಯ ಸ್ವಂತ ವ್ಯಾಪ್ತಿಯ ಹೊರಗೆ"}
-            </span>
-          </div>
-          <div className="space-y-2">
+            {activeApprovalTab === "district" && (
+              pendingDistrict.length === 0 ? (
+                <div className="py-8 text-center text-xs font-mono text-stone-550">{lang === "en" ? "No pending district access requests." : "ಬಾಕಿ ಜಿಲ್ಲಾ ಪ್ರವೇಶ ವಿನಂತಿಗಳಿಲ್ಲ."}</div>
+              ) : (
+              <div className="space-y-2">
+                <div className="text-[10px] text-stone-500 font-mono pb-1">{lang === "en" ? "Outside the officer's home jurisdiction" : "ಅಧಿಕಾರಿಯ ಸ್ವಂತ ವ್ಯಾಪ್ತಿಯ ಹೊರಗೆ"}</div>
             {pendingDistrict.map((p) => (
               <div key={p.rowid} className={`flex items-center gap-3 rounded-lg bg-stone-950/40 border px-3 py-2.5 ${p.emergency ? "border-amber-500/50" : "border-stone-800"}`}>
                 <div className="min-w-0 flex-1">
@@ -1028,27 +1152,15 @@ export const SupervisorDashboardScreen: React.FC = () => {
               </div>
             ))}
           </div>
-        </div>
-      )}
+              )
+            )}
 
-      {/* Live profile-change-request queue -- an officer asking to correct a
-          name/station/rank/designation field on their own record; approving
-          applies the change directly to Employee, rejecting leaves it alone. */}
-      {pendingProfile.length > 0 && (
-        <div className="shrink-0 rounded-xl border border-teal-500/40 bg-teal-500/[0.06] p-4 space-y-3">
-          <div className="flex items-center gap-2">
-            <IdCard className="w-4 h-4 text-teal-400" />
-            <span className="text-xs font-black uppercase tracking-wider text-teal-300 font-mono">
-              {lang === "en" ? "Profile change requests" : "ಪ್ರೊಫೈಲ್ ಬದಲಾವಣೆ ವಿನಂತಿಗಳು"}
-            </span>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-teal-400 text-stone-950 font-bold">
-              {pendingProfile.length}
-            </span>
-            <span className="text-[10px] text-stone-500 font-mono">
-              {lang === "en" ? "Identity fields are read-only until you sign off" : "ನೀವು ಅನುಮೋದಿಸುವವರೆಗೆ ಗುರುತಿನ ಕ್ಷೇತ್ರಗಳು ಓದಲು-ಮಾತ್ರ"}
-            </span>
-          </div>
-          <div className="space-y-2">
+            {activeApprovalTab === "profile" && (
+              pendingProfile.length === 0 ? (
+                <div className="py-8 text-center text-xs font-mono text-stone-550">{lang === "en" ? "No pending profile change requests." : "ಬಾಕಿ ಪ್ರೊಫೈಲ್ ಬದಲಾವಣೆ ವಿನಂತಿಗಳಿಲ್ಲ."}</div>
+              ) : (
+              <div className="space-y-2">
+                <div className="text-[10px] text-stone-500 font-mono pb-1">{lang === "en" ? "Identity fields are read-only until you sign off" : "ನೀವು ಅನುಮೋದಿಸುವವರೆಗೆ ಗುರುತಿನ ಕ್ಷೇತ್ರಗಳು ಓದಲು-ಮಾತ್ರ"}</div>
             {pendingProfile.map((p) => (
               <div key={p.rowid} className="flex items-center gap-3 rounded-lg bg-stone-950/40 border border-stone-800 px-3 py-2.5">
                 <div className="min-w-0 flex-1">
@@ -1082,21 +1194,26 @@ export const SupervisorDashboardScreen: React.FC = () => {
               </div>
             ))}
           </div>
-        </div>
-      )}
+              )
+            )}
+          </>
+        )}
+      </div>
 
       {/* Approval history -- decided export + POCSO items, filterable by lane
           and outcome, rendered as a proper table (not another queue-card
-          list) since this is a review/audit surface, not an action queue. */}
-      <div className="shrink-0 rounded-xl border border-stone-800 bg-stone-900/40 p-4 space-y-3">
-        <div className="flex items-center gap-2 flex-wrap">
-          <Fingerprint className="w-4 h-4 text-[#C79A4E]" />
-          <span className="text-xs font-black uppercase tracking-wider text-stone-300 font-mono">
-            {lang === "en" ? "Approval history" : "ಅನುಮೋದನೆ ಇತಿಹಾಸ"}
-          </span>
-          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-stone-800 text-stone-400">
-            {historyItems.length}
-          </span>
+          list) since this is a review/audit surface, not an action queue.
+          Now an accordion panel, collapsed by default. */}
+      <div ref={(el) => { sectionRefs.current.history = el; }} className="shrink-0 rounded-xl border border-stone-800 bg-stone-900/40 p-4 space-y-3">
+        <SectionHeader
+          icon={<Fingerprint className="w-4 h-4 text-[#C79A4E]" />}
+          title={<span>{lang === "en" ? "Approval History" : "ಅನುಮೋದನೆ ಇತಿಹಾಸ"} <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-stone-800 text-stone-400 ml-1">{historyItems.length}</span></span>}
+          isOpen={openSections.history}
+          onToggle={() => toggleSection("history")}
+        />
+        {openSections.history && (
+        <>
+        <div className="flex items-center gap-2 flex-wrap pt-1">
           <div className="ml-auto flex items-center gap-2">
             <select
               value={historyTypeFilter}
@@ -1189,121 +1306,71 @@ export const SupervisorDashboardScreen: React.FC = () => {
             </table>
           </div>
         )}
+        </>
+        )}
       </div>
 
-      {/* Quick-read telemetry strip -- derived from the same flags/auditLogs
-          already fetched for the two panels below, no extra round-trip. */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 shrink-0">
-        <div className="glass-card p-3.5 border border-stone-850 flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-amber-500/10 border border-amber-500/25 flex items-center justify-center shrink-0">
-            <AlertTriangle className="w-4.5 h-4.5 text-amber-500" />
-          </div>
-          <div className="min-w-0">
-            <div className="text-lg font-black text-stone-100 font-mono leading-tight">
-              {isLoadingFlags ? "—" : flags.filter((f) => Number(f.reviewed) === 0).length}
-            </div>
-            <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
-              {lang === "en" ? "Pending Flags" : "ಬಾಕಿ ಫ್ಲ್ಯಾಗ್‌ಗಳು"}
-            </div>
-          </div>
-        </div>
-        <div className="glass-card p-3.5 border border-stone-850 flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-emerald-500/10 border border-emerald-500/25 flex items-center justify-center shrink-0">
-            <CheckCircle2 className="w-4.5 h-4.5 text-emerald-500" />
-          </div>
-          <div className="min-w-0">
-            <div className="text-lg font-black text-stone-100 font-mono leading-tight">
-              {isLoadingFlags ? "—" : flags.filter((f) => Number(f.reviewed) !== 0).length}
-            </div>
-            <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
-              {lang === "en" ? "Resolved Flags" : "ಬಗೆಹರಿದ ಫ್ಲ್ಯಾಗ್‌ಗಳು"}
-            </div>
-          </div>
-        </div>
-        <div className="glass-card p-3.5 border border-stone-850 flex items-center gap-3">
-          <div className="w-9 h-9 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 flex items-center justify-center shrink-0">
-            <Activity className="w-4.5 h-4.5 text-[#C79A4E]" />
-          </div>
-          <div className="min-w-0">
-            <div className="text-lg font-black text-stone-100 font-mono leading-tight">
-              {isLoadingAudit ? "—" : auditLogs.length}
-            </div>
-            <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
-              {lang === "en" ? "Audit Entries Loaded" : "ಆಡಿಟ್ ನಮೂದುಗಳು"}
-            </div>
-          </div>
-        </div>
-        <div className="glass-card p-3.5 border border-stone-850 flex items-center gap-3">
-          <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 border ${
-            ledgerVerified === null ? "bg-stone-800/50 border-stone-700" : ledgerVerified ? "bg-emerald-500/10 border-emerald-500/25" : "bg-rose-500/10 border-rose-500/25"
-          }`}>
-            <ShieldCheck className={`w-4.5 h-4.5 ${ledgerVerified === null ? "text-stone-400" : ledgerVerified ? "text-emerald-500" : "text-rose-500"}`} />
-          </div>
-          <div className="min-w-0">
-            <div className={`text-[11px] font-black font-mono leading-tight truncate ${ledgerVerified === null ? "text-stone-400" : ledgerVerified ? "text-emerald-500" : "text-rose-500"}`}>
-              {ledgerVerified === null
-                ? (lang === "en" ? "Not Verified" : "ಪರಿಶೀಲಿಸಿಲ್ಲ")
-                : ledgerVerified
-                  ? (lang === "en" ? "Chain Intact" : "ಸರಪಳಿ ಸುರಕ್ಷಿತ")
-                  : (lang === "en" ? "Inconsistent" : "ಅಸಮಂಜಸ")}
-            </div>
-            <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
-              {lang === "en" ? "Ledger Status" : "ಲೆಡ್ಜರ್ ಸ್ಥಿತಿ"}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Ledger Verification Status Alert / Forensic Investigation Card */}
+      {/* Ledger Verification -- accordion, calm one-liner by default, expands
+          to the forensic breakdown. Only rendered once a verification run has
+          happened (nothing to show before that -- the Command Center's Ledger
+          tile above triggers "Verify Ledger" via the header button, not this
+          section). */}
       {ledgerVerified !== null && (
+        <div ref={(el) => { sectionRefs.current.ledger = el; }} className="shrink-0 rounded-xl border border-stone-800 bg-stone-900/40 p-4 space-y-3">
+          <SectionHeader
+            icon={ledgerVerified ? <ShieldCheck className="w-4 h-4 text-emerald-500" /> : <AlertOctagon className="w-4 h-4 text-rose-500 animate-pulse" />}
+            title={
+              <span className={ledgerVerified ? "text-emerald-400" : "text-rose-400"}>
+                {ledgerVerified
+                  ? (lang === "en" ? `Ledger Verified — ${ledgerDetails?.checked || 300} blocks validated` : `ಲೆಡ್ಜರ್ ಪರಿಶೀಲಿಸಲಾಗಿದೆ — ${ledgerDetails?.checked || 300} ಬ್ಲಾಕ್‌ಗಳು`)
+                  : (lang === "en" ? "Security Alert: AuditLog Tampering Detected" : "ಭದ್ರತಾ ಎಚ್ಚರಿಕೆ: ಆಡಿಟ್‌ಲಾಗ್ ತಿದ್ದುಪಡಿ ಪತ್ತೆಯಾಗಿದೆ")}
+                {ledgerVerified && Number(ledgerDetails?.unverifiable_rows || 0) > 0 && (
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-stone-800 text-stone-400 ml-2 normal-case tracking-normal">
+                    {lang === "en"
+                      ? `${ledgerDetails.unverifiable_rows} pre-dated, not verifiable`
+                      : `${ledgerDetails.unverifiable_rows} ಹಳೆಯದು, ಪರಿಶೀಲಿಸಲಾಗುವುದಿಲ್ಲ`}
+                  </span>
+                )}
+              </span>
+            }
+            isOpen={openSections.ledger}
+            onToggle={() => toggleSection("ledger")}
+          />
+          {openSections.ledger && ledgerVerified && (
+            <p className="text-[11px] text-stone-500 font-mono pt-1">
+              {lang === "en" ? "Continuous SHA-256 hash-chain verified from genesis block. Zero unauthorized database mutations." : "ಆರಂಭಿಕ ಬ್ಲಾಕ್‌ನಿಂದ SHA-256 ಹ್ಯಾಶ್ ಸರಪಳಿ ಪರಿಶೀಲಿಸಲಾಗಿದೆ. ಯಾವುದೇ ಅನಧಿಕೃತ ಬದಲಾವಣೆಗಳಿಲ್ಲ."}
+            </p>
+          )}
+          {openSections.ledger && !ledgerVerified && (
         <div
-          className={`p-5 rounded-2xl border space-y-4 animate-fade-in shadow-xl ${
-            ledgerVerified
-              ? "bg-emerald-950/20 border-emerald-500/30 text-emerald-300"
-              : "bg-rose-950/30 border-rose-500/40 text-rose-300"
-          }`}
+          className="p-4 -m-1 mt-1 rounded-xl border space-y-4 bg-rose-950/30 border-rose-500/40 text-rose-300"
         >
           {/* Header Row */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-stone-800/80 pb-3">
             <div className="flex items-center gap-3">
-              <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border ${
-                ledgerVerified
-                  ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-400"
-                  : "bg-rose-500/15 border-rose-500/30 text-rose-400 animate-pulse"
-              }`}>
-                {ledgerVerified ? <ShieldCheck className="w-5 h-5" /> : <AlertOctagon className="w-5 h-5" />}
+              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border bg-rose-500/15 border-rose-500/30 text-rose-400 animate-pulse">
+                <AlertOctagon className="w-5 h-5" />
               </div>
               <div>
                 <h3 className="text-xs font-black uppercase tracking-wider font-mono flex items-center gap-2">
                   <span>
-                    {ledgerVerified
-                      ? (lang === "en" ? "Cryptographic Ledger Verified: All Blocks Intact" : "ಕ್ರಿಪ್ಟೋಗ್ರಾಫಿಕ್ ಲೆಡ್ಜರ್ ಪರಿಶೀಲಿಸಲಾಗಿದೆ: ಎಲ್ಲಾ ಬ್ಲಾಕ್‌ಗಳು ಸುರಕ್ಷಿತ")
-                      : (lang === "en" ? "Security Alert: AuditLog Tampering Detected" : "ಭದ್ರತಾ ಎಚ್ಚರಿಕೆ: ಆಡಿಟ್‌ಲಾಗ್ ತಿದ್ದುಪಡಿ ಪತ್ತೆಯಾಗಿದೆ")}
+                    {lang === "en" ? "Security Alert: AuditLog Tampering Detected" : "ಭದ್ರತಾ ಎಚ್ಚರಿಕೆ: ಆಡಿಟ್‌ಲಾಗ್ ತಿದ್ದುಪಡಿ ಪತ್ತೆಯಾಗಿದೆ"}
                   </span>
-                  {!ledgerVerified && ledgerDetails?.tamper_type && (
+                  {ledgerDetails?.tamper_type && (
                     <span className="text-[9px] px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 font-mono font-bold">
                       {ledgerDetails.tamper_type === "chain_severed" ? "CHAIN DISCONTINUITY" : "SIGNATURE MISMATCH"}
                     </span>
                   )}
                 </h3>
                 <p className="text-[11px] text-stone-400 font-mono mt-0.5">
-                  {ledgerVerified
-                    ? (lang === "en" ? "Continuous SHA-256 hash-chain verified from genesis block. Zero unauthorized database mutations." : "ಆರಂಭಿಕ ಬ್ಲಾಕ್‌ನಿಂದ SHA-256 ಹ್ಯಾಶ್ ಸರಪಳಿ ಪರಿಶೀಲಿಸಲಾಗಿದೆ. ಯಾವುದೇ ಅನಧಿಕೃತ ಬದಲಾವಣೆಗಳಿಲ್ಲ.")
-                    : (ledgerDetails?.reason || (lang === "en" ? "Hash mismatch detected in database audit records." : "ಡೇಟಾಬೇಸ್ ಆಡಿಟ್ ದಾಖಲೆಗಳಲ್ಲಿ ಹ್ಯಾಶ್ ಅಸಮಂಜಸತೆ ಪತ್ತೆಯಾಗಿದೆ."))
-                  }
+                  {ledgerDetails?.reason || (lang === "en" ? "Hash mismatch detected in database audit records." : "ಡೇಟಾಬೇಸ್ ಆಡಿಟ್ ದಾಖಲೆಗಳಲ್ಲಿ ಹ್ಯಾಶ್ ಅಸಮಂಜಸತೆ ಪತ್ತೆಯಾಗಿದೆ.")}
                 </p>
               </div>
             </div>
-            {ledgerVerified && (
-              <div className="flex items-center gap-2 text-[10px] font-mono bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-lg text-emerald-400 shrink-0">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>{ledgerDetails?.checked || 300} Blocks Validated</span>
-              </div>
-            )}
           </div>
 
           {/* Detailed Forensic Breakdown on Tampering */}
-          {!ledgerVerified && ledgerDetails && (
+          {ledgerDetails && (
             <div className="space-y-3 pt-1">
               {/* Root Cause & How It Occurred */}
               <div className="bg-stone-950/70 rounded-xl p-3.5 border border-rose-500/25 space-y-2">
@@ -1378,22 +1445,24 @@ export const SupervisorDashboardScreen: React.FC = () => {
             </div>
           )}
         </div>
+          )}
+        </div>
       )}
 
-      {/* Main Sections */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-        {/* Left Side: Consistency Flags */}
-        <div className="glass-card p-5 border border-stone-850 space-y-4">
-          <div className="flex justify-between items-center border-b border-stone-850 pb-2">
-            <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
-              <AlertTriangle className="w-4 h-4 text-amber-500 animate-pulse" />
-              <span>{t.supervisorConsistencyFlagsTitle}</span>
-            </h3>
-            <button onClick={fetchFlags} className="text-stone-500 hover:text-[#C79A4E] transition-colors cursor-pointer">
-              <RefreshCw className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
+      {/* Consistency Flags + Audit Ledger Explorer -- paired side-by-side,
+          each its own accordion (collapsed by default). */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+      <div ref={(el) => { sectionRefs.current.flags = el; }} className="rounded-xl border border-stone-800 bg-stone-900/30 p-4 space-y-3">
+        <SectionHeader
+          icon={<AlertTriangle className="w-4 h-4 text-amber-500" />}
+          title={<span>{t.supervisorConsistencyFlagsTitle}</span>}
+          isOpen={openSections.flags}
+          onToggle={() => toggleSection("flags")}
+          onRefresh={fetchFlags}
+          isRefreshing={isLoadingFlags}
+        />
+        {openSections.flags && (
+          <>
           {isLoadingFlags ? (
             <div className="space-y-3">
               {[1, 2, 3].map((n) => (
@@ -1442,20 +1511,21 @@ export const SupervisorDashboardScreen: React.FC = () => {
               ))}
             </div>
           )}
-        </div>
+          </>
+        )}
+      </div>
 
-        {/* Right Side: Audit Ledger Explorer */}
-        <div className="glass-card p-5 border border-stone-850 space-y-4">
-          <div className="flex justify-between items-center border-b border-stone-850 pb-2">
-            <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
-              <FileSpreadsheet className="w-4 h-4 text-[#C79A4E]" />
-              <span>{t.supervisorAuditLedgerTitle}</span>
-            </h3>
-            <button onClick={() => fetchAuditLogs()} className="text-stone-500 hover:text-[#C79A4E] transition-colors cursor-pointer">
-              <RefreshCw className="w-3.5 h-3.5" />
-            </button>
-          </div>
-
+      <div ref={(el) => { sectionRefs.current.auditExplorer = el; }} className="rounded-xl border border-stone-800 bg-stone-900/30 p-4 space-y-3">
+        <SectionHeader
+          icon={<FileSpreadsheet className="w-4 h-4 text-[#C79A4E]" />}
+          title={<span>{t.supervisorAuditLedgerTitle}</span>}
+          isOpen={openSections.auditExplorer}
+          onToggle={() => toggleSection("auditExplorer")}
+          onRefresh={() => fetchAuditLogs()}
+          isRefreshing={isLoadingAudit}
+        />
+        {openSections.auditExplorer && (
+          <>
           {/* Ledger Search: filter the audit trail to one officer's own
               activity by badge/KGID -- accepts "KSP-2", "2", or a full
               KGID, resolved server-side against the real Employee table. */}
@@ -1588,34 +1658,35 @@ export const SupervisorDashboardScreen: React.FC = () => {
               )}
             </div>
           )}
-        </div>
+          </>
+        )}
+      </div>
       </div>
 
-      {/* Feedback Review Board -- human oversight surface for the model-improvement loop.
-          Negative (👎) feedback is surfaced first as it is what needs review. */}
-      <div className="glass-card p-5 border border-stone-850 space-y-4">
-        <div className="flex justify-between items-center border-b border-stone-850 pb-2">
-          <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
-            <MessageSquare className="w-4 h-4 text-[#C79A4E]" />
-            <span>{lang === "en" ? "Feedback Review Board" : "ಪ್ರತಿಕ್ರಿಯೆ ಪರಿಶೀಲನಾ ಮಂಡಳಿ"}</span>
-          </h3>
-          <div className="flex items-center gap-3">
-            {!isLoadingFeedback && feedback.length > 0 && (
-              <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-wider">
-                <span className="text-stone-500">
-                  {lang === "en" ? "Total" : "ಒಟ್ಟು"}: <span className="text-stone-200 font-black">{feedback.length}</span>
+      {/* Feedback Review Board + Officer Access Oversight -- paired
+          side-by-side, each its own accordion (collapsed by default). Fixes
+          Officer Access Oversight's dead-middle-gap problem at full width. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+      <div ref={(el) => { sectionRefs.current.feedback = el; }} className="rounded-xl border border-stone-800 bg-stone-900/30 p-4 space-y-3">
+        <SectionHeader
+          icon={<MessageSquare className="w-4 h-4 text-[#C79A4E]" />}
+          title={
+            <span className="flex items-center gap-2 flex-wrap">
+              <span>{lang === "en" ? "Feedback Review Board" : "ಪ್ರತಿಕ್ರಿಯೆ ಪರಿಶೀಲನಾ ಮಂಡಳಿ"}</span>
+              {!isLoadingFeedback && feedback.length > 0 && (
+                <span className="text-[10px] font-mono normal-case tracking-normal text-rose-450">
+                  {feedback.filter((f) => f.rating === "down").length} {lang === "en" ? "negative" : "ಋಣಾತ್ಮಕ"}
                 </span>
-                <span className="text-rose-450">
-                  {lang === "en" ? "Negative" : "ಋಣಾತ್ಮಕ"}: <span className="font-black">{feedback.filter((f) => f.rating === "down").length}</span>
-                </span>
-              </div>
-            )}
-            <button onClick={fetchFeedback} className="text-stone-500 hover:text-[#C79A4E] transition-colors cursor-pointer">
-              <RefreshCw className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-
+              )}
+            </span>
+          }
+          isOpen={openSections.feedback}
+          onToggle={() => toggleSection("feedback")}
+          onRefresh={fetchFeedback}
+          isRefreshing={isLoadingFeedback}
+        />
+        {openSections.feedback && (
+          <>
         {isLoadingFeedback ? (
           <div className="space-y-3">
             {[1, 2, 3].map((n) => (
@@ -1677,32 +1748,30 @@ export const SupervisorDashboardScreen: React.FC = () => {
               })}
           </div>
         )}
+          </>
+        )}
       </div>
 
-      {/* Officer Access Oversight -- ranked query activity with anomaly flagging */}
-      <div className="glass-card p-5 border border-stone-850 space-y-4">
-        <div className="flex justify-between items-center border-b border-stone-850 pb-2">
-          <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
-            <Users className="w-4 h-4 text-[#C79A4E]" />
-            <span>{lang === "en" ? "Officer Access Oversight" : "ಅಧಿಕಾರಿ ಪ್ರವೇಶ ಮೇಲ್ವಿಚಾರಣೆ"}</span>
-          </h3>
-          <div className="flex items-center gap-3">
-            {!isLoadingOfficers && officers.length > 0 && (
-              <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-wider">
-                <span className="text-stone-500">
-                  {lang === "en" ? "Officers" : "ಅಧಿಕಾರಿಗಳು"}: <span className="text-stone-200 font-black">{officers.length}</span>
+      <div ref={(el) => { sectionRefs.current.officers = el; }} className="rounded-xl border border-stone-800 bg-stone-900/30 p-4 space-y-3">
+        <SectionHeader
+          icon={<Users className="w-4 h-4 text-[#C79A4E]" />}
+          title={
+            <span className="flex items-center gap-2 flex-wrap">
+              <span>{lang === "en" ? "Officer Access Oversight" : "ಅಧಿಕಾರಿ ಪ್ರವೇಶ ಮೇಲ್ವಿಚಾರಣೆ"}</span>
+              {!isLoadingOfficers && officers.length > 0 && (
+                <span className="text-[10px] font-mono normal-case tracking-normal text-rose-450">
+                  {officers.filter((o) => o.flagged).length} {lang === "en" ? "flagged" : "ಗುರುತಿಸಲಾಗಿದೆ"}
                 </span>
-                <span className="text-rose-450">
-                  {lang === "en" ? "Flagged" : "ಗುರುತಿಸಲಾಗಿದೆ"}: <span className="font-black">{officers.filter((o) => o.flagged).length}</span>
-                </span>
-              </div>
-            )}
-            <button onClick={fetchOfficers} className="text-stone-500 hover:text-[#C79A4E] transition-colors cursor-pointer">
-              <RefreshCw className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-
+              )}
+            </span>
+          }
+          isOpen={openSections.officers}
+          onToggle={() => toggleSection("officers")}
+          onRefresh={fetchOfficers}
+          isRefreshing={isLoadingOfficers}
+        />
+        {openSections.officers && (
+          <>
         {isLoadingOfficers ? (
           <div className="space-y-2.5">
             {[1, 2, 3, 4].map((n) => (
@@ -1760,6 +1829,9 @@ export const SupervisorDashboardScreen: React.FC = () => {
             </div>
           </div>
         )}
+          </>
+        )}
+      </div>
       </div>
 
       {/* Two Person Integrity Credential Check */}

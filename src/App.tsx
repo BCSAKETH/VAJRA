@@ -16,7 +16,6 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 // (DistrictSpatialAnalystPanel/DistrictDemographicPanel), not as separate
 // routes. Leaflet/Recharts now load as part of DistrictDashboardScreen's
 // own chunk instead.
-const FIRSearchScreen = lazy(() => import("./screens/FIRSearchScreen").then((m) => ({ default: m.FIRSearchScreen })));
 const SupervisorDashboardScreen = lazy(() =>
   import("./screens/SupervisorDashboardScreen").then((m) => ({ default: m.SupervisorDashboardScreen }))
 );
@@ -26,6 +25,11 @@ const DistrictDashboardScreen = lazy(() =>
 );
 const InvestigationsScreen = lazy(() =>
   import("./screens/InvestigationsScreen").then((m) => ({ default: m.InvestigationsScreen }))
+);
+// "View all conversations" -- reached only via the sidebar's own link, no
+// nav-rail icon (same lazy-chunk pattern as every other secondary screen).
+const AllChatsScreen = lazy(() =>
+  import("./screens/AllChatsScreen").then((m) => ({ default: m.AllChatsScreen }))
 );
 
 const ScreenLoadingFallback: React.FC = () => (
@@ -54,15 +58,15 @@ const AppContent: React.FC = () => {
   // Every other screen is fine to unmount/remount (no long-lived state to
   // preserve) and stays lazy/code-split as before.
   const isChatActive = currentScreen === "ai_chat" || !(
-    ["fir_search", "supervisor", "audit", "settings", "district_dashboard", "investigations"].includes(currentScreen)
+    ["supervisor", "audit", "settings", "district_dashboard", "investigations", "all_chats"].includes(currentScreen)
   );
 
   const renderOtherScreen = () => {
     switch (currentScreen) {
-      case "fir_search":
-        return <FIRSearchScreen />;
       case "investigations":
         return <InvestigationsScreen />;
+      case "all_chats":
+        return <AllChatsScreen />;
       case "supervisor":
       case "audit":
         if (roleTier !== "supervisor") {

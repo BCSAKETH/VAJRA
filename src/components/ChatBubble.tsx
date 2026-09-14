@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ChatMessage } from "../AppContext";
 import { translations } from "../i18n";
-import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2, Info } from "lucide-react";
+import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2, Info, Pin, PinOff } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 import { API_BASE } from "../config";
 
@@ -36,6 +36,10 @@ interface ChatBubbleProps {
   totalVariants?: number;
   activeVariantIndex?: number;
   onCycleVariant?: (direction: 1 | -1) => void;
+  // WhatsApp-style pin on this one message -- distinct from the existing
+  // session-level pin. Absent (undefined) for any message with no msgId,
+  // same gating as onEditMessage/onRetryVariant above.
+  onTogglePin?: () => void;
   // E.1: read-only rendering for SupervisorApprovalReviewModal.tsx -- shows
   // the message exactly as the officer saw it (POCSO redaction included,
   // per Loophole L3: unmasked token issued only after approval) without
@@ -421,6 +425,7 @@ const speakText = (text: string, lang: "en" | "kn", onEnd: () => void): SpeakRes
 export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   message, lang, voicePersona, onExpandWidget, onRetry, onQuickReply, addToast, isLast,
   onEditMessage, onRetryVariant, totalVariants, activeVariantIndex, onCycleVariant, isReviewMode,
+  onTogglePin,
 }) => {
   const t = translations[lang];
   const isAI = message.sender === "assistant";
@@ -1621,6 +1626,16 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
               className="p-1 rounded hover:bg-stone-800 text-stone-600 hover:text-[#C79A4E] transition-colors cursor-pointer disabled:opacity-40"
             >
               <RotateCcw className={`w-3 h-3 ${isRetrying ? "animate-spin text-[#C79A4E]" : ""}`} />
+            </button>
+          )}
+          {onTogglePin && (
+            <button
+              onClick={onTogglePin}
+              title={message.isPinned ? (lang === "en" ? "Unpin message" : "ಪಿನ್ ತೆಗೆಯಿರಿ") : (lang === "en" ? "Pin message" : "ಸಂದೇಶ ಪಿನ್ ಮಾಡಿ")}
+              aria-pressed={!!message.isPinned}
+              className={`p-1 rounded hover:bg-stone-800 transition-colors cursor-pointer ${message.isPinned ? "text-[#C79A4E]" : "text-stone-600 hover:text-stone-300"}`}
+            >
+              {message.isPinned ? <PinOff className="w-3 h-3" /> : <Pin className="w-3 h-3" />}
             </button>
           )}
           <button

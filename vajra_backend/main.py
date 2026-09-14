@@ -898,29 +898,69 @@ def _fir_rls_clause(request: Request, prefix: str = " WHERE") -> str:
     return f"{prefix} 1=0"  # fail closed: no resolvable jurisdiction -> no rows
 
 
+def _resolve_district_to_unit_ids(district: str) -> Optional[List[int]]:
+    """
+    FIR-into-District-Analytics fold-in: resolves a district NAME to the
+    Unit IDs under it (CaseMaster.PoliceStationID is actually a Unit.UnitID
+    reference -- confirmed by _build_fir_records' own join logic just above,
+    not a separate PoliceStation entity). ZCQL has no JOINs (confirmed
+    elsewhere in this file) so this is a real 2-step Python resolution, same
+    pattern already used throughout this module. Returns None for an empty/
+    statewide request (no filter), or a possibly-empty list if the district
+    name doesn't resolve to anything real (caller then correctly returns zero
+    rows rather than silently ignoring a bad filter).
+    """
+    if not district or not district.strip() or not catalyst_app:
+        return None
+    try:
+        d_res = catalyst_app.zql().execute_query(
+            f"SELECT DistrictID FROM District WHERE DistrictName LIKE '*{escape_zcql_literal(district.strip())}*' LIMIT 1"
+        )
+        if not d_res:
+            return []
+        district_id = d_res[0].get("District", {}).get("DistrictID")
+        unit_res = catalyst_app.zql().execute_query(f"SELECT UnitID FROM Unit WHERE DistrictID = {district_id}")
+        return [int(u["Unit"]["UnitID"]) for u in unit_res if u.get("Unit", {}).get("UnitID") is not None]
+    except Exception as e:
+        logger.warning(f"_resolve_district_to_unit_ids failed for {district!r}: {e}")
+        return None
+
+
 @app.get("/api/cases/all")
-async def get_cases_all(request: Request, location_context: str = Depends(security_firewall)):
-    """Backs FIRSearchScreen.tsx's default (no search term) view. §7.1 #7e:
-    this route never existed -- the frontend always 404'd, showing "Security
-    Registry Offline" unconditionally regardless of the database's real
-    state. Capped at 300 (ZCQL's own per-query row cap), newest first --
-    this screen has no pagination UI yet, so an unbounded return would just
-    silently truncate at some ZCQL-internal limit anyway; 300 newest is the
-    honest, predictable version of that same cap."""
+async def get_cases_all(request: Request, district: str = "", location_context: str = Depends(security_firewall)):
+    """Backs FIRSearchScreen.tsx's default (no search term) view, now folded
+    into District Analytics as a statewide/scoped tab (same pattern as
+    Spatial/Demographic). §7.1 #7e: this route never existed -- the frontend
+    always 404'd, showing "Security Registry Offline" unconditionally
+    regardless of the database's real state. Capped at 300 (ZCQL's own
+    per-query row cap), newest first -- this screen has no pagination UI
+    yet, so an unbounded return would just silently truncate at some
+    ZCQL-internal limit anyway; 300 newest is the honest, predictable
+    version of that same cap."""
     if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
     try:
         rls = _fir_rls_clause(request)
+        district_clause = ""
+        if district and district.strip():
+            unit_ids = _resolve_district_to_unit_ids(district)
+            # A line officer's own RLS already narrows them to one station --
+            # AND-ing an empty/non-matching district list correctly yields
+            # zero rows rather than silently ignoring the filter (Loophole:
+            # never let a bad/unmatched district name fall back to showing
+            # everything).
+            id_list = ",".join(str(u) for u in (unit_ids or [])) or "-1"
+            district_clause = (" AND" if rls else " WHERE") + f" PoliceStationID IN ({id_list})"
         rows = catalyst_app.zql().execute_query(
             f"SELECT CaseMasterID, CrimeNo, BriefFacts, CrimeRegisteredDate, PoliceStationID, CaseCategoryID "
-            f"FROM CaseMaster{rls} ORDER BY ROWID DESC LIMIT 300")
+            f"FROM CaseMaster{rls}{district_clause} ORDER BY ROWID DESC LIMIT 300")
         return _build_fir_records([r.get("CaseMaster", {}) for r in rows])
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load case registry: {str(e)}")
 
 
 @app.get("/api/cases/search")
-async def get_cases_search(request: Request, query: str = "", location_context: str = Depends(security_firewall)):
+async def get_cases_search(request: Request, query: str = "", district: str = "", location_context: str = Depends(security_firewall)):
     """Backs FIRSearchScreen.tsx's search box ("Search CrimeNo or facts...").
     §7.1 #7e: same never-existed route as /api/cases/all above. Matches
     CrimeNo OR BriefFacts via ZCQL's '*value*' wildcard (its LIKE syntax --
@@ -929,13 +969,18 @@ async def get_cases_search(request: Request, query: str = "", location_context: 
         raise HTTPException(status_code=500, detail="Database client offline.")
     q = (query or "").strip()
     if not q:
-        return await get_cases_all(request, location_context)
+        return await get_cases_all(request, district, location_context)
     try:
         safe_q = escape_zcql_literal(q).replace("*", "")  # strip ZCQL wildcard metacharacters out of raw officer input
         rls = _fir_rls_clause(request, prefix=" AND")
+        district_clause = ""
+        if district and district.strip():
+            unit_ids = _resolve_district_to_unit_ids(district)
+            id_list = ",".join(str(u) for u in (unit_ids or [])) or "-1"
+            district_clause = f" AND PoliceStationID IN ({id_list})"
         rows = catalyst_app.zql().execute_query(
             f"SELECT CaseMasterID, CrimeNo, BriefFacts, CrimeRegisteredDate, PoliceStationID, CaseCategoryID "
-            f"FROM CaseMaster WHERE (CrimeNo LIKE '*{safe_q}*' OR BriefFacts LIKE '*{safe_q}*'){rls} "
+            f"FROM CaseMaster WHERE (CrimeNo LIKE '*{safe_q}*' OR BriefFacts LIKE '*{safe_q}*'){rls}{district_clause} "
             f"ORDER BY ROWID DESC LIMIT 300")
         return _build_fir_records([r.get("CaseMaster", {}) for r in rows])
     except Exception as e:
@@ -2444,6 +2489,31 @@ def _resolve_variant_info(session_id: str, target_msg_id: str, sender: str) -> D
     return {"variant_group": variant_group, "version_index": next_version}
 
 
+def _find_message_row_by_msg_id(session_id: str, msg_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Message-pin feature: same data_json-scan-then-ROWID pattern
+    `_resolve_variant_info` already uses (msg_id is stashed inside each
+    ChatMessage's own data_json blob, never a dedicated column -- reusing
+    that existing convention rather than adding a new one). Returns the raw
+    ChatMessage row dict (including ROWID and the parsed data_json) so the
+    caller can merge a field into it and write back, or None if not found.
+    """
+    if not catalyst_app:
+        return None
+    try:
+        rows = catalyst_app.zql().execute_query(
+            f"SELECT ROWID, data_json FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}' ORDER BY sent_at DESC LIMIT 300"
+        )
+        for r in rows:
+            m = r.get("ChatMessage", {})
+            d = _safe_json_loads(m.get("data_json"), {})
+            if d.get("msg_id") == msg_id:
+                return {"rowid": m.get("ROWID"), "data": d}
+    except Exception as e:
+        logger.warning(f"_find_message_row_by_msg_id failed: {e}")
+    return None
+
+
 def _fit_json(obj: Any, cap: int) -> str:
     """
     Serialize obj to JSON that is ALWAYS valid and <= cap chars. Uses
@@ -3071,6 +3141,42 @@ async def get_session_messages(session_id: str, request: Request, location_conte
         # NEVER successfully loaded still gets [].
         stale = _SESSION_MESSAGES_CACHE.get(session_id)
         return stale[1] if stale else []
+
+
+class PinMessageRequest(BaseModel):
+    pinned: bool
+
+
+@app.post("/api/sessions/{session_id}/messages/{msg_id}/pin")
+async def pin_message(session_id: str, msg_id: str, payload: PinMessageRequest, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Message-level pin (WhatsApp-style) -- distinct from the existing
+    session-level "Pin" (pins a whole conversation in the sidebar). Reuses
+    the same msg_id-inside-data_json convention the edit/retry/variant
+    system already established (_resolve_variant_info) instead of a new
+    dedicated column -- `is_pinned` just becomes one more key in that same
+    JSON blob. Same ownership gate as reading/writing this session's own
+    messages.
+    """
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    if employee_id and not _get_cowork_role(session_id, employee_id, request.state.kgid):
+        raise HTTPException(status_code=403, detail="You do not have access to this session.")
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    found = _find_message_row_by_msg_id(session_id, msg_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="Message not found.")
+    updated_data = dict(found["data"])
+    updated_data["is_pinned"] = bool(payload.pinned)
+    try:
+        zcql_update_row("ChatMessage", {"ROWID": found["rowid"], "data_json": _fit_json(updated_data, 9000)})
+    except Exception as e:
+        logger.error(f"pin_message: update failed: {e}")
+        raise HTTPException(status_code=500, detail="Could not update this message.")
+    # This session's cached message list (get_session_messages, 15s TTL)
+    # would otherwise still show the old pin state for up to 15s.
+    _SESSION_MESSAGES_CACHE.pop(session_id, None)
+    return {"status": "updated", "msg_id": msg_id, "pinned": bool(payload.pinned)}
 
 
 @app.delete("/api/sessions/{session_id}")
@@ -4192,7 +4298,22 @@ async def respond_to_cowork_invitation(invitation_rowid: str, payload: CoworkRes
 
 @app.get("/api/cowork/sessions")
 async def list_cowork_sessions(request: Request, location_context: str = Depends(security_firewall)):
-    """Sessions the current officer is a participant in (distinct from solely-owned sessions in GET /api/sessions)."""
+    """
+    Sessions the current officer is a participant in (distinct from solely-owned
+    sessions in GET /api/sessions) -- backs AIChatScreen.tsx's `hasParticipants`
+    check, which gates whether the real-time Cowork SSE stream even opens.
+
+    Bug fixed here (found live: "Cowork feels like we're refreshing every
+    time"): this only ever queried `CoworkParticipant WHERE employee_id = X` --
+    the row that exists for an INVITED GUEST, never for the session's OWNER.
+    An owner who invited someone never appears in their own session's
+    CoworkParticipant rows, so their own session never showed up in their own
+    list here, hasParticipants stayed false for THEM specifically, and the
+    live stream never opened on their side -- the guest saw instant push, the
+    owner never did. `list_investigations` already solves this identical
+    owner-vs-guest gap correctly (its own `shared_owner_ids` check, above) --
+    this reuses that exact pattern rather than inventing a second one.
+    """
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
     if not catalyst_app:
         return []
@@ -4201,9 +4322,13 @@ async def list_cowork_sessions(request: Request, location_context: str = Depends
             f"SELECT session_id, role FROM CoworkParticipant WHERE employee_id = {employee_id} LIMIT 100"
         )
         sessions = []
+        seen_session_ids = set()
         for r in part_res:
             p = r.get("CoworkParticipant", {})
             sid = p.get("session_id")
+            if not sid:
+                continue
+            seen_session_ids.add(sid)
             title = "Shared Conversation"
             try:
                 sess_res = catalyst_app.zql().execute_query(f"SELECT title, last_active_at FROM ChatSession WHERE session_id = '{escape_zcql_literal(sid)}' LIMIT 1")
@@ -4215,6 +4340,32 @@ async def list_cowork_sessions(request: Request, location_context: str = Depends
             except Exception:
                 pass
             sessions.append({"session_id": sid, "title": title, "role": p.get("role"), "last_active_at": None})
+
+        # Owner-side fix: find this officer's OWNED sessions that have at
+        # least one guest (any employee_id) in CoworkParticipant, and include
+        # them too -- mirrors list_investigations' shared_owner_ids check.
+        try:
+            owned_res = catalyst_app.zql().execute_query(
+                f"SELECT session_id, title, last_active_at FROM ChatSession WHERE employee_id = {employee_id} LIMIT 300"
+            )
+            owned_ids = [r.get("ChatSession", {}).get("session_id") for r in owned_res if r.get("ChatSession", {}).get("session_id")]
+            owned_ids = [sid for sid in owned_ids if sid not in seen_session_ids]
+            if owned_ids:
+                id_list = ",".join(f"'{escape_zcql_literal(sid)}'" for sid in owned_ids)
+                part_check = catalyst_app.zql().execute_query(
+                    f"SELECT DISTINCT session_id FROM CoworkParticipant WHERE session_id IN ({id_list})"
+                )
+                shared_owned_ids = {r.get("CoworkParticipant", {}).get("session_id") for r in part_check}
+                owned_by_id = {r.get("ChatSession", {}).get("session_id"): r.get("ChatSession", {}) for r in owned_res}
+                for sid in shared_owned_ids:
+                    s = owned_by_id.get(sid, {})
+                    sessions.append({
+                        "session_id": sid, "title": s.get("title") or "Shared Conversation",
+                        "role": "owner", "last_active_at": s.get("last_active_at"),
+                    })
+        except Exception as e:
+            logger.warning(f"Could not check owner-side cowork sessions: {e}")
+
         return sessions
     except Exception as e:
         logger.warning(f"Could not list cowork sessions: {e}")
@@ -5959,6 +6110,22 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
         genesis_hash = "0000000000000000000000000000000000000000000000000000000000000000"
         expected_prev_hash = genesis_hash
         checked = 0
+        # G.1 finding #3 fix: confirmed against LIVE data (2 real rows,
+        # ROWID ...201205 logged 2026-07-26 and ...445112 logged 2026-09-09 --
+        # not just old legacy data, this can recur) that a row can have BOTH
+        # hash fields empty/null -- a write-path gap (_write_audit_log's own
+        # degrading-fallback-attempt list can produce a row shape with no
+        # hash fields), not tampering. Previously this made the empty string
+        # fail the very next row's `stored_prev_hash != expected_prev_hash`
+        # check, reporting a false "TAMPERING DETECTED / chain severed" and
+        # never even checking the ~2,554 real rows after it. Fix: a row
+        # with NO hash data of its own is skipped from the chain check
+        # entirely (neither breaks the chain nor advances expected_prev_hash
+        # off an empty value) and counted separately -- a genuine tamper
+        # (a row that HAS both hash fields but they don't verify, or a real
+        # discontinuity between two hash-bearing rows) still fails exactly
+        # as before.
+        unverifiable_rows = 0
 
         for r in res:
             log = r.get("AuditLog") or r.get("auditlog") or r
@@ -5972,6 +6139,10 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
             response_summary = log.get("response_summary") or ""
             session_id = log.get("session_id") or ""
             logged_at = log.get("logged_at") or ""
+
+            if not stored_prev_hash and not stored_row_hash:
+                unverifiable_rows += 1
+                continue
 
             if stored_prev_hash != expected_prev_hash:
                 return {
@@ -5993,7 +6164,8 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
                         "or modified directly via database console without re-signing the cryptographic chain."
                     ),
                     "remediation": "Audit ledger requires re-sealing. Preserve forensic dump for judicial review under Section 63 BSA / Sec 65B IEA.",
-                    "checked": checked
+                    "checked": checked,
+                    "unverifiable_rows": unverifiable_rows
                 }
 
             serialized_content = f"{employee_id}|{action_type}|{target}|{query_text[:100]}|{response_summary[:100]}|{session_id}|{logged_at}"
@@ -6018,7 +6190,8 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
                         f"The record payload (Action: '{action_type}', Target: '{target}', Query: '{query_text[:40]}...') was altered after block creation."
                     ),
                     "remediation": "Flagged for supervisory review. Evidence admissibility compromised until verified against off-chain secondary replication.",
-                    "checked": checked
+                    "checked": checked,
+                    "unverifiable_rows": unverifiable_rows
                 }
 
             expected_prev_hash = stored_row_hash
@@ -6026,9 +6199,13 @@ async def verify_audit_ledger(request: Request, location_context: str = Depends(
 
         return {
             "valid": True,
-            "reason": f"All {checked} audit blocks cryptographically verified — unbroken SHA-256 chain from genesis block.",
+            "reason": (
+                f"All {checked} audit blocks cryptographically verified — unbroken SHA-256 chain from genesis block."
+                + (f" ({unverifiable_rows} pre-dated hash-chaining, not verifiable.)" if unverifiable_rows else "")
+            ),
             "checked": checked,
             "total_blocks": checked,
+            "unverifiable_rows": unverifiable_rows,
             "integrity_score": "100%",
             "status": "SECURE_AND_VERIFIED"
         }

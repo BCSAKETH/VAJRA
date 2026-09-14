@@ -1,7 +1,6 @@
-import React, { useState, useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { WatermarkOverlay } from "../components/WatermarkOverlay";
 import { Search, ShieldAlert, FolderOpen, Calendar, MapPin, Eye } from "lucide-react";
 
 interface CaseRecord {
@@ -16,7 +15,17 @@ interface CaseRecord {
   AccusedCount: number;
 }
 
-export const FIRSearchScreen: React.FC = () => {
+// FIR fold-in (Part G): this used to be a standalone "FIR Repository" nav
+// screen (FIRSearchScreen.tsx) -- same precedent already set for Spatial
+// Analyst/Demographic Correlation, which retired as separate routes and now
+// live only as tabs inside District Analytics. `district`: null means
+// statewide (no filter applied server-side, same convention
+// DistrictDemographicPanel already uses); a district name narrows the
+// existing /api/cases/all + /api/cases/search endpoints via their new
+// `district` query param (server-side District->Unit->PoliceStationID
+// resolution, ANDed with the existing per-officer row-level security that's
+// unchanged either way).
+export const DistrictFIRPanel: React.FC<{ district: string | null }> = ({ district }) => {
   const { lang, addToast, setIsAuthenticated } = useApp();
   const [query, setQuery] = useState("");
   const [firs, setFirs] = useState<CaseRecord[]>([]);
@@ -24,15 +33,15 @@ export const FIRSearchScreen: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [selectedCase, setSelectedCase] = useState<CaseRecord | null>(null);
 
-  // Fetch FIRs on mount/search
   const handleSearch = async (searchStr: string) => {
     try {
       setIsLoading(true);
       setErrorMsg(null);
 
+      const districtParam = district ? `district=${encodeURIComponent(district)}` : "";
       const endpoint = searchStr.trim()
-        ? `${API_BASE}/api/cases/search?query=${encodeURIComponent(searchStr)}`
-        : `${API_BASE}/api/cases/all`;
+        ? `${API_BASE}/api/cases/search?query=${encodeURIComponent(searchStr)}${districtParam ? `&${districtParam}` : ""}`
+        : `${API_BASE}/api/cases/all${districtParam ? `?${districtParam}` : ""}`;
 
       const response = await fetch(endpoint, {
         headers: {
@@ -77,29 +86,30 @@ export const FIRSearchScreen: React.FC = () => {
   };
 
   useEffect(() => {
+    setQuery("");
+    setSelectedCase(null);
     handleSearch("");
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [district]);
 
   return (
-    <div className="h-full flex flex-col relative p-6 space-y-6 bg-stone-950/20">
-      {/* Repeating security watermark overlay */}
-      <WatermarkOverlay />
-
-      {/* Top Search Controls */}
-      <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center bg-stone-905/30 shrink-0">
+    <div className="glass-card p-4 border border-stone-850 space-y-4">
+      <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
         <div className="space-y-1">
-          <h2 className="text-base font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">
-            <FolderOpen className="w-5 h-5 text-[#C79A4E]" />
-            <span>{lang === "en" ? "FIR Security Registry" : "FIR ಭದ್ರತಾ ರಿಜಿಸ್ಟ್ರಿ"}</span>
-          </h2>
-          <p className="text-[11px] text-stone-550 leading-relaxed font-mono">
+          <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
+            <FolderOpen className="w-3.5 h-3.5 text-[#C79A4E]" />
+            <span>{lang === "en" ? "Case Registry" : "ಪ್ರಕರಣ ರಿಜಿಸ್ಟ್ರಿ"}</span>
+            <span className="text-[9px] font-mono normal-case tracking-normal text-stone-600">
+              · {district || (lang === "en" ? "Statewide" : "ರಾಜ್ಯವ್ಯಾಪಿ")}
+            </span>
+          </h3>
+          <p className="text-[10.5px] text-stone-550 leading-relaxed font-mono">
             {lang === "en"
               ? "Audit case registry entries across the Karnataka CCTNS datastore."
               : "ಕರ್ನಾಟಕ CCTNS ಡೇಟಾಸ್ಟೋರ್‌ನಾದ್ಯಂತ ಪ್ರಕರಣ ರಿಜಿಸ್ಟ್ರಿ ನಮೂದುಗಳನ್ನು ಪರಿಶೀಲಿಸಿ."}
           </p>
         </div>
 
-        {/* Search Bar */}
         <div className="w-full sm:w-80 relative">
           <input
             type="text"
@@ -118,8 +128,7 @@ export const FIRSearchScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Main Table or Card details */}
-      <div className="flex-1 min-h-[300px] overflow-hidden flex flex-col md:flex-row gap-6 relative">
+      <div className="min-h-[300px] flex flex-col md:flex-row gap-4 relative">
         {errorMsg ? (
           <div className="flex-1 flex flex-col items-center justify-center p-6 text-center bg-stone-950/40 rounded-2xl border border-rose-500/10 space-y-4">
             <div className="w-12 h-12 bg-rose-500/10 border border-rose-500/25 text-rose-500 rounded-full flex items-center justify-center">
@@ -137,21 +146,20 @@ export const FIRSearchScreen: React.FC = () => {
             </div>
           </div>
         ) : isLoading ? (
-          <div className="flex-1 flex items-center justify-center text-stone-400 text-xs font-mono">
+          <div className="flex-1 flex items-center justify-center text-stone-400 text-xs font-mono py-10">
             {lang === "en" ? "Decrypting CCTNS files..." : "CCTNS ಫೈಲ್‌ಗಳನ್ನು ಡೀಕ್ರಿಪ್ಟ್ ಮಾಡಲಾಗುತ್ತಿದೆ..."}
           </div>
         ) : firs.length === 0 ? (
-          <div className="flex-1 flex items-center justify-center text-stone-500 text-xs font-mono">
+          <div className="flex-1 flex items-center justify-center text-stone-500 text-xs font-mono py-10">
             {lang === "en" ? "No secure case records resolved." : "ಯಾವುದೇ ಸುರಕ್ಷಿತ ಪ್ರಕರಣ ದಾಖಲೆಗಳು ಕಂಡುಬಂದಿಲ್ಲ."}
           </div>
         ) : (
           <>
-            {/* Table Panel */}
             <div className="flex-1 bg-stone-900/10 border border-stone-850 rounded-2xl overflow-hidden flex flex-col">
-              <div className="overflow-x-auto flex-1">
+              <div className="overflow-x-auto flex-1 max-h-[420px] overflow-y-auto">
                 <table className="w-full text-left text-xs font-mono border-collapse">
-                  <thead>
-                    <tr className="bg-stone-950/45 border-b border-stone-800 text-stone-400 uppercase text-[9.5px] font-black tracking-wider">
+                  <thead className="sticky top-0 bg-stone-950/95 backdrop-blur-sm">
+                    <tr className="border-b border-stone-800 text-stone-400 uppercase text-[9.5px] font-black tracking-wider">
                       <th className="py-3.5 px-4">{lang === "en" ? "Crime No" : "ಅಪರಾಧ ಸಂಖ್ಯೆ"}</th>
                       <th className="py-3.5 px-4">{lang === "en" ? "Registered" : "ನೋಂದಾಯಿಸಲಾಗಿದೆ"}</th>
                       <th className="py-3.5 px-4">{lang === "en" ? "District / Unit" : "ಜಿಲ್ಲೆ / ಠಾಣೆ"}</th>
@@ -197,7 +205,6 @@ export const FIRSearchScreen: React.FC = () => {
               </div>
             </div>
 
-            {/* Sidebar Inspector Panel */}
             {selectedCase && (
               <div className="w-full md:w-96 glass-panel border border-stone-800 rounded-2xl p-5 flex flex-col gap-4 animate-fade-in relative z-10 shrink-0">
                 <div className="border-b border-stone-850 pb-3 flex justify-between items-start">

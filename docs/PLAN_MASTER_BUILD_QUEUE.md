@@ -7311,3 +7311,76 @@ the whole app feels consistent instead of every screen inventing its own pattern
 
 Until G.3 is answered, this stays Part G — parked, not queued into §6's execution
 order.
+
+---
+
+**Build status (2026-09-14): Part G answered and BUILT.** G.3's open questions
+were resolved directly with the user (re-scope → merge into one tabbed
+Approvals card after all, reversing the "unify visually only" first answer;
+finding #3 → confirmed live against real `AuditLog` rows, not hypothetical).
+Shipped in one combined batch, verified (`tsc --noEmit` clean, `ast.parse`
+clean, `npm run build` clean) and deployed (backend + client):
+
+- Command Center strip moved to the top of `SupervisorDashboardScreen.tsx`,
+  every tile real and clickable (scroll-to + auto-expand): Pending Approvals
+  (new, sum of all 4 queues), Pending Flags, Ledger Status, Officers Flagged
+  (new).
+- The 4 approval queues (Exports/POCSO/District/Profile) merged into ONE
+  card with a tab row; District's break-glass Acknowledge/Revoke rendering
+  unchanged inside its own tab. POCSO's accent recolored rose→fuchsia.
+- 6 major sections (Approvals, Approval History, Ledger, Consistency Flags,
+  Audit Ledger Explorer, Feedback + Officer Oversight) converted to a shared
+  `SectionHeader` collapsible-accordion pattern; Approvals opens by default,
+  the rest collapsed. Feedback Review Board + Officer Access Oversight paired
+  side-by-side (`grid lg:grid-cols-2`), fixing Officer Oversight's confirmed
+  dead-middle-gap at full width.
+- `verify_audit_ledger` (`main.py`) fixed for the confirmed live false
+  positive: a row with no hash data (2 real rows found, one 5 days old at the
+  time) is now skipped from the chain-break check and counted separately as
+  `unverifiable_rows`, instead of falsely reporting "TAMPERING DETECTED" and
+  never checking the remaining rows. Ledger card now shows a calm one-liner
+  by default, expanding to the existing forensic breakdown only on a genuine
+  break.
+
+Same batch also shipped 4 items scoped in afterward by the user (message pin,
+Cowork live-push fix, FIR fold-in, View All Conversations + Back/Forward
+nav) — see below.
+
+**Message-level Pin (WhatsApp-style, distinct from the existing session-level
+Pin):** `POST /api/sessions/{id}/messages/{msg_id}/pin` reuses the existing
+`msg_id`-inside-`data_json` convention (`_find_message_row_by_msg_id`, same
+pattern as `_resolve_variant_info`) — no new column. `ChatBubble.tsx` gained a
+Pin/PinOff action-row button; `AIChatScreen.tsx` gained `handleTogglePin`
+(optimistic, reverts on failure) and a collapsible pinned-messages strip above
+the thread that reuses the existing `handleJumpToMessage` scroll+highlight.
+
+**Cowork live-push fix (owner side):** `list_cowork_sessions` only ever
+checked `CoworkParticipant` for the invited guest's own row, never the
+session owner's — so a session's OWNER never got `hasParticipants: true` and
+the SSE stream never opened for them, while the guest they invited saw
+instant push. Fixed by mirroring `list_investigations`' existing
+`shared_owner_ids` pattern (checks the officer's OWNED sessions for any
+guest-participant row too). Sidebar chat list also now calls
+`bumpChatSessionsRefresh()` on every Cowork SSE message, so it live-reorders
+during an active session instead of only after a manual action.
+
+**FIR Repository folded into District Analytics:** retired as a standalone
+nav screen (`FIRSearchScreen.tsx` deleted), reborn as `DistrictFIRPanel.tsx`,
+a 4th "Case Registry" tab on `DistrictDashboardScreen.tsx` — statewide by
+default, narrows to a district exactly like the existing Spatial/Demographic
+tabs. `/api/cases/all` and `/api/cases/search` gained an optional `district`
+param, resolved District→Unit→`PoliceStationID` server-side (2-step ZCQL, no
+JOINs) and ANDed with the existing, unchanged `_fir_rls_clause`.
+
+**"View all conversations" full page + Back/Forward nav:** new
+`AllChatsScreen.tsx` (reuses `GroupedSessionList`'s `variant="page"`), wired
+from a new link at the bottom of the sidebar's chat list.
+`GroupedSessionList.tsx` gained an "Archived only" filter (archived chats
+were previously permanently invisible everywhere — this is the one real
+place they can be seen again), select-mode + bulk delete (loops the existing
+per-session `DELETE /api/sessions/{id}`, no new bulk endpoint), and relative
+timestamps ("2h ago") for `variant="page"` rows — all three gated to
+`kind="chats" && variant="page"` so the sidebar and Investigations page are
+unaffected. Back/Forward: a small in-memory screen-history stack in
+`AppContext.tsx` (`goBack`/`goForward`/`canGoBack`/`canGoForward`), two icon
+buttons in `MainLayout.tsx`'s header.
