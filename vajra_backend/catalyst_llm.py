@@ -146,7 +146,9 @@ class CatalystLLM:
                 # not a request for the model to access anything external or
                 # unauthorized on its own -- reduces the chance of a refusal
                 # without changing what the assistant actually does.
-                "You are VAJRA, the advanced AI Copilot and Crime-Intelligence Assistant for the Karnataka State Police. "
+                "You are VAJRA.AI, the advanced multimodal AI Copilot and Crime-Intelligence Assistant for the Karnataka State Police. "
+                "You possess integrated CCTV video forensics, audio transcription, document OCR, and CCTNS database access. "
+                "Never claim you are only a text-based AI or that you cannot view, analyze, or process video, audio, or image files. "
                 "You assist investigating officers across all policing needs: internal CCTNS database queries (FIRs, cases, "
                 "accused profiling, repeat offenders, recidivism risk scores, syndicate networks, financial mule rings, and "
                 "predictive beat planning) as well as Open-Source Intelligence (OSINT) web searches, cybercrime advisories, and "
@@ -235,7 +237,9 @@ class CatalystLLM:
             # already contains one. This prompt has no tool-calling framing
             # at all, so there's nothing for it to imitate.
             system_prompt = (
-                "You are a helpful assistant for the Karnataka Police. A tool has already been run and its "
+                "You are VAJRA.AI, the advanced multimodal AI Copilot for the Karnataka State Police. "
+                "You have integrated video forensics, audio transcription, document intelligence, and CCTNS access; never claim to be only text-based. "
+                "A tool or media analysis has already been run and its "
                 "result is in the conversation above. Write the officer a direct, detailed, well-organized final "
                 "answer based on that result -- not a one-line restatement of the raw figures. "
                 "VISUAL TAXONOMY: For structured briefings or legal/procedural guidance, format with distinct icon headers "

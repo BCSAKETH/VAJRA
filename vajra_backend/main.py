@@ -2448,6 +2448,7 @@ class ChatRequest(BaseModel):
     # table already uses everywhere else.
     edit_of_msg_id: Optional[str] = None
     retry_of_msg_id: Optional[str] = None
+    attachment_analysis: Optional[str] = None
 
 
 def _bump_chat_session_active(session_id: str):
@@ -3996,16 +3997,26 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
         except Exception as e:
             logger.warning(f"ANSWER_REGENERATION audit log failed: {e}")
 
+    # Component 2 (Section 9): Store attachment_analysis in ChatMessage data_json
+    _att_analysis_to_store = payload.attachment_analysis
+    if not _att_analysis_to_store and message.startswith("Attachment analysis:"):
+        _att_analysis_to_store = message.split("\n\n", 1)[0].replace("Attachment analysis:", "").strip()
+
     if not _is_retry:
+        _user_msg_data = {
+            **({"attachments": payload.attachments} if payload.attachments else {}),
+            **({"attachment_analysis": _att_analysis_to_store} if _att_analysis_to_store else {}),
+            **_user_variant_extra,
+        }
         _persist_chat_message(
             session_id, "user", display_text, "text",
-            {**({"attachments": payload.attachments} if payload.attachments else {}), **_user_variant_extra},
+            _user_msg_data,
             sender_employee_id=employee_id
         )
         await connection_manager.broadcast(session_id, {
             "type": "message", "sender": "user", "sender_employee_id": employee_id,
             "sender_name": first_name, "text": display_text, "response_type": "text",
-            "data": _user_variant_extra, "citations": [], "timestamp": datetime.utcnow().isoformat(),
+            "data": _user_msg_data, "citations": [], "timestamp": datetime.utcnow().isoformat(),
             "client_msg_id": payload.client_msg_id
         })
 
@@ -5781,7 +5792,7 @@ async def upload_chat_attachments(
                         )
                         return batch, qwen_v.analyze([b for _, b in batch], instruction=instr_b)
 
-                    with ThreadPoolExecutor(max_workers=min(8, len(frame_batches))) as _vex:
+                    with ThreadPoolExecutor(max_workers=min(3, len(frame_batches))) as _vex:
                         batch_results = list(_vex.map(_analyze_batch, frame_batches))
 
                     ok_texts = [r["text"] for _, r in batch_results if r.get("available") and r.get("text")]
@@ -5813,13 +5824,24 @@ async def upload_chat_attachments(
             stratus_key = store_attachment(downscaled, "jpg", "image/jpeg")
             page_stratus_ids = [stratus_key]
 
+        file_sha256 = hashlib.sha256(content).hexdigest()
         attachment_refs.append({
             "file_name": f.filename,
             "type": f.content_type,
             "stratus_id": stratus_key,
             "page_count": page_count,
             "page_stratus_ids": page_stratus_ids,
+            "sha256": file_sha256,
         })
+        try:
+            emp_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId") or 4003385
+            agent_loop._write_audit_log(
+                emp_id, "ATTACHMENT_UPLOAD", f.filename or "media",
+                f"Uploaded attachment {f.filename} (type: {f.content_type}, size: {len(content)} bytes, sha256: {file_sha256[:16]}...)",
+                f"sha256:{file_sha256}", ""
+            )
+        except Exception as e:
+            logger.warning(f"Audit log failed for attachment upload: {e}")
 
     analysis_text_parts: List[str] = []
     analysis_available = False
@@ -5837,17 +5859,26 @@ async def upload_chat_attachments(
         # "analysis," and claiming otherwise would overstate what happened.
         analysis_text_parts.extend(video_notes)
 
-    # 5.1: video/audio-derived text (scene descriptions, transcripts) goes
-    # through the same phone-number masking every other officer-facing text
-    # in this app already gets for POCSO-sensitive contexts (vajra_core.py's
-    # redact_phone_numbers) -- treated exactly like any other text VAJRA
-    # generates, not a separate unguarded path just because it came from
-    # media instead of a database row. This endpoint has no case_no/session
-    # context to check is_pocso_sensitive() against, so name-based POCSO
-    # redaction isn't wired here yet (a real, separate gap -- flagged, not
-    # silently skipped); phone-number masking is safe and applied
-    # unconditionally since it costs nothing when no number is present.
+    # 5.1 & L42: video/audio-derived text (scene descriptions, transcripts) goes
+    # through both phone-number masking and POCSO name redaction before leaving backend
     combined_analysis = redact_phone_numbers("\n\n".join(analysis_text_parts))
+    try:
+        from vajra_core import redact_pocso_name
+        combined_analysis = redact_pocso_name(combined_analysis)
+    except Exception:
+        pass
+
+    # L33: High-Density Video Summarizer for oversized scene batches (>3500 chars / ~1000 tokens)
+    if len(combined_analysis) > 3500 and "Video Analysis" in combined_analysis:
+        lines = [ln.strip() for ln in combined_analysis.split("\n") if ln.strip()]
+        timeline_lines = [ln for ln in lines if re.match(r'^(?:\d+:\d+|\d+s|\b(?:[0-1]?\d|2[0-3]):[0-5]\d\b)', ln) or ":" in ln[:10]]
+        if timeline_lines:
+            summary_table = "\n".join(f"- {tl}" for tl in timeline_lines[:24])
+            combined_analysis = (
+                f"[Video Forensics Executive Summary -- High-Density Extraction]\n"
+                f"{summary_table}\n\n"
+                f"[Full Observations]: {combined_analysis[:1200]}..."
+            )
 
     # TEMPORARY -- see av_analysis.py's _last_debug docstring. Exposes why
     # ffmpeg-based chunking/frame-extraction did or didn't run, since this

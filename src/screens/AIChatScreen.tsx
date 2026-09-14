@@ -55,6 +55,7 @@ const mapSessionMessages = (sessionId: string, messages: any[]): ChatMessage[] =
     data: m.data,
     citations: m.citations,
     attachments: m.data?.attachments,
+    attachmentAnalysis: m.data?.attachment_analysis,
     senderName: m.sender_name,
     senderEmployeeId: m.sender_employee_id,
     // Conversation branching (edit/retry/variants) -- packed into data_json
@@ -704,10 +705,6 @@ export const AIChatScreen: React.FC = () => {
     handleSend(newText, [], { editOfMsgId: msgId });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const handleRetryVariant = useCallback((msgId: string, originalQuestionText: string) => {
-    handleSend(originalQuestionText, [], { retryOfMsgId: msgId });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   // WhatsApp-style message pin -- optimistic local flip, then persists
   // server-side via the existing msg_id-in-data_json convention. Reverts on
@@ -752,7 +749,12 @@ export const AIChatScreen: React.FC = () => {
   const handleSend = useCallback(async (
     textToSend: string,
     filesToSend: File[] = [],
-    variantOptions?: { editOfMsgId?: string; retryOfMsgId?: string }
+    variantOptions?: {
+      editOfMsgId?: string;
+      retryOfMsgId?: string;
+      existingAttachments?: any[];
+      cachedAttachmentAnalysis?: string;
+    }
   ) => {
     if (isThinking || isUploadingAttachments) return;
     if (!textToSend.trim() && filesToSend.length === 0) return;
@@ -770,8 +772,15 @@ export const AIChatScreen: React.FC = () => {
     let pendingKey = sendSessionId ?? "__new__";
 
     let queryForAgent = textToSend;
-    let uploadedAttachmentRefs: { file_name: string; type: string; page_count: number; stratus_id?: string; data_uri?: string; page_stratus_ids?: string[] }[] = [];
-    if (filesToSend.length > 0) {
+    let uploadedAttachmentRefs: { file_name: string; type: string; page_count: number; stratus_id?: string; data_uri?: string; page_stratus_ids?: string[]; sha256?: string }[] = [];
+    let currentAttachmentAnalysis: string | undefined = variantOptions?.cachedAttachmentAnalysis;
+
+    if (variantOptions?.existingAttachments && variantOptions.existingAttachments.length > 0) {
+      uploadedAttachmentRefs = variantOptions.existingAttachments;
+      if (variantOptions.cachedAttachmentAnalysis) {
+        queryForAgent = `Attachment analysis: ${variantOptions.cachedAttachmentAnalysis}\n\n${textToSend}`;
+      }
+    } else if (filesToSend.length > 0) {
       setIsUploadingAttachments(true);
       setUploadStatusLabel(
         lang === "en" ? "Uploading attachment... 0%" : "ಲಗತ್ತು ಅಪ್‌ಲೋಡ್ ಆಗುತ್ತಿದೆ... 0%"
@@ -782,6 +791,7 @@ export const AIChatScreen: React.FC = () => {
           const uploadData = await uploadRes.json();
           uploadedAttachmentRefs = uploadData.attachments || [];
           if (uploadData.attachment_analysis) {
+            currentAttachmentAnalysis = uploadData.attachment_analysis;
             queryForAgent = `Attachment analysis: ${uploadData.attachment_analysis}\n\n${textToSend}`;
           }
         } else {
@@ -832,6 +842,7 @@ export const AIChatScreen: React.FC = () => {
         text: textToSend,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
         attachments: uploadedAttachmentRefs.length > 0 ? uploadedAttachmentRefs : undefined,
+        attachmentAnalysis: currentAttachmentAnalysis,
         senderName: officerName || undefined,
       };
       setChatMessages((prev) => [...prev, userMsg]);
@@ -865,6 +876,7 @@ export const AIChatScreen: React.FC = () => {
           // accepts and stores this field (ChatRequest.attachments); it was
           // just never actually populated from here.
           attachments: uploadedAttachmentRefs.length > 0 ? uploadedAttachmentRefs : undefined,
+          attachment_analysis: currentAttachmentAnalysis,
           // Standard vs Full Dossier -- chosen in the composer selector.
           answer_mode: answerMode,
           edit_of_msg_id: variantOptions?.editOfMsgId,
@@ -991,6 +1003,26 @@ export const AIChatScreen: React.FC = () => {
       }
     }
   }, [isThinking, isUploadingAttachments, lang, addToast, setIsAuthenticated, chatMode, appendMessageForTurn, pollForPendingReply, markPending, clearPending, answerMode]);
+
+  // Component 1 (Section 9): Preserve attachments and cached analysis on retry
+  const handleRetryVariant = useCallback((msgId: string, originalQuestionText: string) => {
+    // 1. Locate the paired user message that initiated this turn
+    const msgIndex = chatMessages.findIndex((m) => m.id === msgId || m.msgId === msgId);
+    const pairedUser = msgIndex > 0
+      ? chatMessages.slice(0, msgIndex).reverse().find((m) => m.sender === "user")
+      : undefined;
+
+    // 2. Extract existing attachment references from the paired user message
+    const existingAttachments = pairedUser?.attachments || [];
+    const cachedAnalysis = pairedUser?.attachmentAnalysis || undefined;
+
+    // 3. Resend with existing attachment metadata -- ZERO re-upload overhead!
+    handleSend(originalQuestionText, [], {
+      retryOfMsgId: msgId,
+      existingAttachments,
+      cachedAttachmentAnalysis: cachedAnalysis,
+    });
+  }, [chatMessages, handleSend]);
 
   // Start a fresh conversation -- clears the transcript and drops the active
   // session id, so the next message sent auto-creates a brand new ChatSession.

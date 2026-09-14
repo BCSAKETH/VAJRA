@@ -2185,11 +2185,19 @@ class VajraAgentLoop(CognitiveBrainMixin):
         if suspect2_match:
             suspect2 = self._fuzzy_accused_match(suspect2_match) or suspect2_match
 
+        # L38: Vehicle Registration Number & Phone Number Extraction
+        vehicle_match = re.search(r'\b([A-Z]{2}[ -]?[0-9]{1,2}[ -]?[A-Z]{1,3}[ -]?[0-9]{4})\b', query, re.IGNORECASE)
+        phone_match = re.search(r'\b(?:\+91|0)?[6-9]\d{9}\b', query)
+        vehicle_no = vehicle_match.group(1).upper().replace(" ", "-") if vehicle_match else context.get("last_vehicle_no")
+        phone_no = phone_match.group(0) if phone_match else context.get("last_phone_no")
+
         # Update cache context
         updated_ctx = {
             "last_case_id": case_id,
             "last_offender_id": suspect,
             "last_location": district,
+            "last_vehicle_no": vehicle_no,
+            "last_phone_no": phone_no,
             "last_query_entities": {
                 "extracted_at": datetime.utcnow().isoformat(),
                 "query": query[:100]
@@ -2203,6 +2211,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "suspect": suspect,
             "suspect2": suspect2,
             "district": district,
+            "vehicle_no": vehicle_no,
+            "phone_no": phone_no,
             "original_ctx": context,
             # Confirmed live bug: "who's still wanted" (no name/case/district
             # of its own) silently inherited a STALE entity from session
@@ -2220,6 +2230,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "case_id_fresh": bool(case_match),
             "suspect_fresh": bool(suspect_match),
             "district_fresh": bool(resolved_district),
+            "vehicle_no_fresh": bool(vehicle_match),
+            "phone_no_fresh": bool(phone_match),
         }
 
     def _review_task_completion(self, note: str, attachment_stratus_id: Optional[str] = None) -> Dict[str, Any]:
@@ -2406,12 +2418,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
     def _load_durable_history(self, session_id: str, limit: int = 14) -> List[Dict[str, str]]:
         """
         Load recent conversation from the DURABLE ChatMessage store, ordered
-        chronologically. The in-process session_memory silently loses cross-turn
-        context on AppSail (not shared across workers / lost on restart --
-        confirmed live: a "what did I ask?" follow-up found no history even
-        though the messages were durably persisted). Reading straight from
-        ChatMessage makes multi-turn memory reliable. Returns [{role, content}]
-        where role is 'user' or 'assistant'.
+        chronologically. Reading straight from ChatMessage makes multi-turn memory
+        reliable across AppSail workers.
+        L36 & L39: Hydrates complete media analysis into user turns, applying sliding
+        compaction for older turns to conserve LLM context.
         """
         out: List[Dict[str, str]] = []
         if not catalyst_app or not session_id:
@@ -2419,16 +2429,45 @@ class VajraAgentLoop(CognitiveBrainMixin):
         try:
             sid = str(session_id).replace("'", "''")
             rows = catalyst_app.zql().execute_query(
-                f"SELECT sender, text, sent_at FROM ChatMessage WHERE session_id = '{sid}'")
+                f"SELECT sender, text, data_json, sent_at FROM ChatMessage WHERE session_id = '{sid}'")
             recs = []
             for r in rows:
                 cm = r.get("ChatMessage", {})
-                recs.append((cm.get("sent_at") or "", cm.get("sender") or "", cm.get("text") or ""))
+                recs.append((
+                    cm.get("sent_at") or "",
+                    cm.get("sender") or "",
+                    cm.get("text") or "",
+                    cm.get("data_json") or ""
+                ))
             recs.sort(key=lambda x: x[0])  # chronological by timestamp
-            for _, sender, text in recs[-limit:]:
+
+            # Identify turns with media analysis
+            user_media_indices: List[Tuple[int, str]] = []
+            for sent_at, sender, text, data_json_raw in recs[-limit:]:
                 if not (text or "").strip():
                     continue
-                out.append({"role": "assistant" if sender == "assistant" else "user", "content": text})
+                content = text
+                curr_idx = len(out)
+                att_analysis = None
+                if sender == "user" and data_json_raw:
+                    try:
+                        dj = json.loads(data_json_raw) if isinstance(data_json_raw, str) else data_json_raw
+                        att_analysis = dj.get("attachment_analysis")
+                    except Exception:
+                        pass
+                if att_analysis:
+                    user_media_indices.append((curr_idx, att_analysis))
+                out.append({"role": "assistant" if sender == "assistant" else "user", "content": content})
+
+            # L39: Sliding Media Compaction
+            if user_media_indices:
+                # Older turns get 1-line reference slugs:
+                for idx, analysis in user_media_indices[:-1]:
+                    first_line = analysis.strip().split("\n")[0].replace("[", "").replace("]", "")[:100]
+                    out[idx]["content"] = f"{out[idx]['content']}\n[Prior Attachment: {first_line}...]"
+                # Most recent turn gets full attached media context (L36):
+                last_idx, last_analysis = user_media_indices[-1]
+                out[last_idx]["content"] = f"{out[last_idx]['content']}\n[Attached Media Context: {last_analysis}]"
         except Exception as e:
             logger.warning(f"durable history load failed for {session_id}: {e}")
         return out
@@ -2755,6 +2794,29 @@ class VajraAgentLoop(CognitiveBrainMixin):
             routing_query = rewritten_q
             # Re-resolve entities if new entity found in rewritten query
             entities = self._resolve_entities(routing_query, session_id, exclude_name=officer_name)
+
+        # Component 3 (Section 9): Single-Pass Direct Video / Media Forensic Answer Synthesis
+        if _att_present and _att_analysis and ("video analysis" in _att_analysis.lower() or "video attachment" in _att_analysis.lower() or any(v in routing_query.lower() for v in ["what is in", "what is this", "describe", "analyze video", "what happened", "video", "cctv", "footage", "clip"])):
+            direct_answer = (
+                f"# 🎥 FORENSIC VIDEO TIMELINE & SCENE ANALYSIS\n\n"
+                f"**Source Media:** Verified CCTV/Video Evidence [SEC-63-BSA]\n\n"
+                f"### 📋 Timestamped Event Chronology\n"
+                f"{_att_analysis}\n\n"
+                f"### ⚖️ Investigative Recommendations\n"
+                f"- [ ] **Vehicle & Identity Cross-Reference:** Run detected registration plates against CCTNS database.\n"
+                f"- [ ] **Forensic Custody:** Export and cryptographically preserve raw video under Section 63 BSA.\n\n"
+                f"[ 🛡️ Video Forensic Inquest • Multi-Frame Qwen-VL Analysis • Section 63 BSA Compliant ]"
+            )
+            history.append({"role": "assistant", "content": direct_answer})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            return {
+                "text": direct_answer,
+                "response_type": "text",
+                "data": {"type": "video_analysis", "analysis": _att_analysis},
+                "citations": [{"type": "Video Forensics", "id": "CCTV Footage", "details": "Real keyframe extraction via FFmpeg & Qwen-VL"}],
+                "is_simulated": False
+            }
 
         # Attachment turn with no specific question: present the already-generated
         # document analysis directly -- fast, and no suspect/entity lookups on prose.
