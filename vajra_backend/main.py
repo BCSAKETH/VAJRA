@@ -7318,44 +7318,109 @@ async def process_voice_endpoint(payload: VoiceProcessRequest, request: Request,
 class FeedbackRequest(BaseModel):
     session_id: Optional[str] = None
     message_id: Optional[str] = None
+    variant_id: Optional[str] = None
     query: Optional[str] = ""
     response: Optional[str] = ""
     rating: str           # "up" or "down"
     correction: Optional[str] = ""
+    invoked_tool: Optional[str] = None
+    tool_parameters: Optional[Dict[str, Any]] = None
+    tool_status: Optional[str] = None
+    latency_ms: Optional[int] = None
 
 
 @app.post("/api/feedback")
 async def submit_feedback(payload: FeedbackRequest, request: Request, location_context: str = Depends(security_firewall)):
     """
     Records an officer's thumbs-up/down (and optional correction) on an answer.
-    This is the FOUNDATION of VAJRA's auto-learning: the captured signal drives
-    routing/prompt tuning and the Answer-Quality loop. Stored in a dedicated
-    Feedback table (see docs/SCHEMA.md); if that table isn't provisioned in the
-    console yet, the endpoint soft-acks instead of failing so the UI stays
-    responsive -- feedback is optional telemetry, never a hard dependency of a
-    turn.
+    SOTIE (Section 10): Telemetry binding with dynamic gold exemplar recording,
+    contextual bandit reward updating, and cache invalidation on downvotes.
     """
     rating = (payload.rating or "").strip().lower()
     if rating not in ("up", "down"):
         raise HTTPException(status_code=400, detail="rating must be 'up' or 'down'")
     prof = request.state.user_profile or {}
     kgid = prof.get("KGID") or prof.get("EmployeeID") or prof.get("EmployeeId") or ""
-    row = {
+    
+    # Pack telemetry tag to guarantee telemetry persistence even if extended columns are absent in Console
+    telemetry_tag = ""
+    if payload.invoked_tool:
+        telemetry_tag = f"[SOTIE:tool={payload.invoked_tool}|ms={payload.latency_ms or 0}|status={payload.tool_status or 'ok'}] "
+
+    full_correction = f"{telemetry_tag}{payload.correction or ''}".strip()
+
+    row_base = {
         "kgid": str(kgid),
         "session_id": (payload.session_id or "")[:64],
         "message_id": (payload.message_id or "")[:64],
         "query_text": (payload.query or "")[:2000],
         "response_summary": (payload.response or "")[:2000],
         "rating": rating,
-        "correction": (payload.correction or "")[:2000],
+        "correction": full_correction[:2000],
         "created_at": datetime.utcnow().isoformat(),
     }
-    try:
-        zcql_insert_row("Feedback", row)
-        return {"status": "recorded"}
-    except Exception as e:
-        logger.warning(f"Feedback insert failed (Feedback table not provisioned yet?): {e}")
-        return {"status": "unavailable", "detail": "Feedback storage not configured yet."}
+
+    # Attempt multi-shape insertion: try with explicit columns first, fall back to base row
+    inserted = False
+    if payload.invoked_tool:
+        row_extended = dict(row_base)
+        row_extended["invoked_tool"] = str(payload.invoked_tool)[:64]
+        if payload.latency_ms is not None:
+            row_extended["latency_ms"] = int(payload.latency_ms)
+        try:
+            zcql_insert_row("Feedback", row_extended)
+            inserted = True
+        except Exception:
+            pass
+
+    if not inserted:
+        try:
+            zcql_insert_row("Feedback", row_base)
+            inserted = True
+        except Exception as e:
+            logger.warning(f"Feedback insert failed (Feedback table not provisioned yet?): {e}")
+
+    # SOTIE Continuous Tool Learning:
+    # 1. On 👍 (upvote): commit gold tool exemplar if tool and query exist
+    if rating == "up" and payload.invoked_tool and payload.query:
+        try:
+            from tool_training_optimizer import record_gold_tool_exemplar
+            record_gold_tool_exemplar(
+                query=payload.query,
+                tool_name=payload.invoked_tool,
+                parameters=payload.tool_parameters or {}
+            )
+        except Exception as e:
+            logger.warning(f"SOTIE exemplar recording failed: {e}")
+
+    # 2. Update Contextual Multi-Armed Bandit weights
+    if payload.invoked_tool:
+        try:
+            from tool_training_optimizer import update_bandit_weights
+            update_bandit_weights(payload.invoked_tool, rating, payload.correction)
+        except Exception as e:
+            logger.warning(f"SOTIE bandit update failed: {e}")
+
+    # 3. On 👎 (downvote): invalidate stale tool cache (L48)
+    if rating == "down" and payload.invoked_tool:
+        try:
+            from tool_training_optimizer import invalidate_tool_cache
+            invalidate_tool_cache(payload.invoked_tool, payload.tool_parameters)
+        except Exception as e:
+            logger.warning(f"SOTIE cache invalidation failed: {e}")
+
+    # 4. Extract entity aliases from corrections (L54)
+    if payload.correction and any(k in payload.correction.lower() for k in ["not", "station", "instead", "was"]):
+        try:
+            from tool_training_optimizer import record_entity_alias
+            corr = payload.correction.strip()
+            m = re.search(r'(?:not\s+([a-zA-Z0-9\s]+?)[,\s]+(?:it\s+was|was|use)\s+([a-zA-Z0-9\s]+))', corr, re.IGNORECASE)
+            if m:
+                record_entity_alias(m.group(1).strip(), m.group(2).strip())
+        except Exception as e:
+            logger.warning(f"SOTIE alias learning failed: {e}")
+
+    return {"status": "recorded" if inserted else "unavailable"}
 
 
 def _resolve_district_name(district_id: int) -> str:

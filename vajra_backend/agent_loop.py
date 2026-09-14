@@ -20,6 +20,7 @@ from session_memory import VajraSessionMemory
 from catalyst_llm import CatalystLLM
 from catalyst_qwen import CatalystQwen
 from vajra_cognitive_brain import CognitiveBrainMixin
+from tool_training_optimizer import get_matching_tool_exemplars, resolve_entity_aliases, update_bandit_weights, get_tool_bandit_weight
 
 logger = logging.getLogger(__name__)
 
@@ -2772,6 +2773,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # GLM round trip every single time, same speedup _route_kannada
         # already gives pure Kannada-script queries.
         routing_query = _normalize_kanglish(routing_query)
+        # SOTIE (L54): Dynamic Police Entity & Station Alias Resolution
+        routing_query = resolve_entity_aliases(routing_query)
 
         # RESUME a pending clarifying question (see _check_pending_clarification's
         # docstring for why this is a durable, deterministic lookup rather than
@@ -3402,10 +3405,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 # cuts the prompt from ~3,240 to ~800 tokens so the model
                 # answers in seconds instead of dropping the connection.
                 tools_for_call = self._relevant_tools(routing_query) if allow_tools else None
+                # SOTIE (L51): Dynamic In-Context Few-Shot Tool Exemplars (capped at top-2, <= 300 tokens)
+                gold_exemplars = get_matching_tool_exemplars(routing_query, limit=2) if allow_tools else None
                 llm_res = self.llm.chat(
                     history,
                     tools_for_call,
-                    max_tokens=3500
+                    max_tokens=3500,
+                    tool_exemplars=gold_exemplars
                 )
 
             if llm_res.get("error"):
@@ -3511,8 +3517,16 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         _q_preview = str(params.get("query") or "").strip()[:60]
                         _progress(f"Searching the web for \"{_q_preview}\"..." if _q_preview else "Searching the web...")
 
-                    # Execute specific tool based on function calling
+                    # SOTIE (L46): Execute specific tool with precision latency & trace telemetry
+                    _t_tool_start = time.time()
                     tool_output = self._execute_tool(tool_name, params, employee_id, session_id, user_unit_id)
+                    _tool_duration_ms = int((time.time() - _t_tool_start) * 1000)
+                    _tool_telemetry = {
+                        "tool_name": tool_name,
+                        "parameters": params,
+                        "status": "error" if "error" in str(tool_output.get("text_result", "")).lower() else "success",
+                        "latency_ms": _tool_duration_ms
+                    }
 
                     if tool_name == "web_search":
                         _n_found = len((tool_output.get("data") or {}).get("news") or [])
@@ -3528,6 +3542,9 @@ class VajraAgentLoop(CognitiveBrainMixin):
                             data_payload.update(tool_output["data"])
                         else:
                             data_payload = tool_output["data"]
+                    if isinstance(data_payload, dict):
+                        data_payload["_tool_telemetry"] = _tool_telemetry
+                        data_payload["_tool_trace"] = _tool_telemetry
                     if tool_output.get("text_result"):
                         last_tool_text_result = tool_output["text_result"]
 
@@ -4141,6 +4158,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # GLM "thinking" model's 3-20s variance. Bilingual text_kn is still
         # generated downstream in main.py, so nothing bilingual is lost.
         final_answer = False
+
+        # SOTIE (L55): Parameter Type Coercion Layer
+        # Coerces string-encoded integers to native int to prevent tool signature crashes
+        if isinstance(params, dict):
+            for int_key in ("year", "limit", "min_convictions", "threshold", "page", "radius_km", "window_hours", "case_id", "district_id"):
+                if int_key in params and isinstance(params[int_key], str) and params[int_key].strip().isdigit():
+                    params[int_key] = int(params[int_key].strip())
 
         # NAME RESOLUTION for suspect tools: fuzzy-correct a (possibly misspelled
         # / transliterated) name to the closest real AccusedName -- this catches

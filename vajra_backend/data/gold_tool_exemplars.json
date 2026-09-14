@@ -1,0 +1,94 @@
+[
+  {
+    "query": "Show repeat NDPS offenders with high conviction risk in Mangaluru",
+    "tool": "get_offender_risk",
+    "parameters": {
+      "district": "Mangaluru City",
+      "crime_group": "NARCOTICS",
+      "min_convictions": 2
+    },
+    "score": 1.0,
+    "source": "canonical"
+  },
+  {
+    "query": "Plot spatial crime density map and hotspots in Belagavi",
+    "tool": "query_hotspots",
+    "parameters": {
+      "district": "Belagavi Dist"
+    },
+    "score": 1.0,
+    "source": "canonical"
+  },
+  {
+    "query": "Trace criminal graph network and co-accused links for Ravi alias Tiger",
+    "tool": "query_graph_network",
+    "parameters": {
+      "suspect_name": "Ravi"
+    },
+    "score": 1.0,
+    "source": "canonical"
+  },
+  {
+    "query": "Resolve vehicle registration plate KA-04-E-1234 to jurisdiction",
+    "tool": "resolve_rto_plate",
+    "parameters": {
+      "plate_number": "KA-04-E-1234"
+    },
+    "score": 1.0,
+    "source": "canonical"
+  },
+  {
+    "query": "Reverse-resolve bank IFSC code SBIN0001234 for financial trail",
+    "tool": "resolve_ifsc",
+    "parameters": {
+      "ifsc_code": "SBIN0001234"
+    },
+    "score": 1.0,
+    "source": "canonical"
+  },
+  {
+    "query": "Generate full case dossier and timeline for case CR-2026-31313",
+    "tool": "generate_case_dossier",
+    "parameters": {
+      "crime_no": "CR-2026-31313"
+    },
+    "score": 1.0,
+    "source": "canonical"
+  },
+  {
+    "query": "Look up suspect criminal record by Aadhaar or phone number",
+    "tool": "search_by_identifier",
+    "parameters": {
+      "identifier_type": "phone",
+      "identifier_value": "9876543210"
+    },
+    "score": 1.0,
+    "source": "canonical"
+  },
+  {
+    "query": "Predict patrol route beat deployment for high-risk areas in Bengaluru East",
+    "tool": "plan_patrol_deployment",
+    "parameters": {
+      "district": "Bengaluru City",
+      "zone": "East"
+    },
+    "score": 1.0,
+    "source": "canonical"
+  },
+  {
+    "query": "Check alibi consistency against cell tower tower dumps for accused Ramesh",
+    "tool": "check_alibi_consistency",
+    "parameters": {
+      "suspect_name": "Ramesh"
+    },
+    "score": 1.0,
+    "source": "canonical"
+  },
+  {
+    "query": "State-wide chargesheet conviction rate and arrest analytics",
+    "tool": "case_outcome_analytics",
+    "parameters": {},
+    "score": 1.0,
+    "source": "canonical"
+  }
+]

@@ -69,6 +69,7 @@ const mapSessionMessages = (sessionId: string, messages: any[]): ChatMessage[] =
     versionIndex: m.data?.version_index,
     // WhatsApp-style message pin -- same data_json convention as msgId above.
     isPinned: !!m.data?.is_pinned,
+    sessionId: sessionId,
   }));
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
@@ -1681,6 +1682,8 @@ export const AIChatScreen: React.FC = () => {
         ) : (
           displayMessages.map((msg, idx) => {
             const vmeta = msg.variantGroup ? variantMeta[`${msg.variantGroup}::${msg.sender}`] : undefined;
+            const fullIdx = chatMessages.findIndex((m) => m.id === msg.id);
+            const pairedUser = fullIdx > 0 ? [...chatMessages.slice(0, fullIdx)].reverse().find((m) => m.sender === "user") : undefined;
             return (
             // §9.4 Case Board: data-msg-id + a brief highlight ring is what
             // "tap a board entry -> jump to and highlight the original
@@ -1695,13 +1698,13 @@ export const AIChatScreen: React.FC = () => {
               message={msg}
               lang={lang}
               voicePersona={voicePersona}
+              sessionId={activeSessionIdRef.current || ""}
+              pairedQuery={msg.sender === "assistant" ? (pairedUser?.text || "") : undefined}
               onExpandWidget={(widgetType, widgetData) => {
                 setExpandedWidget({ type: widgetType as any, data: widgetData });
                 if (widgetType === "network") openNetworkWidget(); else setNetworkNewSince(null);
               }}
               onRetry={msg.retryText ? () => {
-                const fullIdx = chatMessages.findIndex((m) => m.id === msg.id);
-                const pairedUser = fullIdx > 0 ? [...chatMessages.slice(0, fullIdx)].reverse().find((m) => m.sender === "user") : undefined;
                 handleSend(msg.retryText!, [], {
                   retryOfMsgId: msg.msgId || msg.id,
                   existingAttachments: pairedUser?.attachments || [],
@@ -1713,12 +1716,6 @@ export const AIChatScreen: React.FC = () => {
               isLast={idx === displayMessages.length - 1}
               onEditMessage={msg.sender === "user" && msg.msgId ? (newText) => handleEditMessage(msg.msgId!, newText) : undefined}
               onRetryVariant={msg.sender === "assistant" && msg.msgId ? () => {
-                // The paired question is whichever user turn immediately
-                // precedes this assistant reply in the FULL (unfiltered)
-                // history -- not displayMessages, since an earlier variant
-                // toggle could have hidden it.
-                const fullIdx = chatMessages.findIndex((m) => m.id === msg.id);
-                const pairedUser = [...chatMessages.slice(0, fullIdx)].reverse().find((m) => m.sender === "user");
                 if (pairedUser) handleRetryVariant(msg.msgId!, pairedUser.text);
               } : undefined}
               totalVariants={vmeta?.total}

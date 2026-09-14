@@ -72,6 +72,9 @@ export interface ChatMessage {
   // session-level pin in the sidebar). Persisted server-side inside this
   // message's own data_json blob, same convention msgId already uses.
   isPinned?: boolean;
+  // SOTIE (Section 10): Session ID and initiating query binding for telemetry
+  sessionId?: string;
+  forQuery?: string;
 }
 
 export interface ToastMessage {

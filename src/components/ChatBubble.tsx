@@ -46,6 +46,9 @@ interface ChatBubbleProps {
   // exposing interactive controls that only make sense for the officer who
   // owns the conversation (e.g. the POCSO "Request Access" trigger).
   isReviewMode?: boolean;
+  // SOTIE (Section 10): Session and query context for telemetry binding
+  sessionId?: string;
+  pairedQuery?: string;
 }
 
 // Panel types that InlineWidget can render as a visual (everything else in a
@@ -425,7 +428,7 @@ const speakText = (text: string, lang: "en" | "kn", onEnd: () => void): SpeakRes
 export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   message, lang, voicePersona, onExpandWidget, onRetry, onQuickReply, addToast, isLast,
   onEditMessage, onRetryVariant, totalVariants, activeVariantIndex, onCycleVariant, isReviewMode,
-  onTogglePin,
+  onTogglePin, sessionId, pairedQuery,
 }) => {
   const t = translations[lang];
   const isAI = message.sender === "assistant";
@@ -974,15 +977,23 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     const next = feedback === rating ? null : rating;   // click again to undo
     setFeedback(next);
     if (!next) return;
+
+    const toolTelemetry = (message as any).data?._tool_telemetry || (message as any).data?._tool_trace || {};
+
     fetch(`${API_BASE}/api/feedback`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
       body: JSON.stringify({
-        session_id: (message as any).sessionId || "",
-        message_id: String(message.id || ""),
-        query: (message as any).forQuery || "",
+        session_id: sessionId || message.sessionId || (message as any).sessionId || "",
+        message_id: String(message.msgId || message.id || ""),
+        variant_id: message.variantGroup ? `${message.variantGroup}::${activeVariantIndex || 1}` : undefined,
+        query: pairedQuery || message.forQuery || (message as any).forQuery || "",
         response: displayText.slice(0, 2000),
         rating: next,
+        invoked_tool: toolTelemetry.tool_name || null,
+        tool_parameters: toolTelemetry.parameters || null,
+        tool_status: toolTelemetry.status || null,
+        latency_ms: toolTelemetry.latency_ms || null,
       }),
     }).catch(() => { /* best-effort telemetry */ });
   };

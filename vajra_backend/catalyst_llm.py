@@ -95,7 +95,8 @@ class CatalystLLM:
         messages: List[Dict[str, str]],
         tools: Optional[List[Dict[str, Any]]] = None,
         use_agent_system_prompt: bool = True,
-        max_tokens: int = 2500
+        max_tokens: int = 2500,
+        tool_exemplars: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
         """
         Sends chat payload to Catalyst LLM Serving.
@@ -228,6 +229,10 @@ class CatalystLLM:
             )
             for t in tools:
                 system_prompt += f"- {t['name']}: {t['description']}. Parameters: {json.dumps(t['parameters'])}\n"
+            if tool_exemplars:
+                system_prompt += "\nVERIFIED GOLD TOOL DEMONSTRATIONS (Upvoted by KSP Officers):\n"
+                for ex in tool_exemplars:
+                    system_prompt += f'User: "{ex.get("query")}"\nDecision: {{"tool": "{ex.get("tool")}", "parameters": {json.dumps(ex.get("parameters", {}))}}}\n'
         else:
             # No tools passed -- this is the final-synthesis call after tool
             # results are already in history. Confirmed live that reusing
