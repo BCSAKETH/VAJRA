@@ -2888,10 +2888,18 @@ async def list_sessions(request: Request, location_context: str = Depends(securi
         # sessions too (all of ChatSession, top 50 by recency), which is both
         # an RLS violation and the reason the sidebar showed sessions/titles
         # the signed-in officer never created.
+        # "Lost chats" bug fixed here (confirmed live: one officer had 136
+        # real chat sessions in ChatSession, but this LIMIT 50 silently cut
+        # off the 86 oldest -- not deleted, just invisible everywhere this
+        # list feeds: the sidebar, the new "View all conversations" page,
+        # search). Raised to 300, this codebase's own established ZCQL
+        # single-query cap (same bound already used for ChatGroup/session-meta/
+        # InvestigationTask elsewhere in this file) -- covers every real
+        # officer's chat volume today with real headroom.
         owned = catalyst_app.zql().execute_query(
             f"SELECT session_id, title, last_active_at FROM ChatSession "
             f"WHERE employee_id = {employee_id} AND (description IS NULL OR description = '') "
-            f"ORDER BY last_active_at DESC LIMIT 50"
+            f"ORDER BY last_active_at DESC LIMIT 300"
         )
         sessions = [r.get("ChatSession", {}) for r in owned]
         seen_session_ids = {s["session_id"] for s in sessions}
@@ -4511,10 +4519,13 @@ async def list_investigations(request: Request, location_context: str = Depends(
     try:
         # Same missing-filter bug as GET /api/sessions above -- add the owner
         # scope so this doesn't also leak every other officer's Investigations.
+        # Same "lost chats" LIMIT fix as GET /api/sessions above (this list
+        # also backs /api/investigations/search, so the cap silently hid
+        # search results too, not just the Investigations page itself).
         owned = catalyst_app.zql().execute_query(
             f"SELECT session_id, title, description, case_no, last_active_at FROM ChatSession "
             f"WHERE employee_id = {employee_id} AND (description IS NOT NULL AND description != '') "
-            f"ORDER BY last_active_at DESC LIMIT 50"
+            f"ORDER BY last_active_at DESC LIMIT 300"
         )
         investigations = [{
             "session_id": r["ChatSession"]["session_id"],

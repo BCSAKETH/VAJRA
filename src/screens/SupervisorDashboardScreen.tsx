@@ -4,47 +4,41 @@ import { API_BASE } from "../config";
 import { TwoPersonApprovalModal } from "../components/TwoPersonApprovalModal";
 import { WatermarkOverlay } from "../components/WatermarkOverlay";
 import { SupervisorApprovalReviewModal } from "../components/SupervisorApprovalReviewModal";
-import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2, Bell, BellOff, ChevronDown, ChevronRight, Hourglass } from "lucide-react";
+import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2, Bell, BellOff, Hourglass } from "lucide-react";
 
-// Supervisor Dashboard redesign: one shared collapsible-section header,
-// reused by all 6 accordion panels (Approvals/History/Ledger/Consistency
-// Flags/Audit Ledger Explorer/Feedback/Officer Oversight) instead of each
-// copy-pasting its own header markup -- the header row itself was ALREADY
-// byte-for-byte identical across 4 of these panels before this redesign
-// (confirmed by audit), so this only formalizes what was already a de facto
-// shared pattern. `onRefresh` gets its own stopPropagation so refreshing a
-// panel never also toggles its collapse state.
+// Supervisor Dashboard redesign: one shared, ALWAYS-EXPANDED section header,
+// reused by every panel (Approvals/History/Ledger/Consistency Flags/Audit
+// Ledger Explorer/Feedback/Officer Oversight) instead of each copy-pasting
+// its own header markup -- the header row itself was ALREADY byte-for-byte
+// identical across 4 of these panels before this redesign (confirmed by
+// audit), so this only formalizes what was already a de facto shared
+// pattern. No collapse/expand -- every section is always fully visible
+// (removed per explicit feedback: a supervisor scanning for what needs
+// attention shouldn't have to click sections open first).
 const SectionHeader: React.FC<{
   icon: React.ReactNode;
   title: React.ReactNode;
-  isOpen: boolean;
-  onToggle: () => void;
   onRefresh?: () => void;
   isRefreshing?: boolean;
   extra?: React.ReactNode;
-}> = ({ icon, title, isOpen, onToggle, onRefresh, isRefreshing, extra }) => (
-  <button
-    onClick={onToggle}
-    className="w-full flex items-center justify-between border-b border-stone-850 pb-2 cursor-pointer text-left"
-  >
+}> = ({ icon, title, onRefresh, isRefreshing, extra }) => (
+  <div className="w-full flex items-center justify-between border-b border-stone-850 pb-2">
     <span className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
-      {isOpen ? <ChevronDown className="w-3.5 h-3.5 text-stone-500 shrink-0" /> : <ChevronRight className="w-3.5 h-3.5 text-stone-500 shrink-0" />}
       {icon}
       {title}
     </span>
     <span className="flex items-center gap-3">
       {extra}
       {onRefresh && (
-        <span
-          role="button"
-          onClick={(e) => { e.stopPropagation(); onRefresh(); }}
+        <button
+          onClick={onRefresh}
           className="text-stone-500 hover:text-[#C79A4E] transition-colors cursor-pointer"
         >
           <RefreshCw className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
-        </span>
+        </button>
       )}
     </span>
-  </button>
+  </div>
 );
 
 // §5.5: web push applicationServerKey must be a Uint8Array, but the backend
@@ -830,25 +824,16 @@ export const SupervisorDashboardScreen: React.FC = () => {
   const [activeApprovalTab, setActiveApprovalTab] = useState<"exports" | "pocso" | "district" | "profile">("exports");
   const totalPendingApprovals = pendingExports.length + pendingPocso.length + pendingDistrict.length + pendingProfile.length;
 
-  // Every major section becomes a collapsible accordion panel -- collapsed
-  // by default except Approvals (the actionable work, opens by default per
-  // the same "surface what needs attention" logic as the Command Center
-  // strip itself).
-  const [openSections, setOpenSections] = useState<Record<string, boolean>>({
-    approvals: true, history: false, ledger: false, flags: false, auditExplorer: false, feedback: false, officers: false,
-  });
-  const toggleSection = (key: string) => setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  // Every section on this page is always fully visible (no collapse/expand --
+  // removed per explicit feedback). sectionRefs still backs the Command
+  // Center strip's "jump to section" behavior below.
   const sectionRefs = useRef<Record<string, HTMLDivElement | null>>({});
-  // Command Center strip: every tile is a real button -- clicking one
-  // smooth-scrolls to AND opens its section, instead of leaving the officer
-  // to hunt for where a number lives.
-  const scrollToAndExpand = (key: string) => {
-    setOpenSections((prev) => ({ ...prev, [key]: true }));
-    setTimeout(() => sectionRefs.current[key]?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  const scrollToSection = (key: string) => {
+    sectionRefs.current[key]?.scrollIntoView({ behavior: "smooth", block: "start" });
   };
 
   return (
-    <div className="h-full flex flex-col p-6 space-y-5 bg-stone-950/20 overflow-y-auto">
+    <div className="h-full flex flex-col p-6 space-y-6 bg-stone-950/20 overflow-y-auto">
       {/* Security watermark overlay */}
       <WatermarkOverlay />
 
@@ -919,7 +904,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
           the page), every number real, every tile clickable (scrolls to AND
           opens its section). */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 shrink-0">
-        <button onClick={() => scrollToAndExpand("approvals")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-[#C79A4E]/30 transition-colors cursor-pointer">
+        <button onClick={() => scrollToSection("approvals")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-[#C79A4E]/30 transition-colors cursor-pointer">
           <div className="w-9 h-9 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 flex items-center justify-center shrink-0">
             <Hourglass className="w-4.5 h-4.5 text-[#C79A4E]" />
           </div>
@@ -930,7 +915,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
             </div>
           </div>
         </button>
-        <button onClick={() => scrollToAndExpand("flags")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-amber-500/30 transition-colors cursor-pointer">
+        <button onClick={() => scrollToSection("flags")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-amber-500/30 transition-colors cursor-pointer">
           <div className="w-9 h-9 rounded-lg bg-amber-500/10 border border-amber-500/25 flex items-center justify-center shrink-0">
             <AlertTriangle className="w-4.5 h-4.5 text-amber-500" />
           </div>
@@ -943,7 +928,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
             </div>
           </div>
         </button>
-        <button onClick={() => scrollToAndExpand("ledger")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-stone-700 transition-colors cursor-pointer">
+        <button onClick={() => scrollToSection("ledger")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-stone-700 transition-colors cursor-pointer">
           <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 border ${
             ledgerVerified === null ? "bg-stone-800/50 border-stone-700" : ledgerVerified ? "bg-emerald-500/10 border-emerald-500/25" : "bg-rose-500/10 border-rose-500/25"
           }`}>
@@ -962,7 +947,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
             </div>
           </div>
         </button>
-        <button onClick={() => scrollToAndExpand("officers")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-rose-500/30 transition-colors cursor-pointer">
+        <button onClick={() => scrollToSection("officers")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-rose-500/30 transition-colors cursor-pointer">
           <div className="w-9 h-9 rounded-lg bg-rose-500/10 border border-rose-500/25 flex items-center justify-center shrink-0">
             <ShieldAlert className="w-4.5 h-4.5 text-rose-450" />
           </div>
@@ -980,16 +965,14 @@ export const SupervisorDashboardScreen: React.FC = () => {
       {/* Approvals Queue -- merged from 4 separate cards into ONE with a tab
           row (Exports/POCSO/District/Profile). District's distinct
           break-glass Acknowledge/Revoke item rendering is unchanged, only
-          the outer container changed. Open by default (the actionable work). */}
-      <div ref={(el) => { sectionRefs.current.approvals = el; }} className="shrink-0 rounded-xl border border-stone-800 bg-stone-900/30 p-4 space-y-3">
+          the outer container changed. Uses glass-card like every other
+          panel on this page (symmetry, theme-aware). */}
+      <div ref={(el) => { sectionRefs.current.approvals = el; }} className="glass-card shrink-0 rounded-xl border border-stone-850 p-5 space-y-4">
         <SectionHeader
           icon={<Hourglass className="w-4 h-4 text-[#C79A4E]" />}
           title={<span>{lang === "en" ? "Approvals Queue" : "ಅನುಮೋದನೆ ಸಾಲು"} <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-[#C79A4E]/20 text-[#C79A4E] ml-1">{totalPendingApprovals}</span></span>}
-          isOpen={openSections.approvals}
-          onToggle={() => toggleSection("approvals")}
         />
-        {openSections.approvals && (
-          <>
+        <>
             <div className="flex items-center gap-1.5 flex-wrap pt-1">
               {([
                 { id: "exports" as const, label: lang === "en" ? "Exports" : "ರಫ್ತು", count: pendingExports.length, accent: "text-[#C79A4E]", activeBg: "bg-[#C79A4E]/15 border-[#C79A4E]/40" },
@@ -1197,21 +1180,16 @@ export const SupervisorDashboardScreen: React.FC = () => {
               )
             )}
           </>
-        )}
       </div>
 
       {/* Approval history -- decided export + POCSO items, filterable by lane
           and outcome, rendered as a proper table (not another queue-card
-          list) since this is a review/audit surface, not an action queue.
-          Now an accordion panel, collapsed by default. */}
+          list) since this is a review/audit surface, not an action queue. */}
       <div ref={(el) => { sectionRefs.current.history = el; }} className="shrink-0 rounded-xl border border-stone-800 bg-stone-900/40 p-4 space-y-3">
         <SectionHeader
           icon={<Fingerprint className="w-4 h-4 text-[#C79A4E]" />}
           title={<span>{lang === "en" ? "Approval History" : "ಅನುಮೋದನೆ ಇತಿಹಾಸ"} <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-stone-800 text-stone-400 ml-1">{historyItems.length}</span></span>}
-          isOpen={openSections.history}
-          onToggle={() => toggleSection("history")}
         />
-        {openSections.history && (
         <>
         <div className="flex items-center gap-2 flex-wrap pt-1">
           <div className="ml-auto flex items-center gap-2">
@@ -1307,70 +1285,73 @@ export const SupervisorDashboardScreen: React.FC = () => {
           </div>
         )}
         </>
-        )}
       </div>
 
-      {/* Ledger Verification -- accordion, calm one-liner by default, expands
-          to the forensic breakdown. Only rendered once a verification run has
-          happened (nothing to show before that -- the Command Center's Ledger
-          tile above triggers "Verify Ledger" via the header button, not this
-          section). */}
+      {/* Ledger Verification Status Alert / Forensic Investigation Card --
+          always fully visible (no accordion): a calm emerald card when
+          verified, an alarming rose card with full forensic detail
+          immediately when a genuine break is found. Only rendered once a
+          verification run has happened. */}
       {ledgerVerified !== null && (
-        <div ref={(el) => { sectionRefs.current.ledger = el; }} className="shrink-0 rounded-xl border border-stone-800 bg-stone-900/40 p-4 space-y-3">
-          <SectionHeader
-            icon={ledgerVerified ? <ShieldCheck className="w-4 h-4 text-emerald-500" /> : <AlertOctagon className="w-4 h-4 text-rose-500 animate-pulse" />}
-            title={
-              <span className={ledgerVerified ? "text-emerald-400" : "text-rose-400"}>
-                {ledgerVerified
-                  ? (lang === "en" ? `Ledger Verified — ${ledgerDetails?.checked || 300} blocks validated` : `ಲೆಡ್ಜರ್ ಪರಿಶೀಲಿಸಲಾಗಿದೆ — ${ledgerDetails?.checked || 300} ಬ್ಲಾಕ್‌ಗಳು`)
-                  : (lang === "en" ? "Security Alert: AuditLog Tampering Detected" : "ಭದ್ರತಾ ಎಚ್ಚರಿಕೆ: ಆಡಿಟ್‌ಲಾಗ್ ತಿದ್ದುಪಡಿ ಪತ್ತೆಯಾಗಿದೆ")}
-                {ledgerVerified && Number(ledgerDetails?.unverifiable_rows || 0) > 0 && (
-                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-stone-800 text-stone-400 ml-2 normal-case tracking-normal">
-                    {lang === "en"
-                      ? `${ledgerDetails.unverifiable_rows} pre-dated, not verifiable`
-                      : `${ledgerDetails.unverifiable_rows} ಹಳೆಯದು, ಪರಿಶೀಲಿಸಲಾಗುವುದಿಲ್ಲ`}
-                  </span>
-                )}
-              </span>
-            }
-            isOpen={openSections.ledger}
-            onToggle={() => toggleSection("ledger")}
-          />
-          {openSections.ledger && ledgerVerified && (
-            <p className="text-[11px] text-stone-500 font-mono pt-1">
-              {lang === "en" ? "Continuous SHA-256 hash-chain verified from genesis block. Zero unauthorized database mutations." : "ಆರಂಭಿಕ ಬ್ಲಾಕ್‌ನಿಂದ SHA-256 ಹ್ಯಾಶ್ ಸರಪಳಿ ಪರಿಶೀಲಿಸಲಾಗಿದೆ. ಯಾವುದೇ ಅನಧಿಕೃತ ಬದಲಾವಣೆಗಳಿಲ್ಲ."}
-            </p>
-          )}
-          {openSections.ledger && !ledgerVerified && (
         <div
-          className="p-4 -m-1 mt-1 rounded-xl border space-y-4 bg-rose-950/30 border-rose-500/40 text-rose-300"
+          ref={(el) => { sectionRefs.current.ledger = el; }}
+          className={`p-5 rounded-2xl border space-y-4 animate-fade-in shadow-xl ${
+            ledgerVerified
+              ? "bg-emerald-950/20 border-emerald-500/30 text-emerald-300"
+              : "bg-rose-950/30 border-rose-500/40 text-rose-300"
+          }`}
         >
           {/* Header Row */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-stone-800/80 pb-3">
             <div className="flex items-center gap-3">
-              <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border bg-rose-500/15 border-rose-500/30 text-rose-400 animate-pulse">
-                <AlertOctagon className="w-5 h-5" />
+              <div className={`w-9 h-9 rounded-xl flex items-center justify-center shrink-0 border ${
+                ledgerVerified
+                  ? "bg-emerald-500/15 border-emerald-500/30 text-emerald-400"
+                  : "bg-rose-500/15 border-rose-500/30 text-rose-400 animate-pulse"
+              }`}>
+                {ledgerVerified ? <ShieldCheck className="w-5 h-5" /> : <AlertOctagon className="w-5 h-5" />}
               </div>
               <div>
                 <h3 className="text-xs font-black uppercase tracking-wider font-mono flex items-center gap-2">
                   <span>
-                    {lang === "en" ? "Security Alert: AuditLog Tampering Detected" : "ಭದ್ರತಾ ಎಚ್ಚರಿಕೆ: ಆಡಿಟ್‌ಲಾಗ್ ತಿದ್ದುಪಡಿ ಪತ್ತೆಯಾಗಿದೆ"}
+                    {ledgerVerified
+                      ? (lang === "en" ? "Cryptographic Ledger Verified: All Blocks Intact" : "ಕ್ರಿಪ್ಟೋಗ್ರಾಫಿಕ್ ಲೆಡ್ಜರ್ ಪರಿಶೀಲಿಸಲಾಗಿದೆ: ಎಲ್ಲಾ ಬ್ಲಾಕ್‌ಗಳು ಸುರಕ್ಷಿತ")
+                      : (lang === "en" ? "Security Alert: AuditLog Tampering Detected" : "ಭದ್ರತಾ ಎಚ್ಚರಿಕೆ: ಆಡಿಟ್‌ಲಾಗ್ ತಿದ್ದುಪಡಿ ಪತ್ತೆಯಾಗಿದೆ")}
                   </span>
-                  {ledgerDetails?.tamper_type && (
+                  {!ledgerVerified && ledgerDetails?.tamper_type && (
                     <span className="text-[9px] px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 border border-rose-500/30 font-mono font-bold">
                       {ledgerDetails.tamper_type === "chain_severed" ? "CHAIN DISCONTINUITY" : "SIGNATURE MISMATCH"}
                     </span>
                   )}
                 </h3>
                 <p className="text-[11px] text-stone-400 font-mono mt-0.5">
-                  {ledgerDetails?.reason || (lang === "en" ? "Hash mismatch detected in database audit records." : "ಡೇಟಾಬೇಸ್ ಆಡಿಟ್ ದಾಖಲೆಗಳಲ್ಲಿ ಹ್ಯಾಶ್ ಅಸಮಂಜಸತೆ ಪತ್ತೆಯಾಗಿದೆ.")}
+                  {ledgerVerified
+                    ? (lang === "en" ? "Continuous SHA-256 hash-chain verified from genesis block. Zero unauthorized database mutations." : "ಆರಂಭಿಕ ಬ್ಲಾಕ್‌ನಿಂದ SHA-256 ಹ್ಯಾಶ್ ಸರಪಳಿ ಪರಿಶೀಲಿಸಲಾಗಿದೆ. ಯಾವುದೇ ಅನಧಿಕೃತ ಬದಲಾವಣೆಗಳಿಲ್ಲ.")
+                    : (ledgerDetails?.reason || (lang === "en" ? "Hash mismatch detected in database audit records." : "ಡೇಟಾಬೇಸ್ ಆಡಿಟ್ ದಾಖಲೆಗಳಲ್ಲಿ ಹ್ಯಾಶ್ ಅಸಮಂಜಸತೆ ಪತ್ತೆಯಾಗಿದೆ."))
+                  }
                 </p>
               </div>
             </div>
+            {ledgerVerified && (
+              <div className="flex items-center gap-2 text-[10px] font-mono bg-emerald-500/10 border border-emerald-500/25 px-2.5 py-1 rounded-lg text-emerald-400 shrink-0">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>
+                  {ledgerDetails?.checked || 300} Blocks Validated
+                  {/* Real fix, confirmed against live data: rows with no
+                      hash data at all (pre-dating hash-chaining) used to
+                      falsely trip "TAMPERING DETECTED" -- backend now skips
+                      them and reports the count here instead. */}
+                  {Number(ledgerDetails?.unverifiable_rows || 0) > 0 &&
+                    (lang === "en"
+                      ? ` (${ledgerDetails.unverifiable_rows} pre-dated, not verifiable)`
+                      : ` (${ledgerDetails.unverifiable_rows} ಹಳೆಯದು, ಪರಿಶೀಲಿಸಲಾಗುವುದಿಲ್ಲ)`)}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Detailed Forensic Breakdown on Tampering */}
-          {ledgerDetails && (
+          {!ledgerVerified && ledgerDetails && (
             <div className="space-y-3 pt-1">
               {/* Root Cause & How It Occurred */}
               <div className="bg-stone-950/70 rounded-xl p-3.5 border border-rose-500/25 space-y-2">
@@ -1379,8 +1360,8 @@ export const SupervisorDashboardScreen: React.FC = () => {
                   <span>{lang === "en" ? "Forensic Root-Cause Analysis (How Tampering Occurred)" : "ವಿಧಿವಿಜ್ಞಾನ ಮೂಲ-ಕಾರಣ ವಿಶ್ಲೇಷಣೆ (ತಿದ್ದುಪಡಿ ಹೇಗೆ ಸಂಭವಿಸಿತು)"}</span>
                 </div>
                 <p className="text-xs text-stone-300 leading-relaxed">
-                  {ledgerDetails.explanation || (lang === "en" 
-                    ? "A database record was modified or deleted directly in the database without recalculating the cryptographic SHA-256 block signature." 
+                  {ledgerDetails.explanation || (lang === "en"
+                    ? "A database record was modified or deleted directly in the database without recalculating the cryptographic SHA-256 block signature."
                     : "ಕ್ರಿಪ್ಟೋಗ್ರಾಫಿಕ್ SHA-256 ಬ್ಲಾಕ್ ಸಹಿಯನ್ನು ಮರು-ಲೆಕ್ಕಿಸದೆ ಡೇಟಾಬೇಸ್‌ನಲ್ಲಿ ನೇರವಾಗಿ ಬದಲಾಯಿಸಲಾಗಿದೆ.")}
                 </p>
                 {ledgerDetails.remediation && (
@@ -1445,24 +1426,19 @@ export const SupervisorDashboardScreen: React.FC = () => {
             </div>
           )}
         </div>
-          )}
-        </div>
       )}
 
-      {/* Consistency Flags + Audit Ledger Explorer -- paired side-by-side,
-          each its own accordion (collapsed by default). */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
-      <div ref={(el) => { sectionRefs.current.flags = el; }} className="rounded-xl border border-stone-800 bg-stone-900/30 p-4 space-y-3">
+      {/* Consistency Flags + Audit Ledger Explorer -- paired side-by-side.
+          Uses glass-card like every other panel (symmetry, theme-aware). */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+      <div ref={(el) => { sectionRefs.current.flags = el; }} className="glass-card p-5 border border-stone-850 space-y-4">
         <SectionHeader
-          icon={<AlertTriangle className="w-4 h-4 text-amber-500" />}
+          icon={<AlertTriangle className="w-4 h-4 text-amber-500 animate-pulse" />}
           title={<span>{t.supervisorConsistencyFlagsTitle}</span>}
-          isOpen={openSections.flags}
-          onToggle={() => toggleSection("flags")}
           onRefresh={fetchFlags}
           isRefreshing={isLoadingFlags}
         />
-        {openSections.flags && (
-          <>
+        <>
           {isLoadingFlags ? (
             <div className="space-y-3">
               {[1, 2, 3].map((n) => (
@@ -1512,20 +1488,16 @@ export const SupervisorDashboardScreen: React.FC = () => {
             </div>
           )}
           </>
-        )}
       </div>
 
-      <div ref={(el) => { sectionRefs.current.auditExplorer = el; }} className="rounded-xl border border-stone-800 bg-stone-900/30 p-4 space-y-3">
+      <div ref={(el) => { sectionRefs.current.auditExplorer = el; }} className="glass-card p-5 border border-stone-850 space-y-4">
         <SectionHeader
           icon={<FileSpreadsheet className="w-4 h-4 text-[#C79A4E]" />}
           title={<span>{t.supervisorAuditLedgerTitle}</span>}
-          isOpen={openSections.auditExplorer}
-          onToggle={() => toggleSection("auditExplorer")}
           onRefresh={() => fetchAuditLogs()}
           isRefreshing={isLoadingAudit}
         />
-        {openSections.auditExplorer && (
-          <>
+        <>
           {/* Ledger Search: filter the audit trail to one officer's own
               activity by badge/KGID -- accepts "KSP-2", "2", or a full
               KGID, resolved server-side against the real Employee table. */}
@@ -1659,15 +1631,14 @@ export const SupervisorDashboardScreen: React.FC = () => {
             </div>
           )}
           </>
-        )}
       </div>
       </div>
 
       {/* Feedback Review Board + Officer Access Oversight -- paired
-          side-by-side, each its own accordion (collapsed by default). Fixes
-          Officer Access Oversight's dead-middle-gap problem at full width. */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
-      <div ref={(el) => { sectionRefs.current.feedback = el; }} className="rounded-xl border border-stone-800 bg-stone-900/30 p-4 space-y-3">
+          side-by-side. Fixes Officer Access Oversight's dead-middle-gap
+          problem at full width. Uses glass-card like every other panel. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+      <div ref={(el) => { sectionRefs.current.feedback = el; }} className="glass-card p-5 border border-stone-850 space-y-4">
         <SectionHeader
           icon={<MessageSquare className="w-4 h-4 text-[#C79A4E]" />}
           title={
@@ -1680,13 +1651,10 @@ export const SupervisorDashboardScreen: React.FC = () => {
               )}
             </span>
           }
-          isOpen={openSections.feedback}
-          onToggle={() => toggleSection("feedback")}
           onRefresh={fetchFeedback}
           isRefreshing={isLoadingFeedback}
         />
-        {openSections.feedback && (
-          <>
+        <>
         {isLoadingFeedback ? (
           <div className="space-y-3">
             {[1, 2, 3].map((n) => (
@@ -1749,10 +1717,9 @@ export const SupervisorDashboardScreen: React.FC = () => {
           </div>
         )}
           </>
-        )}
       </div>
 
-      <div ref={(el) => { sectionRefs.current.officers = el; }} className="rounded-xl border border-stone-800 bg-stone-900/30 p-4 space-y-3">
+      <div ref={(el) => { sectionRefs.current.officers = el; }} className="glass-card p-5 border border-stone-850 space-y-4">
         <SectionHeader
           icon={<Users className="w-4 h-4 text-[#C79A4E]" />}
           title={
@@ -1765,13 +1732,10 @@ export const SupervisorDashboardScreen: React.FC = () => {
               )}
             </span>
           }
-          isOpen={openSections.officers}
-          onToggle={() => toggleSection("officers")}
           onRefresh={fetchOfficers}
           isRefreshing={isLoadingOfficers}
         />
-        {openSections.officers && (
-          <>
+        <>
         {isLoadingOfficers ? (
           <div className="space-y-2.5">
             {[1, 2, 3, 4].map((n) => (
@@ -1830,7 +1794,6 @@ export const SupervisorDashboardScreen: React.FC = () => {
           </div>
         )}
           </>
-        )}
       </div>
       </div>
 
