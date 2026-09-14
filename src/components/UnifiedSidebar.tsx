@@ -2,12 +2,11 @@ import React, { useEffect, useRef, useState } from "react";
 import { useApp, ScreenId } from "../AppContext";
 import { API_BASE } from "../config";
 import {
-  MessageSquarePlus, FolderPlus, FolderKanban, Map, UserCheck, Search as SearchIcon, Loader2,
+  MessageSquarePlus, FolderKanban, Map, UserCheck, Search as SearchIcon, Loader2,
   ChevronLeft, ChevronRight, Shield, IdCard, Building2, X, LogOut,
   Settings as SettingsIcon, Search,
 } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
-import { NewInvestigationModal } from "./NewInvestigationModal";
 import { GroupedSessionList, SessionSummary, Investigation, SessionMetaEntry, GroupInfo } from "./GroupedSessionList";
 
 // §9.1 Unified Sidebar: merges MainLayout's icon-only nav rail and
@@ -58,7 +57,6 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
   const [meta, setMeta] = useState<Record<string, SessionMetaEntry>>({});
   const [groups, setGroups] = useState<GroupInfo[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [showNewInvestigation, setShowNewInvestigation] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const bumpRefresh = () => setRefreshKey((k) => k + 1);
 
@@ -192,13 +190,6 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
         >
           <MessageSquarePlus className="w-3.5 h-3.5 shrink-0" />
           {isExpanded && t.newChat}
-        </button>
-        <button
-          onClick={() => setShowNewInvestigation(true)}
-          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 text-xs font-bold uppercase tracking-wider cursor-pointer"
-        >
-          <FolderPlus className="w-3.5 h-3.5 shrink-0" />
-          {isExpanded && t.newInvestigation}
         </button>
         {navItems.map((item) => {
           const Icon = item.icon;
@@ -374,16 +365,6 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
         </button>
       </div>
 
-      {showNewInvestigation && (
-        <NewInvestigationModal
-          onClose={() => setShowNewInvestigation(false)}
-          onCreated={(sessionId) => {
-            setShowNewInvestigation(false);
-            bumpRefresh();
-            handleSelectSession(sessionId);
-          }}
-        />
-      )}
     </aside>
   );
 };
