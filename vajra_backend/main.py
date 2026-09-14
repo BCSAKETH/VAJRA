@@ -4000,7 +4000,7 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     # Component 2 (Section 9): Store attachment_analysis in ChatMessage data_json
     _att_analysis_to_store = payload.attachment_analysis
     if not _att_analysis_to_store and message.startswith("Attachment analysis:"):
-        _att_analysis_to_store = message.split("\n\n", 1)[0].replace("Attachment analysis:", "").strip()
+        _att_analysis_to_store = message.rsplit("\n\n", 1)[0].replace("Attachment analysis:", "").strip()
 
     if not _is_retry:
         _user_msg_data = {

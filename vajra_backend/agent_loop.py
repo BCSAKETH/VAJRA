@@ -2191,6 +2191,24 @@ class VajraAgentLoop(CognitiveBrainMixin):
         vehicle_no = vehicle_match.group(1).upper().replace(" ", "-") if vehicle_match else context.get("last_vehicle_no")
         phone_no = phone_match.group(0) if phone_match else context.get("last_phone_no")
 
+        # L38: Grounding follow-ups from prior media analysis
+        if not vehicle_no:
+            for m in reversed(context.get("messages", [])):
+                content = m.get("content", "")
+                if "[Attached Media Context:" in content or "video analysis" in content.lower():
+                    vm = re.search(r'\b([A-Z]{2}[ -]?[0-9]{1,2}[ -]?[A-Z]{1,3}[ -]?[0-9]{4})\b', content, re.IGNORECASE)
+                    if vm:
+                        vehicle_no = vm.group(1).upper().replace(" ", "-")
+                        break
+        if not phone_no:
+            for m in reversed(context.get("messages", [])):
+                content = m.get("content", "")
+                if "[Attached Media Context:" in content or "audio" in content.lower():
+                    pm = re.search(r'\b(?:\+91|0)?[6-9]\d{9}\b', content)
+                    if pm:
+                        phone_no = pm.group(0)
+                        break
+
         # Update cache context
         updated_ctx = {
             "last_case_id": case_id,
@@ -2699,10 +2717,14 @@ class VajraAgentLoop(CognitiveBrainMixin):
         _att_analysis, _att_present = "", False
         _att_history_note: Optional[str] = None
         if officer_query.lower().lstrip().startswith("attachment analysis:"):
-            _ap = officer_query.split("\n\n", 1)
-            _lead = _ap[0].strip()
-            _att_analysis = _lead.split(":", 1)[1].strip() if ":" in _lead else _lead
-            _asked = _ap[1].strip() if len(_ap) > 1 else ""
+            _blob = re.sub(r'(?i)^\s*attachment analysis:\s*', '', officer_query).strip()
+            if "\n\n" in _blob:
+                _ap = _blob.rsplit("\n\n", 1)
+                _att_analysis = _ap[0].strip()
+                _asked = _ap[1].strip()
+            else:
+                _att_analysis = _blob
+                _asked = ""
             # E.6 (D.4/loophole fix): the original 12-string EXACT match list
             # missed ordinary natural phrasings ("what is in this video?",
             # "what does this footage show?") -- those fell through to
@@ -2796,7 +2818,16 @@ class VajraAgentLoop(CognitiveBrainMixin):
             entities = self._resolve_entities(routing_query, session_id, exclude_name=officer_name)
 
         # Component 3 (Section 9): Single-Pass Direct Video / Media Forensic Answer Synthesis
-        if _att_present and _att_analysis and ("video analysis" in _att_analysis.lower() or "video attachment" in _att_analysis.lower() or any(v in routing_query.lower() for v in ["what is in", "what is this", "describe", "analyze video", "what happened", "video", "cctv", "footage", "clip"])):
+        _is_video_analysis = "video analysis" in _att_analysis.lower() or "video attachment" in _att_analysis.lower()
+        _is_investigative_query = any(k in routing_query.lower() for k in [
+            "search", "cctns", "check", "fir", "owner", "accused", "suspect", "plate",
+            "chargesheet", "arrest", "risk", "network", "dossier", "who is", "look up", "lookup"
+        ])
+        _is_generic_video_inquiry = (
+            not routing_query or
+            any(v in routing_query.lower() for v in ["what is in", "what is this", "describe", "analyze video", "what happened", "video", "cctv", "footage", "clip", "summarize"])
+        )
+        if _att_present and _att_analysis and _is_video_analysis and _is_generic_video_inquiry and not _is_investigative_query:
             direct_answer = (
                 f"# 🎥 FORENSIC VIDEO TIMELINE & SCENE ANALYSIS\n\n"
                 f"**Source Media:** Verified CCTV/Video Evidence [SEC-63-BSA]\n\n"

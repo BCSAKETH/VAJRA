@@ -1699,7 +1699,15 @@ export const AIChatScreen: React.FC = () => {
                 setExpandedWidget({ type: widgetType as any, data: widgetData });
                 if (widgetType === "network") openNetworkWidget(); else setNetworkNewSince(null);
               }}
-              onRetry={msg.retryText ? () => handleSend(msg.retryText!) : undefined}
+              onRetry={msg.retryText ? () => {
+                const fullIdx = chatMessages.findIndex((m) => m.id === msg.id);
+                const pairedUser = fullIdx > 0 ? [...chatMessages.slice(0, fullIdx)].reverse().find((m) => m.sender === "user") : undefined;
+                handleSend(msg.retryText!, [], {
+                  retryOfMsgId: msg.msgId || msg.id,
+                  existingAttachments: pairedUser?.attachments || [],
+                  cachedAttachmentAnalysis: (pairedUser as any)?.attachmentAnalysis || undefined,
+                });
+              } : undefined}
               onQuickReply={(text) => handleSend(text)}
               addToast={addToast}
               isLast={idx === displayMessages.length - 1}
