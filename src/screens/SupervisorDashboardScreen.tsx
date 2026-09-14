@@ -833,9 +833,23 @@ export const SupervisorDashboardScreen: React.FC = () => {
   };
 
   return (
-    <div className="h-full flex flex-col p-6 space-y-6 bg-stone-950/20 overflow-y-auto">
-      {/* Security watermark overlay */}
+    <div className="h-full flex flex-col relative overflow-hidden bg-stone-950/20">
+      {/* Security watermark overlay -- MUST sit in a non-scrolling,
+          viewport-bound host (this outer div), with the actual page content
+          in a SEPARATE inner scrolling child below, exactly like
+          AIChatScreen's own already-correct pattern. Root cause of the
+          reported bug: this screen used to put `overflow-y-auto` directly
+          on the SAME div the watermark lived in, with no `relative` at all
+          -- so the watermark's `absolute inset-0` escaped to a distant
+          positioned ancestor (MainLayout's <main>), which is pinned to the
+          viewport while this page's own content scrolled past underneath
+          it, reading as a stuck, misaligned background layer instead of a
+          faint pattern. Splitting the scroll region out fixes both: the
+          watermark now has its own correctly-scoped positioned ancestor,
+          and it stays visible for the whole page instead of scrolling away
+          after the first screenful. */}
       <WatermarkOverlay />
+      <div className="flex-1 min-h-0 overflow-y-auto p-6 space-y-6">
 
       {/* E.1: high-fidelity click-to-inspect review modal */}
       <SupervisorApprovalReviewModal
@@ -1798,6 +1812,11 @@ export const SupervisorDashboardScreen: React.FC = () => {
       </div>
 
       {/* Two Person Integrity Credential Check */}
+      </div>
+      {/* Fixed-position modal, deliberately OUTSIDE the scrollable inner div
+          above -- `position: fixed` already covers the full viewport
+          regardless of nesting, but keeping it as a sibling here (not a
+          descendant of the scroll region) is the cleaner structure. */}
       <TwoPersonApprovalModal
         actionName={`Resolve Consistency Flag (ID: ${selectedFlagId})`}
         isOpen={isApprovalOpen}

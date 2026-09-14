@@ -101,7 +101,7 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
     setIsSearching(true);
     searchDebounceRef.current = setTimeout(async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/investigations/search?q=${encodeURIComponent(term)}`, { headers: authHeaders() });
+        const res = await fetch(`${API_BASE}/api/sessions/search?q=${encodeURIComponent(term)}`, { headers: authHeaders() });
         setSearchResults(res.ok ? await res.json() : []);
       } catch {
         setSearchResults([]);
@@ -210,7 +210,10 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
         })}
       </div>
 
-      {/* §9.9 cross-investigation search */}
+      {/* §9.9 search -- now covers every chat AND investigation the officer
+          can see (bug fixed: this used to search investigations only, even
+          though this sidebar shows chats only -- a query could never match
+          anything visible here). */}
       {isExpanded && (
         <div className="p-2.5 border-b border-stone-850 relative">
           <div className="relative">
@@ -219,7 +222,7 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder={lang === "en" ? "Search Investigations..." : "ತನಿಖೆಗಳನ್ನು ಹುಡುಕಿ..."}
+              placeholder={lang === "en" ? "Search chats..." : "ಚಾಟ್‌ಗಳನ್ನು ಹುಡುಕಿ..."}
               className="w-full bg-stone-950/60 border border-stone-800 focus:border-[#C79A4E]/50 rounded-lg py-1.5 pl-8 pr-7 text-[11px] text-stone-200 focus:outline-none transition-all"
             />
             {isSearching && <Loader2 className="w-3 h-3 animate-spin text-stone-600 absolute right-2.5 top-1/2 -translate-y-1/2" />}

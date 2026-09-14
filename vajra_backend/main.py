@@ -3068,9 +3068,30 @@ async def get_session_messages(session_id: str, request: Request, location_conte
     try:
         # Omit ZCQL ORDER BY to prevent 23s unindexed full table sort.
         # Python memory sorting takes < 0.1ms.
-        res = catalyst_app.zql().execute_query(
-            f"SELECT sender, sender_employee_id, text, response_type, data_json, citations_json, sent_at FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 300"
+        query = (
+            f"SELECT sender, sender_employee_id, text, response_type, data_json, citations_json, sent_at "
+            f"FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 300"
         )
+        res = catalyst_app.zql().execute_query(query)
+        # "Investigation chats going missing" bug, confirmed live and now
+        # hardened, not just papered over by the in-memory cache below: ZCQL
+        # can under-read this exact query (fewer rows than genuinely exist),
+        # and the ONLY thing protecting against it before this fix was
+        # `_SESSION_MESSAGES_CACHE` -- which is wiped on every backend
+        # restart/redeploy. The first request for a session right after a
+        # redeploy had NO larger cached read to fall back on, so a single
+        # unlucky under-read became the officer's permanent view of that
+        # investigation's history until enough traffic happened to correct
+        # it. Message count for a given session can only ever be flat or
+        # grow (this endpoint never deletes rows), so re-querying a couple
+        # more times immediately and keeping whichever read returned the
+        # MOST rows is a safe, cheap way to survive a flaky read even with a
+        # stone-cold cache.
+        if len(res) < 300:  # already at the query's own cap, nothing more to gain
+            await asyncio.sleep(0.15)  # brief gap gives a flaky read a chance to clear
+            retry_res = catalyst_app.zql().execute_query(query)
+            if len(retry_res) > len(res):
+                res = retry_res
         res.sort(key=lambda r: r.get("ChatMessage", {}).get("sent_at") or "")
 
         messages = []
@@ -4650,7 +4671,16 @@ def _is_investigation_session(session_id: str) -> bool:
 
 # §9.6 Case Diary -- a FIXED whitelist of loggable event types (Loophole L1):
 # casual chat must never leak into the diary, only real investigative events.
-_DIARY_ALLOWED_EVENTS = {"tool_call", "task_completed", "member_added", "case_linked", "export_generated"}
+_DIARY_ALLOWED_EVENTS = {
+    "tool_call", "task_completed", "member_added", "case_linked", "export_generated",
+    # New: an investigative note the officer explicitly dictated to the AI
+    # assistant ("update the case diary with...") and asked it to record --
+    # distinct from "tool_call" (an automatic log of a query being run) and
+    # never auto-derived from ordinary chat text (Loophole L2 stays intact:
+    # this only fires when the officer explicitly asks, via the
+    # add_case_diary_entry tool -- see agent_loop.py).
+    "officer_note",
+}
 
 
 def _log_diary_entry(session_id: str, event_type: str, summary: str, employee_id: Optional[int]) -> None:
@@ -5181,30 +5211,49 @@ async def list_investigation_cases(session_id: str, request: Request, location_c
         return []
 
 
-# ---- §9.9 Search across all investigations ---------------------------------
+# ---- §9.9 Search across all sessions (chats + investigations) --------------
 
-@app.get("/api/investigations/search")
-async def search_investigations(q: str, request: Request, location_context: str = Depends(security_firewall)):
+@app.get("/api/sessions/search")
+async def search_sessions(q: str, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Backs the sidebar's own search box. Real bug fixed here (confirmed live
+    via screenshot: typing "where" returned "No matches" against a sidebar
+    that visibly lists chats): this used to be `/api/investigations/search`,
+    querying ONLY investigations -- but the sidebar it serves shows chats
+    ONLY (Investigations moved to their own dedicated page earlier this
+    session). A search box could never find anything in the very list it was
+    searching. Now covers BOTH regular chats (list_sessions' scope) AND
+    investigations (list_investigations' scope) -- reusing both existing,
+    already-RLS-safe (owned + Cowork participant) results rather than a
+    third, narrower re-implementation, so this can never drift out of sync
+    with what the officer can actually see listed anywhere. Also now matches
+    the session's own TITLE, not just message body text -- a chat named
+    "Where is suspect X" with no message yet containing "where" used to be
+    invisible to its own title search.
+    """
     term = q.strip()
     if len(term) < 2:
         return []
     if not catalyst_app:
         return []
     safe = escape_zcql_literal(term)
-    # Loophole L1: bounded to the officer's OWN investigations only (never a
-    # cross-officer search) -- but "own" means the exact same scope
-    # list_investigations already uses (owned + Cowork participant), not just
-    # ownership. Bug fixed here: this used to query ChatSession directly with
-    # only an `employee_id = X` filter, silently missing every investigation
-    # the officer can see and open from the very same sidebar list because
-    # they're a Cowork participant rather than the owner. Reusing
-    # list_investigations' own result (not a second, narrower re-implementation)
-    # guarantees this search can never drift out of sync with what the officer
-    # can actually see listed.
-    investigations = await list_investigations(request, location_context)
+    chats, investigations = await asyncio.gather(
+        list_sessions(request, location_context),
+        list_investigations(request, location_context),
+    )
     results = []
-    for inv in investigations:
-        sid = inv["session_id"]
+    seen_ids = set()
+    for item in [*chats, *investigations]:
+        sid = item["session_id"]
+        if sid in seen_ids:
+            continue
+        seen_ids.add(sid)
+        title = item.get("title") or ""
+        if term.lower() in title.lower():
+            results.append({"session_id": sid, "title": title, "snippet": title[:120]})
+            if len(results) >= 20:
+                break
+            continue
         hits = catalyst_app.zql().execute_query(
             f"SELECT text FROM ChatMessage WHERE session_id = '{escape_zcql_literal(sid)}' AND text LIKE '*{safe}*' LIMIT 1"
         )
@@ -5212,7 +5261,7 @@ async def search_investigations(q: str, request: Request, location_context: str 
             snippet = hits[0].get("ChatMessage", {}).get("text", "")
             # Loophole L2: same redaction any other officer-facing text goes through.
             safe_snippet = redact_pocso_name(snippet) if is_pocso_sensitive(snippet) else snippet
-            results.append({"session_id": sid, "title": inv["title"], "snippet": safe_snippet[:120]})
+            results.append({"session_id": sid, "title": title, "snippet": safe_snippet[:120]})
         if len(results) >= 20:
             break
     return results

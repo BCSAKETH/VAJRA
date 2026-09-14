@@ -408,6 +408,32 @@ class VajraAgentLoop(CognitiveBrainMixin):
             }
         },
         {
+            "name": "add_case_diary_entry",
+            "description": "Actually WRITE a note into this Investigation's Case Diary -- use this whenever the officer asks you to 'update the case diary', 'log this in the diary', 'add a diary entry', or similar, instead of just describing what they should type themselves. Only works inside an active Investigation (a case-linked conversation), never a plain quick chat -- if this isn't one, say so instead of calling this tool. One entry per call; call it once per distinct note if the officer wants several.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {"type": "string", "description": "The investigative note to record, in the officer's own voice (what happened / what was found / what was done) -- concise, factual, evidentiary in tone. Max ~500 characters."}
+                },
+                "required": ["summary"]
+            }
+        },
+        {
+            "name": "add_investigation_task",
+            "description": "Actually CREATE one or more Guided Tasks on this Investigation -- use this whenever the officer asks you to 'add tasks', 'add this to my task list', 'create a task for X', or gives you an investigative plan and asks you to add it as tasks, instead of just describing the tasks in text. Only works inside an active Investigation. Pass every distinct task as its own string in `tasks`, phrased as a short actionable instruction (e.g. 'Collect CCTV footage from Nayar Ganj area'), not a paragraph.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "One or more short, actionable task descriptions to add to the Guided Task list."
+                    }
+                },
+                "required": ["tasks"]
+            }
+        },
+        {
             "name": "get_case_timeline",
             "description": "Retrieve chronological case milestones (Occurrence, FIR registration, Arrest, Chargesheet) by Case Number.",
             "parameters": {
@@ -1789,6 +1815,12 @@ class VajraAgentLoop(CognitiveBrainMixin):
     _TOOL_HINTS = {
         "get_my_profile": ["my name", "my profile", "my details", "who am i", "my rank",
                            "my station", "my posting", "my assignment", "my designation", "am i posted"],
+        "add_case_diary_entry": ["case diary", "update the diary", "update case diary", "log this in the diary",
+                                  "add a diary entry", "add to the diary", "diary entry", "log in the diary",
+                                  "note this in the diary", "record this in the diary"],
+        "add_investigation_task": ["add the tasks", "add tasks", "add a task", "create a task", "create tasks",
+                                    "add this to my task", "add to task list", "guided task", "guided tasks",
+                                    "add these as tasks", "make these tasks", "add task"],
         "list_cases_sharing_id": ["internal id", "internal ID", "shared id", "shared ID", "share this id",
                                  "share this ID", "same internal id", "same case id", "linked by internal",
                                  "cases linked to this internal", "shares the internal", "casemasterid"],
@@ -5912,6 +5944,68 @@ class VajraAgentLoop(CognitiveBrainMixin):
                               "details": "The request was ambiguous or missing information needed to answer well -- asked instead of guessing."})
             final_answer = True
 
+        # 13b. add_case_diary_entry -- real WRITE action, not a lookup.
+        # Confirmed live gap this closes: an officer asking the AI to
+        # "update the case diary" got a copy-paste-it-yourself text answer
+        # because no such tool existed anywhere in the registry.
+        elif tool_name == "add_case_diary_entry":
+            from main import _is_investigation_session, _log_diary_entry
+            response_type = "text"
+            final_answer = True
+            summary = str(params.get("summary") or "").strip()
+            if not session_id or not _is_investigation_session(session_id):
+                text_result = "This isn't an active Investigation, so there's no Case Diary to write into here -- open or start an Investigation first."
+                citations.append({"type": "Case Diary", "id": "not_an_investigation",
+                                  "details": "Case Diary entries only apply to Investigations, not plain chats."})
+            elif not summary:
+                text_result = "I didn't have anything concrete to log -- tell me what to record and I'll add it to the Case Diary."
+                citations.append({"type": "Case Diary", "id": "empty_summary", "details": "No summary text was provided."})
+            else:
+                _log_diary_entry(session_id, "officer_note", summary, employee_id)
+                text_result = f"Added to the Case Diary: “{summary}”"
+                data = {"summary": summary, "logged": True}
+                citations.append({"type": "Case Diary", "id": session_id[-8:],
+                                  "details": "Written directly to this Investigation's Case Diary."})
+
+        # 13c. add_investigation_task -- real WRITE action, not a lookup.
+        elif tool_name == "add_investigation_task":
+            from main import _is_investigation_session
+            from vajra_core import zcql_insert_row
+            response_type = "text"
+            final_answer = True
+            raw_tasks = params.get("tasks")
+            if isinstance(raw_tasks, str):
+                raw_tasks = [raw_tasks]
+            task_list = [str(t).strip()[:300] for t in (raw_tasks or []) if str(t).strip()]
+            if not session_id or not _is_investigation_session(session_id):
+                text_result = "This isn't an active Investigation, so there's no Guided Task list to add to here -- open or start an Investigation first."
+                citations.append({"type": "Guided Tasks", "id": "not_an_investigation",
+                                  "details": "Guided Tasks only apply to Investigations, not plain chats."})
+            elif not task_list:
+                text_result = "I didn't have any concrete tasks to add -- tell me what to add and I'll create them."
+                citations.append({"type": "Guided Tasks", "id": "empty_tasks", "details": "No task text was provided."})
+            elif not catalyst_app:
+                text_result = "The database is offline right now, so I couldn't add these tasks -- try again in a moment."
+            else:
+                added = 0
+                for desc in task_list:
+                    try:
+                        zcql_insert_row("InvestigationTask", {
+                            "session_id": session_id, "description": desc, "status": "pending",
+                            "created_at": datetime.utcnow().isoformat(),
+                        })
+                        added += 1
+                    except Exception as ex:
+                        logger.warning(f"add_investigation_task: one task failed to insert (non-fatal): {ex}")
+                if added:
+                    bullet_list = "\n".join(f"- {t}" for t in task_list[:added])
+                    text_result = f"Added {added} task{'s' if added != 1 else ''} to the Guided Task list:\n{bullet_list}"
+                    data = {"tasks_added": task_list[:added], "count": added}
+                    citations.append({"type": "Guided Tasks", "id": session_id[-8:],
+                                      "details": f"{added} task(s) written directly to this Investigation's Guided Task list."})
+                else:
+                    text_result = "I tried to add those tasks but the write failed -- Guided Tasks may not be configured on the server yet."
+
         # 14. get_case_timeline
         elif tool_name == "get_case_timeline":
             case_no = params.get("case_no", "")
@@ -8194,7 +8288,11 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # calls never write a diary entry.
         try:
             from main import _is_investigation_session, _log_diary_entry
-            if _is_investigation_session(session_id):
+            # add_case_diary_entry already writes its OWN, more accurately
+            # typed "officer_note" entry above -- also logging it here as a
+            # generic "tool_call" would duplicate the exact same text as two
+            # separate diary rows.
+            if tool_name != "add_case_diary_entry" and _is_investigation_session(session_id):
                 _tool_summary = (text_result or "").strip().replace("\n", " ")[:200] or "(no summary text)"
                 _log_diary_entry(session_id, "tool_call", f"Ran {tool_name}: {_tool_summary}", employee_id)
         except Exception as _diary_ex:

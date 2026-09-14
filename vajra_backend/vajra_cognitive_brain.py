@@ -289,6 +289,17 @@ class CognitiveBrainMixin:
         {"name": "get_my_profile", "does": "the requesting officer's OWN identity/assignment (rank, unit, district) -- not a suspect lookup", "params": {}},
         {"name": "case_outcome_analytics", "does": "real state-wide case-outcome statistics: chargesheet rate and arrest rate as a percentage of total cases on record", "params": {}},
         {"name": "recommend_sections", "does": "recommend applicable legal sections for an EXISTING case by number, with real precedent FIRs that carried the same sections (use suggest_sections instead for a free-text crime description with no case number yet)", "params": {"case_no": "the existing case number, if recommending for a specific case", "description": "free-text crime description, if no case number exists yet"}},
+        # Real WRITE actions (not read-only lookups) -- only meaningful inside
+        # an active Investigation. Confirmed live gap: an officer asking "tell
+        # me what to do AND add the tasks AND update the case diary" got a
+        # copy-paste-it-yourself text answer, because neither of these
+        # existed anywhere the planner could see. Now planned as ordinary
+        # steps alongside the read-only ones above -- e.g. step 1 works out
+        # the investigative plan (find_similar_cases/suggest_sections/etc.),
+        # step 2 calls add_investigation_task with that plan's action items,
+        # step 3 calls add_case_diary_entry with a one-line summary.
+        {"name": "add_case_diary_entry", "does": "WRITE one note into the current Investigation's Case Diary (not a read/lookup) -- use when the officer asks to update/log the case diary", "params": {"summary": "required -- the investigative note to record, concise and factual"}},
+        {"name": "add_investigation_task", "does": "WRITE one or more Guided Tasks onto the current Investigation's task list (not a read/lookup) -- use when the officer asks to add tasks / add this as tasks", "params": {"tasks": "required -- a list of short, actionable task strings"}},
     ]
 
     # Multi-step cues + analytical keywords used by the AUTO-ROUTER to decide when
@@ -307,6 +318,17 @@ class CognitiveBrainMixin:
         # of which specific analytical keywords appear around it.
         "and what", "and which", "and who", "and how many", "and where", "and when",
         "as well", "in addition", "also tell me", "also check", "also show",
+        # Confirmed live miss: "tell me what to do to solve this case and add
+        # the tasks and update the case diary" hit zero cues above and only
+        # 1 keyword hit ("case") -- _is_complex_query returned False, the
+        # Brain never ran, and the officer got a text-only answer with no
+        # tool call at all ("I can't push that to the system for you") even
+        # though add_case_diary_entry/add_investigation_task genuinely exist
+        # and could have written it for them. These are a strong signal that
+        # a WRITE action is bundled alongside a substantive question.
+        "add the task", "add tasks", "add a task", "create a task", "create tasks",
+        "update the diary", "update the case diary", "update case diary",
+        "add to the diary", "add a diary entry", "log this in the diary",
     )
     _CAP_KEYWORDS = (
         "hotspot", "trend", "network", "risk", "modus", "financial", "money", "offender",
