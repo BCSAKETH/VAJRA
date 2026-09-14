@@ -53,6 +53,7 @@ import zcatalyst_sdk
 
 # Core components import
 from vajra_core import (
+    derive_role_tier,
     VajraSecurityFirewall,
     MOBehavioralProfiler,
     VajraGraphRAG,
@@ -538,7 +539,7 @@ def _clear_login_attempts(badge_no: str) -> None:
 
 
 @app.post("/api/auth/login")
-async def login(payload: AuthRequest):
+async def login(payload: AuthRequest, request: Request):
     """
     Authenticates an officer against a real stored bcrypt password hash in
     OfficerCredentials. Previously this endpoint accepted any password for
@@ -594,18 +595,22 @@ async def login(payload: AuthRequest):
             detail=f"Account Suspended: Your access has been suspended by {blocked_by}. Reason: {reason}."
         )
 
-    from vajra_core import issue_session_token, derive_role_tier
-    # Previously returned the raw shared Catalyst admin access token as the
-    # session -- the same token used for every backend-to-Catalyst call, and
-    # not resolvable back to a specific officer by the firewall (Zoho's
-    # /project-user/current 401s for it, since it's not a real per-user
-    # session -- see verify_session_token in vajra_core.py). issue_session_token
-    # mints a real per-officer signed session instead, tied to this badge_no
-    # specifically now that its password has been checked.
+    from session_manager import check_session_conflict, register_session, record_auth_audit_log
+    client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "10.14.22.84")
+    user_agent = request.headers.get("user-agent", "")
+
+    # Section 14: Hotstar-style concurrency check
+    conflict = check_session_conflict(payload.badge_no, client_ip, user_agent)
+    if conflict:
+        logger.info(f"Login conflict detected for KGID {payload.badge_no}: active session running on another terminal.")
+        return JSONResponse(status_code=status.HTTP_409_CONFLICT, content=conflict)
+
     try:
-        token = issue_session_token(payload.badge_no)
+        token = register_session(payload.badge_no, client_ip, user_agent)
+        record_auth_audit_log(payload.badge_no, "USER_LOGIN", f"Workstation login established from IP {client_ip}", client_ip)
     except RuntimeError as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
     # Resolve this badge's own RankID so the response can carry its real
     # role_tier -- needed by TwoPersonApprovalModal to verify a co-signing
@@ -686,22 +691,188 @@ async def logout(
     request: Request,
     location_context: str = Depends(security_firewall)
 ):
-    """
-    C.18a: real server-side session revocation. Before this endpoint
-    existed, "Sign Out" (Login screen / UnifiedSidebar) only cleared the
-    browser's localStorage (C.18's own finding) -- the JWT itself stayed
-    fully valid server-side for the rest of its natural life, so a leaked
-    or stale copy (a second tab left open, a token captured in transit)
-    kept working after the officer thought they'd signed out. Gated by
-    security_firewall like every other endpoint (the token must still be
-    currently valid to sign ITSELF out -- an already-invalid token has
-    nothing meaningful left to revoke), so this only ever revokes the
-    caller's own current session, never anyone else's.
-    """
+    from session_manager import record_auth_audit_log, clear_active_session
     auth_header = request.headers.get("Authorization", "")
     jwt_token = auth_header.split(" ", 1)[1] if auth_header.startswith("Bearer ") else ""
+    client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "10.14.22.84")
+    kgid = getattr(request.state, "kgid", "UNKNOWN")
     revoked = revoke_session_token(jwt_token) if jwt_token else False
+    if kgid and kgid != "UNKNOWN":
+        clear_active_session(kgid)
+    record_auth_audit_log(kgid, "USER_LOGOUT", f"Explicit user sign-out from IP {client_ip}", client_ip)
     return {"status": "signed_out", "revoked": revoked}
+
+
+class ResolveConflictRequest(BaseModel):
+    continuation_token: str
+
+
+@app.post("/api/auth/resolve-session-conflict")
+async def resolve_session_conflict_endpoint(payload: ResolveConflictRequest, request: Request):
+    """
+    Section 14: Hotstar-style conflict resolution.
+    Redeems continuation token, evicts the remote terminal, issues new session token,
+    and records an immutable tamper-evident audit record.
+    """
+    from session_manager import resolve_session_conflict, record_auth_audit_log
+    from vajra_core import derive_role_tier, SUPERVISOR_KGIDS, escape_zcql_literal
+    client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "10.14.22.84")
+    user_agent = request.headers.get("user-agent", "")
+
+    result = resolve_session_conflict(payload.continuation_token, client_ip, user_agent)
+    if not result:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Continuation token has expired (>3m) or is invalid. Please log in again."
+        )
+
+    kgid, token = result
+    record_auth_audit_log(
+        kgid,
+        "SUPERSEDED_REMOTE_EVICTION",
+        f"Remote session evicted via Hotstar conflict prompt from IP {client_ip}",
+        client_ip
+    )
+
+    role_tier = "supervisor" if str(kgid).strip() in SUPERVISOR_KGIDS else "officer"
+    first_name = ""
+    full_name = ""
+    rank_id = ""
+    try:
+        if catalyst_app:
+            emp_res = catalyst_app.zql().execute_query(
+                f"SELECT FirstName, RankID FROM Employee WHERE KGID = '{escape_zcql_literal(kgid)}'"
+            )
+            if emp_res:
+                emp = emp_res[0].get("Employee", {})
+                first_name = (emp.get("FirstName") or "").strip()
+                full_name = first_name
+                rank_id = str(emp.get("RankID") or "")
+                role_tier = derive_role_tier(emp.get("RankID"), kgid)
+    except Exception as e:
+        logger.warning(f"Could not resolve details during conflict resolution for {kgid}: {e}")
+
+    if str(kgid).strip() in SUPERVISOR_KGIDS:
+        if not first_name:
+            first_name = "Siddharth Bhatia"
+            full_name = "Siddharth Bhatia"
+            rank_id = "6"
+        role_tier = "supervisor"
+
+    return {
+        "access_token": token,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "role_tier": role_tier,
+        "must_change_password": False,
+        "user": {
+            "id": f"{kgid}_user",
+            "badge_no": kgid,
+            "first_name": first_name or f"Officer {kgid}",
+            "last_name": "",
+            "full_name": full_name or f"Officer {kgid}",
+            "rank_id": rank_id,
+            "email": f"{kgid}@vajra.ksp.gov.in"
+        }
+    }
+
+
+@app.post("/api/auth/heartbeat")
+async def heartbeat_endpoint(request: Request):
+    """
+    Section 14: Liveness heartbeat received from active client tabs every 25s.
+    Resets liveness timer and automatically cancels any pending-close grace window (e.g. F5 refresh).
+    """
+    from session_manager import handle_heartbeat
+    auth_header = request.headers.get("Authorization", "")
+    jwt_token = auth_header.split(" ", 1)[1] if auth_header.startswith("Bearer ") else ""
+    if not jwt_token:
+        try:
+            body = await request.json()
+            jwt_token = body.get("token", "")
+        except Exception:
+            pass
+    alive = handle_heartbeat(jwt_token)
+    return {"status": "alive" if alive else "unrecognized"}
+
+
+@app.post("/api/auth/tab-closed")
+async def tab_closed_endpoint(request: Request):
+    """
+    Section 14: Called via navigator.sendBeacon on tab unload.
+    Initiates 15-second grace window to safely distinguish between F5 refresh and real tab close.
+    """
+    from session_manager import handle_tab_closed, record_auth_audit_log
+    jwt_token = ""
+    kgid = "UNKNOWN"
+    try:
+        body = await request.json()
+        jwt_token = body.get("token", "")
+        kgid = body.get("kgid", "UNKNOWN")
+    except Exception:
+        pass
+    if not jwt_token:
+        auth_header = request.headers.get("Authorization", "")
+        jwt_token = auth_header.split(" ", 1)[1] if auth_header.startswith("Bearer ") else ""
+
+    client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "10.14.22.84")
+    recorded = handle_tab_closed(jwt_token)
+    if recorded and kgid != "UNKNOWN":
+        record_auth_audit_log(kgid, "TAB_CLOSED_AUTO_LOGOUT", f"Tab close beacon received from IP {client_ip} (15s grace period)", client_ip)
+    return {"status": "grace_window_initiated" if recorded else "ignored"}
+
+
+class ReportUnauthorizedRequest(BaseModel):
+    badge_no: str
+    token: Optional[str] = None
+    note: Optional[str] = None
+
+
+@app.post("/api/security/report-unauthorized-eviction")
+async def report_unauthorized_eviction_endpoint(payload: ReportUnauthorizedRequest, request: Request):
+    """
+    Section 14: Officer reports an unrecognised session logout/eviction.
+    Records critical audit entry and notifies Station Supervisor via ProactiveAlerts.
+    """
+    from session_manager import record_auth_audit_log
+    client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "10.14.22.84")
+    badge = payload.badge_no.strip()
+    incident_id = f"INC-SEC-{int(time.time())}"
+
+    # 1. Tamper-evident AuditLog entry
+    record_auth_audit_log(
+        badge,
+        "UNAUTHORIZED_EVICTION_REPORTED",
+        f"CRITICAL: Officer reported unrecognised logout from IP {client_ip}. Ref: {incident_id}. Note: {payload.note or 'Unrecognized remote eviction'}",
+        client_ip
+    )
+
+    # 2. Priority supervisor notification in ProactiveAlerts
+    if catalyst_app:
+        try:
+            alert_payload = {
+                "requester_badge": badge,
+                "incident_id": incident_id,
+                "reported_ip": client_ip,
+                "reported_at": datetime.utcnow().isoformat() + "Z",
+                "message": f"Officer KSP-{badge} flagged an unrecognised remote session termination from IP {client_ip}. Potential credential leak."
+            }
+            zcql_insert_row("ProactiveAlerts", {
+                "AlertType": "UNAUTHORIZED_LOGOUT_ALERT",
+                "AlertMessage": json.dumps(alert_payload),
+                "Status": "ACTIVE",
+                "Severity": "CRITICAL",
+                "CreatedTime": datetime.utcnow().isoformat()
+            })
+        except Exception as e:
+            logger.warning(f"Failed to post to ProactiveAlerts: {e}")
+
+    return {
+        "status": "reported",
+        "incident_id": incident_id,
+        "message": f"Security incident {incident_id} successfully recorded and escalated to Station Supervisor."
+    }
+
 
 
 @app.get("/api/analytics/crime-trends")

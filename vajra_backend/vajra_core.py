@@ -677,6 +677,13 @@ def verify_session_token(token: str) -> Optional[str]:
             if current is not None and jti != current:
                 logger.info(f"Session token for KGID '{kgid}' rejected -- superseded by a newer login on another device.")
                 return None
+            try:
+                from session_manager import is_session_alive
+                if not is_session_alive(kgid, jti):
+                    logger.info(f"Session token for KGID '{kgid}' rejected -- tab closed (>15s) or heartbeat expired.")
+                    return None
+            except Exception:
+                pass
         return kgid
     except pyjwt.PyJWTError as e:
         logger.warning(f"Session token verification failed: {e}")
@@ -1192,10 +1199,22 @@ class VajraSecurityFirewall:
                         detail="This session has been signed out. Please sign in again."
                     )
                 if is_session_superseded(jwt_token):
+                    from session_manager import get_session_eviction_notice
+                    notice = get_session_eviction_notice(jwt_token) or {}
+                    remote_dev = notice.get("remote_device") or {
+                        "device_name": "Another Workstation / Terminal",
+                        "ip_address": "KSP Intranet",
+                        "timestamp": datetime.utcnow().isoformat() + "Z"
+                    }
                     raise HTTPException(
                         status_code=status.HTTP_401_UNAUTHORIZED,
-                        detail="This session has been signed out because your account was logged in on another device or browser."
+                        detail={
+                            "message": "This session has been signed out because your account was logged in on another device or browser.",
+                            "reason": "SESSION_SUPERSEDED",
+                            "remote_device": remote_dev
+                        }
                     )
+
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Security Access Violation: Session authentication failed."

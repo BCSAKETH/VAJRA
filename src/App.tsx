@@ -7,6 +7,7 @@ import { SessionTimeoutGuard } from "./components/SessionTimeoutGuard";
 import { FocusLossCurtain } from "./components/FocusLossCurtain";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ChangePasswordModal } from "./components/ChangePasswordModal";
+import { RemoteEvictionModal } from "./components/RemoteEvictionModal";
 
 // Code-split every screen except Login/AIChat (the two every officer hits on
 // every session) so the initial bundle doesn't pay upfront for chunks a
@@ -43,7 +44,31 @@ const ScreenLoadingFallback: React.FC = () => (
 );
 
 const AppContent: React.FC = () => {
-  const { currentScreen, isAuthenticated, roleTier, lang, mustChangePassword, setMustChangePassword } = useApp();
+  const {
+    currentScreen,
+    isAuthenticated,
+    roleTier,
+    lang,
+    mustChangePassword,
+    setMustChangePassword,
+    evictionNotice,
+    setEvictionNotice,
+    setIsAuthenticated,
+  } = useApp();
+
+  const handleAcknowledgeEviction = () => {
+    setEvictionNotice(null);
+    setIsAuthenticated(false);
+  };
+
+  if (evictionNotice) {
+    return (
+      <RemoteEvictionModal
+        evictionData={evictionNotice}
+        onAcknowledge={handleAcknowledgeEviction}
+      />
+    );
+  }
 
   if (!isAuthenticated || currentScreen === "login") {
     return <LoginScreen />;

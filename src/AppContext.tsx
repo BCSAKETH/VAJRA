@@ -141,6 +141,16 @@ interface AppContextType {
   isGlobalLoading: boolean;
   globalLoadingMessage: string;
   setGlobalLoading: (isLoading: boolean, message?: string) => void;
+  evictionNotice: {
+    message?: string;
+    reason?: string;
+    remote_device?: {
+      device_name?: string;
+      ip_address?: string;
+      timestamp?: string;
+    };
+  } | null;
+  setEvictionNotice: (notice: any) => void;
   // §9.1 Unified Sidebar bridge: the sidebar now lives in MainLayout (a
   // sibling of AIChatScreen, never remounted on screen change), while the
   // actual send/poll/branching pipeline stays owned by AIChatScreen itself
@@ -232,6 +242,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
 
   const [isDbConnected, setIsDbConnected] = useState<boolean>(true);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  
+  // Section 14: Eviction notice state for remote terminal termination
+  const [evictionNotice, setEvictionNotice] = useState<{
+    message?: string;
+    reason?: string;
+    remote_device?: {
+      device_name?: string;
+      ip_address?: string;
+      timestamp?: string;
+    };
+  } | null>(null);
   
   const [notifications, setNotifications] = useState<ToastMessage[]>(() => {
     const saved = localStorage.getItem("vajra_notifications");
@@ -539,7 +560,24 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
       const response = await originalFetch(...args);
       if (response.status === 401) {
         const url = typeof args[0] === "string" ? args[0] : (args[0] as Request)?.url || "";
-        if (url.includes("/api/") && !url.includes("/api/auth/login")) {
+        if (url.includes("/api/") && !url.includes("/api/auth/login") && !url.includes("/api/auth/resolve-session-conflict")) {
+          try {
+            const clone = response.clone();
+            const errData = await clone.json().catch(() => null);
+            const detailObj = errData?.detail;
+            const reason = typeof detailObj === "object" ? detailObj?.reason : errData?.reason;
+            const msg = typeof detailObj === "object" ? detailObj?.message : (typeof detailObj === "string" ? detailObj : "");
+
+            if (reason === "SESSION_SUPERSEDED" || (msg && (msg.toLowerCase().includes("another device") || msg.toLowerCase().includes("another workstation")))) {
+              setEvictionNotice({
+                message: msg || "This session was signed out because your account was logged in on another device.",
+                reason: "SESSION_SUPERSEDED",
+                remote_device: detailObj?.remote_device || errData?.remote_device,
+              });
+              return response;
+            }
+          } catch {}
+
           localStorage.removeItem("vajra_token");
           localStorage.removeItem("vajra_auth");
           setIsAuthenticated(false);
@@ -550,6 +588,60 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     return () => { window.fetch = originalFetch; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Section 14: Periodic liveness heartbeat every 25s to keep session alive and cancel pending-close
+  useEffect(() => {
+    if (!isAuthenticated) {
+      sessionStorage.removeItem("vajra_tab_active");
+      return;
+    }
+
+    // Tab-lifecycle check: mark current tab active (preserved across F5 reloads)
+    sessionStorage.setItem("vajra_tab_active", "true");
+
+    const sendPing = () => {
+      const token = localStorage.getItem("vajra_token");
+      if (!token) return;
+      fetch(`${API_BASE}/api/auth/heartbeat`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ token }),
+      })
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data && data.status === "unrecognized") {
+            // Server terminated this session or tab-close grace period expired
+            localStorage.removeItem("vajra_token");
+            localStorage.removeItem("vajra_auth");
+            setIsAuthenticated(false);
+          }
+        })
+        .catch(() => {});
+    };
+
+    sendPing();
+    const timer = setInterval(sendPing, 25000);
+    return () => clearInterval(timer);
+  }, [isAuthenticated]);
+
+  // Section 14: Tab-close auto-termination beacon with 15s server grace period (preserves F5 refresh)
+  useEffect(() => {
+    const handleUnload = () => {
+      const token = localStorage.getItem("vajra_token");
+      const kgid = localStorage.getItem("vajra_badge") || "UNKNOWN";
+      if (token && navigator.sendBeacon) {
+        const blob = new Blob([JSON.stringify({ token, kgid })], { type: "application/json" });
+        navigator.sendBeacon(`${API_BASE}/api/auth/tab-closed`, blob);
+      }
+    };
+
+    window.addEventListener("pagehide", handleUnload);
+    return () => window.removeEventListener("pagehide", handleUnload);
+  }, []);
+
 
   // E.4: cross-tab logout sync -- logging out (via SessionTimeoutGuard, a
   // 401, or an explicit sign-out) in one tab previously left every other
@@ -632,10 +724,13 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         requestNewChat,
         chatSessionsRefreshNonce,
         bumpChatSessionsRefresh,
+        evictionNotice,
+        setEvictionNotice,
       }}
     >
       {children}
     </AppContext.Provider>
+
   );
 };
 

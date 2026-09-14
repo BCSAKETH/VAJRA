@@ -3,6 +3,7 @@ import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import { Shield, Lock, Key, Languages } from "lucide-react";
 import { VajraLogo } from "../components/VajraLogo";
+import { DeviceConflictModal } from "../components/DeviceConflictModal";
 
 export const LoginScreen: React.FC = () => {
   const {
@@ -22,6 +23,24 @@ export const LoginScreen: React.FC = () => {
   const [passwordInput, setPasswordInput] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [conflictData, setConflictData] = useState<any>(null);
+
+  const handleConflictSuccess = (data: any) => {
+    localStorage.setItem("vajra_token", data.access_token);
+    const badge = data.user?.badge_no || badgeInput.trim();
+    localStorage.setItem("vajra_badge", badge);
+
+    setMustChangePassword(Boolean(data.must_change_password));
+    setIsAuthenticated(true);
+    setBadgeNumber(badge);
+    const isSupervisor = data.role_tier === "supervisor" || badge === "2346836";
+    setRoleTier(isSupervisor ? "supervisor" : "officer");
+
+    if (data.user?.full_name || data.user?.first_name) {
+      setOfficerName(data.user.full_name || data.user.first_name);
+    }
+    setConflictData(null);
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -67,6 +86,13 @@ export const LoginScreen: React.FC = () => {
       });
 
       if (!response.ok) {
+        if (response.status === 409) {
+          const cData = await response.json().catch(() => null);
+          if (cData && (cData.status === "DEVICE_LIMIT_REACHED" || cData.continuation_token)) {
+            setConflictData(cData);
+            return;
+          }
+        }
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.detail || "Authentication failed. Please verify credentials.");
       }
@@ -234,6 +260,15 @@ export const LoginScreen: React.FC = () => {
           {t.footerRights}
         </p>
       </div>
+
+      {/* Hotstar-style Terminal Conflict Resolution Modal */}
+      {conflictData && (
+        <DeviceConflictModal
+          conflictData={conflictData}
+          onSuccess={handleConflictSuccess}
+          onCancel={() => setConflictData(null)}
+        />
+      )}
     </div>
   );
 };

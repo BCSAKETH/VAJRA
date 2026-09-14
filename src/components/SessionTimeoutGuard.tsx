@@ -46,9 +46,6 @@ export const SessionTimeoutGuard: React.FC = () => {
   const executeLogout = useCallback(() => {
     if (countdownTimerRef.current) clearInterval(countdownTimerRef.current);
     if (checkIntervalRef.current) clearInterval(checkIntervalRef.current);
-    localStorage.removeItem("vajra_auth");
-    localStorage.removeItem("vajra_token");
-    localStorage.removeItem("vajra_badge");
     localStorage.removeItem(STORAGE_LAST_ACTIVE_KEY);
     setIsWarningVisible(false);
     setIsAuthenticated(false);
