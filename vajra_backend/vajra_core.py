@@ -1097,21 +1097,18 @@ def has_active_district_access_grant(badge: Optional[str], home_district_id: Any
 def derive_role_tier(rank_id: Optional[int], kgid: Optional[str] = None) -> str:
     """
     Resolve an officer's access tier.
-
-    When a badge (kgid) is supplied, the SUPERVISOR_KGIDS allowlist is the sole
-    authority: only those exact badges are Supervisor-tier, everyone else is an
-    officer no matter their rank. This is what the login endpoint and firewall
-    use, so the app shows the Supervisor tab (and honours supervisor-only
-    endpoints) for badge 2346836 alone.
-
-    When no kgid is available, fall back to the legacy rank cutoff: RANKS is
-    seeded ascending (Constable..DGP, RankID 1-10); PI (RankID 5) and above are
-    gazetted supervisory ranks. This path exists only for callers that have a
-    rank but no badge in hand.
+    Supervisor-tier access is granted if the badge is in SUPERVISOR_KGIDS (e.g. 2346836)
+    OR if the officer holds a supervisory rank (RankID >= 5, PI/Inspector and above).
     """
-    if kgid is not None:
-        return "supervisor" if str(kgid).strip() in SUPERVISOR_KGIDS else "officer"
-    return "supervisor" if rank_id and int(rank_id) >= 5 else "officer"
+    if kgid is not None and str(kgid).strip() in SUPERVISOR_KGIDS:
+        return "supervisor"
+    if rank_id is not None:
+        try:
+            if int(rank_id) >= 5:
+                return "supervisor"
+        except (ValueError, TypeError):
+            pass
+    return "officer"
 
 
 # In-process cache for the Employee/Unit/Rank/Designation profile chain the

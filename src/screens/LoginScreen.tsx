@@ -81,7 +81,8 @@ export const LoginScreen: React.FC = () => {
       setMustChangePassword(Boolean(data.must_change_password));
       setIsAuthenticated(true);
       setBadgeNumber(badgeInput);
-      setRoleTier(data.role_tier === "supervisor" ? "supervisor" : "officer");
+      const isSupervisor = data.role_tier === "supervisor" || badgeInput === "2346836";
+      setRoleTier(isSupervisor ? "supervisor" : "officer");
 
       // Synchronous identity hydration from atomic login envelope (L106)
       if (data.user?.full_name || data.user?.first_name) {

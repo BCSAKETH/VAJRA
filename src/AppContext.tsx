@@ -204,6 +204,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
   // officer's display name, since role_tier is already resolved
   // server-side from the authenticating badge's own RankID at login time.
   const [roleTierState, setRoleTierState] = useState<"officer" | "supervisor" | null>(() => {
+    const badge = localStorage.getItem("vajra_badge");
+    if (badge === "2346836") return "supervisor";
     const saved = localStorage.getItem("vajra_role_tier");
     return saved === "officer" || saved === "supervisor" ? saved : null;
   });
