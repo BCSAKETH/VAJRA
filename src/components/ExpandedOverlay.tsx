@@ -735,6 +735,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                     activeLayers={data.active_layers}
                     primaryEntityId={data.primary_entity ? (data.nodes || []).find((n: any) => (n.label || "").toLowerCase() === String(data.primary_entity).toLowerCase())?.id : undefined}
                     newSinceTimestamp={networkNewSinceTimestamp}
+                    onFollowUpQuery={onFollowUpQuery}
                   />
                 </div>
               </div>

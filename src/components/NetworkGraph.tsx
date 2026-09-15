@@ -416,14 +416,64 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
           ))}
         </div>
       )}
-      <div className="w-full flex-1 overflow-auto">
-      <svg width={width} height={Math.max(height, minHeight)} viewBox={`0 0 ${width} ${Math.max(height, minHeight)}`} className="block mx-auto">
+      {/* H.1.1: time-slider playback -- only rendered when the graph
+          actually carries at least 2 dated items (co-accused/financial
+          edges have real dates; phone/vehicle links never do and always
+          stay visible, per the plan's own honesty rule). */}
+      {dateRangeMs && (
+        <div className="flex items-center gap-2 px-3 shrink-0 text-[10px] font-mono text-stone-400">
+          <button
+            onClick={() => { if (asOfCursor >= 100) setAsOfCursor(0); setIsPlaying((p) => !p); }}
+            className="px-2 py-1 rounded-lg border border-stone-800 bg-stone-900 hover:bg-stone-800 text-[#C79A4E] cursor-pointer shrink-0"
+            title={isPlaying ? "Pause" : "Play"}
+          >
+            {isPlaying ? "⏸" : "▶"}
+          </button>
+          <span className="shrink-0">{new Date(dateRangeMs.min).toLocaleDateString()}</span>
+          <input
+            type="range" min={0} max={100} value={asOfCursor}
+            onChange={(e) => { setIsPlaying(false); setAsOfCursor(Number(e.target.value)); }}
+            className="flex-1 accent-[#C79A4E]"
+          />
+          <span className="shrink-0">{new Date(dateRangeMs.max).toLocaleDateString()}</span>
+          {asOfDateMs != null && (
+            <span className="shrink-0 text-[#C79A4E]">as of {new Date(asOfDateMs).toLocaleDateString()}</span>
+          )}
+        </div>
+      )}
+      <div className="w-full flex-1 overflow-auto relative">
+      {/* H.1.4: zoom/pan control cluster */}
+      <div className="absolute bottom-2 right-2 z-10 flex flex-col gap-1">
+        <button onClick={() => setZoom((z) => ({ ...z, scale: Math.min(3, z.scale * 1.2) }))} className="w-6 h-6 flex items-center justify-center rounded-lg border border-stone-800 bg-stone-900/90 hover:bg-stone-800 text-stone-300 text-xs font-bold cursor-pointer" title="Zoom in">+</button>
+        <button onClick={() => setZoom((z) => ({ ...z, scale: Math.max(0.4, z.scale / 1.2) }))} className="w-6 h-6 flex items-center justify-center rounded-lg border border-stone-800 bg-stone-900/90 hover:bg-stone-800 text-stone-300 text-xs font-bold cursor-pointer" title="Zoom out">−</button>
+        <button onClick={resetView} className="w-6 h-6 flex items-center justify-center rounded-lg border border-stone-800 bg-stone-900/90 hover:bg-stone-800 text-stone-300 text-[9px] font-bold cursor-pointer" title="Reset view">⟲</button>
+      </div>
+      {/* H.1.3: trace confirmation chip */}
+      {selectedTraceNodes.length === 2 && (
+        <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 bg-stone-900 border border-[#C79A4E]/40 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 text-[11px]">
+          <span className="text-stone-300">
+            Trace connection between <b className="text-[#E4C590]">{selectedTraceNodes[0].label}</b> and <b className="text-[#E4C590]">{selectedTraceNodes[1].label}</b>?
+          </span>
+          <button onClick={fireTrace} className="px-2 py-0.5 rounded-lg bg-[#C79A4E] text-stone-950 font-bold cursor-pointer">Trace</button>
+          <button onClick={() => setSelectedForTrace([])} className="px-2 py-0.5 rounded-lg border border-stone-700 text-stone-400 cursor-pointer">Cancel</button>
+        </div>
+      )}
+      <svg
+        width={width} height={Math.max(height, minHeight)} viewBox={`0 0 ${width} ${Math.max(height, minHeight)}`}
+        className={`block mx-auto ${isDragging ? "cursor-grabbing" : "cursor-grab"}`}
+        onWheel={handleWheel}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseUp}
+      >
         <defs>
           <radialGradient id="suspectGlow" cx="50%" cy="50%" r="50%">
             <stop offset="0%" stopColor="#00C6AD" stopOpacity="0.35" />
             <stop offset="100%" stopColor="#00C6AD" stopOpacity="0" />
           </radialGradient>
         </defs>
+        <rect x={0} y={0} width={width} height={Math.max(height, minHeight)} fill="transparent" onMouseDown={handleBgMouseDown} />
+        <g transform={`translate(${zoom.tx},${zoom.ty}) scale(${zoom.scale})`}>
         {visibleEdges.map((rawE, idx) => {
           const e = getEdgeEndpoints(rawE);
           const from = positions.get(e.source);
@@ -469,14 +519,21 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
           if (importance.assessed) tooltipParts.push(`Risk-weighted importance: ${(importance.score * 100).toFixed(0)}%`);
           if (n.cross_flag) tooltipParts.push(n.cross_flag);
           const tooltipText = tooltipParts.join(" · ");
+          const isSelectedForTrace = selectedForTrace.includes(n.id);
+          const traceable = !!onFollowUpQuery && !isOverflow;
           return (
-            <g key={n.id} className="cursor-default" opacity={isMultiHopNode ? 0.6 : 1}>
+            <g
+              key={n.id}
+              className={traceable ? "cursor-pointer" : "cursor-default"}
+              opacity={isMultiHopNode ? 0.6 : 1}
+              onClick={() => handleNodeClick(n)}
+            >
               {/* Native <title> gives every node a real hover tooltip with no
                   extra JS state/positioning logic -- appropriate for a
                   lightweight SVG diagram like this one (see interaction.md:
                   "per-mark hover tooltip" is required, not a specific
                   implementation). */}
-              <title>{tooltipText}</title>
+              <title>{tooltipText}{traceable ? " · click to select for trace" : ""}</title>
               {n.type === "suspect" && (
                 <circle
                   cx={pos.x} cy={pos.y} r={radius + 8}
@@ -488,6 +545,11 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
               )}
               {n.cross_flag && (
                 <circle cx={pos.x} cy={pos.y} r={radius + 4} fill="none" stroke="#E24B4A" strokeWidth={1.5} strokeDasharray="2 2" />
+              )}
+              {isSelectedForTrace && (
+                <circle cx={pos.x} cy={pos.y} r={radius + 6} fill="none" stroke="#C79A4E" strokeWidth={2} strokeDasharray="2 2">
+                  <animateTransform attributeName="transform" type="rotate" from={`0 ${pos.x} ${pos.y}`} to={`360 ${pos.x} ${pos.y}`} dur="3s" repeatCount="indefinite" />
+                </circle>
               )}
               <circle
                 cx={pos.x} cy={pos.y} r={radius}
@@ -523,6 +585,7 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
             </g>
           );
         })}
+        </g>
       </svg>
       </div>
     </div>
