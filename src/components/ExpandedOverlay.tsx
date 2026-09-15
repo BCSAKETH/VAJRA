@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../AppContext";
 import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2, PieChart as PieChartIcon, BarChart3, AreaChart as AreaChartIcon, LineChart as LineChartIcon, ShieldCheck, Scale, CheckCircle2, Sparkles } from "lucide-react";
 import { OffenderTimelineStrip } from "./OffenderTimelineStrip";
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, AreaChart, Area, CartesianGrid, PieChart, Pie, ReferenceLine, Legend } from "recharts";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, AreaChart, Area, CartesianGrid, PieChart, Pie, ReferenceLine, Legend, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { WatermarkOverlay } from "./WatermarkOverlay";
@@ -288,7 +288,7 @@ const MoneyFlowLedger: React.FC<{ transactions: any[]; lang: "en" | "kn" }> = ({
 };
 
 interface ExpandedOverlayProps {
-  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "case_funnel" | "offender_timeline" | "case_list" | "dossier" | "priority_concerns" | "news" | string;
+  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "case_funnel" | "offender_timeline" | "unit_scorecards" | "district_benchmark" | "case_list" | "dossier" | "priority_concerns" | "news" | string;
   data: any;
   onClose: () => void;
   // When true, render only the rich content pane (no fixed backdrop, no modal
@@ -521,6 +521,18 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                   <>
                     <Repeat className="w-5 h-5 text-[#C79A4E]" />
                     <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Offender Timeline" : "ಅಪರಾಧಿ ಕಾಲಾನುಕ್ರಮ"}</h3>
+                  </>
+                )}
+                {type === "unit_scorecards" && (
+                  <>
+                    <ShieldCheck className="w-5 h-5 text-[#C79A4E]" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Unit Scorecards" : "ಘಟಕ ಸ್ಕೋರ್‌ಕಾರ್ಡ್‌ಗಳು"}</h3>
+                  </>
+                )}
+                {type === "district_benchmark" && (
+                  <>
+                    <Scale className="w-5 h-5 text-[#C79A4E]" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "District Benchmark" : "ಜಿಲ್ಲಾ ಮಾನದಂಡ"}</h3>
                   </>
                 )}
               </>
@@ -1534,6 +1546,107 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
               a repeat offender's own full case history. */}
           {type === "offender_timeline" && (
             <OffenderTimelineStrip suspectName={data.suspect_name || ""} cases={data.cases || []} lang={lang} />
+          )}
+
+          {/* H.3.3: Unit Scorecards -- ranked table, case volume exact,
+              rates sampled + disclosed per row via `is_sampled`. */}
+          {type === "unit_scorecards" && (
+            <div className="h-full flex flex-col gap-4">
+              <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl">
+                <h4 className="font-black text-stone-100 text-lg">
+                  {lang === "en" ? "Unit / Station Scorecards" : "ಘಟಕ ಸ್ಕೋರ್‌ಕಾರ್ಡ್‌ಗಳು"}{data.district ? ` — ${data.district}` : ""}
+                </h4>
+                <p className="text-xs text-stone-450 mt-1">
+                  {lang === "en"
+                    ? "Ranked by case volume (exact). Arrest/chargesheet/conviction rates are sampled per station and disclosed when a station's real docket exceeds the sample."
+                    : "ಪ್ರಕರಣ ಪ್ರಮಾಣದಿಂದ ಶ್ರೇಣೀಕರಿಸಲಾಗಿದೆ."}
+                </p>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                <table className="w-full text-[11px] font-mono border-collapse">
+                  <thead>
+                    <tr className="text-left text-stone-500 uppercase text-[9.5px] tracking-wide border-b border-stone-800">
+                      <th className="py-2 pr-2">{lang === "en" ? "Unit" : "ಘಟಕ"}</th>
+                      <th className="py-2 px-2 text-right">{lang === "en" ? "Cases" : "ಪ್ರಕರಣಗಳು"}</th>
+                      <th className="py-2 px-2 text-right">{lang === "en" ? "Arrest %" : "ಬಂಧನ %"}</th>
+                      <th className="py-2 px-2 text-right">{lang === "en" ? "Chargesheet %" : "ಚಾರ್ಜ್‌ಶೀಟ್ %"}</th>
+                      <th className="py-2 pl-2 text-right">{lang === "en" ? "Conviction %" : "ಶಿಕ್ಷೆ %"}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(data.scorecards || []).map((c: any, idx: number) => (
+                      <tr key={idx} className="border-b border-stone-850/60 hover:bg-stone-900/40">
+                        <td className="py-2 pr-2 text-stone-200 font-bold">
+                          {c.unit_name}
+                          {c.is_sampled && <span className="ml-1.5 text-[9px] text-amber-500 font-normal normal-case" title={lang === "en" ? `Rates from a ${c.sampled_cases}-case sample` : ""}>({lang === "en" ? "sampled" : "ಮಾದರಿ"})</span>}
+                        </td>
+                        <td className="py-2 px-2 text-right text-stone-300 font-variant-numeric tabular-nums">{c.case_volume.toLocaleString()}</td>
+                        <td className="py-2 px-2 text-right text-[#C79A4E]">{c.arrest_rate}%</td>
+                        <td className="py-2 px-2 text-right text-[#C79A4E]">{c.chargesheet_rate}%</td>
+                        <td className="py-2 pl-2 text-right text-[#C79A4E]">{c.conviction_rate}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* H.3.4: District Benchmark -- real radar chart across normalized
+              metrics, plus the same ranked table underneath for the exact
+              numbers a radar's shape alone can't convey. */}
+          {type === "district_benchmark" && (
+            <div className="h-full flex flex-col gap-4">
+              <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl">
+                <h4 className="font-black text-stone-100 text-lg">{lang === "en" ? "District Benchmark" : "ಜಿಲ್ಲಾ ಮಾನದಂಡ"}</h4>
+                <p className="text-xs text-stone-450 mt-1">
+                  {lang === "en"
+                    ? "Case volume is exact per district; arrest/chargesheet/conviction rates are sampled and disclosed when a district's real docket exceeds the sample."
+                    : "ಪ್ರತಿ ಜಿಲ್ಲೆಗೆ ಪ್ರಕರಣ ಪ್ರಮಾಣ ನಿಖರವಾಗಿದೆ."}
+                </p>
+              </div>
+              <div className="h-[320px] shrink-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <RadarChart data={data.benchmarks || []} outerRadius="72%">
+                    <PolarGrid stroke="rgba(255,255,255,0.08)" />
+                    <PolarAngleAxis dataKey="district" tick={{ fill: "#a89f92", fontSize: 10 }} />
+                    <PolarRadiusAxis tick={{ fill: "#64748B", fontSize: 8 }} angle={30} />
+                    <Radar name={lang === "en" ? "Arrest %" : "ಬಂಧನ %"} dataKey="arrest_rate" stroke="#38bdf8" fill="#38bdf8" fillOpacity={0.25} />
+                    <Radar name={lang === "en" ? "Chargesheet %" : "ಚಾರ್ಜ್‌ಶೀಟ್ %"} dataKey="chargesheet_rate" stroke="#C79A4E" fill="#C79A4E" fillOpacity={0.25} />
+                    <Radar name={lang === "en" ? "Conviction %" : "ಶಿಕ್ಷೆ %"} dataKey="conviction_rate" stroke="#5DCAA5" fill="#5DCAA5" fillOpacity={0.25} />
+                    <Legend wrapperStyle={{ fontSize: 10 }} />
+                    <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }} />
+                  </RadarChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                <table className="w-full text-[11px] font-mono border-collapse">
+                  <thead>
+                    <tr className="text-left text-stone-500 uppercase text-[9.5px] tracking-wide border-b border-stone-800">
+                      <th className="py-2 pr-2">{lang === "en" ? "District" : "ಜಿಲ್ಲೆ"}</th>
+                      <th className="py-2 px-2 text-right">{lang === "en" ? "Cases" : "ಪ್ರಕರಣಗಳು"}</th>
+                      <th className="py-2 px-2 text-right">{lang === "en" ? "Arrest %" : "ಬಂಧನ %"}</th>
+                      <th className="py-2 px-2 text-right">{lang === "en" ? "Chargesheet %" : "ಚಾರ್ಜ್‌ಶೀಟ್ %"}</th>
+                      <th className="py-2 pl-2 text-right">{lang === "en" ? "Conviction %" : "ಶಿಕ್ಷೆ %"}</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(data.benchmarks || []).map((b: any, idx: number) => (
+                      <tr key={idx} className="border-b border-stone-850/60 hover:bg-stone-900/40">
+                        <td className="py-2 pr-2 text-stone-200 font-bold">
+                          {b.district}
+                          {b.is_sampled && <span className="ml-1.5 text-[9px] text-amber-500 font-normal normal-case">({lang === "en" ? "sampled" : "ಮಾದರಿ"})</span>}
+                        </td>
+                        <td className="py-2 px-2 text-right text-stone-300 tabular-nums">{b.case_volume.toLocaleString()}</td>
+                        <td className="py-2 px-2 text-right text-[#38bdf8]">{b.arrest_rate}%</td>
+                        <td className="py-2 px-2 text-right text-[#C79A4E]">{b.chargesheet_rate}%</td>
+                        <td className="py-2 pl-2 text-right text-[#5DCAA5]">{b.conviction_rate}%</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           )}
 
           {type === "timeline" && (

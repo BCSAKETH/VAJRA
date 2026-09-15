@@ -377,7 +377,7 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
   // button -- the list-shaped types (repeat_offenders, crime_groups,
   // priority_concerns, case_list) already read as plain language on their
   // own, nothing chart-specific to narrate.
-  const isExplainableChart = ["map", "network", "risk", "forecast", "timeline", "mo_match", "correlation", "trend", "case_distribution", "case_funnel", "offender_timeline"].includes(effectiveType);
+  const isExplainableChart = ["map", "network", "risk", "forecast", "timeline", "mo_match", "correlation", "trend", "case_distribution", "case_funnel", "offender_timeline", "unit_scorecards", "district_benchmark"].includes(effectiveType);
 
   const handleExplainChart = async () => {
     setIsExplainingChart(true);
@@ -581,6 +581,18 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
               <>
                 <Repeat className="w-4 h-4 text-[#C79A4E]" />
                 <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Offender Timeline" : "ಅಪರಾಧಿ ಕಾಲಾನುಕ್ರಮ"}</span>
+              </>
+            )}
+            {effectiveType === "unit_scorecards" && (
+              <>
+                <ShieldCheck className="w-4 h-4 text-[#C79A4E]" />
+                <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Unit Scorecards" : "ಘಟಕ ಸ್ಕೋರ್‌ಕಾರ್ಡ್‌ಗಳು"}</span>
+              </>
+            )}
+            {effectiveType === "district_benchmark" && (
+              <>
+                <ShieldAlert className="w-4 h-4 text-[#C79A4E]" />
+                <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "District Benchmark" : "ಜಿಲ್ಲಾ ಮಾನದಂಡ"}</span>
               </>
             )}
             {effectiveType === "priority_concerns" && (

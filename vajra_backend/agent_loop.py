@@ -290,6 +290,29 @@ class VajraAgentLoop(CognitiveBrainMixin):
             }
         },
         {
+            "name": "get_unit_scorecards",
+            "description": "H.3.3: per-station/unit performance scorecard ranked by case volume, with arrest/chargesheet/conviction rates (e.g. 'scorecard for stations', 'which unit has the best clearance rate'). Case volume is exact; rates are computed from a bounded per-station sample and disclosed as such when a station's real docket exceeds it.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "district": {"type": "string", "description": "optional -- scope to one district's stations"},
+                    "top_n": {"type": "integer", "description": "optional, defaults to 10, max 20"}
+                },
+                "required": []
+            }
+        },
+        {
+            "name": "get_district_benchmark",
+            "description": "H.3.4: compares districts side by side on case volume, arrest rate, chargesheet rate, and conviction rate (e.g. 'benchmark districts', 'compare district performance') -- rendered as a radar chart.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "top_n": {"type": "integer", "description": "optional, defaults to 6, max 10"}
+                },
+                "required": []
+            }
+        },
+        {
             "name": "find_common_connections",
             "description": "H.1.6: Given TWO named people (or two case numbers), find what they have in common -- the accused/associates/phone/vehicle nodes that appear in BOTH of their networks. Different from trace_connection_path (shortest chain BETWEEN two people) -- this answers 'what do X and Y have in common?' instead of 'how are X and Y connected?'.",
             "parameters": {
@@ -1852,6 +1875,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
                                      "what do they share", "shared between", "overlap between"],
         "get_offender_timeline": ["offender timeline", "repeat offender timeline", "timeline for suspect",
                                    "arrest history", "fir history", "across their cases", "across all their cases"],
+        "get_unit_scorecards": ["unit scorecard", "station scorecard", "officer scorecard", "unit performance",
+                                 "station performance", "clearance rate by station", "best performing unit"],
+        "get_district_benchmark": ["district benchmark", "benchmark district", "compare district",
+                                    "district comparison", "district radar", "compare districts"],
         "query_case": ["case", "cr-", "fir", "case number", "case no", "about case", "details of case"],
         "get_case_sections": ["section", "ipc", "bns", "legal provision", "charges", "act", "which section"],
         "suggest_sections": ["what section", "which section", "sections can be applied", "applicable section",
@@ -1975,6 +2002,174 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 filtered.append(ws_tool)
         logger.info(f"Tool pre-filter: {len(filtered)}/{len(self.TOOLS)} tools sent to GLM -> {[t['name'] for t in filtered]}")
         return filtered
+
+    def _sample_case_outcome_rates(self, unit_ids: List[int], sample_cap: int = 200) -> Dict[str, Any]:
+        """H.3.3/H.3.4 shared helper: samples up to `sample_cap` of the given
+        units' own CaseMasterIDs, then checks exactly which of THOSE ids
+        appear in ArrestSurrender / ChargesheetDetails / CaseMaster
+        (CaseStatusID=3, the verified real CONVICTED constant). Exact for
+        the sample drawn; a scope with more than sample_cap real cases gets
+        a rate estimated from a subset, never its full docket -- always
+        disclosed to the caller via `is_sampled` (computed by the caller
+        from `sampled_cases` vs. the scope's own real total), same
+        'LIMIT N, then say so' discipline this file uses everywhere else
+        (per direct user confirmation: build this bounded + disclosed,
+        not skipped and not silently presented as exact)."""
+        case_ids: List[int] = []
+        if unit_ids and catalyst_app:
+            try:
+                id_res = catalyst_app.zql().execute_query(
+                    f"SELECT CaseMasterID FROM CaseMaster WHERE PoliceStationID IN ({','.join(map(str, unit_ids))}) LIMIT {sample_cap}")
+                case_ids = sorted({r.get("CaseMaster", {}).get("CaseMasterID") for r in id_res if r.get("CaseMaster", {}).get("CaseMasterID") is not None})
+            except Exception as e:
+                logger.warning(f"_sample_case_outcome_rates: case id sample failed: {e}")
+        arrested = charged = convicted = 0
+        if case_ids and catalyst_app:
+            ids_str = ",".join(str(c) for c in case_ids)
+            try:
+                ar = catalyst_app.zql().execute_query(f"SELECT COUNT(CaseMasterID) FROM ArrestSurrender WHERE CaseMasterID IN ({ids_str})")
+                arrested = int((ar[0].get("ArrestSurrender", {}) or {}).get("COUNT(CaseMasterID)") or 0) if ar else 0
+            except Exception:
+                pass
+            try:
+                cs = catalyst_app.zql().execute_query(f"SELECT COUNT(CaseMasterID) FROM ChargesheetDetails WHERE CaseMasterID IN ({ids_str})")
+                charged = int((cs[0].get("ChargesheetDetails", {}) or {}).get("COUNT(CaseMasterID)") or 0) if cs else 0
+            except Exception:
+                pass
+            try:
+                cv = catalyst_app.zql().execute_query(f"SELECT COUNT(CaseMasterID) FROM CaseMaster WHERE CaseMasterID IN ({ids_str}) AND CaseStatusID = 3")
+                convicted = int((cv[0].get("CaseMaster", {}) or {}).get("COUNT(CaseMasterID)") or 0) if cv else 0
+            except Exception:
+                pass
+        n = len(case_ids)
+        return {
+            "sampled_cases": n,
+            "arrest_rate": round(arrested / n * 100, 1) if n else 0.0,
+            "chargesheet_rate": round(charged / n * 100, 1) if n else 0.0,
+            "conviction_rate": round(convicted / n * 100, 1) if n else 0.0,
+        }
+
+    def _compute_station_scorecards(self, unit_filter_ids: Optional[List[int]], top_n: int, sample_cap: int = 200) -> List[Dict[str, Any]]:
+        """H.3.3: per-station scorecard. Case volume is EXACT (one real
+        GROUP BY over CaseMaster's own PoliceStationID column, no sampling
+        involved at all). Rates come from _sample_case_outcome_rates,
+        called once per station -- bounded to the top `top_n` stations BY
+        VOLUME so this never fans out into hundreds of per-station query
+        batches for a statewide request."""
+        if not catalyst_app:
+            return []
+        where = f" WHERE PoliceStationID IN ({','.join(map(str, unit_filter_ids))})" if unit_filter_ids else ""
+        try:
+            vol_rows = catalyst_app.zql().execute_query(
+                f"SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster{where} GROUP BY PoliceStationID")
+        except Exception as e:
+            logger.warning(f"_compute_station_scorecards: volume query failed: {e}")
+            return []
+        volumes: Dict[int, int] = {}
+        for r in vol_rows:
+            cm = r.get("CaseMaster", {})
+            psid = cm.get("PoliceStationID") or cm.get("policestationid")
+            cnt = cm.get("COUNT(CaseMasterID)") or cm.get("count(casemasterid)")
+            if psid is not None and cnt is not None:
+                try:
+                    volumes[int(psid)] = int(cnt)
+                except (TypeError, ValueError):
+                    continue
+        ranked = sorted(volumes.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+
+        unit_names: Dict[int, str] = {}
+        try:
+            for u in catalyst_app.zql().execute_query("SELECT UnitID, UnitName FROM Unit"):
+                ud = u.get("Unit", {})
+                if ud.get("UnitID"):
+                    unit_names[int(ud["UnitID"])] = ud.get("UnitName") or f"Unit {ud['UnitID']}"
+        except Exception:
+            pass
+
+        scorecards = []
+        for uid, total in ranked:
+            rates = self._sample_case_outcome_rates([uid], sample_cap)
+            scorecards.append({
+                "unit_id": uid, "unit_name": unit_names.get(uid, f"Unit {uid}"),
+                "case_volume": total, "sampled_cases": rates["sampled_cases"],
+                "is_sampled": total > rates["sampled_cases"],
+                "arrest_rate": rates["arrest_rate"], "chargesheet_rate": rates["chargesheet_rate"],
+                "conviction_rate": rates["conviction_rate"],
+            })
+        return scorecards
+
+    def _compute_district_benchmark(self, top_n: int, sample_cap: int = 200) -> List[Dict[str, Any]]:
+        """H.3.4: same shared sampling helper as H.3.3, rolled up to
+        DISTRICT level (all of a district's stations pooled into one
+        combined sample) instead of per-station. Case volume is exact
+        (same single GROUP BY as the station version, summed by district
+        via the real Unit.DistrictID mapping -- no separate query)."""
+        if not catalyst_app:
+            return []
+        try:
+            districts = catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")
+        except Exception as e:
+            logger.warning(f"_compute_district_benchmark: district list failed: {e}")
+            return []
+        dist_names: Dict[int, str] = {}
+        for d in districts:
+            dd = d.get("District", {})
+            if dd.get("DistrictID"):
+                dist_names[int(dd["DistrictID"])] = dd.get("DistrictName") or f"District {dd['DistrictID']}"
+
+        try:
+            vol_rows = catalyst_app.zql().execute_query("SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster GROUP BY PoliceStationID")
+        except Exception as e:
+            logger.warning(f"_compute_district_benchmark: volume query failed: {e}")
+            return []
+        station_volumes: Dict[int, int] = {}
+        for r in vol_rows:
+            cm = r.get("CaseMaster", {})
+            psid = cm.get("PoliceStationID") or cm.get("policestationid")
+            cnt = cm.get("COUNT(CaseMasterID)") or cm.get("count(casemasterid)")
+            if psid is not None and cnt is not None:
+                try:
+                    station_volumes[int(psid)] = int(cnt)
+                except (TypeError, ValueError):
+                    continue
+
+        try:
+            unit_res = catalyst_app.zql().execute_query("SELECT UnitID, DistrictID FROM Unit")
+        except Exception as e:
+            logger.warning(f"_compute_district_benchmark: unit->district map failed: {e}")
+            return []
+        station_to_district: Dict[int, int] = {}
+        for u in unit_res:
+            ud = u.get("Unit", {})
+            uid, did = ud.get("UnitID"), ud.get("DistrictID")
+            if uid and did:
+                try:
+                    station_to_district[int(uid)] = int(did)
+                except (TypeError, ValueError):
+                    continue
+
+        district_volume: Dict[int, int] = {}
+        district_units: Dict[int, List[int]] = {}
+        for uid, vol in station_volumes.items():
+            did = station_to_district.get(uid)
+            if did is None:
+                continue
+            district_volume[did] = district_volume.get(did, 0) + vol
+            district_units.setdefault(did, []).append(uid)
+        ranked_districts = sorted(district_volume.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
+
+        benchmarks = []
+        for did, total_vol in ranked_districts:
+            uids = district_units.get(did, [])
+            rates = self._sample_case_outcome_rates(uids, sample_cap)
+            benchmarks.append({
+                "district": dist_names.get(did, f"District {did}"), "district_id": did,
+                "case_volume": total_vol, "sampled_cases": rates["sampled_cases"],
+                "is_sampled": total_vol > rates["sampled_cases"],
+                "arrest_rate": rates["arrest_rate"], "chargesheet_rate": rates["chargesheet_rate"],
+                "conviction_rate": rates["conviction_rate"],
+            })
+        return benchmarks
 
     def _compute_repeat_offenders_list(self, district: str = "") -> List[Dict[str, Any]]:
         """
@@ -7391,6 +7586,69 @@ class VajraAgentLoop(CognitiveBrainMixin):
                               "details": "COUNT over CaseMaster / ArrestSurrender / ChargesheetDetails / CaseMaster(CaseStatusID=3) -- grounded aggregates."})
             final_answer = True
             self._write_audit_log(employee_id, "Case Outcome Analytics", "State", "Case-aging funnel analytics", text_result, session_id)
+
+        # H.3.3: unit/station scorecards. Case volume is EXACT; arrest/
+        # chargesheet/conviction rates are sampled + disclosed (see
+        # _sample_case_outcome_rates' own docstring) -- ZCQL has no JOINs
+        # and ArrestSurrender/ChargesheetDetails carry no station column of
+        # their own, only a non-unique CaseMasterID, so a full-docket exact
+        # rate per station isn't achievable without a real join this stack
+        # doesn't have.
+        elif tool_name == "get_unit_scorecards":
+            district = self.sanitize_sql_input(params.get("district", "") or "")
+            top_n = min(20, max(1, int(params.get("top_n") or 10)))
+            unit_ids = None
+            scope_label = ""
+            if district and catalyst_app:
+                try:
+                    d_res = catalyst_app.zql().execute_query(f"SELECT DistrictID FROM District WHERE DistrictName LIKE '*{district}*' LIMIT 1")
+                    if d_res:
+                        did = d_res[0].get("District", {}).get("DistrictID")
+                        u_res = catalyst_app.zql().execute_query(f"SELECT UnitID FROM Unit WHERE DistrictID = {did}")
+                        unit_ids = [u.get("Unit", {}).get("UnitID") for u in u_res if u.get("Unit", {}).get("UnitID")]
+                        scope_label = f" in {district}"
+                except Exception as e:
+                    logger.warning(f"get_unit_scorecards: district resolve failed: {e}")
+            cards = self._compute_station_scorecards(unit_ids, top_n)
+            response_type = "unit_scorecards"
+            if cards:
+                lines = [f"Unit/station scorecards{scope_label}, ranked by case volume:"]
+                for c in cards:
+                    samp_note = f" (rates from a {c['sampled_cases']}-case sample of {c['case_volume']})" if c["is_sampled"] else ""
+                    lines.append(f"- {c['unit_name']}: {c['case_volume']} cases, {c['arrest_rate']}% arrest rate, {c['chargesheet_rate']}% chargesheet rate, {c['conviction_rate']}% conviction rate{samp_note}")
+                text_result = "\n".join(lines)
+                data = {"scorecards": cards, "district": district or None}
+                citations.append({"type": "Unit Scorecard", "id": district or "State",
+                                  "details": "Case volume exact (CaseMaster GROUP BY); arrest/chargesheet/conviction rates sampled per station, up to 200 cases each, disclosed when a station exceeds that."})
+            else:
+                response_type = "text"
+                text_result = f"No station data found{scope_label}."
+                data = {}
+            final_answer = True
+            self._write_audit_log(employee_id, "Unit Scorecards", district or "State", "Unit/station scorecard ranking", text_result, session_id)
+
+        # H.3.4: district benchmarking -- same shared sampling helper as
+        # H.3.3, rolled up to district level. Real radar-chart comparison
+        # across districts on volume/arrest/chargesheet/conviction.
+        elif tool_name == "get_district_benchmark":
+            top_n = min(10, max(2, int(params.get("top_n") or 6)))
+            benchmarks = self._compute_district_benchmark(top_n)
+            response_type = "district_benchmark"
+            if benchmarks:
+                lines = [f"District benchmark, top {len(benchmarks)} by case volume:"]
+                for b in benchmarks:
+                    samp_note = f" (sampled)" if b["is_sampled"] else ""
+                    lines.append(f"- {b['district']}: {b['case_volume']} cases, {b['arrest_rate']}% arrest, {b['chargesheet_rate']}% chargesheet, {b['conviction_rate']}% conviction{samp_note}")
+                text_result = "\n".join(lines)
+                data = {"benchmarks": benchmarks}
+                citations.append({"type": "District Benchmark", "id": "State",
+                                  "details": "Case volume exact per district (Unit.DistrictID rollup); rates sampled up to 200 cases per district, disclosed when exceeded."})
+            else:
+                response_type = "text"
+                text_result = "No district data available to benchmark right now."
+                data = {}
+            final_answer = True
+            self._write_audit_log(employee_id, "District Benchmark", "State", "District benchmarking radar", text_result, session_id)
 
         elif tool_name == "count_cases":
             district = self.sanitize_sql_input(params.get("district", "") or "")
