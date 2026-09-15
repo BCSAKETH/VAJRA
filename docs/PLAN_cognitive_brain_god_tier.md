@@ -297,6 +297,77 @@ voice doing both jobs badly.
 
 ---
 
+## 7b. TIER 7 — Real ML, grounded in what's actually vendored (added 2026-09-15)
+
+Per direct request to add "more ML/complex things" to this plan: the honest
+answer is NOT more prompt-layer personas (Tier 2 already covers that
+ground) but the CLASSICAL ML this stack already has real, working
+infrastructure for — XGBoost+SHAP (the risk model) and SentenceTransformer
+embeddings (semantic memory) are already load-bearing in production. This
+tier is scoped to real, vendored libraries only, confirmed by listing the
+actual `vajra_backend/vendor/` directory before writing a single line here
+— not assumed from what a typical Python ML stack usually has.
+
+**Confirmed vendored today:** `sklearn`, `xgboost`, `shap` (all already
+used), and **`networkx`** — present in vendor/ but, as of this plan's own
+2026-09-15 diff, not yet called anywhere in `agent_loop.py`. That changes
+the feasibility grade on one specific item from an earlier planning
+document (`nifty-marinating-blossom.md`'s own accounting table): "Syndicate
+Radar" (Louvain community detection) was graded "confirmed NOT built, no
+networkx call anywhere" — true, but the *library* was never actually
+missing, only the application code calling it. Worth re-grading GREEN, not
+a new-dependency item.
+
+### 7b.1 Syndicate Radar — real Louvain community detection
+**Files:** `vajra_backend/agent_loop.py` (new `detect_syndicate_communities`
+tool), reuses the existing shared-attribute graph `community_detection`/
+`centrality_ranking` already build (phone/vehicle overlap edges).
+- **NOW:** `networkx.algorithms.community.louvain_communities` over the
+  SAME graph `community_detection` already constructs — real modularity-
+  based clustering instead of that tool's current simpler connected-
+  components approach, surfacing groups that aren't fully mutually
+  connected but still statistically cluster together (the actual definition
+  of an emerging syndicate, not just "everyone linked to everyone").
+- **Feasibility:** GREEN — `import networkx` inside the tool function
+  (lazy, matching this file's own established convention for every other
+  optional library), zero new vendor footprint since it's already present.
+
+### 7b.2 Isolation Forest anomaly detection — beyond the existing z-score check
+**Files:** `vajra_backend/agent_loop.py` (`anomaly_detection` tool, already
+exists per this file's own capability list, currently a monthly z-score +
+category-momentum break).
+- **NEXT:** `sklearn.ensemble.IsolationForest` (already vendored, zero new
+  dependency) over a real per-case feature vector (crime type, station,
+  day-of-week, victim/accused counts) to flag individually anomalous CASES,
+  not just anomalous monthly aggregates — a genuinely different, finer-
+  grained signal than the existing district-level trend break.
+- **Feasibility:** GREEN — same vendored sklearn already used for the risk
+  model; this is a second, small estimator, not new infrastructure.
+
+### 7b.3 Risk model recalibration — a real, already-known gap
+**Files:** `vajra_backend/train_risk_model.py` / `train_risk_model_v2.py`,
+`calibrate_risk_model.py` (all already exist).
+- Flagged honestly in an earlier planning document
+  (`docs/VAJRA_God_ProMax_Research_and_Upgrade_Vision.md`, Part 2 item 7):
+  the deployed risk model was confirmed live to predict ~0% for nearly
+  every suspect, with one feature ("Year Temporal") dominating every
+  prediction — a real calibration gap in the flagship ML feature, not a
+  hypothetical. Not re-solved by this document; restated here so it isn't
+  lost across planning docs. **NOW:** class-imbalance handling (SMOTE or
+  class weights) + isotonic calibration, using the already-vendored
+  sklearn/xgboost stack — no new library, a training-script fix.
+- **Feasibility:** GREEN, but needs an actual retrain-and-redeploy pass
+  (`calibrate_risk_model.py` already exists for exactly this), not a
+  request-time code change like everything else in this document.
+
+### 7b.4 Cross-reference: 2.3's embedding classifier is also real ML
+Tier 1 item 2.3 (replace the keyword-count complexity classifier with a
+cosine-similarity check against the already-loaded SentenceTransformer
+embedder) is itself a real ML technique, not just a heuristic swap — noted
+here so it isn't read as a lesser fix than this tier's additions.
+
+---
+
 ## 8. Build order (dependency-aware, not just impact-ranked)
 
 1. **2.1** (generalize grounding beyond case numbers) — standalone, zero
@@ -320,6 +391,14 @@ voice doing both jobs badly.
 9. **3.4** (Supervisor Brain) / **3.5** (Forensic Brain) — real new
    infrastructure/schema work; treat as a separate design review, not a
    quick addition alongside the rest of this list.
+10. **7b.1** (Louvain Syndicate Radar) — standalone, reuses the existing
+    shared-attribute graph, do any time after 2.1-2.3 are stable.
+11. **7b.2** (Isolation Forest anomaly detection) — standalone, independent
+    of everything else in this list.
+12. **7b.3** (risk model recalibration) — highest real-world impact of
+    anything in this document (the flagship ML feature currently
+    under-discriminates), but requires an actual retrain/redeploy cycle,
+    not a request-time code change; schedule it as its own work session.
 
 ## 9. What this plan deliberately does NOT claim
 
