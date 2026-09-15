@@ -5500,10 +5500,12 @@ async def complete_task(session_id: str, task_id: int, payload: CompleteTaskRequ
         raise HTTPException(status_code=400, detail="Please describe what was actually done (at least a sentence) before closing this task.")
     if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
-    # Loophole L3/L4: the AI review is advisory only, with an internal 8s
+    # Loophole L3/L4: the AI review is advisory only, with an internal 10s
     # timeout (see _review_task_completion) -- a slow/failed LLM call never
-    # blocks the task from completing.
-    review = await run_in_threadpool(agent_loop._review_task_completion, note, payload.attachment_stratus_id)
+    # blocks the task from completing. session_id passed through so the
+    # review can cross-check against this investigation's own linked case
+    # record and diary/task history (2026-09-15 upgrade), not just the note.
+    review = await run_in_threadpool(agent_loop._review_task_completion, note, payload.attachment_stratus_id, session_id)
     try:
         existing = catalyst_app.zql().execute_query(
             f"SELECT ROWID FROM InvestigationTask WHERE ROWID = {task_id} AND session_id = '{escape_zcql_literal(session_id)}' LIMIT 1"
@@ -5521,7 +5523,12 @@ async def complete_task(session_id: str, task_id: int, payload: CompleteTaskRequ
         logger.error(f"InvestigationTask table unavailable (console table not created yet?): {e}")
         raise HTTPException(status_code=503, detail="Guided tasks are not yet configured on the server.")
     _log_diary_entry(session_id, "task_completed", f"Task closed: {note[:200]}", employee_id)
-    return {"status": "done", "ai_flag": review.get("flag"), "follow_up_question": review.get("follow_up_question")}
+    return {
+        "status": "done", "ai_flag": review.get("flag"), "follow_up_question": review.get("follow_up_question"),
+        "verification_verdict": review.get("verification_verdict"),
+        "verification_summary": review.get("verification_summary"),
+        "tasks_added": review.get("tasks_added") or [],
+    }
 
 
 # ---- §9.6 Case Diary read endpoint -----------------------------------------

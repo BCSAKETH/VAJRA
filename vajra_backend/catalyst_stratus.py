@@ -31,3 +31,25 @@ def store_attachment(file_bytes: bytes, extension: str, content_type: str) -> Op
     except Exception as e:
         logger.warning(f"Could not store attachment in Stratus bucket '{ATTACHMENTS_BUCKET}': {e}")
         return None
+
+
+def get_attachment_bytes(stratus_key: str) -> Optional[bytes]:
+    """
+    Fetches a previously-stored attachment's raw bytes back out of Stratus --
+    the read half of store_attachment, needed for the task-completion
+    evidence-verification flow (a just-uploaded file must be re-read to be
+    analyzed, not just referenced). Mirrors main.py's /api/attachments/
+    {stratus_key} endpoint's own fetch pattern exactly, so the two never
+    drift on how a Stratus object is retrieved. Returns None on any failure
+    (bucket unavailable, key not found) -- callers must treat that as
+    "couldn't re-fetch," never crash the flow that's asking for it.
+    """
+    if not catalyst_app or not stratus_key or "/" in stratus_key or ".." in stratus_key:
+        return None
+    try:
+        bucket = catalyst_app.stratus().bucket(ATTACHMENTS_BUCKET)
+        obj = bucket.get_object(key=stratus_key)
+        return obj.content if hasattr(obj, "content") else obj
+    except Exception as e:
+        logger.warning(f"Could not retrieve attachment '{stratus_key}' from Stratus: {e}")
+        return None

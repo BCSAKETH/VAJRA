@@ -134,7 +134,26 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
         setPendingFile(null);
         setAttachmentStratusId(null);
         setUploadError(null);
-        if (data.follow_up_question) setLastReview({ taskId, text: data.follow_up_question });
+        // 2026-09-15 upgrade: the AI review now cross-checks the note (and
+        // any attached evidence photo) against the case record and this
+        // investigation's own history, and can auto-add concrete follow-up
+        // tasks when it finds something worth checking. ai_flag (a
+        // discrepancy/uncertain summary) already renders per-task below via
+        // task.ai_flag once `load()` refetches -- this banner covers the
+        // one thing that wouldn't otherwise be obvious: new tasks having
+        // been silently added to the list underneath the one just closed.
+        const addedCount = Array.isArray(data.tasks_added) ? data.tasks_added.length : 0;
+        if (addedCount > 0) {
+          const taskWord = addedCount === 1 ? (lang === "en" ? "task" : "ಕಾರ್ಯ") : (lang === "en" ? "tasks" : "ಕಾರ್ಯಗಳು");
+          setLastReview({
+            taskId,
+            text: lang === "en"
+              ? `AI added ${addedCount} follow-up ${taskWord} based on this review: ${data.tasks_added.join("; ")}`
+              : `ಈ ಪರಿಶೀಲನೆಯ ಆಧಾರದ ಮೇಲೆ AI ${addedCount} ಅನುಸರಣಾ ${taskWord} ಸೇರಿಸಿದೆ: ${data.tasks_added.join("; ")}`,
+          });
+        } else if (data.follow_up_question) {
+          setLastReview({ taskId, text: data.follow_up_question });
+        }
         load();
       }
     } finally {

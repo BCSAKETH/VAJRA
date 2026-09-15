@@ -2486,51 +2486,197 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "phone_no_fresh": bool(phone_match),
         }
 
-    def _review_task_completion(self, note: str, attachment_stratus_id: Optional[str] = None) -> Dict[str, Any]:
-        """
-        §9.5 Guided Task Workflow: bounded, single-purpose LLM call reviewing
-        a just-closed investigative task's note for anything that looks
-        incomplete or contradictory, optionally proposing one follow-up
-        question. Advisory ONLY (Loophole L3) -- the officer can always
-        override and close the task regardless of what this returns, and a
-        failed/timed-out review (Loophole L3 corollary, L4) never blocks the
-        task from completing; the caller (main.py's complete_task) always
-        marks the task done regardless of this method's outcome. Hard 8s
-        timeout via its own ThreadPoolExecutor -- this must never hold up
-        the officer's UI waiting on a slow LLM turn for what is fundamentally
-        a secondary/advisory check.
+    _TASK_ATTACHMENT_IMAGE_EXTS = ("jpg", "jpeg", "png", "webp")
 
-        §9.5 fix: attachment_stratus_id was previously accepted "for interface
-        symmetry" but never actually referenced anywhere in this function --
-        confirmed by audit. Scoped deliberately narrow (not a full vision-
-        analysis pipeline): this only tells the reviewing LLM a supporting
-        file WAS attached, so its one-sentence advisory response can
-        genuinely account for that ("note + attached evidence looks
-        complete") instead of silently reviewing the note as if no file
-        existed. No content-level analysis of the file itself happens here --
-        that would need a second, parallel path into av_analysis.py's
-        real image/video pipeline, not worth the risk this close to review
-        for what's an advisory-only check to begin with.
+    def _get_case_context_for_session(self, session_id: Optional[str]) -> str:
+        """Real upload-verification support: resolves the case linked to this
+        Investigation (InvestigationCaseLink, same table §9.7's manage-menu
+        already writes) and returns a short grounded summary of that case's
+        own record (crime type, brief facts) to cross-check an uploaded
+        file's content against. Returns "" (never fabricated) if no case is
+        linked, the case can't be resolved, or the DB is unavailable."""
+        if not catalyst_app or not session_id:
+            return ""
+        try:
+            link = catalyst_app.zql().execute_query(
+                f"SELECT case_no FROM InvestigationCaseLink WHERE session_id = '{escape_zcql_literal(session_id)}' "
+                f"ORDER BY linked_at DESC LIMIT 1")
+            case_no = link[0].get("InvestigationCaseLink", {}).get("case_no") if link else None
+            if not case_no:
+                return ""
+            resolved = self._resolve_case_rowid(case_no)
+            if not resolved:
+                return ""
+            cm = catalyst_app.zql().execute_query(
+                f"SELECT CrimeMajorHeadID, BriefFacts FROM CaseMaster WHERE ROWID = {resolved['rowid']} LIMIT 1")
+            if not cm:
+                return ""
+            cm_data = cm[0].get("CaseMaster", {})
+            brief = (cm_data.get("BriefFacts") or "")[:800]
+            crime_group = ""
+            head_id = cm_data.get("CrimeMajorHeadID")
+            if head_id:
+                ch = catalyst_app.zql().execute_query(f"SELECT CrimeGroupName FROM CrimeHead WHERE CrimeHeadID = {head_id} LIMIT 1")
+                crime_group = ch[0].get("CrimeHead", {}).get("CrimeGroupName") or "" if ch else ""
+            return f"Case {case_no} ({crime_group or 'type unspecified'}): {brief}" if brief or crime_group else ""
+        except Exception as e:
+            logger.warning(f"_get_case_context_for_session failed (non-fatal): {e}")
+            return ""
+
+    def _get_investigation_history_for_session(self, session_id: Optional[str]) -> str:
+        """Real upload-verification support: recent Case Diary entries +
+        other Guided Tasks already logged for this Investigation, so a
+        verification check can catch an uploaded file that contradicts what
+        the officer has ALREADY recorded (not just the case's own DB
+        record). Returns "" on any failure/empty history -- never blocks
+        the caller."""
+        if not catalyst_app or not session_id:
+            return ""
+        parts = []
+        try:
+            diary = catalyst_app.zql().execute_query(
+                f"SELECT summary, logged_at FROM CaseDiaryEntry WHERE session_id = '{escape_zcql_literal(session_id)}' "
+                f"ORDER BY logged_at DESC LIMIT 5")
+            if diary:
+                lines = [d.get("CaseDiaryEntry", {}).get("summary", "") for d in diary]
+                parts.append("Recent diary entries: " + " | ".join(l for l in lines if l))
+        except Exception:
+            pass
+        try:
+            tasks = catalyst_app.zql().execute_query(
+                f"SELECT description, status, completion_note FROM InvestigationTask WHERE session_id = '{escape_zcql_literal(session_id)}' "
+                f"ORDER BY ROWID DESC LIMIT 8")
+            if tasks:
+                lines = []
+                for t in tasks:
+                    td = t.get("InvestigationTask", {})
+                    lines.append(f"[{td.get('status')}] {td.get('description')}" + (f" -- {td.get('completion_note')}" if td.get("completion_note") else ""))
+                parts.append("Other tasks on this investigation: " + " | ".join(lines))
+        except Exception:
+            pass
+        return "\n".join(parts)[:1500]
+
+    def _review_task_completion(self, note: str, attachment_stratus_id: Optional[str] = None,
+                                 session_id: Optional[str] = None) -> Dict[str, Any]:
         """
+        §9.5 Guided Task Workflow, upgraded per explicit direction (2026-09-15,
+        "verified by SI... need exact correct details... prepare a set of
+        tasks"): a bounded LLM call that now REALLY cross-checks a just-
+        closed task -- reading the attached evidence file's actual content
+        (Qwen vision, when it's an image), the linked case's own DB record,
+        and this investigation's own diary/task history -- instead of only
+        reviewing the note's TEXT in isolation with no idea what the file
+        or the case record actually say. Still fully advisory (Loophole L3):
+        the officer can always override and close the task regardless of
+        what this returns, and a failed/timed-out review never blocks
+        completion; the caller (main.py's complete_task) always marks the
+        task done regardless of this method's outcome. Hard 10s timeout via
+        its own ThreadPoolExecutor (raised from 8s: this now does real work
+        -- an optional Qwen call plus 2 extra ZCQL round-trips -- before the
+        final LLM call, not just one bare completion).
+
+        Auto-adds concrete follow-up Guided Tasks when the verification
+        surfaces something worth checking (per explicit direction: "move to
+        next task... prepare a set of tasks like that") -- written the same
+        way add_investigation_task already writes them, so they show up in
+        the SAME Guided Task list on the officer's next list-tasks refresh.
+        """
+        attachment_analysis = ""
+        if attachment_stratus_id:
+            ext = attachment_stratus_id.rsplit(".", 1)[-1].lower() if "." in attachment_stratus_id else ""
+            if ext in self._TASK_ATTACHMENT_IMAGE_EXTS:
+                try:
+                    from catalyst_stratus import get_attachment_bytes
+                    img_bytes = get_attachment_bytes(attachment_stratus_id)
+                    if img_bytes:
+                        from catalyst_qwen import CatalystQwen
+                        qwen_res = CatalystQwen().analyze(
+                            [img_bytes],
+                            instruction="Extract and describe all investigatively relevant content from this "
+                                        "evidence photo: any visible text, objects, people, damage, location "
+                                        "cues, or documents. Be concise and factual.")
+                        if qwen_res.get("available"):
+                            attachment_analysis = (qwen_res.get("text") or "")[:1200]
+                except Exception as e:
+                    logger.warning(f"Task attachment vision analysis failed (non-fatal): {e}")
+            # A non-image attachment (audio/video/pdf) still counts as
+            # evidence for the LLM's advisory text below -- just without
+            # content-level analysis, same honest limitation as before.
+
+        case_context = self._get_case_context_for_session(session_id)
+        investigation_history = self._get_investigation_history_for_session(session_id)
+
         prompt = (
-            "A police officer just marked an investigative task complete with this note"
-            + (" and attached a supporting file as evidence" if attachment_stratus_id else "")
-            + ". In ONE short sentence, either say it looks complete, or flag ONE specific "
-            "concrete gap and ask ONE follow-up question. Do not invent details not in the note.\n\n"
-            f"NOTE: {note}"
+            "A police officer just marked an investigative task complete. Cross-check what they submitted "
+            "against the case's own record and this investigation's own history, and report back plainly -- "
+            "do NOT invent any detail not present in what's given below.\n\n"
+            f"OFFICER'S NOTE: {note}\n"
+            + (f"\nATTACHED EVIDENCE FILE CONTENT (extracted): {attachment_analysis}\n" if attachment_analysis else
+               ("\n(A file was attached but its content could not be analyzed.)\n" if attachment_stratus_id else ""))
+            + (f"\nCASE RECORD ON FILE: {case_context}\n" if case_context else "")
+            + (f"\nTHIS INVESTIGATION'S OWN HISTORY: {investigation_history}\n" if investigation_history else "")
+            + "\nOutput ONLY one JSON object: "
+            '{"verdict": "consistent" | "discrepancy" | "uncertain", '
+            '"summary": "<one to two sentences -- if discrepancy, name the EXACT mismatch (a name, date, '
+            'number, or detail that does not match); if consistent, say so briefly>", '
+            '"follow_up_tasks": ["<short concrete next task>", ...]}\n'
+            'follow_up_tasks: 0-3 short, concrete, actionable items -- ONLY if genuinely implied by a gap or '
+            'discrepancy found above (e.g. a document not yet cross-verified, a detail needing confirmation). '
+            'Return an empty list if nothing concrete follows from what was actually given.'
         )
         try:
             with ThreadPoolExecutor(max_workers=1) as ex:
                 res = ex.submit(
                     self.llm.chat, [{"role": "user", "content": prompt}],
-                    use_agent_system_prompt=False, max_tokens=150,
-                ).result(timeout=8)
+                    use_agent_system_prompt=False, max_tokens=400,
+                ).result(timeout=10)
             if res.get("error"):
                 return {"flag": None, "follow_up_question": None}
             content = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
             text = self._strip_think(content)
-            looks_incomplete = "?" in text  # a follow-up question is the signal, not a keyword guess
-            return {"flag": text if looks_incomplete else None, "follow_up_question": text if looks_incomplete else None}
+            parsed = None
+            try:
+                parsed = json.loads(self._extract_json(text))
+            except Exception:
+                pass
+            if not isinstance(parsed, dict):
+                # Fell back to the old free-text shape (malformed JSON from the
+                # model) -- still surface SOMETHING rather than silently drop
+                # a real review, same "never let a parse hiccup erase advisory
+                # value" spirit as the rest of this method.
+                looks_incomplete = "?" in text
+                return {"flag": text if looks_incomplete else None, "follow_up_question": text if looks_incomplete else None}
+
+            verdict = parsed.get("verdict")
+            summary = (parsed.get("summary") or "").strip()
+            flag_text = None
+            if verdict == "discrepancy" and summary:
+                flag_text = f"⚠ Verification found a discrepancy: {summary}"
+            elif verdict == "uncertain" and summary:
+                flag_text = f"Could not fully verify: {summary}"
+            # verdict == "consistent" -> no flag; a clean review shouldn't
+            # nag the officer with a positive-result banner every time.
+
+            tasks_added: List[str] = []
+            raw_follow_ups = parsed.get("follow_up_tasks")
+            if isinstance(raw_follow_ups, list) and session_id and catalyst_app:
+                for t in raw_follow_ups[:3]:
+                    t = str(t).strip()[:300]
+                    if not t:
+                        continue
+                    try:
+                        zcql_insert_row("InvestigationTask", {
+                            "session_id": session_id, "description": t, "status": "pending",
+                        })
+                        tasks_added.append(t)
+                    except Exception as ex:
+                        logger.warning(f"Auto-added follow-up task insert failed (non-fatal): {ex}")
+
+            return {
+                "flag": flag_text, "follow_up_question": None,
+                "verification_verdict": verdict, "verification_summary": summary,
+                "tasks_added": tasks_added,
+            }
         except Exception as e:
             logger.warning(f"Task review LLM call failed/timed out: {e}")
             return {"flag": None, "follow_up_question": None}  # Loophole L3 corollary: a failed review never blocks the task
