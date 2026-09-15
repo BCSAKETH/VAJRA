@@ -6282,9 +6282,17 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 added = 0
                 for desc in task_list:
                     try:
+                        # CONFIRMED LIVE BUG (2026-09-15): InvestigationTask
+                        # has no `created_at` column (verified directly
+                        # against the real Catalyst schema -- only
+                        # auto-managed CREATEDTIME/MODIFIEDTIME plus a
+                        # separate `completed_at` for task completion).
+                        # This exact insert is why every AI-driven task add
+                        # silently failed and produced the "may not be
+                        # configured on the server yet" text below -- the
+                        # table has existed since Sep 13, the column never did.
                         zcql_insert_row("InvestigationTask", {
                             "session_id": session_id, "description": desc, "status": "pending",
-                            "created_at": datetime.utcnow().isoformat(),
                         })
                         added += 1
                     except Exception as ex:

@@ -5415,12 +5415,19 @@ async def create_task(session_id: str, payload: CreateTaskRequest, request: Requ
     if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
     try:
+        # CONFIRMED LIVE BUG (2026-09-15): InvestigationTask has no
+        # `created_at` column -- verified directly against the real
+        # Catalyst schema (only auto-managed CREATEDTIME/MODIFIEDTIME
+        # system columns, plus a separate `completed_at` for task
+        # completion). Inserting a `created_at` key that isn't a real
+        # column made every single insert fail, which this function's own
+        # broad except then mislabeled as "table not configured" -- the
+        # table has existed since Sep 13; the column never did.
         zcql_insert_row("InvestigationTask", {
             "session_id": session_id, "description": desc, "status": "pending",
-            "created_at": datetime.utcnow().isoformat(),
         })
     except Exception as e:
-        logger.error(f"InvestigationTask table unavailable (console table not created yet?): {e}")
+        logger.error(f"InvestigationTask insert failed: {e}")
         raise HTTPException(status_code=503, detail="Guided tasks are not yet configured on the server.")
     return {"status": "created"}
 
