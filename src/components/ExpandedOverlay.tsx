@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../AppContext";
-import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2, PieChart as PieChartIcon, BarChart3, ShieldCheck, Scale, CheckCircle2, Sparkles } from "lucide-react";
+import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2, PieChart as PieChartIcon, BarChart3, AreaChart as AreaChartIcon, LineChart as LineChartIcon, ShieldCheck, Scale, CheckCircle2, Sparkles } from "lucide-react";
 import { OffenderTimelineStrip } from "./OffenderTimelineStrip";
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, CartesianGrid, PieChart, Pie, ReferenceLine } from "recharts";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, AreaChart, Area, CartesianGrid, PieChart, Pie, ReferenceLine, Legend } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { WatermarkOverlay } from "./WatermarkOverlay";
@@ -24,6 +24,38 @@ const CHART_COLORS = [
   "#2563EB", "#65A30D", "#9333EA", "#0891B2", "#B45309",
   "#4F46E5", "#E11D48", "#0D9488", "#A855F7",
 ];
+
+// Confirmed live feedback: several charts here were hardcoded to ONE
+// presentation (trend/forecast = line-only, case_distribution = pie-only)
+// with no way for an officer to ask for a different real chart type over
+// the SAME data. One shared toggle control -- not three separately hand-
+// built ones -- so every chart-bearing widget in this file offers a
+// consistent set of real alternate presentations, never re-fetching or
+// re-deriving data, only re-rendering it.
+type ChartKind = "line" | "bar" | "area" | "pie";
+const CHART_KIND_META: Record<ChartKind, { icon: React.ReactNode; labelEn: string; labelKn: string }> = {
+  line: { icon: <LineChartIcon className="w-3 h-3" />, labelEn: "Line", labelKn: "ಲೈನ್" },
+  bar: { icon: <BarChart3 className="w-3 h-3" />, labelEn: "Bar", labelKn: "ಬಾರ್" },
+  area: { icon: <AreaChartIcon className="w-3 h-3" />, labelEn: "Area", labelKn: "ಏರಿಯಾ" },
+  pie: { icon: <PieChartIcon className="w-3 h-3" />, labelEn: "Pie", labelKn: "ಪೈ" },
+};
+const ChartTypeToggle: React.FC<{ value: ChartKind; onChange: (k: ChartKind) => void; options: ChartKind[]; lang: "en" | "kn" }> = ({ value, onChange, options, lang }) => (
+  <div className="flex items-center gap-1.5 self-start">
+    {options.map((opt) => {
+      const meta = CHART_KIND_META[opt];
+      return (
+        <button
+          key={opt}
+          type="button"
+          onClick={() => onChange(opt)}
+          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10.5px] font-bold uppercase tracking-wide border cursor-pointer transition-colors ${value === opt ? "bg-[#C79A4E]/15 border-[#C79A4E]/40 text-[#C79A4E]" : "border-stone-800 text-stone-500 hover:text-stone-300"}`}
+        >
+          {meta.icon} {lang === "en" ? meta.labelEn : meta.labelKn}
+        </button>
+      );
+    })}
+  </div>
+);
 
 // Police-centric mapping for XGBoost/SHAP feature variables:
 // Translates technical data science variables into court-admissible,
@@ -277,12 +309,13 @@ interface ExpandedOverlayProps {
 export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType, data: rawData, onClose, inline = false, onFollowUpQuery, networkNewSinceTimestamp }) => {
   const { lang, officerName, badgeNumber } = useApp();
   const contentRef = useRef<HTMLDivElement>(null);
-  // Confirmed live feedback: case_distribution was hardcoded to a pie
-  // chart with no way for an officer to view the SAME data as a bar chart
-  // instead. The underlying data (data.series) already supports either --
-  // this is a pure presentation toggle over data that's already there, not
-  // a new data source.
-  const [distributionChartType, setDistributionChartType] = useState<"pie" | "bar">("pie");
+  // Confirmed live feedback: several charts (case_distribution, trend,
+  // forecast) were each hardcoded to exactly one presentation with no way
+  // to view the SAME underlying data differently. One ChartKind state per
+  // chart-bearing widget type, all driven by the shared ChartTypeToggle.
+  const [distributionChartType, setDistributionChartType] = useState<ChartKind>("pie");
+  const [trendChartType, setTrendChartType] = useState<ChartKind>("line");
+  const [forecastChartType, setForecastChartType] = useState<ChartKind>("line");
 
   // Resolve sub-data across top-level keys, nested sub-objects, or panels
   const netData = (rawData?.nodes && rawData.nodes.length > 0)
@@ -1173,25 +1206,67 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                 )}
               </div>
 
-              {/* Line Chart */}
+              {/* Chart-type toggle -- same forecastData + confidence band, three real presentations. */}
+              <ChartTypeToggle value={forecastChartType} onChange={setForecastChartType} options={["line", "bar", "area"]} lang={lang} />
+
               <div className="flex-1 min-h-[280px]">
                 <ResponsiveContainer width="100%" height={260}>
-                  <LineChart data={forecastData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
-                    <XAxis dataKey="name" stroke="#94A3B8" fontSize={10} />
-                    <YAxis stroke="#94A3B8" fontSize={10} />
-                    <Tooltip
-                      contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b" }}
-                    />
-                    <Line type="monotone" dataKey="Predicted" stroke="#F59E0B" strokeWidth={2.5} activeDot={{ r: 6 }} />
-                    <Line type="monotone" dataKey="Baseline" stroke="#C79A4E" strokeWidth={2} strokeDasharray="5 5" />
-                    {forecastMeta?.confidence_range && (
-                      <>
-                        <ReferenceLine y={forecastMeta.confidence_range.upper} stroke="#94A3B8" strokeDasharray="2 3" label={{ value: lang === "en" ? "Upper" : "ಮೇಲಿನ", position: "right", fill: "#94A3B8", fontSize: 9 }} />
-                        <ReferenceLine y={forecastMeta.confidence_range.lower} stroke="#94A3B8" strokeDasharray="2 3" label={{ value: lang === "en" ? "Lower" : "ಕೆಳಗಿನ", position: "right", fill: "#94A3B8", fontSize: 9 }} />
-                      </>
-                    )}
-                  </LineChart>
+                  {forecastChartType === "bar" ? (
+                    <BarChart data={forecastData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
+                      <XAxis dataKey="name" stroke="#94A3B8" fontSize={10} />
+                      <YAxis stroke="#94A3B8" fontSize={10} />
+                      <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b" }} />
+                      <Legend wrapperStyle={{ fontSize: 10 }} />
+                      <Bar dataKey="Predicted" fill="#F59E0B" radius={[4, 4, 0, 0]} />
+                      <Bar dataKey="Baseline" fill="#C79A4E" fillOpacity={0.55} radius={[4, 4, 0, 0]} />
+                      {forecastMeta?.confidence_range && (
+                        <>
+                          <ReferenceLine y={forecastMeta.confidence_range.upper} stroke="#94A3B8" strokeDasharray="2 3" label={{ value: lang === "en" ? "Upper" : "ಮೇಲಿನ", position: "right", fill: "#94A3B8", fontSize: 9 }} />
+                          <ReferenceLine y={forecastMeta.confidence_range.lower} stroke="#94A3B8" strokeDasharray="2 3" label={{ value: lang === "en" ? "Lower" : "ಕೆಳಗಿನ", position: "right", fill: "#94A3B8", fontSize: 9 }} />
+                        </>
+                      )}
+                    </BarChart>
+                  ) : forecastChartType === "area" ? (
+                    <AreaChart data={forecastData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
+                      <defs>
+                        <linearGradient id="forecastPredictedFill" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#F59E0B" stopOpacity={0.4} />
+                          <stop offset="95%" stopColor="#F59E0B" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
+                      <XAxis dataKey="name" stroke="#94A3B8" fontSize={10} />
+                      <YAxis stroke="#94A3B8" fontSize={10} />
+                      <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b" }} />
+                      <Legend wrapperStyle={{ fontSize: 10 }} />
+                      <Area type="monotone" dataKey="Predicted" stroke="#F59E0B" strokeWidth={2.5} fill="url(#forecastPredictedFill)" />
+                      <Line type="monotone" dataKey="Baseline" stroke="#C79A4E" strokeWidth={2} strokeDasharray="5 5" dot={false} />
+                      {forecastMeta?.confidence_range && (
+                        <>
+                          <ReferenceLine y={forecastMeta.confidence_range.upper} stroke="#94A3B8" strokeDasharray="2 3" label={{ value: lang === "en" ? "Upper" : "ಮೇಲಿನ", position: "right", fill: "#94A3B8", fontSize: 9 }} />
+                          <ReferenceLine y={forecastMeta.confidence_range.lower} stroke="#94A3B8" strokeDasharray="2 3" label={{ value: lang === "en" ? "Lower" : "ಕೆಳಗಿನ", position: "right", fill: "#94A3B8", fontSize: 9 }} />
+                        </>
+                      )}
+                    </AreaChart>
+                  ) : (
+                    <LineChart data={forecastData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
+                      <XAxis dataKey="name" stroke="#94A3B8" fontSize={10} />
+                      <YAxis stroke="#94A3B8" fontSize={10} />
+                      <Tooltip
+                        contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b" }}
+                      />
+                      <Line type="monotone" dataKey="Predicted" stroke="#F59E0B" strokeWidth={2.5} activeDot={{ r: 6 }} />
+                      <Line type="monotone" dataKey="Baseline" stroke="#C79A4E" strokeWidth={2} strokeDasharray="5 5" />
+                      {forecastMeta?.confidence_range && (
+                        <>
+                          <ReferenceLine y={forecastMeta.confidence_range.upper} stroke="#94A3B8" strokeDasharray="2 3" label={{ value: lang === "en" ? "Upper" : "ಮೇಲಿನ", position: "right", fill: "#94A3B8", fontSize: 9 }} />
+                          <ReferenceLine y={forecastMeta.confidence_range.lower} stroke="#94A3B8" strokeDasharray="2 3" label={{ value: lang === "en" ? "Lower" : "ಕೆಳಗಿನ", position: "right", fill: "#94A3B8", fontSize: 9 }} />
+                        </>
+                      )}
+                    </LineChart>
+                  )}
                 </ResponsiveContainer>
               </div>
 
@@ -1281,16 +1356,42 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                 </div>
               )}
 
-              {/* Line Chart */}
+              {/* Chart-type toggle -- same trendData, three real presentations. */}
+              <ChartTypeToggle value={trendChartType} onChange={setTrendChartType} options={["line", "bar", "area"]} lang={lang} />
+
               <div className="flex-1 min-h-[240px]">
                 <ResponsiveContainer width="100%" height={240}>
-                  <LineChart data={trendData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
-                    <XAxis dataKey="name" stroke="#94A3B8" fontSize={10} />
-                    <YAxis stroke="#94A3B8" fontSize={10} allowDecimals={false} />
-                    <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b" }} />
-                    <Line type="monotone" dataKey="Incidents" stroke="#C79A4E" strokeWidth={2.5} activeDot={{ r: 6 }} dot={{ r: 3 }} />
-                  </LineChart>
+                  {trendChartType === "bar" ? (
+                    <BarChart data={trendData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
+                      <XAxis dataKey="name" stroke="#94A3B8" fontSize={10} />
+                      <YAxis stroke="#94A3B8" fontSize={10} allowDecimals={false} />
+                      <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b" }} />
+                      <Bar dataKey="Incidents" fill="#C79A4E" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  ) : trendChartType === "area" ? (
+                    <AreaChart data={trendData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
+                      <defs>
+                        <linearGradient id="trendAreaFill" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#C79A4E" stopOpacity={0.4} />
+                          <stop offset="95%" stopColor="#C79A4E" stopOpacity={0} />
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
+                      <XAxis dataKey="name" stroke="#94A3B8" fontSize={10} />
+                      <YAxis stroke="#94A3B8" fontSize={10} allowDecimals={false} />
+                      <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b" }} />
+                      <Area type="monotone" dataKey="Incidents" stroke="#C79A4E" strokeWidth={2.5} fill="url(#trendAreaFill)" />
+                    </AreaChart>
+                  ) : (
+                    <LineChart data={trendData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
+                      <XAxis dataKey="name" stroke="#94A3B8" fontSize={10} />
+                      <YAxis stroke="#94A3B8" fontSize={10} allowDecimals={false} />
+                      <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b" }} />
+                      <Line type="monotone" dataKey="Incidents" stroke="#C79A4E" strokeWidth={2.5} activeDot={{ r: 6 }} dot={{ r: 3 }} />
+                    </LineChart>
+                  )}
                 </ResponsiveContainer>
               </div>
             </div>
@@ -1312,25 +1413,10 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                 </div>
               </div>
 
-              {/* Chart-type toggle: the SAME data.series, two presentations
-                  -- per live feedback that a pie-only view left no way to
-                  ask for a bar chart instead. */}
-              <div className="flex items-center gap-1.5 self-start">
-                <button
-                  type="button"
-                  onClick={() => setDistributionChartType("pie")}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10.5px] font-bold uppercase tracking-wide border cursor-pointer transition-colors ${distributionChartType === "pie" ? "bg-[#C79A4E]/15 border-[#C79A4E]/40 text-[#C79A4E]" : "border-stone-800 text-stone-500 hover:text-stone-300"}`}
-                >
-                  <PieChartIcon className="w-3 h-3" /> {lang === "en" ? "Pie" : "ಪೈ"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setDistributionChartType("bar")}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10.5px] font-bold uppercase tracking-wide border cursor-pointer transition-colors ${distributionChartType === "bar" ? "bg-[#C79A4E]/15 border-[#C79A4E]/40 text-[#C79A4E]" : "border-stone-800 text-stone-500 hover:text-stone-300"}`}
-                >
-                  <BarChart3 className="w-3 h-3" /> {lang === "en" ? "Bar" : "ಬಾರ್"}
-                </button>
-              </div>
+              {/* Chart-type toggle: the SAME data.series, multiple real
+                  presentations -- per live feedback that a pie-only view
+                  left no way to ask for a different chart type. */}
+              <ChartTypeToggle value={distributionChartType} onChange={setDistributionChartType} options={["pie", "bar"]} lang={lang} />
 
               <div className="flex-1 flex flex-col md:flex-row items-center justify-center gap-8 min-h-[280px]">
                 <div className="w-full md:w-1/2 h-[280px] flex items-center justify-center">
