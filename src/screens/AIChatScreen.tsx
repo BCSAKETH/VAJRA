@@ -1500,34 +1500,10 @@ export const AIChatScreen: React.FC = () => {
         addToast={addToast}
         answerMode={answerMode}
         onAnswerModeChange={setAnswerMode}
+        chatMode={chatMode}
+        onToggleCowork={handleToggleCowork}
+        hasParticipants={hasParticipants}
       />
-
-      {/* Chat / Cowork mode toggle */}
-      <div className="flex items-center gap-2 justify-center">
-        <div className="inline-flex rounded-lg border border-stone-800 bg-stone-950/50 p-0.5">
-          <button
-            onClick={() => handleToggleCowork("chat")}
-            className={`px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
-              chatMode === "chat" ? "bg-stone-800 text-stone-100" : "text-stone-500 hover:text-stone-300"
-            }`}
-          >
-            {t.chatModeChat}
-          </button>
-          <button
-            onClick={() => handleToggleCowork("cowork")}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[11px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
-              chatMode === "cowork" ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"
-            }`}
-          >
-            <Users className="w-3 h-3" /> {t.chatModeCowork}
-          </button>
-        </div>
-        {hasParticipants && (
-          <span className="text-[10px] text-[#C79A4E] font-mono">
-            {t.sharedSessionHint}
-          </span>
-        )}
-      </div>
     </div>
   );
 

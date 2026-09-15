@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Mic, MicOff, Send, Paperclip, X, FileText, Image as ImageIcon, ChevronDown, Video } from "lucide-react";
+import { Mic, MicOff, Send, Paperclip, X, FileText, Image as ImageIcon, ChevronDown, Video, Users } from "lucide-react";
 import { API_BASE } from "../config";
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
@@ -38,6 +38,13 @@ interface ChatInputProps {
   // planning, so nothing breaks if a cached old build sends it.
   answerMode: "standard" | "dossier";
   onAnswerModeChange: (m: "standard" | "dossier") => void;
+  // Chat/Cowork now lives in this same composer row (merged in per live
+  // feedback -- it used to render as its own separate pill below the
+  // composer box, which read as a stray disconnected control; Claude's
+  // own composer keeps every mode toggle inside one unified input shell).
+  chatMode?: "chat" | "cowork";
+  onToggleCowork?: (mode: "chat" | "cowork") => void;
+  hasParticipants?: boolean;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = React.memo(({
@@ -49,6 +56,9 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
   addToast,
   answerMode,
   onAnswerModeChange,
+  chatMode,
+  onToggleCowork,
+  hasParticipants,
 }) => {
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [inputVal, setInputVal] = useState("");
@@ -496,10 +506,11 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
         </button>
       </div>
 
-      {/* Answer-mode selector -- the "which model" position in a chat UI.
-          Standard = fast, one focused view. Full Dossier = deep, forces the
-          complete multi-panel investigation view for the case/suspect asked. */}
-      <div className="flex items-center gap-2 pt-1">
+      {/* Unified bottom control row -- answer-depth selector AND Chat/Cowork
+          both live inside this same composer shell now (previously
+          Chat/Cowork rendered as a separate pill below the box entirely,
+          which read as a disconnected stray control). */}
+      <div className="flex items-center gap-2 pt-1 flex-wrap">
         <div className="relative">
           <button
             type="button"
@@ -543,6 +554,34 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
         {answerMode === "dossier" && (
           <span className="text-[10px] font-mono text-[#C79A4E]/70">
             {lang === "en" ? "deep investigation view" : "ಆಳವಾದ ತನಿಖಾ ನೋಟ"}
+          </span>
+        )}
+
+        {onToggleCowork && (
+          <div className="inline-flex rounded-lg border border-stone-800 bg-stone-950/50 p-0.5">
+            <button
+              type="button"
+              onClick={() => onToggleCowork("chat")}
+              className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                chatMode === "chat" ? "bg-stone-800 text-stone-100" : "text-stone-500 hover:text-stone-300"
+              }`}
+            >
+              {lang === "en" ? "Chat" : "ಚಾಟ್"}
+            </button>
+            <button
+              type="button"
+              onClick={() => onToggleCowork("cowork")}
+              className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[10.5px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                chatMode === "cowork" ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"
+              }`}
+            >
+              <Users className="w-3 h-3" /> {lang === "en" ? "Cowork" : "ಸಹಕಾರ"}
+            </button>
+          </div>
+        )}
+        {hasParticipants && (
+          <span className="text-[10px] text-[#C79A4E] font-mono">
+            {lang === "en" ? "Shared session" : "ಹಂಚಿಕೊಂಡ ಸೆಷನ್"}
           </span>
         )}
       </div>
