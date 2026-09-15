@@ -10014,10 +10014,29 @@ async def investigation_browser_navigate(payload: Dict[str, Any] = Body(default=
         import requests as _requests
         out = {"ok": False, "title": "", "text": "", "links": []}
         try:
-            r = _requests.get(target_url, headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            }, timeout=10, verify=False)
-            if r.status_code != 200:
+            # SECURITY (found in this session's own loophole review):
+            # requests.get() follows redirects by default with NO re-check
+            # of is_safe_public_url on each hop -- a page could pass the
+            # initial SSRF check, then 302 to http://169.254.169.254/... or
+            # an internal IP, and requests would happily follow it,
+            # completely bypassing the guard above. allow_redirects=False
+            # + manually validating every hop (capped at 3, same bound a
+            # real browser's redirect loop protection uses) closes this.
+            fetch_url = target_url
+            r = None
+            for _ in range(4):
+                r = _requests.get(fetch_url, headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                }, timeout=10, verify=False, allow_redirects=False)
+                if r.status_code in (301, 302, 303, 307, 308) and r.headers.get("Location"):
+                    next_url = urljoin(fetch_url, r.headers["Location"])
+                    if not is_safe_public_url(next_url):
+                        logger.warning(f"investigation_browser_navigate: redirect to unsafe URL blocked ({fetch_url} -> {next_url})")
+                        return out
+                    fetch_url = next_url
+                    continue
+                break
+            if not r or r.status_code != 200:
                 return out
             html_raw = r.text
             tm = re.search(r"<title[^>]*>(.*?)</title>", html_raw, re.DOTALL | re.I)
@@ -10082,6 +10101,32 @@ async def investigation_browser_navigate(payload: Dict[str, Any] = Body(default=
         "links": extracted.get("links") or [],
         "screenshot_data_url": screenshot_data_url,
         "sha256_evidence_seal": evidence_seal,
+    }
+
+
+@app.get("/api/network/expand")
+async def network_expand(suspect_name: str, request: Request = None,
+                         location_context: str = Depends(security_firewall)):
+    """H.1.7: click-to-expand -- a lightweight, direct REST lookup of ONE
+    named suspect's network (real query_graph_network tool, same engine
+    every chat answer already uses) so NetworkGraph.tsx can merge the
+    result into the CURRENTLY-DISPLAYED graph's own local state in place,
+    without firing a whole new chat turn/answer the way onFollowUpQuery's
+    trace-confirmation path deliberately does for click-to-trace (H.1.3) --
+    that pattern doesn't fit here since expanding shouldn't replace the
+    officer's current view, just grow it."""
+    name = (suspect_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="suspect_name is required.")
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    unit_id = request.state.user_profile.get("UnitID") or request.state.user_profile.get("unitid")
+    result = agent_loop._execute_tool("query_graph_network", {"suspect_name": name}, employee_id, "network-expand", unit_id)
+    result_data = result.get("data") or {}
+    return {
+        "nodes": result_data.get("nodes") or [],
+        "edges": result_data.get("edges") or [],
+        "ambiguous_match": bool(result_data.get("ambiguous_match")),
+        "candidate_names": result_data.get("candidate_names") or [],
     }
 
 

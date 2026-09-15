@@ -377,7 +377,7 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
   // button -- the list-shaped types (repeat_offenders, crime_groups,
   // priority_concerns, case_list) already read as plain language on their
   // own, nothing chart-specific to narrate.
-  const isExplainableChart = ["map", "network", "risk", "forecast", "timeline", "mo_match", "correlation", "trend", "case_distribution", "case_funnel"].includes(effectiveType);
+  const isExplainableChart = ["map", "network", "risk", "forecast", "timeline", "mo_match", "correlation", "trend", "case_distribution", "case_funnel", "offender_timeline"].includes(effectiveType);
 
   const handleExplainChart = async () => {
     setIsExplainingChart(true);
@@ -575,6 +575,12 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
               <>
                 <ShieldCheck className="w-4 h-4 text-[#C79A4E]" />
                 <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Case Aging Funnel" : "ಪ್ರಕರಣ ಪ್ರಗತಿ ಹಂತಗಳು"}</span>
+              </>
+            )}
+            {effectiveType === "offender_timeline" && (
+              <>
+                <Repeat className="w-4 h-4 text-[#C79A4E]" />
+                <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Offender Timeline" : "ಅಪರಾಧಿ ಕಾಲಾನುಕ್ರಮ"}</span>
               </>
             )}
             {effectiveType === "priority_concerns" && (

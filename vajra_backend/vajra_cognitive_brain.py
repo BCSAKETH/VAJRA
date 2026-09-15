@@ -442,6 +442,8 @@ class CognitiveBrainMixin:
         {"name": "get_offender_risk", "does": "conviction-risk score for ONE named suspect", "params": {"suspect_name": "required"}},
         {"name": "query_graph_network", "does": "criminal network/associates of ONE named suspect", "params": {"suspect_name": "required"}},
         {"name": "trace_connection_path", "does": "F.3: shortest chain of co-accused connections between TWO named people (e.g. 'how is X connected to Y?') -- use this, NOT two separate query_graph_network calls, whenever the question names two distinct people to connect", "params": {"name_a": "required", "name_b": "required"}},
+        {"name": "get_offender_timeline", "does": "H.3.2: a repeat offender's own FIR-to-arrest timeline across ALL their linked cases (one PERSON's history across multiple cases) -- different from get_case_timeline, which is one CASE's own internal events", "params": {"suspect_name": "required"}},
+        {"name": "find_common_connections", "does": "H.1.6: what TWO named people have IN COMMON -- the accused/associates/phone/vehicle nodes present in both of their networks (e.g. 'what do X and Y have in common?'). Different from trace_connection_path (a chain BETWEEN two people, not shared overlap)", "params": {"name_a": "required", "name_b": "required"}},
         {"name": "get_mo_profile", "does": "modus-operandi profile for ONE named suspect", "params": {"suspect_name": "required"}},
         {"name": "query_financial_links", "does": "financial transaction links for a named entity", "params": {"entity_id": "required name"}},
         {"name": "get_case_types_distribution", "does": "breakdown of cases by crime type (pie/bar)", "params": {"district": "optional"}},

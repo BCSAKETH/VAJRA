@@ -279,6 +279,29 @@ class VajraAgentLoop(CognitiveBrainMixin):
             }
         },
         {
+            "name": "get_offender_timeline",
+            "description": "H.3.2: a repeat offender's own FIR-to-arrest timeline across ALL their linked cases (e.g. 'timeline for suspect Ramesh', 'when was X arrested across their cases'). Different from get_case_timeline (one case's own internal events) -- this is one PERSON's history across MULTIPLE cases.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "suspect_name": {"type": "string", "description": "The suspect's name"}
+                },
+                "required": ["suspect_name"]
+            }
+        },
+        {
+            "name": "find_common_connections",
+            "description": "H.1.6: Given TWO named people (or two case numbers), find what they have in common -- the accused/associates/phone/vehicle nodes that appear in BOTH of their networks. Different from trace_connection_path (shortest chain BETWEEN two people) -- this answers 'what do X and Y have in common?' instead of 'how are X and Y connected?'.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name_a": {"type": "string", "description": "The first person's name"},
+                    "name_b": {"type": "string", "description": "The second person's name"}
+                },
+                "required": ["name_a", "name_b"]
+            }
+        },
+        {
             "name": "query_financial_links",
             "description": "Trace suspicious bank account and wallet transaction connections for a suspect or entity ID.",
             "parameters": {
@@ -1825,6 +1848,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
         "list_cases_sharing_id": ["internal id", "internal ID", "shared id", "shared ID", "share this id",
                                  "share this ID", "same internal id", "same case id", "linked by internal",
                                  "cases linked to this internal", "shares the internal", "casemasterid"],
+        "find_common_connections": ["have in common", "in common", "common connections", "common connection",
+                                     "what do they share", "shared between", "overlap between"],
+        "get_offender_timeline": ["offender timeline", "repeat offender timeline", "timeline for suspect",
+                                   "arrest history", "fir history", "across their cases", "across all their cases"],
         "query_case": ["case", "cr-", "fir", "case number", "case no", "about case", "details of case"],
         "get_case_sections": ["section", "ipc", "bns", "legal provision", "charges", "act", "which section"],
         "suggest_sections": ["what section", "which section", "sections can be applied", "applicable section",
@@ -4713,6 +4740,70 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 citations.append({"type": "GraphRAG Shortest-Path Trace", "id": f"{name_a} <-> {name_b}", "details": f"BFS co-accused traversal, {hops} hop(s)"})
             self._write_audit_log(employee_id, "Shortest-Path Connection Trace", f"{name_a} <-> {name_b}", f"Trace connection between {name_a} and {name_b}", text_result, session_id)
 
+        # 5c. find_common_connections (H.1.6) -- "what do X and Y have in
+        # common?", different question from trace_connection_path's "how
+        # are X and Y connected?" (a chain vs. a shared-node intersection).
+        # Reuses get_criminal_network's existing per-suspect traversal
+        # twice (once per name) and diffs the two node sets, rather than a
+        # new graph algorithm. Renders as ONE combined NetworkGraph (no new
+        # frontend widget type) with every shared node cross_flag'd --
+        # NetworkGraph.tsx already renders a distinct dashed ring + tooltip
+        # for any cross_flag'd node (the existing F.9 "Repeat Offenders
+        # list" convention, repurposed here for "shared with the other
+        # name" instead).
+        elif tool_name == "find_common_connections":
+            name_a = self.sanitize_sql_input(params.get("name_a", ""))
+            name_b = self.sanitize_sql_input(params.get("name_b", ""))
+            net_a = graph_rag.get_criminal_network(name_a)
+            net_b = graph_rag.get_criminal_network(name_b)
+            if net_a.get("ambiguous_match") or net_b.get("ambiguous_match"):
+                response_type = "text"
+                a_ambiguous = bool(net_a.get("ambiguous_match"))
+                amb_name = name_a if a_ambiguous else name_b
+                cands = (net_a if a_ambiguous else net_b).get("candidate_names", [])
+                text_result = (
+                    f"'{amb_name}' matches multiple different people in the database, not one person "
+                    f"(found: {', '.join(cands[:5])}{'...' if len(cands) > 5 else ''}). "
+                    f"Please provide a fuller name to compare networks."
+                )
+                data = {}
+                citations.append({"type": "GraphRAG Relational Tracing", "id": f"{name_a} / {name_b}", "details": "Ambiguous name -- not compared"})
+            else:
+                nodes_a = {str(n.get("label", "")).strip().lower(): n for n in (net_a.get("nodes") or []) if n.get("label")}
+                nodes_b = {str(n.get("label", "")).strip().lower(): n for n in (net_b.get("nodes") or []) if n.get("label")}
+                exclude = {name_a.strip().lower(), name_b.strip().lower()}
+                shared_labels = (set(nodes_a) & set(nodes_b)) - exclude
+                if shared_labels:
+                    response_type = "network"
+                    combined_by_id: Dict[str, Dict[str, Any]] = {}
+                    for n in (net_a.get("nodes") or []) + (net_b.get("nodes") or []):
+                        nid = str(n.get("id") or n.get("label"))
+                        if nid not in combined_by_id:
+                            combined_by_id[nid] = dict(n)
+                        if str(n.get("label", "")).strip().lower() in shared_labels:
+                            combined_by_id[nid]["cross_flag"] = f"Common to both {name_a} and {name_b}"
+                    shared_node_labels = sorted({nodes_a[l].get("label") for l in shared_labels})
+                    data = {
+                        "nodes": list(combined_by_id.values()),
+                        "edges": (net_a.get("edges") or []) + (net_b.get("edges") or []),
+                        "target_suspect": f"{name_a} ∩ {name_b}",
+                    }
+                    text_result = (
+                        f"**{name_a}** and **{name_b}** have {len(shared_node_labels)} connection(s) in common: "
+                        + ", ".join(shared_node_labels[:10])
+                        + (f" (+{len(shared_node_labels) - 10} more)" if len(shared_node_labels) > 10 else "") + "."
+                    )
+                    citations.append({"type": "GraphRAG Relational Tracing", "id": f"{name_a} ∩ {name_b}",
+                                      "details": f"Real network-node intersection: {len(shared_node_labels)} shared entit(y/ies)."})
+                else:
+                    response_type = "text"
+                    text_result = (f"No common connections found between {name_a} and {name_b} in the database -- "
+                                   f"their networks don't overlap on any recorded co-accused, phone, or vehicle link.")
+                    data = {}
+                    citations.append({"type": "GraphRAG Relational Tracing", "id": f"{name_a} / {name_b}", "details": "No overlap found."})
+            final_answer = True
+            self._write_audit_log(employee_id, "Common Connections", f"{name_a} / {name_b}", "Common-connections finder", text_result, session_id)
+
         # 6. query_financial_links
         elif tool_name == "query_financial_links":
             entity = self.sanitize_sql_input(params.get("entity_id", ""))
@@ -6279,6 +6370,99 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     )
                 citations.append({"type": "ZCQL Joined Timeline", "id": case_no, "details": "Occurrence, FIR, Arrest, and Chargesheet logs merged"})
             self._write_audit_log(employee_id, "Case Timeline Inquest", f"Case {case_no}", f"Get timeline for case {case_no}", text_result, session_id)
+
+        # 14b. get_offender_timeline (H.3.2) -- a repeat offender's own
+        # FIR->Arrest pairs across ALL their linked cases, horizontal
+        # timeline strip. Cannot reuse get_repeat_offenders (only a
+        # pre-computed case COUNT, no dates) or get_offender_risk (resolves
+        # exactly one case) -- this is genuinely new per-suspect, multi-case
+        # date aggregation, but reuses get_case_timeline's own FIR/Arrest
+        # field-join pattern once per linked case. Same ambiguous-name-
+        # collision guard as get_criminal_network (vajra_core.py) -- never
+        # silently merges two different real people's histories into one.
+        elif tool_name == "get_offender_timeline":
+            suspect = self.sanitize_sql_input(params.get("suspect_name", ""))
+            response_type = "offender_timeline"
+            events_by_case: List[Dict[str, Any]] = []
+            resolved_name = suspect
+            ambiguous = False
+            candidates: List[str] = []
+            if catalyst_app and suspect:
+                try:
+                    acc_res = catalyst_app.zql().execute_query(
+                        f"SELECT AccusedName, CaseMasterID FROM Accused WHERE AccusedName LIKE '*{suspect}*'")
+                    distinct_names: Dict[str, List[int]] = {}
+                    for r in acc_res:
+                        a = r.get("Accused", {})
+                        nm, cid = a.get("AccusedName"), a.get("CaseMasterID")
+                        if nm and cid is not None:
+                            distinct_names.setdefault(nm, []).append(cid)
+                    if len(distinct_names) > 1:
+                        exact = next((n for n in distinct_names if n.lower() == suspect.lower()), None)
+                        if exact:
+                            resolved_name = exact
+                        else:
+                            ambiguous = True
+                            candidates = sorted(n for n in distinct_names if n.lower() != suspect.lower())[:10]
+                    elif len(distinct_names) == 1:
+                        resolved_name = next(iter(distinct_names))
+
+                    if not ambiguous:
+                        case_ids = sorted(set(distinct_names.get(resolved_name, [])))
+                        for cm_id in case_ids[:15]:
+                            fir_date, crime_no = None, None
+                            try:
+                                cm_res = catalyst_app.zql().execute_query(
+                                    f"SELECT CrimeRegisteredDate, CrimeNo FROM CaseMaster WHERE CaseMasterID = {cm_id} LIMIT 1")
+                                if cm_res:
+                                    cm = cm_res[0].get("CaseMaster", {})
+                                    fir_date = cm.get("CrimeRegisteredDate")
+                                    crime_no = cm.get("CrimeNo")
+                            except Exception:
+                                pass
+                            arrest_date = None
+                            try:
+                                arr_res = catalyst_app.zql().execute_query(
+                                    f"SELECT ArrestSurrenderDate FROM ArrestSurrender WHERE CaseMasterID = {cm_id} LIMIT 1")
+                                if arr_res:
+                                    arrest_date = arr_res[0].get("ArrestSurrender", {}).get("ArrestSurrenderDate")
+                            except Exception:
+                                pass
+                            if fir_date or arrest_date:
+                                events_by_case.append({
+                                    "case_no": crime_no, "case_id": cm_id,
+                                    "fir_date": (fir_date or "").split()[0] if fir_date else None,
+                                    "arrest_date": (arrest_date or "").split()[0] if arrest_date else None,
+                                })
+                except Exception as ex:
+                    logger.warning(f"get_offender_timeline failed: {ex}")
+
+            if ambiguous:
+                response_type = "text"
+                text_result = (f"'{suspect}' matches multiple different people in the database, not one person "
+                               f"(found: {', '.join(candidates)}). Please provide a fuller name to build a specific timeline.")
+                data = {"ambiguous_match": True, "candidate_names": candidates}
+                citations.append({"type": "Accused Datastore", "id": suspect, "details": "Ambiguous name -- timeline not built"})
+            elif not events_by_case:
+                response_type = "text"
+                text_result = f"No FIR/arrest history found on record for '{suspect}'."
+                data = {}
+                citations.append({"type": "ZCQL Joined Offender Timeline", "id": suspect, "details": "No linked cases found"})
+            else:
+                events_by_case.sort(key=lambda e: e["fir_date"] or "9999")
+                text_result = (
+                    f"Offender timeline for {resolved_name}: {len(events_by_case)} linked case(s) -- " +
+                    "; ".join(
+                        f"{e['case_no'] or 'case'} (FIR {e['fir_date'] or 'unknown'}"
+                        + (f", arrest {e['arrest_date']}" if e['arrest_date'] else "") + ")"
+                        for e in events_by_case[:10]
+                    ) + "."
+                )
+                data = {"suspect_name": resolved_name, "cases": events_by_case}
+                citations.append({"type": "ZCQL Joined Offender Timeline", "id": resolved_name,
+                                  "details": f"FIR + arrest dates across {len(events_by_case)} linked case(s)."})
+            final_answer = True
+            self._write_audit_log(employee_id, "Offender Timeline", suspect, f"Repeat-offender timeline for {suspect}", text_result, session_id)
 
         # 15. get_demographic_correlation
         elif tool_name == "get_demographic_correlation":

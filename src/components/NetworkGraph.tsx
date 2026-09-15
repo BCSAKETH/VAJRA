@@ -1,4 +1,5 @@
 import React, { useMemo, useState, useRef, useEffect } from "react";
+import { API_BASE } from "../config";
 
 export interface GraphNode {
   id: string;
@@ -224,10 +225,45 @@ function computeLayout(nodes: GraphNode[], edges: GraphEdge[]) {
 }
 
 export const NetworkGraph: React.FC<NetworkGraphProps> = ({
-  nodes, edges, height: minHeight = 380,
+  nodes: propNodes, edges: propEdges, height: minHeight = 380,
   activeLayers, onToggleLayer, primaryEntityId, minRiskFilter, newSinceTimestamp,
   onFollowUpQuery,
 }) => {
+  // H.1.7: click-to-expand -- fetched expansions merge into ONE combined
+  // node/edge list right here, so every existing computation below (layout,
+  // filtering, date range, etc.) keeps working against a single `nodes`/
+  // `edges` pair exactly as before, with no separate merge step needed at
+  // each call site. De-duplicated by real node id against whatever the
+  // caller's own props already contain.
+  const [expandedNodes, setExpandedNodes] = useState<GraphNode[]>([]);
+  const [expandedEdges, setExpandedEdges] = useState<GraphEdge[]>([]);
+  const [expandingNodeId, setExpandingNodeId] = useState<string | null>(null);
+  const nodes = useMemo(() => {
+    const seen = new Set(propNodes.map((n) => n.id));
+    return [...propNodes, ...expandedNodes.filter((n) => !seen.has(n.id))];
+  }, [propNodes, expandedNodes]);
+  const edges = useMemo(() => [...propEdges, ...expandedEdges], [propEdges, expandedEdges]);
+
+  const handleNodeExpand = async (n: GraphNode) => {
+    if (n.type === "overflow" || expandingNodeId) return;
+    setExpandingNodeId(n.id);
+    try {
+      const res = await fetch(`${API_BASE}/api/network/expand?suspect_name=${encodeURIComponent(n.label)}`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.ambiguous_match) return; // silent -- expanding is a nicety, not worth a blocking error for an ambiguous name
+      const newNodes: GraphNode[] = (data.nodes || []).filter((nn: GraphNode) => nn.id !== n.id);
+      const newEdges: GraphEdge[] = data.edges || [];
+      if (newNodes.length) setExpandedNodes((prev) => [...prev, ...newNodes]);
+      if (newEdges.length) setExpandedEdges((prev) => [...prev, ...newEdges]);
+    } catch {
+      // silent -- click-to-expand is progressive enrichment, never a hard failure
+    } finally {
+      setExpandingNodeId(null);
+    }
+  };
   // F.1/F.33: which layers this graph actually carries (legacy payloads with
   // no "layer" field on any node render exactly as before -- no toggle bar,
   // no filtering, zero behavior change for every caller that predates this).
@@ -521,19 +557,25 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
           const tooltipText = tooltipParts.join(" · ");
           const isSelectedForTrace = selectedForTrace.includes(n.id);
           const traceable = !!onFollowUpQuery && !isOverflow;
+          const expandable = !isOverflow && n.type !== "suspect";
+          const isExpanding = expandingNodeId === n.id;
           return (
             <g
               key={n.id}
-              className={traceable ? "cursor-pointer" : "cursor-default"}
-              opacity={isMultiHopNode ? 0.6 : 1}
+              className={traceable || expandable ? "cursor-pointer" : "cursor-default"}
+              opacity={isMultiHopNode ? 0.6 : isExpanding ? 0.5 : 1}
               onClick={() => handleNodeClick(n)}
+              onDoubleClick={(e) => { e.stopPropagation(); if (expandable) handleNodeExpand(n); }}
             >
               {/* Native <title> gives every node a real hover tooltip with no
                   extra JS state/positioning logic -- appropriate for a
                   lightweight SVG diagram like this one (see interaction.md:
                   "per-mark hover tooltip" is required, not a specific
-                  implementation). */}
-              <title>{tooltipText}{traceable ? " · click to select for trace" : ""}</title>
+                  implementation). H.1.7: double-click expands a non-root
+                  node's own network in place -- a distinct gesture from
+                  H.1.3's single-click trace-select so the two features
+                  never fight over the same click. */}
+              <title>{tooltipText}{traceable ? " · click to select for trace" : ""}{expandable ? " · double-click to expand" : ""}</title>
               {n.type === "suspect" && (
                 <circle
                   cx={pos.x} cy={pos.y} r={radius + 8}

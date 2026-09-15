@@ -39,7 +39,19 @@ export function downloadHotspotsAsGeoJson(hotspots: Array<{ lat: number; lng: nu
   triggerDownload(blob, filename);
 }
 
-export function downloadSvgAsPng(svgEl: SVGSVGElement, filename: string, scale = 2) {
+// H.1.5: evidence-grade export -- an officer/case/timestamp footer baked
+// into the exported PNG (not the source SVG, which stays a clean widget for
+// on-screen use) so the file is self-describing when dropped into a
+// chargesheet annexure, matching the same provenance idea the PDF dossier's
+// own audit_hash already uses. Omitted entirely (no footer band) when no
+// caller passes it -- every existing call site is unaffected.
+export interface ExportFooter {
+  officer?: string;
+  badge?: string;
+  caseRef?: string;
+}
+
+export function downloadSvgAsPng(svgEl: SVGSVGElement, filename: string, scale = 2, footer?: ExportFooter) {
   const clone = svgEl.cloneNode(true) as SVGSVGElement;
   // Recharts/inline SVGs rely on ambient CSS for text/stroke colors that
   // won't apply once serialized standalone -- bake in dark-panel styling
@@ -56,17 +68,35 @@ export function downloadSvgAsPng(svgEl: SVGSVGElement, filename: string, scale =
   const svgBlob = new Blob([svgString], { type: "image/svg+xml;charset=utf-8" });
   const url = URL.createObjectURL(svgBlob);
 
+  const footerH = footer ? 26 : 0;
   const img = new Image();
   img.onload = () => {
     const canvas = document.createElement("canvas");
     canvas.width = width * scale;
-    canvas.height = height * scale;
+    canvas.height = (height + footerH) * scale;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
     ctx.fillStyle = "#0b1220";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.scale(scale, scale);
     ctx.drawImage(img, 0, 0, width, height);
+    if (footer) {
+      ctx.strokeStyle = "rgba(199,154,78,0.35)";
+      ctx.lineWidth = 0.5;
+      ctx.beginPath();
+      ctx.moveTo(0, height);
+      ctx.lineTo(width, height);
+      ctx.stroke();
+      const stampParts = [
+        footer.officer ? `Officer: ${footer.officer}${footer.badge ? ` (${footer.badge})` : ""}` : null,
+        footer.caseRef ? `Ref: ${footer.caseRef}` : null,
+        `Generated: ${new Date().toISOString().replace("T", " ").slice(0, 19)} UTC`,
+      ].filter(Boolean);
+      ctx.fillStyle = "#C79A4E";
+      ctx.font = "9px monospace";
+      ctx.textBaseline = "middle";
+      ctx.fillText(stampParts.join("   •   "), 8, height + footerH / 2);
+    }
     URL.revokeObjectURL(url);
     canvas.toBlob((blob) => {
       if (blob) triggerDownload(blob, filename);

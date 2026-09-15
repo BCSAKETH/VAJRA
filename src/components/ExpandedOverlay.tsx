@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../AppContext";
 import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2, PieChart as PieChartIcon, ShieldCheck, Scale, CheckCircle2, Sparkles } from "lucide-react";
+import { OffenderTimelineStrip } from "./OffenderTimelineStrip";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, CartesianGrid, PieChart, Pie, ReferenceLine } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
@@ -255,7 +256,7 @@ const MoneyFlowLedger: React.FC<{ transactions: any[]; lang: "en" | "kn" }> = ({
 };
 
 interface ExpandedOverlayProps {
-  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "case_funnel" | "case_list" | "dossier" | "priority_concerns" | "news" | string;
+  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "case_funnel" | "offender_timeline" | "case_list" | "dossier" | "priority_concerns" | "news" | string;
   data: any;
   onClose: () => void;
   // When true, render only the rich content pane (no fixed backdrop, no modal
@@ -274,7 +275,7 @@ interface ExpandedOverlayProps {
 }
 
 export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType, data: rawData, onClose, inline = false, onFollowUpQuery, networkNewSinceTimestamp }) => {
-  const { lang } = useApp();
+  const { lang, officerName, badgeNumber } = useApp();
   const contentRef = useRef<HTMLDivElement>(null);
 
   // Resolve sub-data across top-level keys, nested sub-objects, or panels
@@ -336,7 +337,11 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
     if (type === "network" || type === "risk" || type === "forecast" || type === "trend") {
       const svg = contentRef.current?.querySelector("svg");
       if (svg) {
-        downloadSvgAsPng(svg as SVGSVGElement, `vajra_${type}_${stamp}.png`);
+        // H.1.5: evidence-grade export -- self-describing PNG footer.
+        const caseRef = data.case_no || data.target_suspect || data.suspect || data.primary_entity || undefined;
+        downloadSvgAsPng(svg as SVGSVGElement, `vajra_${type}_${stamp}.png`, 2, {
+          officer: officerName || undefined, badge: badgeNumber || undefined, caseRef,
+        });
         return;
       }
     }
@@ -471,6 +476,12 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                   <>
                     <ShieldCheck className="w-5 h-5 text-[#C79A4E]" />
                     <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Aging Funnel" : "ಪ್ರಕರಣ ಪ್ರಗತಿ ಹಂತಗಳು"}</h3>
+                  </>
+                )}
+                {type === "offender_timeline" && (
+                  <>
+                    <Repeat className="w-5 h-5 text-[#C79A4E]" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Offender Timeline" : "ಅಪರಾಧಿ ಕಾಲಾನುಕ್ರಮ"}</h3>
                   </>
                 )}
               </>
@@ -1392,6 +1403,12 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                 })()}
               </div>
             </div>
+          )}
+
+          {/* H.3.2: Offender Timeline -- horizontal FIR->Arrest strip across
+              a repeat offender's own full case history. */}
+          {type === "offender_timeline" && (
+            <OffenderTimelineStrip suspectName={data.suspect_name || ""} cases={data.cases || []} lang={lang} />
           )}
 
           {type === "timeline" && (
