@@ -96,20 +96,36 @@ class CognitiveBrainMixin:
 
     # ---- 2. RELATIONSHIP UNDERSTANDING -----------------------------------
 
+    # Confirmed live bug (2026-09-15): the entity-span character class below
+    # used to be letters/spaces/./'/- ONLY -- CR-2024-56100 contains digits,
+    # which are never in that class, so a case number could never match at
+    # all. "how are CR-2024-56100 and CR-2024-77218 connected" and "how are
+    # CR-2024-77218 and Sanya Grover connected" both silently fell through
+    # to a single-case lookup, dropping the second entity entirely and
+    # answering a different question than the one asked. This mixin's own
+    # docstring names exactly this failure mode as the reason this class
+    # exists ("forcing a single-person answer onto a two-person question")
+    # -- it just never covered case numbers, only names. Fixed by admitting
+    # a case-number span as an alternative to a name span in the same regex.
+    _CASE_NO_RE = r"CR-\d{4}-\d+"
+    _ENTITY_SPAN_RE = rf"(?:{_CASE_NO_RE}|[A-Za-z][A-Za-z .'-]{{1,40}}?)"
+
     def _detect_relationship_query(self, query: str) -> Optional[Tuple[str, str]]:
-        """Detects a two-named-suspect relationship question ('how is X
-        involved with Y', 'relation between X and Y', 'how are X and Y
-        connected', etc.) and extracts both name spans. Deliberately narrow,
+        """Detects a two-entity relationship question ('how is X involved
+        with Y', 'relation between X and Y', 'how are X and Y connected',
+        etc.) and extracts both entity spans -- a suspect NAME, a CASE
+        NUMBER (CR-YYYY-NNNNN), or a mix of the two. Deliberately narrow,
         specific phrase patterns -- not general NER -- because a false
         NEGATIVE here just falls through to the existing paths unchanged,
         while a false POSITIVE would misread an unrelated question as a
         relationship query, which is worse. Case-insensitive since an
         officer may type a name in lowercase (confirmed live)."""
         q = (query or "").strip()
+        e = self._ENTITY_SPAN_RE
         patterns = [
-            r"how\s+(?:is|was)\s+([A-Za-z][A-Za-z .'-]{1,40}?)\s+(?:involved with|connected to|related to|linked to|associated with)\s+([A-Za-z][A-Za-z .'-]{1,40}?)[\?\.]*$",
-            r"(?:relation|relationship|connection|link)\s+between\s+([A-Za-z][A-Za-z .'-]{1,40}?)\s+and\s+([A-Za-z][A-Za-z .'-]{1,40}?)[\?\.]*$",
-            r"how\s+are\s+([A-Za-z][A-Za-z .'-]{1,40}?)\s+and\s+([A-Za-z][A-Za-z .'-]{1,40}?)\s+(?:connected|related|linked)",
+            rf"how\s+(?:is|was)\s+({e})\s+(?:involved with|connected to|related to|linked to|associated with)\s+({e})[\?\.]*$",
+            rf"(?:relation|relationship|connection|link)\s+between\s+({e})\s+and\s+({e})[\?\.]*$",
+            rf"how\s+are\s+({e})\s+and\s+({e})\s+(?:connected|related|linked)",
         ]
         for pat in patterns:
             m = re.search(pat, q, re.IGNORECASE)
@@ -118,6 +134,10 @@ class CognitiveBrainMixin:
                 if n1 and n2 and n1.lower() != n2.lower() and len(n1) > 1 and len(n2) > 1:
                     return (n1, n2)
         return None
+
+    @classmethod
+    def _is_case_no(cls, s: str) -> bool:
+        return bool(re.fullmatch(cls._CASE_NO_RE, (s or "").strip(), re.IGNORECASE))
 
     def _resolve_accused_name(self, raw_name: str) -> Optional[str]:
         """Best-effort resolve a possibly-mistyped name to a real
@@ -149,7 +169,179 @@ class CognitiveBrainMixin:
                     pass
         return None
 
-    def _answer_relationship_between(self, name1_raw: str, name2_raw: str, employee_id: int, session_id: str) -> Optional[Dict[str, Any]]:
+    def _answer_relationship_between(self, entity1_raw: str, entity2_raw: str, employee_id: int, session_id: str) -> Optional[Dict[str, Any]]:
+        """Dispatches 'how are X and Y connected' to the right comparison
+        based on what each entity actually is -- a case number
+        (CR-YYYY-NNNNN) or a suspect name. Two names keeps the original,
+        proven logic below unchanged; a case-to-case or case-to-name pair
+        (the confirmed live gap -- see _detect_relationship_query's own
+        docstring) routes to the dedicated helpers just below this one."""
+        if not catalyst_app:
+            return None
+        is_case1, is_case2 = self._is_case_no(entity1_raw), self._is_case_no(entity2_raw)
+        if is_case1 and is_case2:
+            return self._answer_case_to_case_relationship(entity1_raw, entity2_raw)
+        if is_case1 != is_case2:
+            case_raw, name_raw = (entity1_raw, entity2_raw) if is_case1 else (entity2_raw, entity1_raw)
+            return self._answer_case_to_name_relationship(case_raw, name_raw)
+        return self._answer_name_to_name_relationship(entity1_raw, entity2_raw)
+
+    def _case_summary_for_relationship(self, case_no: str) -> Optional[Dict[str, Any]]:
+        """Resolves ONE case number into everything the relationship
+        comparisons below need: its real, unique ROWID (never the non-
+        unique CaseMasterID alone -- see _resolve_case_rowid's own
+        docstring for the confirmed live collision this guards against),
+        its accused roster, crime type, and filing station -- plus the same
+        honest `collisions` count _resolve_case_rowid already computes, so
+        every caller here carries forward the exact same disclosure
+        discipline instead of a parallel implementation that could
+        silently drop it."""
+        resolved = self._resolve_case_rowid(case_no)
+        if not resolved:
+            return None
+        case_id = resolved["case_id"]
+        accused_names: set = set()
+        try:
+            r = catalyst_app.zql().execute_query(f"SELECT AccusedName FROM Accused WHERE CaseMasterID = {case_id}")
+            accused_names = {row.get("Accused", {}).get("AccusedName") for row in r if row.get("Accused", {}).get("AccusedName")}
+        except Exception:
+            pass
+        crime_head_id, station_id = None, None
+        try:
+            fr = catalyst_app.zql().execute_query(
+                f"SELECT CrimeMajorHeadID, PoliceStationID FROM CaseMaster WHERE ROWID = {resolved['rowid']} LIMIT 1")
+            if fr:
+                cm = fr[0].get("CaseMaster", {})
+                crime_head_id = cm.get("crimemajorheadid") or cm.get("CrimeMajorHeadID")
+                station_id = cm.get("policestationid") or cm.get("PoliceStationID")
+        except Exception:
+            pass
+        return {
+            "case_no": case_no, "case_id": case_id, "rowid": resolved["rowid"],
+            "collisions": resolved["collisions"], "accused_names": accused_names,
+            "crime_head_id": crime_head_id, "station_id": station_id,
+        }
+
+    def _answer_case_to_case_relationship(self, case1_raw: str, case2_raw: str) -> Dict[str, Any]:
+        """Real comparison between TWO CASES: shared accused (a real,
+        checkable link), same filing station, same crime category (a
+        WEAKER signal, labeled as such -- same crime type is not proof of
+        the same offender). Honestly reports 'no recorded connection' when
+        none of these hold, exactly like the name-to-name path below, and
+        carries forward each case's own CaseMasterID-collision disclosure
+        (a real, already-documented data-quality flaw in this dataset --
+        see _resolve_case_rowid) rather than presenting possibly-wrong
+        child data as settled fact."""
+        s1 = self._case_summary_for_relationship(case1_raw)
+        s2 = self._case_summary_for_relationship(case2_raw)
+        if not s1 or not s2:
+            missing = case1_raw if not s1 else case2_raw
+            return {
+                "text": f"I could not find case \"{missing}\" on record, so I can't determine a relationship. Please check the case number.",
+                "response_type": "text", "data": {},
+                "citations": [{"type": "CCTNS Database Record", "id": missing, "details": "Case number not found."}],
+                "is_simulated": False, "simulated_reason": ""
+            }
+        lines = [f"Relationship between **{s1['case_no']}** and **{s2['case_no']}**:"]
+        citations: List[Dict[str, Any]] = []
+        if s1["case_id"] == s2["case_id"]:
+            # Same underlying CaseMasterID: this IS the connection ZCQL can
+            # see, but it's a known data-quality collision in this dataset
+            # (CaseMasterID is not a unique key here), not a real
+            # investigative link -- disclose plainly instead of presenting
+            # shared child rows as if the two cases were genuinely tied.
+            lines.append(f"- These two case numbers share the same internal database record (CaseMasterID "
+                         f"{s1['case_id']}) -- a known data-quality collision in this dataset, not a real "
+                         f"investigative link. Their accused/section/victim child records cannot be reliably "
+                         f"told apart from each other; verify against the original FIRs before acting on either.")
+            citations.append({"type": "Data Quality", "id": f"CaseMasterID {s1['case_id']}",
+                              "details": "Both case numbers resolve to the same non-unique internal ID."})
+        else:
+            shared_accused = s1["accused_names"] & s2["accused_names"]
+            same_station = s1["station_id"] is not None and s1["station_id"] == s2["station_id"]
+            same_crime_type = s1["crime_head_id"] is not None and s1["crime_head_id"] == s2["crime_head_id"]
+            found = False
+            if shared_accused:
+                found = True
+                lines.append(f"- Shared accused on both cases: {', '.join(sorted(n for n in shared_accused if n))}.")
+                citations.append({"type": "CCTNS Database Record", "id": f"{s1['case_no']}, {s2['case_no']}",
+                                  "details": "Same accused named on both cases."})
+            if same_station:
+                found = True
+                lines.append("- Filed at the same police station.")
+            if same_crime_type:
+                lines.append("- Same crime category (a weaker signal -- not confirmation of the same offender or a shared investigation).")
+            if not found:
+                lines.append("- No shared accused and no shared filing station found between these two cases -- there is no recorded direct connection to report.")
+                citations.append({"type": "CCTNS Database Record", "id": f"{s1['case_no']} / {s2['case_no']}", "details": "No overlap found."})
+            for s in (s1, s2):
+                if s["collisions"] > 0:
+                    lines.append(f"\n⚠ Data-integrity note: {s['case_no']}'s internal case-linkage ID is shared with "
+                                 f"{s['collisions']} other case record(s) in this dataset -- the accused/sections shown "
+                                 f"for it may belong to a different one of those records; verify against the original FIR.")
+        return {
+            "text": "\n".join(lines), "response_type": "text",
+            "data": {"case1": s1["case_no"], "case2": s2["case_no"]},
+            "citations": citations, "is_simulated": False, "simulated_reason": ""
+        }
+
+    def _answer_case_to_name_relationship(self, case_raw: str, name_raw: str) -> Dict[str, Any]:
+        """Real comparison between ONE CASE and ONE NAMED PERSON: is that
+        person actually an accused on this case (a direct, checkable link)?
+        If not, does their OWN case history share a crime type or filing
+        station with this case (a weaker signal, labeled as such)? Honest
+        'no recorded connection' otherwise -- never assumes a link just
+        because both entities exist."""
+        s1 = self._case_summary_for_relationship(case_raw)
+        n2 = self._resolve_accused_name(name_raw)
+        if not s1 or not n2:
+            missing = case_raw if not s1 else name_raw
+            return {
+                "text": f"I could not confidently find \"{missing}\" on record, so I can't determine a relationship. Please check the spelling/case number.",
+                "response_type": "text", "data": {},
+                "citations": [{"type": "CCTNS Database Record", "id": missing, "details": "Not found."}],
+                "is_simulated": False, "simulated_reason": ""
+            }
+        lines = [f"Relationship between **{s1['case_no']}** and **{n2}**:"]
+        citations: List[Dict[str, Any]] = [{"type": "CCTNS Database Record", "id": s1["case_no"], "details": "Case accused roster."}]
+        if n2 in s1["accused_names"]:
+            lines.append(f"- **{n2}** is a named accused on case **{s1['case_no']}**.")
+        else:
+            esc2 = n2.replace("'", "''")
+            other_cases_overlap = False
+            try:
+                r2 = catalyst_app.zql().execute_query(f"SELECT CaseMasterID FROM Accused WHERE AccusedName = '{esc2}'")
+                other_case_ids = {row.get("Accused", {}).get("CaseMasterID") for row in r2 if row.get("Accused", {}).get("CaseMasterID") is not None}
+                if other_case_ids:
+                    cm_res = catalyst_app.zql().execute_query(
+                        f"SELECT CrimeMajorHeadID, PoliceStationID FROM CaseMaster WHERE CaseMasterID IN ({','.join(str(i) for i in other_case_ids)}) LIMIT 20")
+                    for r in cm_res:
+                        cm = r.get("CaseMaster", {})
+                        ch = cm.get("crimemajorheadid") or cm.get("CrimeMajorHeadID")
+                        st = cm.get("policestationid") or cm.get("PoliceStationID")
+                        if (ch is not None and ch == s1["crime_head_id"]) or (st is not None and st == s1["station_id"]):
+                            other_cases_overlap = True
+                            break
+            except Exception:
+                pass
+            if other_cases_overlap:
+                lines.append(f"- **{n2}** is not an accused on **{s1['case_no']}** itself, but has another case on "
+                             f"record sharing this case's crime category or filing station (a weaker signal -- "
+                             f"not confirmation of a direct link).")
+            else:
+                lines.append(f"- No recorded connection: **{n2}** is not named as an accused on **{s1['case_no']}**, "
+                             f"and no shared crime type or filing station was found with their other case history.")
+        if s1["collisions"] > 0:
+            lines.append(f"\n⚠ Data-integrity note: {s1['case_no']}'s internal case-linkage ID is shared with "
+                         f"{s1['collisions']} other case record(s) in this dataset -- the accused list shown above "
+                         f"may include names belonging to a different one of those records; verify against the original FIR.")
+        return {
+            "text": "\n".join(lines), "response_type": "text",
+            "data": {"case_no": s1["case_no"], "name": n2},
+            "citations": citations, "is_simulated": False, "simulated_reason": ""
+        }
+
+    def _answer_name_to_name_relationship(self, name1_raw: str, name2_raw: str) -> Optional[Dict[str, Any]]:
         """Deterministic, specific answer for 'how are X and Y connected' --
         replaces two confirmed-live failure modes: (1) a generic case-search
         hit naming a case ID and telling the officer to go read it
@@ -160,8 +352,6 @@ class CognitiveBrainMixin:
         phone/vehicle overlap graph (AccusedContact, clearly labeled as
         such), and gives an honest 'no recorded link' answer instead of a
         fabricated or loosely-related pointer when neither is found."""
-        if not catalyst_app:
-            return None
         n1 = self._resolve_accused_name(name1_raw)
         n2 = self._resolve_accused_name(name2_raw)
         if not n1 or not n2:

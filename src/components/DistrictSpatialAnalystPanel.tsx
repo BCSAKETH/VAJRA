@@ -101,6 +101,66 @@ const ViewportSync: React.FC<{
   return null;
 };
 
+interface NearbyCase { case_no: string; crime_type: string; date: string; distance_km: number; }
+
+// H.2.2: "what's near this point" -- click anywhere on the map (not just a
+// computed hotspot cell) and see the nearest real cases with real distance,
+// via the new /api/cases/near endpoint (haversine over CaseMaster, RLS-
+// scoped the same as every other case-listing endpoint in this app).
+const ClickToFindNearby: React.FC<{
+  point: { lat: number; lng: number } | null;
+  onPick: (p: { lat: number; lng: number } | null) => void;
+}> = ({ point, onPick }) => {
+  useMapEvents({ click: (e) => onPick({ lat: e.latlng.lat, lng: e.latlng.lng }) });
+  const [cases, setCases] = useState<NearbyCase[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    if (!point) return;
+    const controller = new AbortController();
+    setLoading(true);
+    setErr(null);
+    fetch(`${API_BASE}/api/cases/near?lat=${point.lat}&lng=${point.lng}&radius_km=2`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      signal: controller.signal,
+    })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error("lookup failed"))))
+      .then((d) => setCases(d.cases || []))
+      .catch((e) => { if (e?.name !== "AbortError") setErr("Could not look up nearby cases."); })
+      .finally(() => setLoading(false));
+    return () => controller.abort();
+  }, [point]);
+  const markerRef = React.useRef<L.CircleMarker>(null);
+  useEffect(() => {
+    // Marker created via a programmatic map click (not a click ON the
+    // marker itself), so Leaflet's own default "click opens popup"
+    // behavior never fires -- open it explicitly once mounted.
+    if (point) setTimeout(() => markerRef.current?.openPopup(), 0);
+  }, [point]);
+  if (!point) return null;
+  return (
+    <CircleMarker ref={markerRef} center={[point.lat, point.lng]} radius={5} pathOptions={{ fillColor: "#5DCAA5", color: "#0f172a", weight: 2, fillOpacity: 1 }}>
+      <Popup eventHandlers={{ remove: () => onPick(null) }}>
+        <div className="text-xs font-sans text-stone-900 space-y-1 min-w-[180px] max-w-[240px]">
+          <span className="font-bold block">Cases within 2 km</span>
+          {loading && <span className="text-stone-500">Looking up nearby cases...</span>}
+          {err && <span className="text-rose-600">{err}</span>}
+          {!loading && !err && cases.length === 0 && <span className="text-stone-500">No cases found within 2 km.</span>}
+          {!loading && cases.length > 0 && (
+            <ul className="space-y-0.5">
+              {cases.map((c, i) => (
+                <li key={i} className="font-mono text-[10px] text-stone-700 truncate">
+                  {c.case_no} · {c.distance_km} km · {c.crime_type}
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      </Popup>
+    </CircleMarker>
+  );
+};
+
 const DAY_LABELS: { value: number; en: string; kn: string }[] = [
   { value: 0, en: "Mon", kn: "ಸೋಮ" }, { value: 1, en: "Tue", kn: "ಮಂಗಳ" }, { value: 2, en: "Wed", kn: "ಬುಧ" },
   { value: 3, en: "Thu", kn: "ಗುರು" }, { value: 4, en: "Fri", kn: "ಶುಕ್ರ" }, { value: 5, en: "Sat", kn: "ಶನಿ" }, { value: 6, en: "Sun", kn: "ಭಾನು" },
@@ -141,6 +201,8 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
   // Basemap & 3D Perspective controls (Section 11 & 12)
   const [basemapMode, setBasemapMode] = useState<BasemapMode>("street");
   const [is3DMode, setIs3DMode] = useState<boolean>(false);
+  // H.2.2: "what's near this point" click state.
+  const [nearbyClickPoint, setNearbyClickPoint] = useState<{ lat: number; lng: number } | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -372,6 +434,7 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
                 </Polygon>
               ));
             })()}
+            <ClickToFindNearby point={nearbyClickPoint} onPick={setNearbyClickPoint} />
             {viewMode === "heat" && <HeatLayer points={displayPoints} />}
             {viewMode === "heat" && displayPoints.map((point, i) => {
               const isSat = basemapMode === "satellite";

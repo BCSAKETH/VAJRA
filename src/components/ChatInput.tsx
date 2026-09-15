@@ -448,142 +448,137 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
         </div>
       )}
 
-      {/* Input Row */}
-      <div className="flex items-end gap-2">
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          disabled={isThinking || isUploading}
-          className="p-2 rounded-xl text-stone-400 hover:text-stone-200 hover:bg-stone-850 transition-colors disabled:opacity-50 cursor-pointer shrink-0"
-          title={lang === "en" ? "Attach PDF/JPEG evidence" : "ಸಾಕ್ಷ್ಯ PDF/JPEG ಲಗತ್ತಿಸಿ"}
-        >
-          <Paperclip className="w-4 h-4" />
-        </button>
+      {/* Top row: the textarea alone -- clean, no icons crowding it. Every
+          control (attach, mode, Chat/Cowork, mic, send) lives in the single
+          unified bottom row below, matching the reference composer layout
+          (per live feedback): a clean input line on top, one control row
+          on the bottom, left cluster vs. right cluster. */}
+      <textarea
+        ref={textareaRef}
+        value={inputVal}
+        onChange={(e) => setInputVal(e.target.value)}
+        onKeyDown={handleKeyDown}
+        placeholder={
+          lang === "en"
+            ? "Query VAJRA AI copilot... (e.g., 'Show crimes connected to suspect Ramesh', 'Show hotspots in Mysuru')"
+            : "ವಜ್ರ AI ನೊಂದಿಗೆ ವಿಚಾರಣೆ ನಡೆಸಿ... (ಉದಾ: 'ಶಂಕಿತ ರಮೇಶ್ ಸಂಪರ್ಕಿತ ಅಪರಾಧಗಳನ್ನು ತೋರಿಸಿ')"
+        }
+        rows={1}
+        className="w-full bg-transparent border-none text-stone-100 placeholder-stone-500 text-sm focus:outline-none resize-none py-1 font-sans max-h-[200px] overflow-y-auto leading-relaxed"
+      />
 
-        {/* Textarea Input */}
-        <textarea
-          ref={textareaRef}
-          value={inputVal}
-          onChange={(e) => setInputVal(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder={
-            lang === "en"
-              ? "Query VAJRA AI copilot... (e.g., 'Show crimes connected to suspect Ramesh', 'Show hotspots in Mysuru')"
-              : "ವಜ್ರ AI ನೊಂದಿಗೆ ವಿಚಾರಣೆ ನಡೆಸಿ... (ಉದಾ: 'ಶಂಕಿತ ರಮೇಶ್ ಸಂಪರ್ಕಿತ ಅಪರಾಧಗಳನ್ನು ತೋರಿಸಿ')"
-          }
-          rows={1}
-          className="flex-1 bg-transparent border-none text-stone-100 placeholder-stone-500 text-sm focus:outline-none resize-none py-1 font-sans max-h-[200px] overflow-y-auto leading-relaxed"
-        />
-
-        {/* Mic language follows the app's main language toggle automatically --
-            no separate voice-language pill (removed). */}
-
-        {/* Mic Toggle Button */}
-        {voiceAvailable && (
+      {/* Unified bottom control row: left cluster (attach + Chat/Cowork),
+          right cluster (answer-depth selector + mic + send). */}
+      <div className="flex items-center justify-between gap-2 pt-1 flex-wrap">
+        <div className="flex items-center gap-2 flex-wrap">
           <button
             type="button"
-            onClick={isRecording ? stopRecording : startRecording}
+            onClick={() => fileInputRef.current?.click()}
             disabled={isThinking || isUploading}
-            className={`p-2 rounded-xl transition-colors cursor-pointer shrink-0 ${
-              isRecording
-                ? "bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse"
-                : "text-stone-400 hover:text-stone-200 hover:bg-stone-850"
-            }`}
-            title={isRecording ? "Stop voice listening" : "Start voice listening (auto-detects English / Kannada)"}
+            className="p-1.5 rounded-lg text-stone-400 hover:text-stone-200 hover:bg-stone-850 transition-colors disabled:opacity-50 cursor-pointer shrink-0"
+            title={lang === "en" ? "Attach PDF/JPEG evidence" : "ಸಾಕ್ಷ್ಯ PDF/JPEG ಲಗತ್ತಿಸಿ"}
           >
-            {isRecording ? <MicOff className="w-4 h-4 text-rose-400" /> : <Mic className="w-4 h-4" />}
+            <Paperclip className="w-4 h-4" />
           </button>
-        )}
-
-        {/* Send Button */}
-        <button
-          type="button"
-          onClick={handleSendClick}
-          disabled={isThinking || isUploading || (!inputVal.trim() && pendingAttachments.length === 0)}
-          className="p-2.5 rounded-xl bg-[#C79A4E] text-stone-950 font-bold hover:bg-[#d8ab5e] transition-all disabled:opacity-40 disabled:hover:bg-[#C79A4E] cursor-pointer shrink-0 shadow-md flex items-center justify-center"
-        >
-          <Send className="w-4 h-4" />
-        </button>
-      </div>
-
-      {/* Unified bottom control row -- answer-depth selector AND Chat/Cowork
-          both live inside this same composer shell now (previously
-          Chat/Cowork rendered as a separate pill below the box entirely,
-          which read as a disconnected stray control). */}
-      <div className="flex items-center gap-2 pt-1 flex-wrap">
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setModeMenuOpen((o) => !o)}
-            disabled={isThinking}
-            className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold border border-stone-800 bg-stone-900/60 hover:bg-stone-800 transition-colors cursor-pointer disabled:opacity-50"
-            title={lang === "en" ? "Choose answer depth" : "ಉತ್ತರದ ಆಳ ಆಯ್ಕೆಮಾಡಿ"}
-          >
-            <span className={answerMode !== "standard" ? "text-[#C79A4E]" : "text-stone-300"}>
-              ◈ {answerMode === "dossier"
-                    ? (lang === "en" ? "Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್")
-                    : (lang === "en" ? "Standard" : "ಸಾಮಾನ್ಯ")}
+          {onToggleCowork && (
+            <div className="inline-flex rounded-lg border border-stone-800 bg-stone-950/50 p-0.5">
+              <button
+                type="button"
+                onClick={() => onToggleCowork("chat")}
+                className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                  chatMode === "chat" ? "bg-stone-800 text-stone-100" : "text-stone-500 hover:text-stone-300"
+                }`}
+              >
+                {lang === "en" ? "Chat" : "ಚಾಟ್"}
+              </button>
+              <button
+                type="button"
+                onClick={() => onToggleCowork("cowork")}
+                className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[10.5px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
+                  chatMode === "cowork" ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"
+                }`}
+              >
+                <Users className="w-3 h-3" /> {lang === "en" ? "Cowork" : "ಸಹಕಾರ"}
+              </button>
+            </div>
+          )}
+          {hasParticipants && (
+            <span className="text-[10px] text-[#C79A4E] font-mono">
+              {lang === "en" ? "Shared session" : "ಹಂಚಿಕೊಂಡ ಸೆಷನ್"}
             </span>
-            <ChevronDown className="w-3 h-3 text-stone-500" />
-          </button>
-          {modeMenuOpen && (
-            <>
-              <div className="fixed inset-0 z-40" onClick={() => setModeMenuOpen(false)} />
-              <div className="absolute bottom-9 left-0 z-50 w-64 bg-stone-900 border border-stone-800 rounded-xl shadow-2xl py-1.5">
-                {([
-                  ["standard", lang === "en" ? "Standard" : "ಸಾಮಾನ್ಯ", lang === "en" ? "Fast, focused answer -- the AI plans internally when a question needs it, kept minimal." : "ವೇಗದ, ಕೇಂದ್ರೀಕೃತ ಉತ್ತರ."],
-                  ["dossier", lang === "en" ? "Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್", lang === "en" ? "Deep: risk, network, timeline, sections, map & similar cases -- a deliberately comprehensive sweep." : "ಆಳವಾದ: ಅಪಾಯ, ಜಾಲ, ಕಾಲಾನುಕ್ರಮ, ಸೆಕ್ಷನ್‌ಗಳು ಒಟ್ಟಿಗೆ."],
-                ] as const).map(([val, title, desc]) => (
-                  <button
-                    key={val}
-                    type="button"
-                    onClick={() => { onAnswerModeChange(val); setModeMenuOpen(false); }}
-                    className={`w-full text-left px-3 py-2 hover:bg-stone-800 cursor-pointer flex items-start gap-2 ${answerMode === val ? "bg-stone-850/60" : ""}`}
-                  >
-                    <span className={`mt-0.5 text-[11px] ${answerMode === val ? "text-[#C79A4E]" : "text-transparent"}`}>✓</span>
-                    <span className="flex flex-col">
-                      <span className={`text-[12px] font-bold ${val !== "standard" ? "text-[#C79A4E]" : "text-stone-200"}`}>◈ {title}</span>
-                      <span className="text-[10px] text-stone-500 leading-snug">{desc}</span>
-                    </span>
-                  </button>
-                ))}
-              </div>
-            </>
           )}
         </div>
-        {answerMode === "dossier" && (
-          <span className="text-[10px] font-mono text-[#C79A4E]/70">
-            {lang === "en" ? "deep investigation view" : "ಆಳವಾದ ತನಿಖಾ ನೋಟ"}
-          </span>
-        )}
 
-        {onToggleCowork && (
-          <div className="inline-flex rounded-lg border border-stone-800 bg-stone-950/50 p-0.5">
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="relative">
             <button
               type="button"
-              onClick={() => onToggleCowork("chat")}
-              className={`px-2.5 py-1 rounded-md text-[10.5px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
-                chatMode === "chat" ? "bg-stone-800 text-stone-100" : "text-stone-500 hover:text-stone-300"
-              }`}
+              onClick={() => setModeMenuOpen((o) => !o)}
+              disabled={isThinking}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-bold border border-stone-800 bg-stone-900/60 hover:bg-stone-800 transition-colors cursor-pointer disabled:opacity-50"
+              title={lang === "en" ? "Choose answer depth" : "ಉತ್ತರದ ಆಳ ಆಯ್ಕೆಮಾಡಿ"}
             >
-              {lang === "en" ? "Chat" : "ಚಾಟ್"}
+              <span className={answerMode !== "standard" ? "text-[#C79A4E]" : "text-stone-300"}>
+                ◈ {answerMode === "dossier"
+                      ? (lang === "en" ? "Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್")
+                      : (lang === "en" ? "Standard" : "ಸಾಮಾನ್ಯ")}
+              </span>
+              <ChevronDown className="w-3 h-3 text-stone-500" />
             </button>
-            <button
-              type="button"
-              onClick={() => onToggleCowork("cowork")}
-              className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-[10.5px] font-bold uppercase tracking-wider transition-all cursor-pointer ${
-                chatMode === "cowork" ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"
-              }`}
-            >
-              <Users className="w-3 h-3" /> {lang === "en" ? "Cowork" : "ಸಹಕಾರ"}
-            </button>
+            {modeMenuOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setModeMenuOpen(false)} />
+                <div className="absolute bottom-9 right-0 z-50 w-64 bg-stone-900 border border-stone-800 rounded-xl shadow-2xl py-1.5">
+                  {([
+                    ["standard", lang === "en" ? "Standard" : "ಸಾಮಾನ್ಯ", lang === "en" ? "Fast, focused answer -- the AI plans internally when a question needs it, kept minimal." : "ವೇಗದ, ಕೇಂದ್ರೀಕೃತ ಉತ್ತರ."],
+                    ["dossier", lang === "en" ? "Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್", lang === "en" ? "Deep: risk, network, timeline, sections, map & similar cases -- a deliberately comprehensive sweep." : "ಆಳವಾದ: ಅಪಾಯ, ಜಾಲ, ಕಾಲಾನುಕ್ರಮ, ಸೆಕ್ಷನ್‌ಗಳು ಒಟ್ಟಿಗೆ."],
+                  ] as const).map(([val, title, desc]) => (
+                    <button
+                      key={val}
+                      type="button"
+                      onClick={() => { onAnswerModeChange(val); setModeMenuOpen(false); }}
+                      className={`w-full text-left px-3 py-2 hover:bg-stone-800 cursor-pointer flex items-start gap-2 ${answerMode === val ? "bg-stone-850/60" : ""}`}
+                    >
+                      <span className={`mt-0.5 text-[11px] ${answerMode === val ? "text-[#C79A4E]" : "text-transparent"}`}>✓</span>
+                      <span className="flex flex-col">
+                        <span className={`text-[12px] font-bold ${val !== "standard" ? "text-[#C79A4E]" : "text-stone-200"}`}>◈ {title}</span>
+                        <span className="text-[10px] text-stone-500 leading-snug">{desc}</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
           </div>
-        )}
-        {hasParticipants && (
-          <span className="text-[10px] text-[#C79A4E] font-mono">
-            {lang === "en" ? "Shared session" : "ಹಂಚಿಕೊಂಡ ಸೆಷನ್"}
-          </span>
-        )}
+          {answerMode === "dossier" && (
+            <span className="text-[10px] font-mono text-[#C79A4E]/70 hidden sm:inline">
+              {lang === "en" ? "deep investigation view" : "ಆಳವಾದ ತನಿಖಾ ನೋಟ"}
+            </span>
+          )}
+          {voiceAvailable && (
+            <button
+              type="button"
+              onClick={isRecording ? stopRecording : startRecording}
+              disabled={isThinking || isUploading}
+              className={`p-1.5 rounded-lg transition-colors cursor-pointer shrink-0 ${
+                isRecording
+                  ? "bg-rose-500/20 text-rose-400 border border-rose-500/30 animate-pulse"
+                  : "text-stone-400 hover:text-stone-200 hover:bg-stone-850"
+              }`}
+              title={isRecording ? "Stop voice listening" : "Start voice listening (auto-detects English / Kannada)"}
+            >
+              {isRecording ? <MicOff className="w-4 h-4 text-rose-400" /> : <Mic className="w-4 h-4" />}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleSendClick}
+            disabled={isThinking || isUploading || (!inputVal.trim() && pendingAttachments.length === 0)}
+            className="p-2 rounded-xl bg-[#C79A4E] text-stone-950 font-bold hover:bg-[#d8ab5e] transition-all disabled:opacity-40 disabled:hover:bg-[#C79A4E] cursor-pointer shrink-0 shadow-md flex items-center justify-center"
+          >
+            <Send className="w-4 h-4" />
+          </button>
+        </div>
       </div>
     </div>
   );

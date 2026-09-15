@@ -1139,6 +1139,83 @@ def _resolve_district_to_unit_ids(district: str) -> Optional[List[int]]:
         return None
 
 
+def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Great-circle distance in km. Plain math, no new dependency -- there is
+    no haversine/geodesic helper anywhere else in this codebase (confirmed
+    by grep before writing this, per H.2's own plan)."""
+    import math
+    r = 6371.0088  # mean Earth radius, km
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlambda = math.radians(lng2 - lng1)
+    a = math.sin(dphi / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dlambda / 2) ** 2
+    return 2 * r * math.asin(min(1.0, math.sqrt(a)))
+
+
+@app.get("/api/cases/near")
+async def cases_near_point(lat: float, lng: float, radius_km: float = 2.0,
+                           request: Request = None, location_context: str = Depends(security_firewall)):
+    """H.2.2: 'what's near this point' -- click anywhere on the map (not just
+    a computed hotspot cell) and get the nearest real cases with distance.
+    ZCQL has no spatial functions/JOINs, so this pulls a real, RLS-scoped
+    candidate set and computes exact haversine distance in Python -- same
+    2-step-resolution pattern already used throughout this file. Same
+    fail-closed RLS as every other case-listing endpoint (_fir_rls_clause):
+    a line officer never sees another station's cases here either."""
+    if not (11.5 <= lat <= 18.5 and 74.0 <= lng <= 78.6):
+        raise HTTPException(status_code=400, detail="Coordinates outside Karnataka's real bounds.")
+    radius_km = max(0.1, min(25.0, radius_km))
+    if not catalyst_app:
+        return {"cases": [], "count": 0}
+
+    rls = _fir_rls_clause(request, prefix=" WHERE")
+    where = (rls or " WHERE 1=1") + " AND Latitude IS NOT NULL"
+    try:
+        res = catalyst_app.zql().execute_query(
+            f"SELECT CrimeNo, CrimeMajorHeadID, PoliceStationID, CrimeRegisteredDate, Latitude, Longitude "
+            f"FROM CaseMaster{where} LIMIT 300")
+    except Exception as e:
+        logger.warning(f"cases_near_point query failed: {e}")
+        return {"cases": [], "count": 0}
+
+    crime_names: Dict[str, str] = {}
+    try:
+        for h in catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead"):
+            hd = h.get("CrimeHead", {})
+            if hd.get("CrimeHeadID"):
+                crime_names[str(hd["CrimeHeadID"])] = hd.get("CrimeGroupName")
+    except Exception:
+        pass
+
+    nearby = []
+    for r in res:
+        cm = r.get("CaseMaster", {})
+        # ZCQL returns these keys lowercase regardless of the SELECT's own
+        # casing -- confirmed live elsewhere in this codebase (same gotcha
+        # documented in agent_loop.py's own hotspot-map query).
+        c_lat, c_lng = cm.get("latitude") or cm.get("Latitude"), cm.get("longitude") or cm.get("Longitude")
+        if c_lat is None or c_lng is None:
+            continue
+        try:
+            f_lat, f_lng = float(c_lat), float(c_lng)
+        except (TypeError, ValueError):
+            continue
+        if not (11.5 <= f_lat <= 18.5 and 74.0 <= f_lng <= 78.6):
+            continue
+        dist = _haversine_km(lat, lng, f_lat, f_lng)
+        if dist > radius_km:
+            continue
+        head_id = str(cm.get("crimemajorheadid") or cm.get("CrimeMajorHeadID") or "")
+        nearby.append({
+            "case_no": cm.get("crimeno") or cm.get("CrimeNo"),
+            "crime_type": crime_names.get(head_id, "Unclassified"),
+            "date": cm.get("crimeregistereddate") or cm.get("CrimeRegisteredDate"),
+            "distance_km": round(dist, 2),
+        })
+    nearby.sort(key=lambda c: c["distance_km"])
+    return {"cases": nearby[:25], "count": len(nearby)}
+
+
 @app.get("/api/cases/all")
 async def get_cases_all(request: Request, district: str = "", location_context: str = Depends(security_firewall)):
     """Backs FIRSearchScreen.tsx's default (no search term) view, now folded

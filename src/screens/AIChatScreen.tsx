@@ -11,7 +11,8 @@ import { TaskChecklist } from "../components/TaskChecklist";
 import { CaseDiary } from "../components/CaseDiary";
 import { ReasonCollectionModal } from "../components/ReasonCollectionModal";
 import { InvestigationBrowser } from "../components/InvestigationBrowser";
-import { Download, Sparkles, X, Users, FileText, Globe, Check, MoreVertical, ListChecks, BookText, Pin, ChevronDown, ChevronUp } from "lucide-react";
+import { VajraLogo } from "../components/VajraLogo";
+import { Download, X, Users, FileText, Globe, Check, MoreVertical, ListChecks, BookText, Pin, ChevronDown, ChevronUp } from "lucide-react";
 
 // ExpandedOverlay pulls in Leaflet + Recharts directly (~250KB+ of the main
 // bundle) but only ever renders when a widget is actually expanded -- most
@@ -1666,8 +1667,8 @@ export const AIChatScreen: React.FC = () => {
                   fetches asynchronously and never blocks this greeting from
                   rendering instantly. */}
               <GreetingHeader />
-              <div className="w-16 h-16 rounded-full bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[#C79A4E] flex items-center justify-center glow-teal mx-auto">
-                <Sparkles className="w-8 h-8" />
+              <div className="w-16 h-16 mx-auto">
+                <VajraLogo animated size={64} />
               </div>
               <div className="space-y-1.5">
                 <h2 className="text-base font-bold text-stone-200 uppercase tracking-wider">
@@ -1753,7 +1754,7 @@ export const AIChatScreen: React.FC = () => {
         {isThinking && (
           <div className="flex items-start gap-3 max-w-[75%] animate-fade-in">
             <div className="w-8 h-8 rounded-full bg-[#C79A4E]/10 border border-[#C79A4E]/20 flex items-center justify-center shrink-0 glow-teal">
-              <Sparkles className="w-4 h-4 text-[#C79A4E] animate-spin" />
+              <VajraLogo size={20} />
             </div>
             <div className="space-y-2 flex-1">
               <div className="text-[10px] font-mono text-stone-500 font-bold uppercase tracking-wider flex items-center gap-2">
