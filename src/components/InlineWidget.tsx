@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaf
 import L from "leaflet";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { Maximize2, ShieldAlert, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart, Newspaper, ExternalLink, Radio, ChevronDown, ChevronRight, Code2, Copy, Check, Sparkles, Download } from "lucide-react";
+import { Maximize2, ShieldAlert, ShieldCheck, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart, Newspaper, ExternalLink, Radio, ChevronDown, ChevronRight, Code2, Copy, Check, Sparkles, Download } from "lucide-react";
 import { ExpandedOverlay } from "./ExpandedOverlay";
 import { ErrorBoundary } from "./ErrorBoundary";
 
@@ -377,7 +377,7 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
   // button -- the list-shaped types (repeat_offenders, crime_groups,
   // priority_concerns, case_list) already read as plain language on their
   // own, nothing chart-specific to narrate.
-  const isExplainableChart = ["map", "network", "risk", "forecast", "timeline", "mo_match", "correlation", "trend", "case_distribution"].includes(effectiveType);
+  const isExplainableChart = ["map", "network", "risk", "forecast", "timeline", "mo_match", "correlation", "trend", "case_distribution", "case_funnel"].includes(effectiveType);
 
   const handleExplainChart = async () => {
     setIsExplainingChart(true);
@@ -569,6 +569,12 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
               <>
                 <PieChart className="w-4 h-4 text-[#C79A4E]" />
                 <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Case Types Distribution" : "ಪ್ರಕರಣಗಳ ಪ್ರಕಾರ ವಿತರಣೆ"}</span>
+              </>
+            )}
+            {effectiveType === "case_funnel" && (
+              <>
+                <ShieldCheck className="w-4 h-4 text-[#C79A4E]" />
+                <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Case Aging Funnel" : "ಪ್ರಕರಣ ಪ್ರಗತಿ ಹಂತಗಳು"}</span>
               </>
             )}
             {effectiveType === "priority_concerns" && (

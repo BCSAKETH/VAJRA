@@ -4027,6 +4027,40 @@ class VajraAgentLoop(CognitiveBrainMixin):
             for cell, n in counts.items()
         ]
 
+    def _project_next_period_density(self, hotspots_by_month_raw: Dict[str, List[Dict[str, Any]]],
+                                      available_months: List[str]) -> List[Dict[str, Any]]:
+        """H.2.1: 'where next' -- a simple, HONEST weighted-recency trend
+        projection over the SAME real per-month coordinate buckets the
+        time-lapse slider (F.14, just above) already computes -- zero new
+        ZCQL queries. Recent months are weighted higher than older ones,
+        same honest spirit as get_forecast's own disclosed
+        baseline_trend_extrapolation: a trend estimate, not a confirmed
+        prediction, and the frontend is required to label it that way.
+        Needs at least 2 real months of data to say anything -- returns []
+        rather than inventing a projection from a single snapshot."""
+        if len(available_months) < 2:
+            return []
+        weighted_counts: Dict[str, float] = {}
+        boundary_by_cell: Dict[str, Any] = {}
+        for i, mk in enumerate(available_months):
+            weight = i + 1  # oldest month = 1, most recent = len(available_months)
+            for hb in self._compute_hexbins(hotspots_by_month_raw.get(mk, [])):
+                idx = hb["h3_index"]
+                weighted_counts[idx] = weighted_counts.get(idx, 0.0) + hb["count"] * weight
+                boundary_by_cell.setdefault(idx, hb["boundary"])
+        if not weighted_counts:
+            return []
+        # Relative-density score (0-1), same "relative to this map's own
+        # data, not an absolute cross-map value" honesty rule the existing
+        # heat-layer legend already discloses -- never an absolute count.
+        max_w = max(weighted_counts.values())
+        projected = [
+            {"h3_index": idx, "projected_score": round(w / max_w, 3), "boundary": boundary_by_cell[idx]}
+            for idx, w in weighted_counts.items()
+        ]
+        projected.sort(key=lambda p: p["projected_score"], reverse=True)
+        return projected[:40]
+
     def _fetch_similar_cases(self, crime_group_name: str, district: Optional[str], limit: int = 15) -> List[Dict[str, Any]]:
         """F.18: real CaseMaster peer rows for the risk peer-average comparison
         -- same crime type, optionally scoped to one district. Bounded to 15
@@ -5293,17 +5327,23 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     month_centroids = self.cluster_hotspots(month_pts, eps=eps, min_samples=month_min_samples)
                     hotspots_by_month_clustered[mk] = month_centroids if month_centroids else month_pts[:20]
 
+                # H.2.1: reuses the SAME raw per-month buckets built for the
+                # time-lapse slider above, zero extra ZCQL work.
+                projected_hexbins = self._project_next_period_density(hotspots_by_month, available_months)
+
                 scope_label = f" in {district}" if district else ""
                 if centroids:
                     data = {"hotspots": centroids, "trend": trend, "hexbins": hexbins,
-                            "hotspots_by_month": hotspots_by_month_clustered, "available_months": available_months}
+                            "hotspots_by_month": hotspots_by_month_clustered, "available_months": available_months,
+                            "projected_hexbins": projected_hexbins}
                     text_result = f"Plotted spatial crime density map{scope_label}. Detected {len(centroids)} active hotspot clusters containing dense incident concentrations.{trend_txt}"
                 else:
                     data = {"hotspots": coordinates if coordinates else [
                         {"lat": 13.02768, "lng": 77.5124, "label": "Peenya Hotspot A"},
                         {"lat": 12.9716, "lng": 77.5946, "label": "Cubbon Park Cluster"}
                     ], "trend": trend, "hexbins": hexbins,
-                        "hotspots_by_month": hotspots_by_month_clustered, "available_months": available_months}
+                        "hotspots_by_month": hotspots_by_month_clustered, "available_months": available_months,
+                        "projected_hexbins": projected_hexbins}
                     text_result = f"The CCTNS database does not currently contain enough dense incident coordinates{scope_label} to form statistical clusters using DBSCAN (requires at least 10 spatial points within an eps of 0.005). Displaying raw incident marker positions.{trend_txt}"
 
                 citations.append({"type": "Geospatial DBSCAN Analyst", "id": "KSP Hotspots", "details": f"Incident spatial coordinates{scope_label}"})
@@ -7107,7 +7147,14 @@ class VajraAgentLoop(CognitiveBrainMixin):
             self._write_audit_log(employee_id, "Live News", scope, f"Live news request: {scope}", text_result, session_id)
 
         elif tool_name == "case_outcome_analytics":
-            total = charged = arrested = 0
+            # H.3.1: extended from a 2-stage clearance percentage into the
+            # real 4-stage funnel (FIR -> Arrested -> Chargesheeted ->
+            # Convicted) -- same COUNT-aggregate pattern, one more stage.
+            # CaseStatusID == 3 is the verified real "CONVICTED" constant
+            # already used consistently by calibrate_risk_model.py,
+            # train_risk_model.py, and main.py's own model-calibration
+            # code (Item 27) -- reused here rather than re-derived.
+            total = charged = arrested = convicted = 0
             if catalyst_app:
                 try:
                     r1 = catalyst_app.zql().execute_query("SELECT COUNT(CaseMasterID) FROM CaseMaster")
@@ -7116,20 +7163,32 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     charged = int((r2[0].get("ChargesheetDetails", {}) or {}).get("COUNT(CaseMasterID)") or 0) if r2 else 0
                     r3 = catalyst_app.zql().execute_query("SELECT COUNT(CaseMasterID) FROM ArrestSurrender")
                     arrested = int((r3[0].get("ArrestSurrender", {}) or {}).get("COUNT(CaseMasterID)") or 0) if r3 else 0
+                    r4 = catalyst_app.zql().execute_query("SELECT COUNT(CaseMasterID) FROM CaseMaster WHERE CaseStatusID = 3")
+                    convicted = int((r4[0].get("CaseMaster", {}) or {}).get("COUNT(CaseMasterID)") or 0) if r4 else 0
                 except Exception as e:
                     logger.warning(f"case_outcome_analytics failed: {e}")
             clr = round(charged / total * 100, 1) if total else 0.0
             arr = round(arrested / total * 100, 1) if total else 0.0
-            response_type = "case_distribution"
+            conv = round(convicted / total * 100, 1) if total else 0.0
+            response_type = "case_funnel"
             if total:
                 text_result = (
-                    f"Case-outcome picture across the state (real counts):\n"
-                    f"- Total cases on record: {total:,}\n"
-                    f"- Chargesheets filed: {charged:,} ({clr}% of cases reached chargesheet)\n"
-                    f"- Cases with a recorded arrest/surrender: {arrested:,} ({arr}%)\n"
-                    f"- The remaining ~{round(100 - clr, 1)}% are still under investigation or pending trial.\n"
-                    f"(District-level clearance needs per-case mapping and is shown state-wide here.)")
-                data = {"series": [{"name": "Chargesheeted", "value": charged},
+                    f"Case-aging funnel across the state (real counts):\n"
+                    f"- FIR registered: {total:,}\n"
+                    f"- Accused arrested: {arrested:,} ({arr}%)\n"
+                    f"- Chargesheeted: {charged:,} ({clr}%)\n"
+                    f"- Convicted: {convicted:,} ({conv}%)\n"
+                    f"(Each stage is an independent COUNT against its own real table -- a case can, in principle, "
+                    f"reach a later stage without every earlier one being separately logged, so these are not "
+                    f"strictly a nested funnel of the exact same cases. District-level breakdown needs per-case "
+                    f"mapping and is shown state-wide here.)")
+                data = {"funnel": [
+                            {"stage": "FIR Registered", "value": total},
+                            {"stage": "Accused Arrested", "value": arrested},
+                            {"stage": "Chargesheeted", "value": charged},
+                            {"stage": "Convicted", "value": convicted},
+                        ],
+                        "series": [{"name": "Chargesheeted", "value": charged},
                                    {"name": "Under investigation / pending", "value": max(0, total - charged)}],
                         "total": total}
             else:
@@ -7137,9 +7196,9 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 text_result = "No case-outcome data is available to compute clearance right now."
                 data = {}
             citations.append({"type": "Case Outcome Analytics", "id": "State",
-                              "details": "COUNT over CaseMaster / ChargesheetDetails / ArrestSurrender -- grounded aggregates."})
+                              "details": "COUNT over CaseMaster / ArrestSurrender / ChargesheetDetails / CaseMaster(CaseStatusID=3) -- grounded aggregates."})
             final_answer = True
-            self._write_audit_log(employee_id, "Case Outcome Analytics", "State", "Case clearance/outcome analytics", text_result, session_id)
+            self._write_audit_log(employee_id, "Case Outcome Analytics", "State", "Case-aging funnel analytics", text_result, session_id)
 
         elif tool_name == "count_cases":
             district = self.sanitize_sql_input(params.get("district", "") or "")

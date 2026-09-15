@@ -31,6 +31,14 @@ interface HexBin {
   boundary: [number, number][];
 }
 
+// H.2.1: a weighted-recency trend estimate, not a confirmed prediction --
+// same honest disclosure discipline as get_forecast's own confidence band.
+interface ProjectedHexBin {
+  h3_index: string;
+  projected_score: number;
+  boundary: [number, number][];
+}
+
 const HEAT_GRADIENT: Record<number, string> = {
   0.0: "#2f8f4e",
   0.35: "#d9c441",
@@ -110,7 +118,8 @@ interface NearbyCase { case_no: string; crime_type: string; date: string; distan
 const ClickToFindNearby: React.FC<{
   point: { lat: number; lng: number } | null;
   onPick: (p: { lat: number; lng: number } | null) => void;
-}> = ({ point, onPick }) => {
+  district: string;
+}> = ({ point, onPick, district }) => {
   useMapEvents({ click: (e) => onPick({ lat: e.latlng.lat, lng: e.latlng.lng }) });
   const [cases, setCases] = useState<NearbyCase[]>([]);
   const [loading, setLoading] = useState(false);
@@ -120,7 +129,7 @@ const ClickToFindNearby: React.FC<{
     const controller = new AbortController();
     setLoading(true);
     setErr(null);
-    fetch(`${API_BASE}/api/cases/near?lat=${point.lat}&lng=${point.lng}&radius_km=2`, {
+    fetch(`${API_BASE}/api/cases/near?lat=${point.lat}&lng=${point.lng}&radius_km=2&district=${encodeURIComponent(district)}`, {
       headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
       signal: controller.signal,
     })
@@ -129,7 +138,7 @@ const ClickToFindNearby: React.FC<{
       .catch((e) => { if (e?.name !== "AbortError") setErr("Could not look up nearby cases."); })
       .finally(() => setLoading(false));
     return () => controller.abort();
-  }, [point]);
+  }, [point, district]);
   const markerRef = React.useRef<L.CircleMarker>(null);
   useEffect(() => {
     // Marker created via a programmatic map click (not a click ON the
@@ -197,6 +206,9 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
   const [hotspotsByMonth, setHotspotsByMonth] = useState<Record<string, HotspotPoint[]>>({});
   const [availableMonths, setAvailableMonths] = useState<string[]>([]);
   const [selectedMonth, setSelectedMonth] = useState<string | null>(null);
+  // H.2.1: Historical (real data, default) vs. Projected (trend estimate).
+  const [mapTimeView, setMapTimeView] = useState<"historical" | "projected">("historical");
+  const [projectedHexbins, setProjectedHexbins] = useState<ProjectedHexBin[]>([]);
 
   // Basemap & 3D Perspective controls (Section 11 & 12)
   const [basemapMode, setBasemapMode] = useState<BasemapMode>("street");
@@ -227,6 +239,7 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
         setHotspotsByMonth(data?.hotspots_by_month || {});
         setAvailableMonths(months);
         setSelectedMonth(months.length > 1 ? months[months.length - 1] : null);
+        setProjectedHexbins(data?.projected_hexbins || []);
       } catch (err: any) {
         if (err?.name === "AbortError") return;
         setErrorMsg(err.message || "Geospatial engine unreachable.");
@@ -253,6 +266,22 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
           <button onClick={() => setViewMode("heat")} className={`flex-1 py-1.5 rounded-md text-[10.5px] font-bold font-mono uppercase tracking-wide transition-colors cursor-pointer ${viewMode === "heat" ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"}`}>Heat</button>
           <button onClick={() => setViewMode("hex")} className={`flex-1 py-1.5 rounded-md text-[10.5px] font-bold font-mono uppercase tracking-wide transition-colors cursor-pointer ${viewMode === "hex" ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"}`}>Hex Grid</button>
         </div>
+        {/* H.2.1: only offered when real data actually supports a trend
+            estimate (2+ real months) -- never shown as a false option. */}
+        {projectedHexbins.length > 0 && (
+          <div className="space-y-1">
+            <div className="flex rounded-lg border border-stone-800 bg-stone-900 p-0.5 gap-0.5">
+              <button onClick={() => setMapTimeView("historical")} className={`flex-1 py-1.5 rounded-md text-[10.5px] font-bold font-mono uppercase tracking-wide transition-colors cursor-pointer ${mapTimeView === "historical" ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"}`}>Historical</button>
+              <button onClick={() => setMapTimeView("projected")} className={`flex-1 py-1.5 rounded-md text-[10.5px] font-bold font-mono uppercase tracking-wide transition-colors cursor-pointer ${mapTimeView === "projected" ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"}`}>Projected</button>
+            </div>
+            {mapTimeView === "projected" && (
+              <p className="text-[9px] font-mono text-amber-500/80 leading-snug flex items-start gap-1">
+                <AlertTriangle className="w-3 h-3 shrink-0 mt-0.5" />
+                Projected next-period density -- a weighted-recency trend estimate from real history, not a confirmed prediction.
+              </p>
+            )}
+          </div>
+        )}
         <div className={`space-y-3 ${viewMode === "hex" ? "opacity-40 pointer-events-none" : ""}`}>
           <div className="space-y-1">
             <label className="flex justify-between text-[10.5px] font-bold text-stone-400 font-mono">
@@ -422,21 +451,44 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
             ) : (
               <AutoFitBounds points={displayPoints} />
             )}
-            {viewMode === "hex" && hexbins.length > 0 && (() => {
-              const maxCount = Math.max(...hexbins.map((h) => h.count), 1);
-              return hexbins.map((h) => (
-                <Polygon key={h.h3_index} positions={h.boundary} pathOptions={{ fillColor: "#C79A4E", color: "#C79A4E", weight: 1, fillOpacity: 0.15 + 0.55 * (h.count / maxCount), opacity: 0.5 }}>
+            {/* H.2.1: Projected view replaces the historical layers with a
+                dashed-outline trend-estimate overlay -- deliberately
+                visually distinct (dashed, amber) so it can never be
+                mistaken for real historical density. */}
+            {mapTimeView === "projected" ? (
+              projectedHexbins.map((h) => (
+                <Polygon
+                  key={h.h3_index}
+                  positions={h.boundary}
+                  pathOptions={{ fillColor: "#d9c441", color: "#d9c441", weight: 1.5, dashArray: "4 3", fillOpacity: 0.12 + 0.45 * h.projected_score, opacity: 0.75 }}
+                >
                   <Popup>
                     <div className="text-xs font-sans text-stone-900" style={{ transform: is3DMode ? "rotateX(-42deg)" : "none", transformOrigin: "bottom center" }}>
-                      <span className="font-bold block">{h.count} incidents</span>
+                      <span className="font-bold block">Projected relative density: {(h.projected_score * 100).toFixed(0)}%</span>
+                      <span className="block text-[10px] text-stone-600 mt-0.5">Trend estimate, not a confirmed prediction.</span>
                     </div>
                   </Popup>
                 </Polygon>
-              ));
-            })()}
-            <ClickToFindNearby point={nearbyClickPoint} onPick={setNearbyClickPoint} />
-            {viewMode === "heat" && <HeatLayer points={displayPoints} />}
-            {viewMode === "heat" && displayPoints.map((point, i) => {
+              ))
+            ) : (
+              <>
+                {viewMode === "hex" && hexbins.length > 0 && (() => {
+                  const maxCount = Math.max(...hexbins.map((h) => h.count), 1);
+                  return hexbins.map((h) => (
+                    <Polygon key={h.h3_index} positions={h.boundary} pathOptions={{ fillColor: "#C79A4E", color: "#C79A4E", weight: 1, fillOpacity: 0.15 + 0.55 * (h.count / maxCount), opacity: 0.5 }}>
+                      <Popup>
+                        <div className="text-xs font-sans text-stone-900" style={{ transform: is3DMode ? "rotateX(-42deg)" : "none", transformOrigin: "bottom center" }}>
+                          <span className="font-bold block">{h.count} incidents</span>
+                        </div>
+                      </Popup>
+                    </Polygon>
+                  ));
+                })()}
+                {viewMode === "heat" && <HeatLayer points={displayPoints} />}
+              </>
+            )}
+            <ClickToFindNearby point={nearbyClickPoint} onPick={setNearbyClickPoint} district={district} />
+            {mapTimeView === "historical" && viewMode === "heat" && displayPoints.map((point, i) => {
               const isSat = basemapMode === "satellite";
               return (
                 <React.Fragment key={i}>

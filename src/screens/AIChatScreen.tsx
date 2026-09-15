@@ -1754,7 +1754,7 @@ export const AIChatScreen: React.FC = () => {
         {isThinking && (
           <div className="flex items-start gap-3 max-w-[75%] animate-fade-in">
             <div className="w-8 h-8 rounded-full bg-[#C79A4E]/10 border border-[#C79A4E]/20 flex items-center justify-center shrink-0 glow-teal">
-              <VajraLogo size={20} />
+              <VajraLogo size={20} animated />
             </div>
             <div className="space-y-2 flex-1">
               <div className="text-[10px] font-mono text-stone-500 font-bold uppercase tracking-wider flex items-center gap-2">

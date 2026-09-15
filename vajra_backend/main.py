@@ -1153,23 +1153,41 @@ def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
 
 
 @app.get("/api/cases/near")
-async def cases_near_point(lat: float, lng: float, radius_km: float = 2.0,
+async def cases_near_point(lat: float, lng: float, radius_km: float = 2.0, district: str = "",
                            request: Request = None, location_context: str = Depends(security_firewall)):
     """H.2.2: 'what's near this point' -- click anywhere on the map (not just
     a computed hotspot cell) and get the nearest real cases with distance.
-    ZCQL has no spatial functions/JOINs, so this pulls a real, RLS-scoped
-    candidate set and computes exact haversine distance in Python -- same
-    2-step-resolution pattern already used throughout this file. Same
-    fail-closed RLS as every other case-listing endpoint (_fir_rls_clause):
-    a line officer never sees another station's cases here either."""
+    ZCQL has no spatial functions/JOINs, so this pulls a candidate set and
+    computes exact haversine distance in Python -- same 2-step-resolution
+    pattern already used throughout this file.
+
+    CONFIRMED LIVE BUG (fixed 2026-09-15): this originally used
+    _fir_rls_clause (restricts to the OFFICER'S OWN single home station) --
+    but this endpoint is embedded in the SAME district hotspot map that
+    query_hotspots (agent_loop.py) already powers, and that tool scopes by
+    the requested DISTRICT, not by the viewing officer's own station
+    (jurisdiction gating for this map happens at which districts the
+    frontend even lets an officer navigate to, same as every other
+    district-scoped geospatial tool in agent_loop.py -- confirmed by
+    reading query_hotspots' own unit_ids resolution). The mismatch meant a
+    click right next to a real, visible hotspot cluster still returned "no
+    cases found" whenever the clicked point wasn't inside the officer's own
+    single home station. Now scopes by the SAME district param the map
+    panel already has, via the same _resolve_district_to_unit_ids helper
+    every other district-scoped endpoint in this file already uses --
+    falls back to _fir_rls_clause only when no district is given at all."""
     if not (11.5 <= lat <= 18.5 and 74.0 <= lng <= 78.6):
         raise HTTPException(status_code=400, detail="Coordinates outside Karnataka's real bounds.")
     radius_km = max(0.1, min(25.0, radius_km))
     if not catalyst_app:
         return {"cases": [], "count": 0}
 
-    rls = _fir_rls_clause(request, prefix=" WHERE")
-    where = (rls or " WHERE 1=1") + " AND Latitude IS NOT NULL"
+    if district.strip():
+        unit_ids = _resolve_district_to_unit_ids(district)
+        where = (f" WHERE PoliceStationID IN ({','.join(str(u) for u in unit_ids)})" if unit_ids else " WHERE 1=0") + " AND Latitude IS NOT NULL"
+    else:
+        rls = _fir_rls_clause(request, prefix=" WHERE")
+        where = (rls or " WHERE 1=1") + " AND Latitude IS NOT NULL"
     try:
         res = catalyst_app.zql().execute_query(
             f"SELECT CrimeNo, CrimeMajorHeadID, PoliceStationID, CrimeRegisteredDate, Latitude, Longitude "

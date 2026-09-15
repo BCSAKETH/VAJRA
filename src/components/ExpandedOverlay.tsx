@@ -255,7 +255,7 @@ const MoneyFlowLedger: React.FC<{ transactions: any[]; lang: "en" | "kn" }> = ({
 };
 
 interface ExpandedOverlayProps {
-  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "case_list" | "dossier" | "priority_concerns" | "news" | string;
+  type: "map" | "network" | "risk" | "forecast" | "timeline" | "mo_match" | "correlation" | "repeat_offenders" | "crime_groups" | "trend" | "case_distribution" | "case_funnel" | "case_list" | "dossier" | "priority_concerns" | "news" | string;
   data: any;
   onClose: () => void;
   // When true, render only the rich content pane (no fixed backdrop, no modal
@@ -465,6 +465,12 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                   <>
                     <PieChartIcon className="w-5 h-5 text-[#C79A4E]" />
                     <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Types Distribution" : "ಪ್ರಕರಣಗಳ ಪ್ರಕಾರ ವಿತರಣೆ"}</h3>
+                  </>
+                )}
+                {type === "case_funnel" && (
+                  <>
+                    <ShieldCheck className="w-5 h-5 text-[#C79A4E]" />
+                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Aging Funnel" : "ಪ್ರಕರಣ ಪ್ರಗತಿ ಹಂತಗಳು"}</h3>
                   </>
                 )}
               </>
@@ -1343,6 +1349,47 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                     })}
                   </div>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* H.3.1: Case Aging Funnel -- plain decreasing-width bars (per
+              plan: no new chart library needed for a 4-stage funnel), one
+              real COUNT-aggregate stage per row (case_outcome_analytics). */}
+          {type === "case_funnel" && (
+            <div className="h-full flex flex-col gap-6">
+              <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl">
+                <h4 className="font-black text-stone-100 text-lg">
+                  {lang === "en" ? "Case Aging Funnel" : "ಪ್ರಕರಣ ಪ್ರಗತಿ ಹಂತಗಳು"}
+                </h4>
+                <p className="text-xs text-stone-450 mt-1">
+                  {lang === "en"
+                    ? "Each stage is an independent real COUNT -- not strictly a nested funnel of the exact same cases (a case can reach a later stage without every earlier one being separately logged)."
+                    : "ಪ್ರತಿ ಹಂತವು ಸ್ವತಂತ್ರ ನೈಜ ಎಣಿಕೆಯಾಗಿದೆ."}
+                </p>
+              </div>
+              <div className="flex-1 space-y-4 py-2">
+                {(() => {
+                  const stages: { stage: string; value: number }[] = data.funnel || [];
+                  const maxVal = Math.max(...stages.map((s) => s.value), 1);
+                  return stages.map((s, idx) => (
+                    <div key={idx} className="space-y-1">
+                      <div className="flex justify-between items-baseline font-mono text-[11px]">
+                        <span className="text-stone-300 font-bold uppercase tracking-wide">{s.stage}</span>
+                        <span className="text-[#C79A4E] font-extrabold">{s.value.toLocaleString()}</span>
+                      </div>
+                      <div className="h-6 bg-stone-900/40 rounded-md border border-stone-850 overflow-hidden">
+                        <div
+                          className="h-full rounded-md transition-all duration-500"
+                          style={{
+                            width: `${Math.max(4, (s.value / maxVal) * 100)}%`,
+                            background: `linear-gradient(90deg, #C79A4E, ${CHART_COLORS[idx % CHART_COLORS.length]})`,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  ));
+                })()}
               </div>
             </div>
           )}

@@ -90,10 +90,10 @@ function starPath(cx: number, cy: number, outerR: number, innerR: number): strin
   }
   return `M${pts.map(([x, y]) => `${x.toFixed(2)} ${y.toFixed(2)}`).join(" L")} Z`;
 }
-const [STAR_LEFT_X, STAR_LEFT_Y] = polar(270, 16.6);
-const [STAR_RIGHT_X, STAR_RIGHT_Y] = polar(90, 16.6);
-const STAR_LEFT_PATH = starPath(STAR_LEFT_X, STAR_LEFT_Y, 1.7, 0.75);
-const STAR_RIGHT_PATH = starPath(STAR_RIGHT_X, STAR_RIGHT_Y, 1.7, 0.75);
+const [STAR_LEFT_X, STAR_LEFT_Y] = polar(270, 16.2);
+const [STAR_RIGHT_X, STAR_RIGHT_Y] = polar(90, 16.2);
+const STAR_LEFT_PATH = starPath(STAR_LEFT_X, STAR_LEFT_Y, 1.5, 0.65);
+const STAR_RIGHT_PATH = starPath(STAR_RIGHT_X, STAR_RIGHT_Y, 1.5, 0.65);
 
 export const VajraLogo: React.FC<VajraLogoProps> = ({
   className = "",
@@ -142,16 +142,29 @@ export const VajraLogo: React.FC<VajraLogoProps> = ({
 
         {/* 4 & 5. Ring text -- "KARNATAKA STATE POLICE" top, "CRIME
             INTELLIGENCE" bottom. Illegible at icon sizes by design (accepted
-            tradeoff); reads as a textured official ring. */}
-        <path id={topArcId} d="M24 24 m-15.2,0 a15.2,15.2 0 1,1 30.4,0" fill="none" stroke="none" />
-        <path id={bottomArcId} d="M24 24 m-15.2,0 a15.2,15.2 0 1,0 30.4,0" fill="none" stroke="none" />
-        <text fontSize="2.85" fontWeight="700" letterSpacing="0.28" fill="#C79A4E" stroke="none">
-          <textPath href={`#${topArcId}`} startOffset="12.5%">
+            tradeoff); reads as a textured official ring.
+
+            Crest divergence fix (per live feedback + the "Crest Divergence"
+            audit artifact): the bottom arc previously used a DIFFERENT
+            radius/font-size than the top (15.2 shared but offset-TUNED
+            10.5%/12.5% with text-anchor left-default, not true centering)
+            -- close enough to look almost right, which is exactly why it
+            read as "not at exact position" rather than obviously broken.
+            Both arcs are now the SAME half-circle radius (14.9), same font
+            size (2.85), and use real text-anchor="middle" + startOffset
+            "50%" -- genuine geometric centering instead of a hand-tuned
+            percentage. _generate_vajra_crest_svg in catalyst_smartbrowz.py
+            (the PDF export crest) must carry this exact same change in the
+            same commit -- see that function's own docstring. */}
+        <path id={topArcId} d="M 9.1,24 A 14.9,14.9 0 0,1 38.9,24" fill="none" stroke="none" />
+        <path id={bottomArcId} d="M 38.9,24 A 14.9,14.9 0 0,1 9.1,24" fill="none" stroke="none" />
+        <text fontSize="2.85" fontWeight="800" letterSpacing="0.22" textAnchor="middle" fill="#C79A4E" stroke="none">
+          <textPath href={`#${topArcId}`} startOffset="50%">
             KARNATAKA STATE POLICE
           </textPath>
         </text>
-        <text fontSize="2.55" fontWeight="600" letterSpacing="0.38" fill="#C79A4E" stroke="none">
-          <textPath href={`#${bottomArcId}`} startOffset="10.5%">
+        <text fontSize="2.85" fontWeight="800" letterSpacing="0.32" textAnchor="middle" fill="#C79A4E" stroke="none">
+          <textPath href={`#${bottomArcId}`} startOffset="50%">
             CRIME INTELLIGENCE
           </textPath>
         </text>
