@@ -472,6 +472,7 @@ class CognitiveBrainMixin:
         {"name": "community_detection", "does": "detect syndicate clusters of accused bound by a shared phone/vehicle", "params": {"top_n": "optional integer 1-30, defaults to 8 -- pass the exact number the officer asked for"}},
         {"name": "centrality_ranking", "does": "rank accused by how connected they are over the shared-attribute graph (likely hubs/kingpins)", "params": {"top_n": "optional integer 1-30, defaults to 10 -- pass the exact number the officer asked for"}},
         {"name": "anomaly_detection", "does": "statistical anomaly call-outs (monthly z-score spike + category-momentum break) for a district", "params": {"district": "optional"}},
+        {"name": "detect_case_anomalies", "does": "flags individually unusual CASES (not district-level trends) via Isolation Forest over crime type/station/day-of-week/victim+accused counts -- finds a single case that doesn't fit its own station's normal pattern", "params": {"district": "optional"}},
         {"name": "summarize_url", "does": "read and summarize any public web page/article by URL (unverified external content)", "params": {"url": "the URL", "query": "the raw request, optional"}},
         # These 5 real, working tools existed in the app's own tool registry
         # but were NEVER registered here -- confirmed live via a full diff of

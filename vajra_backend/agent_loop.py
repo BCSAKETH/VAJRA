@@ -711,6 +711,15 @@ class VajraAgentLoop(CognitiveBrainMixin):
             }
         },
         {
+            "name": "detect_case_anomalies",
+            "description": "Flag individually unusual CASES (not a district-level trend) via Isolation Forest over each case's own crime type, station, day-of-week, and victim/accused counts -- finds a single case that doesn't fit its own station's normal pattern, a different and finer-grained signal than anomaly_detection's monthly aggregate.",
+            "parameters": {
+                "type": "object",
+                "properties": {"district": {"type": "string", "description": "Optional district to scope the scan to"}},
+                "required": []
+            }
+        },
+        {
             "name": "community_detection",
             "description": "Detect clusters/communities of co-offending suspects (syndicate groups) via graph community detection.",
             "parameters": {
@@ -1860,6 +1869,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
     # answers in seconds. This is a SPEED filter, not the decision itself --
     # GLM still reasons over and picks from whatever survives the filter.
     _TOOL_HINTS = {
+        "detect_case_anomalies": ["unusual case", "outlier case", "case that stands out", "flag unusual cases",
+                                   "individually anomalous case", "which case is unusual", "isolation forest"],
         "get_my_profile": ["my name", "my profile", "my details", "who am i", "my rank",
                            "my station", "my posting", "my assignment", "my designation", "am i posted"],
         "add_case_diary_entry": ["case diary", "update the diary", "update case diary", "log this in the diary",
@@ -8071,6 +8082,88 @@ class VajraAgentLoop(CognitiveBrainMixin):
                               "details": "Z-score on monthly volume + category-momentum break, over real COUNT aggregates."})
             final_answer = True
             self._write_audit_log(employee_id, "Anomaly Detection", scope, f"Anomaly scan: {scope}", text_result, session_id)
+
+        # Cognitive Brain plan §7b.2: Isolation Forest anomaly detection --
+        # a genuinely different, finer-grained signal than anomaly_detection
+        # above (which flags a district-level MONTHLY trend break). This
+        # flags individual CASES that don't fit the normal pattern of their
+        # own crime-type/station/day-of-week/party-count shape, using
+        # sklearn.ensemble.IsolationForest (already vendored for the risk
+        # model -- zero new dependency, per the plan's own grounding note).
+        elif tool_name == "detect_case_anomalies":
+            district = self.sanitize_sql_input(params.get("district", "") or "")
+            scope = district or "all districts"
+            response_type = "text"
+            try:
+                unit_ids: List[str] = []
+                if district and catalyst_app:
+                    d_res = catalyst_app.zql().execute_query(
+                        f"SELECT DistrictID FROM District WHERE DistrictName LIKE '*{district}*' LIMIT 1")
+                    if d_res:
+                        dist_id = d_res[0].get("District", {}).get("DistrictID")
+                        u_res = catalyst_app.zql().execute_query(f"SELECT UnitID FROM Unit WHERE DistrictID = {dist_id}")
+                        unit_ids = [u.get("Unit", {}).get("UnitID") for u in u_res if u.get("Unit", {}).get("UnitID")]
+                where = f" WHERE PoliceStationID IN ({','.join(map(str, unit_ids))})" if unit_ids else ""
+                rows = catalyst_app.zql().execute_query(
+                    f"SELECT CaseMasterID, CrimeNo, PoliceStationID, CrimeMajorHeadID, GravityOffenceID, "
+                    f"AccusedCount, VictimCount, CrimeRegisteredDate FROM CaseMaster{where} LIMIT 300"
+                ) if catalyst_app else []
+                cases = [r.get("CaseMaster", {}) for r in rows]
+                # Isolation Forest needs a real sample to establish a "normal"
+                # shape against -- too few rows and every case looks equally
+                # (un)usual, so this honestly declines rather than fabricate
+                # a signal from noise.
+                if len(cases) < 20:
+                    text_result = f"Not enough cases indexed for {scope} yet ({len(cases)}) to run a reliable anomaly scan -- needs at least 20."
+                    data = {"anomalies": [], "scope": scope, "sample_size": len(cases)}
+                else:
+                    from sklearn.ensemble import IsolationForest
+                    feats, meta = [], []
+                    for c in cases:
+                        try:
+                            dow = datetime.fromisoformat(str(c.get("CrimeRegisteredDate"))[:10]).weekday()
+                        except Exception:
+                            dow = 0
+                        feats.append([
+                            float(c.get("PoliceStationID") or 0), float(c.get("CrimeMajorHeadID") or 0),
+                            float(c.get("GravityOffenceID") or 0), float(c.get("AccusedCount") or 0),
+                            float(c.get("VictimCount") or 0), float(dow),
+                        ])
+                        meta.append(c)
+                    X = np.array(feats)
+                    iso = IsolationForest(n_estimators=150, contamination=0.05, random_state=42)
+                    iso.fit(X)
+                    scores = iso.score_samples(X)  # more negative = more anomalous
+                    order = np.argsort(scores)[:5]
+                    col_names = ["station", "crime type", "gravity", "accused count", "victim count", "day-of-week"]
+                    col_mean = X.mean(axis=0)
+                    col_std = X.std(axis=0)
+                    col_std[col_std == 0] = 1.0
+                    anomalies = []
+                    for idx in order:
+                        c = meta[idx]
+                        row = X[idx]
+                        z = np.abs((row - col_mean) / col_std)
+                        top_feat = col_names[int(np.argmax(z))]
+                        anomalies.append({
+                            "case_no": c.get("CrimeNo"), "reason": f"unusual {top_feat} for a case of this shape",
+                            "anomaly_score": round(float(scores[idx]), 3),
+                        })
+                    text_result = (
+                        f"Isolation Forest flagged {len(anomalies)} individually unusual case(s) for {scope} "
+                        f"(sampled {len(cases)} cases; each score is how far outside the normal shape it sits, "
+                        f"more negative = more unusual):\n"
+                        + "\n".join(f"- {a['case_no']}: {a['reason']} (score {a['anomaly_score']})" for a in anomalies)
+                    )
+                    data = {"anomalies": anomalies, "scope": scope, "sample_size": len(cases)}
+            except Exception as e:
+                logger.warning(f"detect_case_anomalies failed: {e}")
+                text_result = f"Could not run the case-level anomaly scan for {scope} right now."
+                data = {"anomalies": [], "scope": scope}
+            citations.append({"type": "Isolation Forest Anomaly Detection", "id": scope,
+                              "details": "sklearn.ensemble.IsolationForest over per-case crime type/station/day-of-week/party-count features -- flags individual cases, not monthly aggregates."})
+            final_answer = True
+            self._write_audit_log(employee_id, "Case Anomaly Detection", scope, f"Isolation Forest scan: {scope}", text_result, session_id)
 
         elif tool_name == "summarize_url":
             import internet_signals
