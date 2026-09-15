@@ -30,7 +30,8 @@ export type ScreenId =
   | "settings"
   | "district_dashboard"
   | "investigations"
-  | "all_chats";
+  | "all_chats"
+  | "crime_intelligence";
 
 export type TranscriptTextSize = "small" | "medium" | "large";
 export type TranscriptWidth = "narrow" | "medium" | "wide";

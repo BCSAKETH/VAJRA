@@ -4,7 +4,7 @@ import { API_BASE } from "../config";
 import {
   MessageSquarePlus, FolderKanban, Map, UserCheck, Loader2,
   ChevronLeft, ChevronRight, Shield, IdCard, Building2, X, LogOut,
-  Settings as SettingsIcon, Search, LayoutList,
+  Settings as SettingsIcon, Search, LayoutList, Radar,
 } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
 import { GroupedSessionList, SessionSummary, Investigation, SessionMetaEntry, GroupInfo } from "./GroupedSessionList";
@@ -130,6 +130,7 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
     // itself anymore; that entire list moved to the page this opens.
     { id: "investigations" as ScreenId, label: t.navInvestigations, icon: FolderKanban },
     { id: "district_dashboard", label: t.navDistrictDashboard, icon: Map },
+    { id: "crime_intelligence" as ScreenId, label: t.navCrimeIntelligence, icon: Radar },
     ...(roleTier === "supervisor" && badgeNumber === "2346836" ? [{ id: "supervisor" as ScreenId, label: t.navSupervisor, icon: UserCheck }] : []),
   ];
 
