@@ -6,6 +6,8 @@ import {
 import { API_BASE } from "../config";
 import { useApp } from "../AppContext";
 
+interface PageLink { href: string; text: string; }
+
 interface BrowserTab {
   id: string;
   title: string;
@@ -14,8 +16,7 @@ interface BrowserTab {
   status: "idle" | "loading" | "loaded" | "error";
   screenshotDataUrl: string | null;
   extractedText: string | null;
-  leadership: string[];
-  contacts: string[];
+  links: PageLink[];
   evidenceSeal: string | null;
   errorMessage?: string;
   history: string[];
@@ -24,7 +25,7 @@ interface BrowserTab {
 
 const newTab = (id: string): BrowserTab => ({
   id, title: "New tab", url: "", inputUrl: "", status: "idle",
-  screenshotDataUrl: null, extractedText: null, leadership: [], contacts: [],
+  screenshotDataUrl: null, extractedText: null, links: [],
   evidenceSeal: null, history: [], historyIndex: -1,
 });
 
@@ -82,8 +83,8 @@ export const InvestigationBrowser: React.FC<{
         return {
           ...t, status: "loaded", url: data.url, inputUrl: data.url,
           title: data.page_title || data.url, screenshotDataUrl: data.screenshot_data_url || null,
-          extractedText: data.extracted_text || null, leadership: data.leadership || [],
-          contacts: data.contacts || [], evidenceSeal: data.sha256_evidence_seal || null,
+          extractedText: data.extracted_text || null, links: data.links || [],
+          evidenceSeal: data.sha256_evidence_seal || null,
           history: hist, historyIndex: hist.length - 1,
         };
       }));
@@ -219,20 +220,23 @@ export const InvestigationBrowser: React.FC<{
                 <span>SHA-256 {lang === "en" ? "evidence seal" : "ಸಾಕ್ಷ್ಯ ಮುದ್ರೆ"}: {activeTab.evidenceSeal.slice(0, 24)}...</span>
               </div>
             )}
-            {(activeTab.leadership.length > 0 || activeTab.contacts.length > 0) && (
-              <div className="grid grid-cols-2 gap-2 text-[11px]">
-                {activeTab.leadership.length > 0 && (
-                  <div className="bg-stone-900/60 border border-stone-800 rounded-lg p-2">
-                    <div className="text-stone-500 uppercase tracking-wide text-[9.5px] mb-1">{lang === "en" ? "Leadership" : "ನಾಯಕತ್ವ"}</div>
-                    {activeTab.leadership.map((l, i) => <div key={i} className="text-stone-300">{l}</div>)}
-                  </div>
-                )}
-                {activeTab.contacts.length > 0 && (
-                  <div className="bg-stone-900/60 border border-stone-800 rounded-lg p-2">
-                    <div className="text-stone-500 uppercase tracking-wide text-[9.5px] mb-1">{lang === "en" ? "Contacts" : "ಸಂಪರ್ಕಗಳು"}</div>
-                    {activeTab.contacts.map((c, i) => <div key={i} className="text-stone-300">{c}</div>)}
-                  </div>
-                )}
+            {activeTab.links.length > 0 && (
+              <div className="bg-stone-900/60 border border-stone-800 rounded-lg p-2.5">
+                <div className="text-stone-500 uppercase tracking-wide text-[9.5px] mb-1.5">
+                  {lang === "en" ? "Links on this page — click to browse deeper" : "ಈ ಪುಟದಲ್ಲಿನ ಲಿಂಕ್‌ಗಳು"}
+                </div>
+                <div className="flex flex-col gap-1 max-h-40 overflow-y-auto">
+                  {activeTab.links.map((l, i) => (
+                    <button
+                      key={i}
+                      onClick={() => navigate(l.href)}
+                      className="text-left text-[11px] text-[#8fb8ff] hover:text-[#C79A4E] hover:underline truncate cursor-pointer"
+                      title={l.href}
+                    >
+                      {l.text || l.href}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             {activeTab.extractedText && (

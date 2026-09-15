@@ -1607,10 +1607,10 @@ export const AIChatScreen: React.FC = () => {
         )}
         <button
           onClick={() => setShowBrowser(true)}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-white transition-all shadow-md cursor-pointer"
+          title={lang === "en" ? "Browse with VAJRA" : "VAJRA ಬ್ರೌಸ್"}
+          className="flex items-center justify-center p-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-stone-400 hover:text-white transition-all shadow-md cursor-pointer"
         >
           <Globe className="w-3.5 h-3.5" />
-          <span>{lang === "en" ? "Browse with VAJRA" : "VAJRA ಬ್ರೌಸ್"}</span>
         </button>
       </div>
 
@@ -1967,16 +1967,19 @@ export const AIChatScreen: React.FC = () => {
         onSubmit={handleReasonSubmit}
       />
 
-      {/* Section 19: Sandboxed Investigation Browser overlay */}
+      {/* Section 19: Sandboxed Investigation Browser -- a real split-view side
+          panel (docked to the right edge, chat stays fully visible and
+          usable on the left) rather than a blocking modal, matching the
+          split-pane "chat + live browser" layout an officer would expect
+          from Claude's own browser-use view. No backdrop dim: both panes
+          are meant to be looked at together, not one gating the other. */}
       {showBrowser && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-fade-in">
-          <div className="w-full max-w-4xl h-[85vh]">
-            <InvestigationBrowser
-              isOpen={showBrowser}
-              onClose={() => setShowBrowser(false)}
-              onSendToChat={(text) => { setShowBrowser(false); handleSend(text); }}
-            />
-          </div>
+        <div className="fixed top-0 right-0 bottom-0 z-40 w-full sm:w-[46vw] sm:min-w-[420px] max-w-2xl p-2 sm:p-3 animate-fade-in">
+          <InvestigationBrowser
+            isOpen={showBrowser}
+            onClose={() => setShowBrowser(false)}
+            onSendToChat={(text) => { handleSend(text); }}
+          />
         </div>
       )}
 

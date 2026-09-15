@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useRef, useEffect } from "react";
 
 export interface GraphNode {
   id: string;
@@ -65,6 +65,11 @@ interface NetworkGraphProps {
   // render with a "NEW" badge -- undefined/null means no badge (either
   // never viewed before, or the feature's backing table isn't set up yet).
   newSinceTimestamp?: string | null;
+  // H.1.3: fires a follow-up chat query through the existing chat pipeline
+  // (same bridge already used for Repeat Offenders / suggestion chips) --
+  // used by click-to-trace. Omitted entirely disables the trace affordance,
+  // same backward-compatible pattern as every other optional prop here.
+  onFollowUpQuery?: (text: string) => void;
 }
 
 // Categorical palette validated against the app's dark surface (#161412) via
@@ -221,6 +226,7 @@ function computeLayout(nodes: GraphNode[], edges: GraphEdge[]) {
 export const NetworkGraph: React.FC<NetworkGraphProps> = ({
   nodes, edges, height: minHeight = 380,
   activeLayers, onToggleLayer, primaryEntityId, minRiskFilter, newSinceTimestamp,
+  onFollowUpQuery,
 }) => {
   // F.1/F.33: which layers this graph actually carries (legacy payloads with
   // no "layer" field on any node render exactly as before -- no toggle bar,
@@ -254,14 +260,100 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
     return true;
   };
 
-  const visibleNodes = useMemo(() => nodes.filter(nodeVisible), [nodes, activeSet, availableLayers, minRiskFilter, primaryEntityId]);
+  // H.1.1: time-slider playback. Edges/nodes with a real first_seen/txn_time
+  // are hidden once the "as-of" cursor is before that date; anything with NO
+  // date (phone/vehicle links have no date column, per the plan's own
+  // finding) always stays visible -- the slider never dishonestly implies a
+  // date VAJRA doesn't actually have. Range/slider are only shown at all
+  // when at least one dated item exists, so an undated legacy graph renders
+  // with zero UI change.
+  const dateRangeMs = useMemo(() => {
+    const stamps: number[] = [];
+    nodes.forEach((n) => { const t = n.first_seen ? Date.parse(n.first_seen) : NaN; if (!isNaN(t)) stamps.push(t); });
+    edges.forEach((rawE) => {
+      const e = rawE as GraphEdge;
+      const t1 = e.first_seen ? Date.parse(e.first_seen) : NaN;
+      const t2 = e.txn_time ? Date.parse(e.txn_time) : NaN;
+      if (!isNaN(t1)) stamps.push(t1);
+      if (!isNaN(t2)) stamps.push(t2);
+    });
+    if (stamps.length < 2) return null;
+    return { min: Math.min(...stamps), max: Math.max(...stamps) };
+  }, [nodes, edges]);
+
+  const [asOfCursor, setAsOfCursor] = useState<number>(100); // 0-100, % through dateRangeMs
+  const [isPlaying, setIsPlaying] = useState(false);
+  useEffect(() => {
+    if (!isPlaying || !dateRangeMs) return;
+    if (asOfCursor >= 100) { setIsPlaying(false); return; }
+    const id = setTimeout(() => setAsOfCursor((c) => Math.min(100, c + 2)), 120);
+    return () => clearTimeout(id);
+  }, [isPlaying, asOfCursor, dateRangeMs]);
+  const asOfDateMs = dateRangeMs ? dateRangeMs.min + ((dateRangeMs.max - dateRangeMs.min) * asOfCursor) / 100 : null;
+  const passesDateCursor = (ts?: string | null): boolean => {
+    if (!dateRangeMs || asOfDateMs == null || !ts) return true; // undated -- always visible, never hidden dishonestly
+    const t = Date.parse(ts);
+    return isNaN(t) || t <= asOfDateMs;
+  };
+
+  // F.1 Loophole L3 (risk filter, #33 merge): a node passes if its layer is
+  // active (or it carries no layer at all -- legacy data) AND (it's the
+  // specifically-queried primary entity OR its risk clears minRiskFilter).
+  const visibleNodes = useMemo(
+    () => nodes.filter((n) => nodeVisible(n) && (n.id === primaryEntityId || passesDateCursor(n.first_seen))),
+    [nodes, activeSet, availableLayers, minRiskFilter, primaryEntityId, asOfDateMs, dateRangeMs]
+  );
   const visibleIds = useMemo(() => new Set(visibleNodes.map((n) => n.id)), [visibleNodes]);
   const visibleEdges = useMemo(() => edges.filter((rawE) => {
     const e = getEdgeEndpoints(rawE);
-    return visibleIds.has(e.source) && visibleIds.has(e.target);
-  }), [edges, visibleIds]);
+    if (!visibleIds.has(e.source) || !visibleIds.has(e.target)) return false;
+    const edgeData = rawE as GraphEdge;
+    return passesDateCursor(edgeData.first_seen) && passesDateCursor(edgeData.txn_time);
+  }), [edges, visibleIds, asOfDateMs, dateRangeMs]);
 
   const { positions, width, height, renderNodes } = useMemo(() => computeLayout(visibleNodes, visibleEdges), [visibleNodes, visibleEdges]);
+
+  // H.1.4: zoom (wheel) & pan (drag) -- a viewBox-space transform on a
+  // wrapping <g>, not a change to the underlying layout coordinates, so
+  // computeLayout/positions stay exactly as before.
+  const [zoom, setZoom] = useState({ scale: 1, tx: 0, ty: 0 });
+  const dragState = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
+    e.preventDefault();
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+    setZoom((z) => ({ ...z, scale: Math.min(3, Math.max(0.4, z.scale * factor)) }));
+  };
+  const handleBgMouseDown = (e: React.MouseEvent<SVGRectElement>) => {
+    setIsDragging(true);
+    dragState.current = { x: e.clientX, y: e.clientY, tx: zoom.tx, ty: zoom.ty };
+  };
+  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!isDragging || !dragState.current) return;
+    setZoom((z) => ({ ...z, tx: dragState.current!.tx + (e.clientX - dragState.current!.x), ty: dragState.current!.ty + (e.clientY - dragState.current!.y) }));
+  };
+  const handleMouseUp = () => { setIsDragging(false); dragState.current = null; };
+  const resetView = () => setZoom({ scale: 1, tx: 0, ty: 0 });
+
+  // H.1.3: click-to-trace shortest path. Selecting two nodes shows a
+  // confirmation chip; confirming fires a normal chat follow-up through the
+  // existing pipeline (which already calls trace_connection_path) rather
+  // than splicing a second graph payload into this component's own state.
+  const [selectedForTrace, setSelectedForTrace] = useState<string[]>([]);
+  const handleNodeClick = (n: GraphNode) => {
+    if (!onFollowUpQuery || n.type === "overflow") return;
+    setSelectedForTrace((prev) => {
+      if (prev.includes(n.id)) return prev.filter((id) => id !== n.id);
+      if (prev.length >= 2) return [prev[1], n.id];
+      return [...prev, n.id];
+    });
+  };
+  const selectedTraceNodes = selectedForTrace.map((id) => renderNodes.find((n) => n.id === id)).filter(Boolean) as GraphNode[];
+  const fireTrace = () => {
+    if (selectedTraceNodes.length !== 2 || !onFollowUpQuery) return;
+    onFollowUpQuery(`how are ${selectedTraceNodes[0].label} and ${selectedTraceNodes[1].label} connected`);
+    setSelectedForTrace([]);
+  };
 
   if (nodes.length === 0) {
     return (

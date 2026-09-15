@@ -40,7 +40,7 @@ import random
 import uuid
 import socket
 import ipaddress
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
@@ -9906,13 +9906,55 @@ async def investigation_browser_navigate(payload: Dict[str, Any] = Body(default=
         raise HTTPException(status_code=403,
                             detail="Security Firewall: navigation to private, local, or non-public network addresses is prohibited.")
 
-    from catalyst_smartbrowz import smartbrowz_screenshot_bytes, smartbrowz_deep_dive_page
+    from catalyst_smartbrowz import smartbrowz_screenshot_bytes
+
+    def _fetch_and_extract(target_url: str) -> Dict[str, Any]:
+        """Self-contained (not smartbrowz_deep_dive_page, which crawls extra
+        /about-us//leadership/ subpages -- overkill and slower for a generic
+        browse-any-page use case): one plain server-side fetch, title + clean
+        text + up to 15 real on-page links (absolute-resolved) so the officer
+        can click deeper into the SAME sandboxed session instead of retyping
+        a URL for every hop -- still never a direct connection from the
+        officer's own browser to the target site."""
+        import requests as _requests
+        out = {"ok": False, "title": "", "text": "", "links": []}
+        try:
+            r = _requests.get(target_url, headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            }, timeout=10, verify=False)
+            if r.status_code != 200:
+                return out
+            html_raw = r.text
+            tm = re.search(r"<title[^>]*>(.*?)</title>", html_raw, re.DOTALL | re.I)
+            out["title"] = re.sub(r"<[^>]+>", "", tm.group(1)).strip() if tm else ""
+            links_seen, links = set(), []
+            for m in re.finditer(r'<a\b[^>]*href=["\']([^"\'#]+)["\'][^>]*>(.*?)</a>', html_raw, re.I | re.S):
+                href, text = m.group(1).strip(), re.sub(r"<[^>]+>", " ", m.group(2)).strip()
+                text = re.sub(r"\s+", " ", text)[:80]
+                if not href or href.lower().startswith(("javascript:", "mailto:", "tel:")):
+                    continue
+                abs_href = urljoin(target_url, href)
+                if not abs_href.lower().startswith(("http://", "https://")) or abs_href in links_seen:
+                    continue
+                links_seen.add(abs_href)
+                links.append({"href": abs_href, "text": text or abs_href[:60]})
+                if len(links) >= 15:
+                    break
+            out["links"] = links
+            body = re.sub(r"(?is)<(script|style|noscript|svg)[^>]*>.*?</\1>", " ", html_raw)
+            clean_txt = re.sub(r"<[^>]+>", " ", body)
+            clean_txt = re.sub(r"&[a-zA-Z#0-9]+;", " ", clean_txt)
+            out["text"] = re.sub(r"\s+", " ", clean_txt).strip()[:6000]
+            out["ok"] = bool(out["text"])
+        except Exception as e:
+            logger.warning(f"investigation_browser_navigate: fetch/extract failed for {target_url}: {e}")
+        return out
+
     try:
-        extracted = await asyncio.wait_for(
-            run_in_threadpool(smartbrowz_deep_dive_page, url, "general", 6000), timeout=20)
+        extracted = await asyncio.wait_for(run_in_threadpool(_fetch_and_extract, url), timeout=15)
     except Exception as e:
         logger.warning(f"investigation_browser_navigate: page extraction failed for {url}: {e}")
-        extracted = {"ok": False, "title": "", "text": "", "leadership": [], "contacts": []}
+        extracted = {"ok": False, "title": "", "text": "", "links": []}
 
     screenshot_data_url = None
     try:
@@ -9942,8 +9984,7 @@ async def investigation_browser_navigate(payload: Dict[str, Any] = Body(default=
         "url": url,
         "page_title": extracted.get("title") or url,
         "extracted_text": (extracted.get("text") or "")[:6000],
-        "leadership": extracted.get("leadership") or [],
-        "contacts": extracted.get("contacts") or [],
+        "links": extracted.get("links") or [],
         "screenshot_data_url": screenshot_data_url,
         "sha256_evidence_seal": evidence_seal,
     }
