@@ -9799,7 +9799,17 @@ class VajraAgentLoop(CognitiveBrainMixin):
         if m_reversed:
             name = m_reversed.group(1).strip()
         else:
-            m = re.search(r"(?:named|called)\s+([a-zA-Z][a-zA-Z.\s]{1,40}?)(?:[?.!]|$)", query, re.IGNORECASE)
+            # Diagnosed-but-unfixed gap (Sept 6-7 session): this only accepted
+            # "named"/"called" -- a real officer typing "name" instead of
+            # "named" ("is there a suspect name Ramesh") fell through to the
+            # looser m2 fallback below, which then wrongly captured "name
+            # Ramesh" as the name (searched a suspect literally called "Name
+            # Ramesh" and reported not found). "name" listed AFTER "named" in
+            # the alternation so "named X" still matches the longer, correct
+            # branch first -- Python's re tries alternatives left-to-right at
+            # each position, so "named" is attempted before "name" can
+            # short-match its first four letters.
+            m = re.search(r"(?:named|name|called)\s+([a-zA-Z][a-zA-Z.\s]{1,40}?)(?:[?.!]|$)", query, re.IGNORECASE)
             if m:
                 name = m.group(1).strip()
             else:
