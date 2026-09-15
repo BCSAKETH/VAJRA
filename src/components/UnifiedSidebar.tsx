@@ -50,6 +50,7 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
   const {
     t, lang, currentScreen, setCurrentScreen, roleTier, badgeNumber, setIsAuthenticated,
     activeChatSessionId, requestChatSessionSelect, requestNewChat, chatSessionsRefreshNonce,
+    isSettingsOpen, openSettings,
   } = useApp();
 
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -354,16 +355,16 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
             )}
           </button>
           <button
-            onClick={(e) => { e.stopPropagation(); setCurrentScreen("settings"); setIsProfileOpen(false); }}
+            onClick={(e) => { e.stopPropagation(); openSettings(); setIsProfileOpen(false); }}
             title={t.navSettings}
             aria-label={t.navSettings}
             className={`shrink-0 flex items-center justify-center rounded-lg border transition-all cursor-pointer ${isExpanded ? "p-1.5" : "w-8 h-8"} ${
-              currentScreen === "settings"
+              isSettingsOpen
                 ? "bg-[#C79A4E]/15 border-[#C79A4E]/40 text-[#C79A4E] shadow-[0_0_10px_rgba(199,154,78,0.2)]"
                 : "border-stone-800/70 hover:border-stone-700 bg-stone-900/40 hover:bg-stone-800/70 text-stone-400 hover:text-[#C79A4E]"
             }`}
           >
-            <SettingsIcon className={`w-4 h-4 transition-transform duration-300 ${currentScreen === "settings" ? "rotate-45 text-[#C79A4E]" : "hover:rotate-45"}`} />
+            <SettingsIcon className={`w-4 h-4 transition-transform duration-300 ${isSettingsOpen ? "rotate-45 text-[#C79A4E]" : "hover:rotate-45"}`} />
           </button>
         </div>
 

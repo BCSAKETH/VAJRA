@@ -934,7 +934,9 @@ export const SettingsScreen: React.FC = () => {
           MANDATORY statutory justification. Submits to supervisor approval,
           never applies directly (see comment above the handler). */}
       {isRequestOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+        // z-[120]: see ChangePasswordModal.tsx's own comment on the same fix
+        // -- this can now open from inside SettingsModal (z-[105] dialog).
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
           <div className="glass-card w-full max-w-2xl border border-stone-800 p-5 space-y-4 rounded-2xl max-h-[90vh] overflow-y-auto">
             <div className="flex items-center justify-between border-b border-stone-850 pb-3">
               <h3 className="text-xs font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">

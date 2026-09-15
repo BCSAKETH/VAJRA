@@ -21,7 +21,11 @@ import { RemoteEvictionModal } from "./components/RemoteEvictionModal";
 const SupervisorDashboardScreen = lazy(() =>
   import("./screens/SupervisorDashboardScreen").then((m) => ({ default: m.SupervisorDashboardScreen }))
 );
-const SettingsScreen = lazy(() => import("./screens/SettingsScreen").then((m) => ({ default: m.SettingsScreen })));
+// §32: Settings is now a global overlay (SettingsModal), not a screen --
+// still lazy-loaded (same chunk-on-first-open discipline as every other
+// secondary screen), just via SettingsModal instead of SettingsScreen
+// directly (SettingsModal itself imports and renders SettingsScreen).
+const SettingsModal = lazy(() => import("./components/SettingsModal").then((m) => ({ default: m.SettingsModal })));
 const DistrictDashboardScreen = lazy(() =>
   import("./screens/DistrictDashboardScreen").then((m) => ({ default: m.DistrictDashboardScreen }))
 );
@@ -54,6 +58,8 @@ const AppContent: React.FC = () => {
     evictionNotice,
     setEvictionNotice,
     setIsAuthenticated,
+    isSettingsOpen,
+    closeSettings,
   } = useApp();
 
   const handleAcknowledgeEviction = () => {
@@ -84,7 +90,7 @@ const AppContent: React.FC = () => {
   // Every other screen is fine to unmount/remount (no long-lived state to
   // preserve) and stays lazy/code-split as before.
   const isChatActive = currentScreen === "ai_chat" || !(
-    ["supervisor", "audit", "settings", "district_dashboard", "investigations", "all_chats"].includes(currentScreen)
+    ["supervisor", "audit", "district_dashboard", "investigations", "all_chats"].includes(currentScreen)
   );
 
   const renderOtherScreen = () => {
@@ -112,8 +118,6 @@ const AppContent: React.FC = () => {
           );
         }
         return <SupervisorDashboardScreen />;
-      case "settings":
-        return <SettingsScreen />;
       case "district_dashboard":
         return <DistrictDashboardScreen />;
       default:
@@ -149,6 +153,17 @@ const AppContent: React.FC = () => {
           isMandatory={true}
           onClose={() => setMustChangePassword(false)}
         />
+      )}
+      {isSettingsOpen && (
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 backdrop-blur-md">
+              <div className="w-8 h-8 border-2 border-stone-800 border-t-[#C79A4E] rounded-full animate-spin" />
+            </div>
+          }
+        >
+          <SettingsModal isOpen={isSettingsOpen} onClose={closeSettings} />
+        </Suspense>
       )}
     </MainLayout>
   );

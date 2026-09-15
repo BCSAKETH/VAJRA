@@ -89,7 +89,12 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+    // z-[120]: this modal can now open FROM INSIDE SettingsModal (z-[105]
+    // dialog), which itself can open from any screen -- z-50 used to sit
+    // BELOW that, rendering invisible/unclickable behind the settings
+    // dialog whenever opened from there (Finals-part 3.md loophole L254).
+    // Still correctly layers above any ordinary z-50 in-page modal too.
+    <div className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
       <div className="w-full max-w-md bg-stone-900 border border-stone-800 rounded-2xl p-6 shadow-2xl space-y-4 animate-fade-in relative">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-stone-800 pb-3">

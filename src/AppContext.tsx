@@ -144,6 +144,12 @@ interface AppContextType {
   removeNotification: (id: string) => void;
   theme: "light" | "high-contrast-dark";
   setTheme: (theme: "light" | "high-contrast-dark") => void;
+  // Finals-part 3.md §32 (L263): Settings as a pure UI overlay, not a
+  // screen-navigation target -- opening it must never unmount whatever
+  // screen/chat is currently active underneath.
+  isSettingsOpen: boolean;
+  openSettings: () => void;
+  closeSettings: () => void;
   voicePersona: string;
   setVoicePersona: (persona: string) => void;
   transcriptTextSize: TranscriptTextSize;
@@ -514,6 +520,26 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     setThemeState(newTheme);
   };
 
+  // §32 (L263, L265): Settings is pure overlay state, opened from anywhere
+  // (sidebar click, or the global Ctrl/Cmd+, hotkey below) without ever
+  // touching `currentScreen` -- whatever was active underneath stays mounted.
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const openSettings = useCallback(() => setIsSettingsOpen(true), []);
+  const closeSettings = useCallback(() => setIsSettingsOpen(false), []);
+
+  useEffect(() => {
+    const handleGlobalHotkey = (e: KeyboardEvent) => {
+      // L265: Ctrl/Cmd+, opens Settings instead of falling through to the
+      // browser's own native settings/preferences shortcut.
+      if ((e.ctrlKey || e.metaKey) && e.key === ",") {
+        e.preventDefault();
+        setIsSettingsOpen(true);
+      }
+    };
+    window.addEventListener("keydown", handleGlobalHotkey);
+    return () => window.removeEventListener("keydown", handleGlobalHotkey);
+  }, []);
+
   useEffect(() => {
     localStorage.setItem("vajra_voice_persona", voicePersona);
   }, [voicePersona]);
@@ -767,6 +793,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         removeNotification,
         theme,
         setTheme,
+        isSettingsOpen,
+        openSettings,
+        closeSettings,
         voicePersona,
         setVoicePersona,
         transcriptTextSize,
