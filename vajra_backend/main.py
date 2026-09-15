@@ -976,6 +976,41 @@ async def get_spatial_hotspots(
     }
 
 
+@app.get("/api/geospatial/district-stations")
+async def geospatial_district_stations(district: str = "", location_context: str = Depends(security_firewall)):
+    """
+    Backs the Tactical 3D Map (Finals-part 3.md §21-22). Real per-station
+    markers -- each station's position is the real centroid of its own
+    geocoded cases (see spatiotemporal_forecast.py's own module docstring
+    for why this replaces the source document's hardcoded 5-station
+    coordinate dictionary). Stations with zero geocoded cases are omitted,
+    not placed at a fabricated fallback location.
+    """
+    from spatiotemporal_forecast import get_district_stations
+    if not district:
+        raise HTTPException(status_code=400, detail="district is required.")
+    stations = await run_in_threadpool(get_district_stations, district, catalyst_app)
+    return {"district": district, "stations": stations}
+
+
+@app.get("/api/geospatial/station-forecast")
+async def geospatial_station_forecast(unit_id: int, day_of_week: Optional[int] = None,
+                                       location_context: str = Depends(security_firewall)):
+    """
+    Real day-of-week statistical signal for ONE station (see
+    spatiotemporal_forecast.py's own module docstring: this is a disclosed
+    z-score against the station's own trailing weekly baseline, not a
+    trained model's probability, and day-of-week rather than the source
+    document's fabricated hour-of-day granularity -- CCTNS records here
+    carry no clock-time component).
+    """
+    from spatiotemporal_forecast import get_station_forecast
+    if day_of_week is not None and not (0 <= day_of_week <= 6):
+        day_of_week = None
+    result = await run_in_threadpool(get_station_forecast, unit_id, day_of_week, catalyst_app)
+    return result
+
+
 @app.get("/api/cases/demographics")
 async def get_cases_demographics(request: Request, location_context: str = Depends(security_firewall)):
     """
