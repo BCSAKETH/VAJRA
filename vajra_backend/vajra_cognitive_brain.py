@@ -736,6 +736,39 @@ class CognitiveBrainMixin:
         names = {c["name"] for c in self._COMPILER_CAPABILITIES}
         registry = "\n".join(f"- {c['name']}: {c['does']} | params: {json.dumps(c['params'])}"
                              for c in self._COMPILER_CAPABILITIES)
+
+        # §2.4 (Cognitive Brain plan): wire SOTIE into the compiler's own
+        # tool selection. SOTIE (tool_training_optimizer.py) already tracks
+        # gold exemplars + bandit weights, but previously only fed the
+        # OLDER native-function-calling loop in agent_loop.py -- the
+        # compiler's registry text never read either. Shadow-mode for the
+        # risky half (per this item's own feasibility note): bandit
+        # failure-rate down-ranking is only LOGGED here, never yet applied
+        # to `registry`, so a bad bandit weight can't create a
+        # self-reinforcing bad-routing loop until this is reviewed against
+        # real telemetry. The exemplar half is lower-risk (same mechanism
+        # already proven safe in production for the other tool-selection
+        # path) and IS applied for real, below.
+        try:
+            from tool_training_optimizer import get_matching_tool_exemplars, get_tool_bandit_weight
+            _gold_exemplars = get_matching_tool_exemplars(query, limit=2)
+            _low_weight_caps = [(c["name"], get_tool_bandit_weight(c["name"]))
+                                 for c in self._COMPILER_CAPABILITIES]
+            _low_weight_caps = [(n, w) for n, w in _low_weight_caps if w < 0.6]
+            if _low_weight_caps:
+                logger.info(f"§2.4 SOTIE shadow mode: capabilities with a low bandit weight for this turn "
+                            f"(would down-rank in the compiler's registry text, not yet applied): {_low_weight_caps}")
+        except Exception as e:
+            _gold_exemplars = []
+            logger.warning(f"§2.4 SOTIE wiring failed (non-fatal, compiler proceeds without it): {e}")
+        _exemplar_block = ""
+        if _gold_exemplars:
+            _ex_lines = [f'  - "{e.get("query", "")[:100]}" -> {e.get("tool", "")}' for e in _gold_exemplars]
+            _exemplar_block = (
+                "\n\nSIMILAR PAST QUERIES (learned from officer feedback -- a strong hint, not a hard rule; "
+                "still use your own judgment if this query is genuinely different):\n" + "\n".join(_ex_lines)
+            )
+
         # Confirmed live: "show their case id" inside an ongoing Full Dossier
         # thread took ~70s because deep=True's depth_rule unconditionally
         # demands a comprehensive multi-capability sweep REGARDLESS of what
@@ -828,6 +861,7 @@ class CognitiveBrainMixin:
             "Plan a 'web_search' step with the topic or query as the parameter.\n"
             "- CRITICAL FORMATTING: Output ONLY the raw JSON object starting with { and ending with }. Do NOT write any reasoning, thinking process, markdown bullet points, or preamble text. Any non-JSON text causes immediate syntax failure.\n"
             + depth_rule
+            + _exemplar_block
         )
         try:
             _history_msgs = [h for h in (history or [])[-7:-1] if isinstance(h, dict) and h.get("content")]
@@ -1160,6 +1194,28 @@ class CognitiveBrainMixin:
                           "details": (f"Compiled to {len(panels)} grounded step(s): "
                                       f"{', '.join(p['panel_key'] for p in panels)}. "
                                       "The AI planned; a deterministic engine executed each step.")})
+
+        # §3.7 Orchestrator (light-touch): extends the existing decided_by
+        # traceability discipline (_classify_intent's own routing trail)
+        # to which PERSONA(S) touched this turn's answer -- not a separate
+        # persona-routing table (the plan's own feasibility note grades a
+        # full routing rewrite YELLOW, to be done only once 3.2/3.3/3.6 are
+        # individually proven; this just makes their existing, independent
+        # triggers visible together as one citation instead of leaving each
+        # one's involvement implicit in the answer text alone).
+        _personas_fired = []
+        if data_payload.get("field_ops_restyled"):
+            _personas_fired.append("Officer/Field-Ops")
+        if data_payload.get("prosecution_critique"):
+            _personas_fired.append("Legal/Prosecutor")
+        if data_payload.get("red_team_counter_check"):
+            _personas_fired.append("Standing Red-Team")
+        if data_payload.get("hypotheses"):
+            _personas_fired.append("Investigative Hypotheses")
+        if _personas_fired:
+            citations.append({"type": "Cognitive Brain Personas", "id": ", ".join(_personas_fired),
+                              "details": f"This answer was also reviewed/restyled by: {', '.join(_personas_fired)}."})
+
         self._write_audit_log(employee_id, "Semantic Compiler", intent[:80], query, text_out, session_id)
         return {"text": text_out, "response_type": resp_type, "data": data_payload,
                 "citations": citations, "is_simulated": False, "simulated_reason": ""}
