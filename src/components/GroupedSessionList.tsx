@@ -5,7 +5,7 @@ import {
   MessageSquare, Folder, Users, Loader2, MoreVertical, Trash2,
   ChevronDown, ChevronRight as ChevronRightIcon, Filter, Pin, PinOff,
   Circle, Archive, ArchiveRestore, Copy, FolderInput, FileStack, Pencil, Plus,
-  Check, CheckSquare, Square,
+  Check, CheckSquare, Square, Hand, X,
 } from "lucide-react";
 import { FilterSortPanel, FilterSortState, DEFAULT_FILTER_SORT_STATE } from "./FilterSortPanel";
 
@@ -115,6 +115,73 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   const [busyId, setBusyId] = useState<string | null>(null);
 
+  // Section 17: Sidebar Pinned Workspace & Drag-and-Drop Pinning Architecture
+  const [isDragOverPinned, setIsDragOverPinned] = useState(false);
+  const [isDragOverUngrouped, setIsDragOverUngrouped] = useState(false);
+  const [isDraggingSession, setIsDraggingSession] = useState(false);
+  const [showDragTip, setShowDragTip] = useState(() => {
+    return localStorage.getItem("vajra_hide_pin_drag_tip") !== "true";
+  });
+
+  const dismissDragTip = () => {
+    setShowDragTip(false);
+    localStorage.setItem("vajra_hide_pin_drag_tip", "true");
+  };
+
+  const handleDragStart = (e: React.DragEvent, sessionId: string) => {
+    e.dataTransfer.setData("text/vajra-session-id", sessionId);
+    e.dataTransfer.effectAllowed = "move";
+    setIsDraggingSession(true);
+  };
+
+  const handleDragEnd = () => {
+    setIsDraggingSession(false);
+    setIsDragOverPinned(false);
+    setIsDragOverUngrouped(false);
+  };
+
+  const handleDragOverPinned = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (!isDragOverPinned) setIsDragOverPinned(true);
+  };
+
+  const handleDragLeavePinned = (e: React.DragEvent) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDragOverPinned(false);
+  };
+
+  const handleDropToPin = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOverPinned(false);
+    setIsDraggingSession(false);
+    const sessionId = e.dataTransfer.getData("text/vajra-session-id");
+    if (!sessionId) return;
+    if (meta[sessionId]?.is_pinned) return;
+    await patchSession(sessionId, { is_pinned: true });
+  };
+
+  const handleDragOverUngrouped = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (!isDragOverUngrouped) setIsDragOverUngrouped(true);
+  };
+
+  const handleDragLeaveUngrouped = (e: React.DragEvent) => {
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return;
+    setIsDragOverUngrouped(false);
+  };
+
+  const handleDropToUnpin = async (e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOverUngrouped(false);
+    setIsDraggingSession(false);
+    const sessionId = e.dataTransfer.getData("text/vajra-session-id");
+    if (!sessionId) return;
+    if (!meta[sessionId]?.is_pinned) return;
+    await patchSession(sessionId, { is_pinned: false });
+  };
+
   // "View all conversations" page only: select-mode + bulk delete, and the
   // "Archived only" filter toggle -- both genuinely new capabilities, gated
   // to this one page so every other GroupedSessionList caller (sidebar,
@@ -175,18 +242,34 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, meta, filter]);
 
-  const sorted = useMemo(() => {
-    const arr = [...filtered];
+  // Split filtered items into dedicated pinned workspace and unpinned standard list (Section 17)
+  const { pinnedItems, unpinnedItems } = useMemo(() => {
+    const pinned: (SessionSummary | Investigation)[] = [];
+    const unpinned: (SessionSummary | Investigation)[] = [];
+    for (const it of filtered) {
+      if (meta[it.session_id]?.is_pinned) {
+        pinned.push(it);
+      } else {
+        unpinned.push(it);
+      }
+    }
+    return { pinnedItems: pinned, unpinnedItems: unpinned };
+  }, [filtered, meta]);
+
+  const sortedPinned = useMemo(() => {
+    const arr = [...pinnedItems];
+    arr.sort((a, b) => (b.last_active_at || "").localeCompare(a.last_active_at || ""));
+    return arr;
+  }, [pinnedItems]);
+
+  const sortedUnpinned = useMemo(() => {
+    const arr = [...unpinnedItems];
     arr.sort((a, b) => {
-      // Pinned always float to the top regardless of sort mode.
-      const pa = meta[a.session_id]?.is_pinned ? 1 : 0;
-      const pb = meta[b.session_id]?.is_pinned ? 1 : 0;
-      if (pa !== pb) return pb - pa;
       if (filter.sortBy === "title") return (a.title || "").localeCompare(b.title || "");
       return (b.last_active_at || "").localeCompare(a.last_active_at || "");
     });
     return arr;
-  }, [filtered, meta, filter.sortBy]);
+  }, [unpinnedItems, filter.sortBy]);
 
   // ---- grouping ----
   const groupsById = useMemo(() => new Map(groups.map((g) => [String(g.group_id), g])), [groups]);
@@ -194,9 +277,9 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
     const buckets = new Map<string, (SessionSummary | Investigation)[]>();
     const ungrouped: (SessionSummary | Investigation)[] = [];
     if (filter.groupBy === "none") {
-      return { buckets, ungrouped: sorted };
+      return { buckets, ungrouped: sortedUnpinned };
     }
-    for (const it of sorted) {
+    for (const it of sortedUnpinned) {
       const gid = meta[it.session_id]?.group_id;
       if (gid !== null && gid !== undefined && gid !== "" && groupsById.has(String(gid))) {
         const key = String(gid);
@@ -207,7 +290,7 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
       }
     }
     return { buckets, ungrouped };
-  }, [sorted, meta, groupsById, filter.groupBy]);
+  }, [sortedUnpinned, meta, groupsById, filter.groupBy]);
 
   const visibleGroupIds = useMemo(() => {
     const ids = Array.from(groupsById.keys());
@@ -469,6 +552,111 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
     }
   };
 
+  // Section 17: Dedicated Pinned Pill Item Renderer
+  const renderPinnedRow = (item: SessionSummary | Investigation) => {
+    const m = meta[item.session_id];
+    const isActive = item.session_id === activeSessionId;
+    const isLoadingThis = loadingSessionId === item.session_id;
+    const isBusy = busyId === item.session_id;
+
+    return (
+      <div
+        key={item.session_id}
+        draggable={!selectMode}
+        onDragStart={(e) => handleDragStart(e, item.session_id)}
+        onDragEnd={handleDragEnd}
+        className="relative group"
+      >
+        <div
+          onClick={() => (selectMode ? toggleSelected(item.session_id) : onSelectSession(item.session_id))}
+          className={`group flex items-center justify-between px-3 py-2 rounded-xl text-xs cursor-pointer transition-all ${
+            isActive
+              ? "bg-stone-800 text-stone-100 font-bold shadow-sm border border-stone-700/60"
+              : "bg-stone-900/60 hover:bg-stone-850 text-stone-300 hover:text-stone-100 border border-stone-850/60"
+          }`}
+        >
+          <div className="flex items-center gap-2 min-w-0 flex-1">
+            {isLoadingThis || isBusy ? (
+              <Loader2 className="w-3 h-3 shrink-0 animate-spin text-[#C79A4E]" />
+            ) : (
+              <Circle className="w-2.5 h-2.5 text-stone-500 shrink-0" />
+            )}
+            <span className="truncate">{item.title || (lang === "en" ? "New Conversation" : "ಹೊಸ ಸಂಭಾಷಣೆ")}</span>
+          </div>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpenMenuId(openMenuId === item.session_id ? null : item.session_id);
+            }}
+            className="opacity-0 group-hover:opacity-100 text-stone-400 hover:text-stone-200 p-1 rounded transition-opacity cursor-pointer"
+            aria-label="More options"
+          >
+            <MoreVertical className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+        {openMenuId === item.session_id && (
+          <div
+            className="absolute right-1 top-7 z-50 bg-stone-900 border border-stone-800 rounded-lg shadow-2xl py-1 w-44"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => handleCopyId(item.session_id)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-stone-300 hover:bg-stone-800 cursor-pointer"
+            >
+              <Copy className="w-3 h-3" /> {lang === "en" ? "Copy session ID" : "ಸೆಷನ್ ID ನಕಲಿಸಿ"}
+            </button>
+            <button
+              onClick={() => handleTogglePin(item.session_id, true)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-stone-300 hover:bg-stone-800 cursor-pointer"
+            >
+              <PinOff className="w-3 h-3" /> {lang === "en" ? "Unpin" : "ಪಿನ್ ತೆಗೆ"}
+            </button>
+            <button
+              onClick={() => handleToggleUnread(item.session_id, !!m?.is_unread)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-stone-300 hover:bg-stone-800 cursor-pointer"
+            >
+              <Circle className="w-3 h-3" />{" "}
+              {m?.is_unread
+                ? lang === "en"
+                  ? "Mark as read"
+                  : "ಓದಿದಂತೆ ಗುರುತಿಸಿ"
+                : lang === "en"
+                ? "Mark as unread"
+                : "ಓದದಂತೆ ಗುರುತಿಸಿ"}
+            </button>
+            <button
+              onClick={() => handleRename(item.session_id, item.title)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-stone-300 hover:bg-stone-800 cursor-pointer"
+            >
+              <Pencil className="w-3 h-3" /> {lang === "en" ? "Rename" : "ಮರುಹೆಸರಿಸಿ"}
+            </button>
+            <div className="border-t border-stone-800 my-1" />
+            <button
+              onClick={() => handleToggleArchive(item.session_id, !!m?.is_archived)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-stone-300 hover:bg-stone-800 cursor-pointer"
+            >
+              {m?.is_archived ? <ArchiveRestore className="w-3 h-3" /> : <Archive className="w-3 h-3" />}{" "}
+              {m?.is_archived
+                ? lang === "en"
+                  ? "Unarchive"
+                  : "ಆರ್ಕೈವ್ ರದ್ದು"
+                : lang === "en"
+                ? "Archive"
+                : "ಆರ್ಕೈವ್ ಮಾಡಿ"}
+            </button>
+            <button
+              onClick={() => handleDelete(item.session_id, item.title)}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] text-rose-400 hover:bg-rose-500/10 cursor-pointer"
+            >
+              <Trash2 className="w-3 h-3" /> {lang === "en" ? "Delete" : "ಅಳಿಸಿ"}
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   // ---- row rendering ----
   const renderRow = (item: SessionSummary | Investigation) => {
     const isInvestigation = kind === "investigations";
@@ -492,7 +680,13 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
     const isSelected = selectedIds.has(item.session_id);
 
     return (
-      <div key={item.session_id} className="relative group">
+      <div
+        key={item.session_id}
+        draggable={!selectMode}
+        onDragStart={(e) => handleDragStart(e, item.session_id)}
+        onDragEnd={handleDragEnd}
+        className="relative group"
+      >
         <button
           onClick={() => (selectMode ? toggleSelected(item.session_id) : onSelectSession(item.session_id))}
           disabled={!selectMode && (!!loadingSessionId || isBusy)}
@@ -703,10 +897,72 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
         </div>
       )}
 
-      {sorted.length === 0 ? (
+      {sortedPinned.length === 0 && sortedUnpinned.length === 0 && !isDraggingSession ? (
         <div className="text-[10px] text-stone-600 text-center py-4 font-mono px-2">{emptyLabel}</div>
       ) : (
         <>
+          {/* Section 17: Pinned Workspace -- strictly invisible if 0 pinned items and not dragging */}
+          {(sortedPinned.length > 0 || isDragOverPinned || isDraggingSession) && (
+            <div
+              onDragOver={handleDragOverPinned}
+              onDragLeave={handleDragLeavePinned}
+              onDrop={handleDropToPin}
+              className={`mb-3 pb-2 transition-all rounded-xl p-1.5 ${
+                isDragOverPinned
+                  ? "bg-blue-500/15 border-blue-500/60 border-dashed border shadow-lg shadow-blue-500/10"
+                  : isDraggingSession && sortedPinned.length === 0
+                  ? "bg-blue-500/5 border-blue-500/30 border-dashed border"
+                  : "border-b border-stone-850/60"
+              }`}
+            >
+              {/* Section Header with Relative Container for Callout */}
+              <div className="relative flex items-center justify-between px-1 py-1 mb-1.5">
+                <span className="text-[10.5px] font-bold text-stone-400 uppercase tracking-wider font-mono">
+                  {lang === "en" ? "Pinned" : "ಪಿನ್ ಮಾಡಲಾದ"}
+                </span>
+
+                {/* Blue Tip Callout Tooltip (Section 17 / User Screenshot 1) */}
+                {isExpanded && showDragTip && sortedPinned.length > 0 && (
+                  <div className="absolute left-full ml-3 top-1/2 -translate-y-1/2 z-50 flex items-center gap-2.5 bg-blue-600 text-white px-3.5 py-2 rounded-xl shadow-2xl whitespace-nowrap animate-fade-in border border-blue-400/30">
+                    {/* Speech bubble arrow pointer pointing left */}
+                    <div className="absolute right-full top-1/2 -translate-y-1/2 border-8 border-transparent border-r-blue-600" />
+
+                    <div className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center shrink-0">
+                      <Hand className="w-3 h-3 text-white" />
+                    </div>
+
+                    <span className="text-xs font-medium">
+                      {lang === "en"
+                        ? "Tip: you can drag tasks here to pin them"
+                        : "ಸುಳಿವು: ಪಿನ್ ಮಾಡಲು ನೀವು ಕಾರ್ಯಗಳನ್ನು ಇಲ್ಲಿಗೆ ಎಳೆಯಬಹುದು"}
+                    </span>
+
+                    <button
+                      onClick={dismissDragTip}
+                      className="ml-1 text-white/80 hover:text-white cursor-pointer p-0.5"
+                      aria-label="Dismiss tip"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Empty drop guide when dragging over an empty pinned section */}
+              {sortedPinned.length === 0 && (
+                <div className="flex items-center justify-center gap-2 py-3 text-xs text-blue-400 font-medium">
+                  <Pin className="w-3.5 h-3.5 animate-bounce" />
+                  <span>{lang === "en" ? "Drop here to pin" : "ಪಿನ್ ಮಾಡಲು ಇಲ್ಲಿ ಬಿಡಿ"}</span>
+                </div>
+              )}
+
+              {/* Pinned Pill Items */}
+              <div className="space-y-1">
+                {sortedPinned.map(renderPinnedRow)}
+              </div>
+            </div>
+          )}
+
           {filter.groupBy !== "none" &&
             visibleGroupIds.map((gid) => {
               const g = groupsById.get(gid)!;
@@ -739,7 +995,16 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
               </button>
             )}
             {!collapsedGroups.has("__ungrouped__") && (
-              <div className="space-y-1 pl-1">{grouped.ungrouped.map(renderRow)}</div>
+              <div
+                onDragOver={handleDragOverUngrouped}
+                onDragLeave={handleDragLeaveUngrouped}
+                onDrop={handleDropToUnpin}
+                className={`space-y-1 pl-1 transition-all rounded-lg ${
+                  isDragOverUngrouped ? "bg-stone-800/40 border border-dashed border-stone-600/50 p-1" : ""
+                }`}
+              >
+                {grouped.ungrouped.map(renderRow)}
+              </div>
             )}
           </div>
         </>
