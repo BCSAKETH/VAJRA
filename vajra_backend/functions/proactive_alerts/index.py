@@ -179,6 +179,45 @@ def get_last_known_offender_counts(headers):
     return last_counts, history_exists
 
 
+def _week_key(date_str):
+    """ISO (year, week) key from a 'YYYY-MM-DD...' date string, or None if
+    unparseable/missing -- CrimeRegisteredDate/ArrestSurrenderDate are
+    date-only across this dataset (confirmed elsewhere in this codebase,
+    vajra_core.py), so this only ever needs the first 10 characters."""
+    if not date_str:
+        return None
+    try:
+        d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
+        y, w, _ = d.isocalendar()
+        return (y, w)
+    except Exception:
+        return None
+
+
+def _zscore_latest_vs_baseline(week_counts):
+    """§3.4 Supervisor Brain: given {week_key: count} for one entity (a
+    district or an officer), sorted chronologically, returns (z, latest,
+    baseline_mean) comparing the most recent COMPLETE week against the
+    mean/stdev of the trailing weeks before it -- pure stdlib, no numpy (this
+    job function's own dependency footprint stays `requests`-only). Needs at
+    least 4 trailing weeks of real history before it will score anything, so
+    a newly-active district/officer with thin history never gets a noisy,
+    meaningless z-score. Returns None if there isn't enough history yet."""
+    weeks = sorted(week_counts.keys())
+    if len(weeks) < 5:
+        return None
+    latest_week = weeks[-1]
+    baseline_weeks = weeks[-9:-1] if len(weeks) >= 9 else weeks[:-1]
+    baseline = [week_counts[w] for w in baseline_weeks]
+    latest = week_counts[latest_week]
+    n = len(baseline)
+    mean = sum(baseline) / n
+    variance = sum((x - mean) ** 2 for x in baseline) / n
+    stdev = variance ** 0.5 or 1.0
+    z = (latest - mean) / stdev
+    return z, latest, round(mean, 1)
+
+
 def insert_alerts(headers, alerts):
     inserted = 0
     for alert in alerts:
@@ -212,7 +251,7 @@ def handler(context, basic_val):
         # 1. District Case-Volume Spike Detection
         # Fetch case master station links (paginated -- CaseMaster has ~8000 rows,
         # far past ZCQL's 300-row-per-query cap)
-        cases_list = fetch_all(headers, "CaseMasterID, PoliceStationID", "CaseMaster", order_by="CaseMasterID")
+        cases_list = fetch_all(headers, "CaseMasterID, PoliceStationID, CrimeRegisteredDate", "CaseMaster", order_by="CaseMasterID")
         case_to_ps = {
             int(c["CaseMaster"]["CaseMasterID"]): int(c["CaseMaster"]["PoliceStationID"])
             for c in cases_list
@@ -343,20 +382,133 @@ def handler(context, basic_val):
                 offender_spikes.append({**base, "AlertMessage": f"Repeat Offender Alert: Suspect '{name}' detected in {count} separate cases (up from {prior}).", "Severity": "Critical" if count > 3 else "Warning"})
             # else: no new case for this offender since we last checked
 
+        # 3. Cognitive Brain plan §3.4 Supervisor/Command Brain: a genuinely
+        # different signal from SPATIAL_SPIKE above -- that fires on ANY
+        # increase since last check (a district sitting at a permanently
+        # busy level never stops re-qualifying as long as it keeps growing
+        # at all). This is real STATISTICAL significance against each
+        # district's own trailing weekly baseline (|z| >= 2, same threshold
+        # convention agent_loop.py's anomaly_detection tool already uses),
+        # surfaced as its own distinct AlertType so a supervisor can tell
+        # "busier than usual" (SPATIAL_SPIKE) apart from "statistically
+        # abnormal for THIS district" (this). Extends this SAME already-
+        # scheduled job rather than a new one -- no new console/cron setup.
+        dist_week_counts = {}
+        for c in cases_list:
+            cm = c.get("CaseMaster", {})
+            ps_id = cm.get("PoliceStationID")
+            wk = _week_key(cm.get("CrimeRegisteredDate"))
+            if not ps_id or not wk or int(ps_id) not in unit_to_dist:
+                continue
+            d_id = unit_to_dist[int(ps_id)]
+            dist_week_counts.setdefault(d_id, {}).setdefault(wk, 0)
+            dist_week_counts[d_id][wk] += 1
+
+        district_trend_alerts = []
+        for d_id, wk_counts in dist_week_counts.items():
+            result = _zscore_latest_vs_baseline(wk_counts)
+            if not result:
+                continue
+            z, latest, mean = result
+            if abs(z) < 2:
+                continue
+            d_name = dist_names.get(d_id, f"District {d_id}")
+            direction = "above" if z > 0 else "below"
+            district_trend_alerts.append({
+                "AlertType": "DISTRICT_TREND_ANOMALY", "DistrictID": d_id,
+                "TriggerTime": datetime.now().isoformat(), "IsRead": False, "_sort_key": abs(z),
+                "AlertMessage": (
+                    f"Supervisor Radar: {d_name} logged {latest} cases this week, statistically {direction} its "
+                    f"own {mean}-case trailing weekly average (z={round(z, 1)}) -- a genuine deviation from this "
+                    f"district's normal pattern, not just a busy week."
+                ),
+                "Severity": "Critical" if abs(z) >= 3 else "Warning",
+            })
+
+        # 4. §3.4 continued -- per-Investigating-Officer workload anomaly,
+        # the "officer" half this item's plan asks for. ArrestSurrender.IOID
+        # is the real per-case Investigating Officer reference (docs/
+        # SCHEMA.md); resolved to a name via Employee where possible, never
+        # fabricated -- falls back to "IO #<id>" honestly if the join misses.
+        # Wrapped in its own try/except: this column's exact real shape on
+        # this deployment hasn't been exercised anywhere else in the
+        # codebase, so a schema surprise here must not take down the
+        # already-working district/offender sections above it.
+        officer_trend_alerts = []
+        try:
+            arrests_list = fetch_all(headers, "IOID, ArrestSurrenderDate, PoliceStationID", "ArrestSurrender", order_by="ArrestSurrender")
+            io_week_counts = {}
+            io_last_district = {}
+            for a in arrests_list:
+                ar = a.get("ArrestSurrender", {})
+                io_id = ar.get("IOID")
+                wk = _week_key(ar.get("ArrestSurrenderDate"))
+                if not io_id or not wk:
+                    continue
+                io_id = int(io_id)
+                io_week_counts.setdefault(io_id, {}).setdefault(wk, 0)
+                io_week_counts[io_id][wk] += 1
+                ps_id = ar.get("PoliceStationID")
+                if ps_id and int(ps_id) in unit_to_dist:
+                    io_last_district[io_id] = unit_to_dist[int(ps_id)]
+
+            io_ids_to_name = {}
+            if io_week_counts:
+                emp_rows = fetch_all(headers, "EmployeeID, FirstName", "Employee", order_by="EmployeeID")
+                for e in emp_rows:
+                    emp = e.get("Employee", {})
+                    eid = emp.get("EmployeeID")
+                    if eid:
+                        io_ids_to_name[int(eid)] = emp.get("FirstName") or f"IO #{eid}"
+
+            for io_id, wk_counts in io_week_counts.items():
+                result = _zscore_latest_vs_baseline(wk_counts)
+                if not result:
+                    continue
+                z, latest, mean = result
+                if abs(z) < 2:
+                    continue
+                io_name = io_ids_to_name.get(io_id, f"IO #{io_id}")
+                d_id = io_last_district.get(io_id, 1)
+                direction = "above" if z > 0 else "below"
+                officer_trend_alerts.append({
+                    "AlertType": "OFFICER_WORKLOAD_ANOMALY", "DistrictID": d_id,
+                    "TriggerTime": datetime.now().isoformat(), "IsRead": False, "_sort_key": abs(z),
+                    "AlertMessage": (
+                        f"Supervisor Radar: {io_name} logged {latest} arrests/surrenders this week, statistically "
+                        f"{direction} their own {mean}-case trailing weekly average (z={round(z, 1)}) -- worth a "
+                        f"quiet check-in, not necessarily a problem."
+                    ),
+                    "Severity": "Warning",
+                })
+        except Exception as e:
+            logger.warning(f"Officer workload anomaly section skipped (non-fatal): {e}")
+
         # Genuine spikes are capped at 20 per type (most severe/highest
         # count first) so a real surge doesn't flood the officer with alerts
         # -- but baselines are never capped, precisely to avoid the
         # partial-coverage bug described above.
         spatial_spikes.sort(key=lambda a: a["_sort_key"], reverse=True)
         offender_spikes.sort(key=lambda a: a["_sort_key"], reverse=True)
-        alerts_to_insert = spatial_baselines + spatial_spikes[:20] + offender_baselines + offender_spikes[:20]
+        district_trend_alerts.sort(key=lambda a: a["_sort_key"], reverse=True)
+        officer_trend_alerts.sort(key=lambda a: a["_sort_key"], reverse=True)
+        # §3.4 alerts are already a statistical-significance filter (|z|>=2)
+        # on top of a 5+ week history requirement, so they're naturally rare
+        # -- capped at 15 each as a flood-safety net, same spirit as the
+        # existing 20-caps above, not because they're expected to hit it.
+        alerts_to_insert = (
+            spatial_baselines + spatial_spikes[:20] + offender_baselines + offender_spikes[:20]
+            + district_trend_alerts[:15] + officer_trend_alerts[:15]
+        )
 
         inserted = insert_alerts(headers, alerts_to_insert)
 
         logger.info(
             f"Proactive Alerts Job completed successfully. Inserted {inserted} rows "
             f"({len(spatial_baselines)} spatial baseline, {len(spatial_spikes[:20])} spatial spike, "
-            f"{len(offender_baselines)} offender baseline, {len(offender_spikes[:20])} offender spike)."
+            f"{len(offender_baselines)} offender baseline, {len(offender_spikes[:20])} offender spike, "
+            f"{len(district_trend_alerts[:15])} district trend anomaly [§3.4], "
+            f"{len(officer_trend_alerts[:15])} officer workload anomaly [§3.4])."
         )
         return "Success"
     except Exception as e:

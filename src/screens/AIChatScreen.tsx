@@ -372,6 +372,12 @@ export const AIChatScreen: React.FC = () => {
               const ALERT_TITLES: Record<string, string> = {
                 SPATIAL_SPIKE: "🚨 Spatial Crime Spike",
                 REPEAT_OFFENDER: "👤 Repeat Offender Alert",
+                // Cognitive Brain plan §3.4 Supervisor/Command Brain --
+                // statistical (|z|>=2 vs trailing baseline) deviation
+                // alerts, distinct from SPATIAL_SPIKE's simpler
+                // any-increase-since-last-check signal.
+                DISTRICT_TREND_ANOMALY: "🧭 Supervisor Radar: District Anomaly",
+                OFFICER_WORKLOAD_ANOMALY: "🧭 Supervisor Radar: Officer Workload Anomaly",
               };
               addNotification(
                 ALERT_TITLES[alert.type] ?? "🔔 System Alert",

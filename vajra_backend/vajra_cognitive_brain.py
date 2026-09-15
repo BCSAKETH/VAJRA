@@ -1502,6 +1502,89 @@ class CognitiveBrainMixin:
             return []
         return gaps
 
+    # Cognitive Brain plan §3.5 Forensic/Technical Brain, scoped per explicit
+    # direction (2026-09-15): a SMALL, GENERIC checklist per broad crime
+    # category, clearly labeled as general investigative guidance -- NOT an
+    # official KSP SOP, and NOT a per-case verified-present/absent claim
+    # (unlike §3.1's checks above, there is no real table tracking whether a
+    # CCTV pull or a medical exam actually happened for a given case, so
+    # claiming one is "missing" would be fabricating a fact this system
+    # cannot actually verify). Buckets map onto CrimeHead.CrimeGroupName
+    # values already confirmed real in this dataset (agent_loop.py's own
+    # _KNOWN_CRIME_GROUPS list), not invented category names.
+    _FORENSIC_CHECKLIST_BUCKETS = {
+        "violent": {
+            "groups": {"MURDER", "ATTEMPT TO MURDER", "ASSAULT", "DOWRY DEATH", "RIOTS",
+                       "DOMESTIC VIOLENCE", "KIDNAPPING", "ARSON"},
+            "items": ["Post-mortem / medical examination report", "Scene-of-crime forensic report",
+                      "Witness statements", "Weapon / material object recovery memo"],
+        },
+        "sexual_offence": {
+            "groups": {"SEXUAL OFFENCES", "MOLESTATION"},
+            "items": ["Medical examination report", "Forensic / DNA report",
+                      "Section 164 BNSS statement recording", "POCSO-compliant procedure documentation (if victim is a minor)"],
+        },
+        "property": {
+            "groups": {"THEFT", "BURGLARY", "ROBBERY", "DACOITY", "CHAIN SNATCHING", "MOTOR VEHICLE THEFT"},
+            "items": ["Scene inspection / panchnama", "CCTV footage collection",
+                      "Stolen property recovery memo", "Witness statements"],
+        },
+        "financial": {
+            "groups": {"CHEATING", "FRAUD"},
+            "items": ["Bank / transaction statements", "Complainant's documentary evidence",
+                      "Digital evidence (emails/messages) preservation"],
+        },
+        "cyber": {
+            "groups": {"CYBERCRIME"},
+            "items": ["CDR / IP log requisition", "Digital device seizure memo",
+                      "Digital evidence preservation under Section 63/65B BSA"],
+        },
+        "contraband": {
+            "groups": {"NARCOTICS", "ARMS ACT"},
+            "items": ["Seizure memo with independent witnesses", "FSL sample report",
+                      "Chain-of-custody documentation"],
+        },
+        "missing_person": {
+            "groups": {"MISSING PERSON"},
+            "items": ["Last-seen witness statements", "Photograph circulation record",
+                      "CCTV footage from last-known location"],
+        },
+    }
+    _FORENSIC_CHECKLIST_DEFAULT = ["Scene inspection / panchnama", "Witness statements"]
+
+    def _forensic_evidence_checklist(self, case_no: str) -> Optional[Dict[str, Any]]:
+        """§3.5: returns {"crime_group": ..., "items": [...]} -- a REFERENCE
+        checklist for the officer to self-verify, never a claim about what
+        this specific case actually has or lacks (this system has no table
+        that could honestly answer that). Returns None (section omitted) on
+        any failure, unresolved case, or unrecognized crime group -- never
+        guesses a bucket for a crime type outside the confirmed-real list."""
+        if not catalyst_app or not case_no:
+            return None
+        try:
+            resolved = self._resolve_case_rowid(case_no)
+            if not resolved:
+                return None
+            cm = catalyst_app.zql().execute_query(
+                f"SELECT CrimeMajorHeadID FROM CaseMaster WHERE ROWID = {resolved['rowid']} LIMIT 1")
+            head_id = cm[0].get("CaseMaster", {}).get("CrimeMajorHeadID") if cm else None
+            if not head_id:
+                return None
+            ch = catalyst_app.zql().execute_query(
+                f"SELECT CrimeGroupName FROM CrimeHead WHERE CrimeHeadID = {head_id} LIMIT 1")
+            crime_group = (ch[0].get("CrimeHead", {}).get("CrimeGroupName") or "").strip().upper() if ch else ""
+            if not crime_group:
+                return None
+            items = self._FORENSIC_CHECKLIST_DEFAULT
+            for bucket in self._FORENSIC_CHECKLIST_BUCKETS.values():
+                if crime_group in bucket["groups"]:
+                    items = bucket["items"]
+                    break
+            return {"crime_group": crime_group, "items": items}
+        except Exception as e:
+            logger.warning(f"§3.5 forensic evidence checklist failed (non-fatal): {e}")
+            return None
+
     def _assemble_master_dossier(self, query: str, intent: str, panels: List[Dict[str, Any]], combined: List[str], data_payload: Dict[str, Any]) -> str:
         """
         Assembles multi-panel compiled outputs into an authoritative Master Investigation Dossier
@@ -1663,6 +1746,20 @@ class CognitiveBrainMixin:
                 lines.append("What's still missing or pending for this case (checked against records on file):")
                 for _g in _gaps:
                     lines.append(f"- [ ] {_g}")
+                lines.append("")
+
+            # §3.5 Forensic/Technical Brain: a REFERENCE checklist, not a
+            # verified-missing claim (see _forensic_evidence_checklist's own
+            # docstring for why those are kept as two distinct sections) --
+            # general investigative guidance for this case's crime type,
+            # explicitly labeled as such so it's never mistaken for a
+            # confirmed record of what this specific case does or doesn't have.
+            _forensic = self._forensic_evidence_checklist(_case_no_for_gaps)
+            if _forensic and _forensic.get("items"):
+                lines.append(f"### 🔬 Typical Evidence Checklist -- {_forensic['crime_group'].title()} (general guidance, not case-verified)")
+                lines.append("Commonly expected for a case of this type -- verify each against this specific file, not stated as present or absent here:")
+                for _it in _forensic["items"]:
+                    lines.append(f"- {_it}")
                 lines.append("")
 
         # Action Directives Checklist
