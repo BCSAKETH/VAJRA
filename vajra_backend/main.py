@@ -99,6 +99,7 @@ from vajra_core import (
 from agent_loop import VajraAgentLoop
 from catalyst_llm import CatalystLLM
 from catalyst_qwen import CatalystQwen
+from pdf_utils import safe_slice  # defensive type normalizer for PDF/HTML dossier card rendering
 from fastapi.responses import Response, JSONResponse
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -9041,9 +9042,9 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         def _render_fpdf_risk_card(pdf: "FPDF", c: dict, card_w: float, is_kn: bool):
             score = float(c.get("score", 50.0))
             suspect = str(c.get("suspect", "Accused"))
-            factors = c.get("shap_factors") or []
+            factors = safe_slice(c.get("shap_factors"), 4, "risk card shap_factors")
 
-            card_h = 44 + (min(len(factors), 4) * 5.0)
+            card_h = 44 + (len(factors) * 5.0)
             if pdf.get_y() + card_h > pdf.h - 18:
                 pdf.add_page()
 
@@ -9132,7 +9133,7 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
             # Waterfall Rows
             row_y = bar_y + 9.5
             zero_x = bar_x + 72
-            for f in factors[:4]:
+            for f in factors:  # already safe_slice'd to <=4 items above
                 fname = f.get("name", "Factor")
                 flabel = _SHAP_TERMS_KN.get(fname, fname) if is_kn else fname
                 fval = float(f.get("value", 0.05))
@@ -9410,12 +9411,13 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
 
         def _render_fpdf_hotspot_card(pdf: "FPDF", c: dict, card_w: float, is_kn: bool):
             district = str(c.get("district", "Bengaluru Urban"))
-            hotspots = c.get("hotspots") or [
+            _hotspots_default = [
                 {"name": "Majestic Bus Terminal Sector", "coords": "12.9767, 77.5713", "risk": "Critical", "count": 173},
                 {"name": "Yeshwantpur Market Sector", "coords": "13.0234, 77.5501", "risk": "High", "count": 30},
                 {"name": "Koramangala 5th Block Hub", "coords": "12.9360, 77.6240", "risk": "Elevated", "count": 24},
                 {"name": "Jayanagar 4th Block Circle", "coords": "12.9082, 77.5429", "risk": "Monitored", "count": 23}
             ]
+            hotspots = safe_slice(c.get("hotspots"), 4, "hotspot card hotspots") or _hotspots_default
 
             card_h = 44
             if pdf.get_y() + card_h > pdf.h - 18:
@@ -9450,7 +9452,7 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
             # Table Grid
             row_y = start_y + 9.5
             col_w = (card_w - 8) / 2.0
-            for idx, hs in enumerate(hotspots[:4]):
+            for idx, hs in enumerate(hotspots):  # already safe_slice'd to <=4 items above
                 hx = start_x + 4 + (idx % 2) * col_w
                 hy = row_y + (idx // 2) * 11.0
 
@@ -9491,7 +9493,7 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
 
         def _render_fpdf_osint_card(pdf: "FPDF", c: dict, card_w: float, is_kn: bool):
             query = str(c.get("query", "Open-Source Intelligence Lead"))
-            domains = c.get("domains") or ["thehindu.com", "deccanherald.com", "ksp.karnataka.gov.in"]
+            domains = safe_slice(c.get("domains"), 5, "osint card domains") or ["thehindu.com", "deccanherald.com", "ksp.karnataka.gov.in"]
             doc_hash = str(c.get("hash", "e3b0c44298fc1c149afbf4c8996fb924"))[:24]
 
             card_h = 36
@@ -9533,7 +9535,7 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
             pdf.set_xy(start_x + 4, start_y + 14.5)
             pdf.set_font("NotoKannada", size=6.5)
             pdf.set_text_color(*MUTE)
-            dom_str = ", ".join(domains[:5])
+            dom_str = ", ".join(str(d) for d in domains)  # already safe_slice'd to <=5 items above
             pdf.cell(card_w - 8, 4, f"Verified Scraped Domains: {dom_str}")
 
             # Section 63 BSA Notice Box

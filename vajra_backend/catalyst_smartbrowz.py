@@ -26,6 +26,7 @@ try:
     from vajra_core import catalyst_app
 except Exception:
     catalyst_app = None
+from pdf_utils import safe_slice  # defensive type normalizer for card rendering
 
 logger = logging.getLogger("catalyst_smartbrowz")
 
@@ -230,13 +231,13 @@ def _render_visual_widget_card(panel_type: str, data: Any, lang: str = "en") -> 
 
     # 2. Crime Hotspot Map Summary
     elif panel_type in ("map", "hotspots") or "hotspots" in data or "coordinates" in data or "cells" in data:
-        hotspots = data.get("hotspots") or data.get("cells") or []
+        hotspots = safe_slice(data.get("hotspots") or data.get("cells"), 5, "smartbrowz hotspot card")
         district = data.get("district", "Bengaluru Urban")
         title = "Spatial Crime Hotspot Analysis" if not is_kn else "ಪ್ರಾದೇಶಿಕ ಅಪರಾಧ ಹಾಟ್‌ಸ್ಪಾಟ್ ವಿಶ್ಲೇಷಣೆ"
 
         rows = ""
         if hotspots:
-            for idx, hs in enumerate(hotspots[:5]):
+            for idx, hs in enumerate(hotspots):  # already safe_slice'd to <=5 items above
                 if isinstance(hs, dict):
                     hname = hs.get('name') or f"Hotspot Sector #{idx+1}"
                     coords = hs.get('coords') or f"{hs.get('lat', 12.97):.4f}, {hs.get('lng', 77.59):.4f}"
@@ -381,10 +382,10 @@ def _render_visual_widget_card(panel_type: str, data: Any, lang: str = "en") -> 
     # 5. Autonomous OSINT & Web Intelligence Signal Card
     elif panel_type in ("osint", "news") or "domains" in data:
         query = data.get("query", "Open-Source Intelligence Lead")
-        domains = data.get("domains") or ["thehindu.com", "deccanherald.com", "ksp.karnataka.gov.in"]
+        domains = safe_slice(data.get("domains"), 5, "smartbrowz osint card domains") or ["thehindu.com", "deccanherald.com", "ksp.karnataka.gov.in"]
         doc_hash = str(data.get("hash", "e3b0c44298fc1c149afbf4c8996fb924"))[:24]
         title = "Autonomous OSINT & Web Intelligence Signal" if not is_kn else "ಅಂತರ್ಜಾಲ ಮುಕ್ತ ಮಾಹಿತಿ ಮತ್ತು ಸಾರ್ವಜನಿಕ ಮೂಲಗಳ ವಿಶ್ಲೇಷಣೆ"
-        dom_str = ", ".join(domains[:5])
+        dom_str = ", ".join(str(d) for d in domains)  # already safe_slice'd to <=5 items above
         card_html = f"""
         <div class="visual-card">
             <div class="visual-header">
