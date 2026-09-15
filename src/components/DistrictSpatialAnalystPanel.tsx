@@ -443,7 +443,19 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
             <p className="text-stone-400 text-xs font-mono font-bold">No hotspots match these filters.</p>
           </div>
         ) : (
-          <MapContainer key={`${district}-${basemapMode}`} center={[displayPoints[0].lat, displayPoints[0].lng]} zoom={11} style={{ height: "100%", width: "100%", background: "#161412" }}>
+          <MapContainer
+            key={`${district}-${basemapMode}`}
+            center={[displayPoints[0].lat, displayPoints[0].lng]}
+            zoom={11}
+            style={{ height: "100%", width: "100%", background: "#161412" }}
+            // Finals-part 3.md L222: in Compare mode (sharedViewport
+            // present) two narrower maps sit side-by-side, and an
+            // unintentional mouse-wheel pass over one traps the page
+            // scroll into a map zoom instead. Standalone use (the primary
+            // Spatial Analyst screen, no sharedViewport) keeps normal
+            // scroll-to-zoom -- officers already rely on it there.
+            scrollWheelZoom={!sharedViewport}
+          >
             {/* Watermark-Free High-Performance Basemap Tiles */}
             <TileLayer
               url={BASEMAP_TILES[basemapMode].base}

@@ -21,7 +21,7 @@ import {
   Area,
   CartesianGrid,
 } from "recharts";
-import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2, FolderOpen, ArrowLeft } from "lucide-react";
+import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2, Rows2, FolderOpen, ArrowLeft } from "lucide-react";
 import { DistrictSpatialAnalystPanel } from "../components/DistrictSpatialAnalystPanel";
 import { DistrictDemographicPanel } from "../components/DistrictDemographicPanel";
 import { ComparisonDeltaHUD } from "../components/ComparisonDeltaHUD";
@@ -159,6 +159,11 @@ export const DistrictDashboardScreen: React.FC = () => {
   // into ComparisonDeltaHUD above the two maps.
   const [primaryStats, setPrimaryStats] = useState<{ incidents: number; clusters: number } | null>(null);
   const [secondaryStats, setSecondaryStats] = useState<{ incidents: number; clusters: number } | null>(null);
+  // Finals-part 3.md L222: explicit layout toggle for Compare mode --
+  // "side-by-side" relies on the xl: breakpoint alone, which collapses to
+  // a single column on laptops/tablets (<1280px) with no way to force it
+  // back; "stacked" is an explicit, deliberate choice for a narrower window.
+  const [compareLayout, setCompareLayout] = useState<"side-by-side" | "stacked">("side-by-side");
   const [stateNews, setStateNews] = useState<{ title: string; source: string; url: string }[]>([]);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   // Open-Source Signals lane (live news) — kept in its OWN state and rendered
@@ -726,7 +731,31 @@ export const DistrictDashboardScreen: React.FC = () => {
 
           {compareMode ? (
             <div className="space-y-2">
-              <div className="flex items-center justify-end">
+              <div className="flex items-center justify-end gap-2">
+                {/* L222: explicit layout toggle -- the xl: breakpoint alone
+                    collapses to one column on laptops/tablets (<1280px)
+                    with no way to force it back to side-by-side, or to
+                    deliberately stack on a wider screen. */}
+                <div className="flex rounded-md border border-stone-800 bg-stone-900 p-0.5 gap-0.5">
+                  <button
+                    onClick={() => setCompareLayout("side-by-side")}
+                    title={lang === "en" ? "Side-by-Side" : "ಅಕ್ಕಪಕ್ಕ"}
+                    className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono font-bold uppercase transition-colors cursor-pointer ${
+                      compareLayout === "side-by-side" ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"
+                    }`}
+                  >
+                    <Columns2 className="w-3 h-3" />
+                  </button>
+                  <button
+                    onClick={() => setCompareLayout("stacked")}
+                    title={lang === "en" ? "Stacked" : "ಪೇರಿಸಿ"}
+                    className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-mono font-bold uppercase transition-colors cursor-pointer ${
+                      compareLayout === "stacked" ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"
+                    }`}
+                  >
+                    <Rows2 className="w-3 h-3" />
+                  </button>
+                </div>
                 <select
                   value={compareDistrict}
                   onChange={(e) => setCompareDistrict(e.target.value)}
@@ -747,7 +776,7 @@ export const DistrictDashboardScreen: React.FC = () => {
                   />
                 );
               })()}
-              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <div className={`grid gap-4 ${compareLayout === "stacked" ? "grid-cols-1" : "grid-cols-1 xl:grid-cols-2"}`}>
                 <div>
                   <p className="text-[10px] font-mono font-bold text-stone-500 uppercase mb-1.5">
                     {selectedId && districtDetailCache ? districtDetailCache.district : (lang === "en" ? "Statewide" : "ರಾಜ್ಯವ್ಯಾಪಿ")}

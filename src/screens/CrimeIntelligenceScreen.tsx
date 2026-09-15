@@ -138,6 +138,7 @@ export const CrimeIntelligenceScreen: React.FC = () => {
                 selectedUnitId={selectedStation?.unit_id ?? null}
                 onSelectStation={handleSelectStation}
                 isDark={theme !== "light"}
+                district={selectedDistrict}
               />
             )}
           </div>

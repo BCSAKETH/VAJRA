@@ -33,6 +33,9 @@ interface Tactical3DMapProps {
   selectedUnitId?: number | string | null;
   onSelectStation: (station: TacticalStation) => void;
   isDark?: boolean;
+  // Real selected district name for the top-left badge -- never fabricated,
+  // just the same value the caller's own district selector already holds.
+  district?: string;
 }
 
 // L192/L208: a station outside Karnataka's real bounding box is a data
@@ -54,6 +57,7 @@ export const Tactical3DMap: React.FC<Tactical3DMapProps> = ({
   selectedUnitId,
   onSelectStation,
   isDark = true,
+  district,
 }) => {
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
@@ -195,6 +199,16 @@ export const Tactical3DMap: React.FC<Tactical3DMapProps> = ({
         isFullscreen ? "fixed inset-0 z-50 bg-stone-950" : "rounded-xl border border-stone-800 shadow-2xl"
       }`}
     >
+      {/* Top-left geographic badge -- real selected district, not fabricated. */}
+      <div className="absolute top-3 left-4 z-20 pointer-events-none">
+        <div className="px-3 py-2 rounded-lg bg-stone-950/85 border border-stone-800 backdrop-blur-md shadow-xl">
+          <div className="text-xs font-black tracking-widest text-[#C79A4E] uppercase">{district || "Karnataka"}</div>
+          <div className="text-[10px] font-medium text-stone-400">
+            {district ? "Real-Time Station Intelligence" : "Statewide FIR Coverage"}
+          </div>
+        </div>
+      </div>
+
       <div className="absolute top-3 right-3 z-20 flex flex-col gap-1.5 bg-stone-900/90 border border-stone-800 rounded-lg p-1 shadow-xl backdrop-blur-md">
         <button onClick={handleZoomIn} title="Zoom In" className="p-2 hover:bg-stone-800 text-stone-300 hover:text-white rounded transition-colors cursor-pointer">
           <Plus className="w-4 h-4" />
