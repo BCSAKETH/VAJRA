@@ -607,6 +607,70 @@ class CognitiveBrainMixin:
             logger.warning(f"_is_complex_query_semantic check failed (non-fatal, defaulting to simple): {e}")
             return False
 
+    _CLAUSE_STOPWORDS = {
+        "the", "a", "an", "of", "to", "in", "on", "at", "for", "and", "or", "with", "from", "by",
+        "this", "that", "these", "those", "also", "then", "please", "case", "cases", "officer",
+        "tell", "show", "give", "what", "which", "who", "how", "when", "where", "about", "into",
+    }
+
+    def _plan_covers_all_clauses(self, query: str, steps: List[Dict[str, Any]]) -> List[str]:
+        """§2.2 NOW: cheap deterministic coverage check -- the same bug class
+        the H.0 fix already closed for one specific phrasing ("now try"
+        slipping past the planner), generalized to the plan's OWN output:
+        does the compiled step list actually touch every distinct clause of
+        a compound request? Splits the query on 'and'/',' and checks each
+        clause shares a real keyword with at least one planned step's
+        capability name/description. Pure string ops, no LLM call on the
+        (overwhelmingly common) fully-covered case. Returns the uncovered
+        clauses (empty list = nothing to fix)."""
+        _core = re.sub(r"^\[Context:.*?\]\n\n", "", (query or ""), flags=re.DOTALL)
+        _clauses = re.split(r"\band\b|,", _core, flags=re.IGNORECASE)
+        _cap_text_by_name = {c["name"]: (c["name"].replace("_", " ") + " " + c["does"]).lower()
+                              for c in self._COMPILER_CAPABILITIES}
+        _planned_text = " ".join(_cap_text_by_name.get(s.get("capability"), "") for s in steps)
+        uncovered = []
+        for clause in _clauses:
+            words = [w for w in re.findall(r"[a-z]{4,}", clause.lower()) if w not in self._CLAUSE_STOPWORDS]
+            if len(words) < 2:
+                continue  # too short/generic a fragment to be a real distinct clause
+            if not any(w in _planned_text for w in words):
+                uncovered.append(clause.strip())
+        return uncovered
+
+    def _replan_for_uncovered_clauses(self, query: str, uncovered_clauses: List[str],
+                                       names: set, registry: str) -> Optional[List[Dict[str, Any]]]:
+        """§2.2: ONE extra bounded re-ask, only spent when
+        _plan_covers_all_clauses finds a real gap (rare) -- asks for
+        ADDITIONAL steps covering specifically what looked missed, rather
+        than re-planning from scratch (cheaper, and never discards an
+        otherwise-good plan). Returns None on any failure -- the caller
+        keeps the original plan unchanged, same fail-open discipline as
+        every other enrichment call in this file."""
+        _gap_text = "; ".join(uncovered_clauses[:3])
+        prompt = (
+            f"A plan was already compiled for this officer's request but may have missed part of it. The "
+            f"part(s) that look uncovered: {_gap_text}\n\n"
+            f"CAPABILITIES (use ONLY these names):\n{registry}\n\n"
+            'If any of the uncovered part(s) above genuinely need a data lookup this plan hasn\'t already '
+            'covered, return ONLY a JSON object: {"additional_steps": [{"id": "sX", "capability": "<name>", '
+            '"params": {...}}]}. If the uncovered text doesn\'t actually need a separate lookup (e.g. it\'s '
+            'just phrasing, not a real second ask), return {"additional_steps": []}.\n\n'
+            f"ORIGINAL REQUEST: {query}"
+        )
+        try:
+            res = self.llm.chat([{"role": "user", "content": prompt}], None, use_agent_system_prompt=False, max_tokens=500)
+            if res.get("error"):
+                return None
+            raw = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+            parsed = json.loads(self._extract_json(raw))
+            extra = parsed.get("additional_steps") if isinstance(parsed, dict) else None
+            if not isinstance(extra, list):
+                return None
+            return [s for s in extra if isinstance(s, dict) and s.get("capability") in names]
+        except Exception as e:
+            logger.warning(f"§2.2 plan self-critique re-ask failed (non-fatal, keeping original plan): {e}")
+            return None
+
     @staticmethod
     def _resolve_plan_ref(ref: str, results: Dict[str, Any]) -> Any:
         """Resolve a DAG dependency like "$s1.data.offenders.0.suspect" against the
@@ -847,6 +911,28 @@ class CognitiveBrainMixin:
                 f"no_valid_steps: plan had {len(_raw_steps) if isinstance(_raw_steps, list) else 0} raw step(s), "
                 f"none matched a known capability name (raw intent: {intent[:80]!r})")
             return None
+
+        # §2.2 (Cognitive Brain plan): plan self-critique before execution.
+        # Same bug class the H.0 fix already closed for one specific
+        # phrasing, generalized: does this plan's step list actually cover
+        # every distinct clause of a compound request? Cheap, deterministic
+        # (no LLM call on the common all-covered case). Only on a genuine
+        # gap does this spend ONE extra bounded re-ask for additional
+        # steps -- never a full re-plan, and always falls back to the
+        # original plan unchanged on any failure.
+        _uncovered = self._plan_covers_all_clauses(query, steps)
+        if _uncovered:
+            logger.info(f"compiler: plan coverage gap detected for clause(s) {_uncovered!r}; re-asking for additional steps.")
+            _extra_steps = self._replan_for_uncovered_clauses(query, _uncovered, names, registry)
+            if _extra_steps:
+                _existing_caps = {s.get("capability") for s in steps}
+                for _es in _extra_steps:
+                    if _es.get("capability") not in _existing_caps:
+                        _es["id"] = _es.get("id") or f"s{len(steps) + 1}"
+                        steps.append(_es)
+                        _existing_caps.add(_es.get("capability"))
+                logger.info(f"compiler: coverage re-ask added {len(_extra_steps)} step(s).")
+
         # DETERMINISTIC EXECUTION -- run each planned step over the grounded tools.
         # Steps can DEPEND on earlier ones: a "$s1.data.offenders.0.suspect" param
         # is resolved from the stored output of step s1 before this step runs.
@@ -1043,6 +1129,18 @@ class CognitiveBrainMixin:
                         if critique.get("key_gap"):
                             _lines.append(f"**Key gap to resolve:** {critique['key_gap']}")
                         text_out += "\n".join(_lines)
+
+        # §3.2 Officer/Field-Ops Brain: restyle (never re-derive) an already-
+        # grounded Standard-mode answer into short, phone-readable,
+        # citation-preserving prose when the officer's own phrasing is a
+        # quick "what do I do" field ask, not an analytical question. Runs
+        # BEFORE §3.6's red-team check below so a restyled Field-Ops answer
+        # can still get its own "before you act, verify" line appended.
+        if not deep and text_out and self._is_field_ops_query(query):
+            _restyled = self._restyle_for_field_ops(text_out, query)
+            if _restyled:
+                data_payload["field_ops_restyled"] = True
+                text_out = _restyled
 
         # §3.6 Standing Red-Team Brain: the devil's-advocate HALF only (no
         # full hypothesis list -- keeps the Standard-mode latency budget
@@ -1246,6 +1344,107 @@ class CognitiveBrainMixin:
             logger.warning(f"Standing Red-Team devil's-advocate check failed/timed out (non-fatal): {e}")
             return None
 
+    # Cognitive Brain plan §3.2: Officer/Field-Ops Brain -- a genuinely
+    # different persona for "what do I do right now" queries: short,
+    # procedure-citation-heavy, safety-first, phone-readable, not the same
+    # dossier-shaped prose for every query regardless of who's asking or
+    # why. Query-shape detector: imperative + short + no analytical
+    # keywords (a real investigative/analytical question -- "compare",
+    # "network", "trend" -- should NEVER get compressed into this format
+    # even if it happens to start with "what do i do").
+    _FIELD_OPS_QUERY_CUES = (
+        "what do i do", "what should i do", "how do i handle", "how do i deal with",
+        "procedure for", "steps to", "what's the procedure", "what is the procedure",
+        "how should i proceed", "what next", "what do i do now", "immediate steps",
+    )
+    _FIELD_OPS_EXCLUDE_KEYWORDS = (
+        "compare", "trend", "network", "hotspot", "forecast", "predict", "demographic",
+        "syndicate", "cluster", "ranking", "distribution", "analytics",
+    )
+
+    def _is_field_ops_query(self, query: str) -> bool:
+        q = (query or "").lower().strip()
+        if not q or len(q.split()) > 18:
+            return False  # a long, detailed question isn't a quick field-ops ask
+        if any(k in q for k in self._FIELD_OPS_EXCLUDE_KEYWORDS):
+            return False  # a real analytical question, even if imperative-shaped
+        return any(c in q for c in self._FIELD_OPS_QUERY_CUES)
+
+    def _restyle_for_field_ops(self, text_out: str, query: str) -> Optional[str]:
+        """§3.2: NOT a fresh answer -- a bounded RESTYLE pass over the
+        already-grounded, already-tool-produced text_out, reusing the exact
+        tools/facts already selected (per the plan's own feasibility note:
+        "only the synthesis prompt/persona changes, not the planning").
+        Same "reason only over what's given, never invent" discipline as
+        every other bounded call in this file. Hard 6s timeout via its own
+        ThreadPoolExecutor (matches _generate_devils_advocate_only) -- a
+        slow/failed restyle must never replace a perfectly good answer with
+        nothing, so callers fall back to the original text_out on any
+        failure or timeout."""
+        if not text_out:
+            return None
+        prompt = (
+            "Reformat the ALREADY-VERIFIED answer below for an officer reading it on a phone in the field "
+            "RIGHT NOW, not at a desk. Rules: (1) short numbered immediate actions first, most urgent first; "
+            "(2) keep every statute/section citation and case/CR number EXACTLY as written, verbatim; "
+            "(3) drop background prose that isn't an action or a citation; (4) under 120 words total; "
+            "(5) do NOT add any fact, section, or number not already present below.\n\n"
+            f"OFFICER'S QUESTION: {query}\n\nVERIFIED ANSWER TO REFORMAT:\n{text_out[:3000]}"
+        )
+        try:
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                res = ex.submit(
+                    self.llm.chat, [{"role": "user", "content": prompt}],
+                    use_agent_system_prompt=False, max_tokens=300,
+                ).result(timeout=6)
+            if res.get("error"):
+                return None
+            content = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+            restyled = self._strip_think(content).strip()
+            return restyled or None
+        except Exception as e:
+            logger.warning(f"Field-Ops restyle failed/timed out (non-fatal, keeping original answer): {e}")
+            return None
+
+    def _investigator_gap_checklist(self, case_no: str) -> List[str]:
+        """§3.1 Investigator Brain: sharpens the Dossier answer with what a
+        real investigator would proactively name -- gaps, not just what was
+        literally asked. HONEST SCOPE: this codebase's real schema
+        (docs/SCHEMA.md) has no ForensicReport/CCTV/WitnessStatement
+        tables -- confirmed absent, not just unqueried -- so rather than
+        reference tables that don't exist, this checks presence/absence of
+        the real investigation-completeness signals that DO exist: a filed
+        chargesheet, a recorded arrest/surrender, and complainant/victim
+        details on file. Pure existence checks (ROWID LIMIT 1), no new LLM
+        call, fails open (empty list, section simply omitted) on any DB
+        error or missing case."""
+        if not catalyst_app or not case_no:
+            return []
+        gaps: List[str] = []
+        try:
+            resolved = self._resolve_case_rowid(case_no)
+            if not resolved:
+                return []
+            case_id = resolved["case_id"]
+            _checks = (
+                ("ChargesheetDetails", "No chargesheet filed yet."),
+                ("ArrestSurrender", "No arrest or surrender recorded yet."),
+                ("ComplainantDetails", "No complainant details on file."),
+                ("Victim", "No victim details on file."),
+            )
+            for table, gap_text in _checks:
+                try:
+                    res = catalyst_app.zql().execute_query(
+                        f"SELECT ROWID FROM {table} WHERE CaseMasterID = {case_id} LIMIT 1")
+                    if not res:
+                        gaps.append(gap_text)
+                except Exception:
+                    continue  # table/column shape uncertain for this deployment -- skip that one check, not the whole list
+        except Exception as e:
+            logger.warning(f"§3.1 investigator gap checklist failed (non-fatal): {e}")
+            return []
+        return gaps
+
     def _assemble_master_dossier(self, query: str, intent: str, panels: List[Dict[str, Any]], combined: List[str], data_payload: Dict[str, Any]) -> str:
         """
         Assembles multi-panel compiled outputs into an authoritative Master Investigation Dossier
@@ -1389,6 +1588,25 @@ class CognitiveBrainMixin:
             lines.append("---")
             lines.append("")
             section_idx += 1
+
+        # §3.1 Investigator Brain: a real investigator proactively names
+        # GAPS, not just what was asked. Only for a case-scoped Dossier
+        # (a resolvable case number) -- a suspect-scoped Dossier can span
+        # multiple cases, so there's no single case to check completeness
+        # against. Pure post-processing over data already available via
+        # ZCQL, no new LLM call.
+        _case_no_for_gaps = data_payload.get("case_no") or ""
+        if not _case_no_for_gaps:
+            _m = re.search(r"\bCR-\d{4}-\d+\b", query, re.IGNORECASE)
+            _case_no_for_gaps = _m.group(0).upper() if _m else ""
+        if _case_no_for_gaps:
+            _gaps = self._investigator_gap_checklist(_case_no_for_gaps)
+            if _gaps:
+                lines.append(f"### 🧭 Investigator Gap Check -- Case {_case_no_for_gaps}")
+                lines.append("What's still missing or pending for this case (checked against records on file):")
+                for _g in _gaps:
+                    lines.append(f"- [ ] {_g}")
+                lines.append("")
 
         # Action Directives Checklist
         lines.append("### ⚖️ Master Investigative Recommendations & Action Directives")
