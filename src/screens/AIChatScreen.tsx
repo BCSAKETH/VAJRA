@@ -93,6 +93,9 @@ export const AIChatScreen: React.FC = () => {
     addNotification,
     setIsAuthenticated,
     voicePersona,
+    transcriptWidth,
+    transcriptTextSize,
+    ttsSettings,
     // §9.1 Unified Sidebar bridge -- see AppContext.tsx's own comment for
     // why this thin bridge exists instead of lifting this whole pipeline.
     setActiveChatSessionId,
@@ -100,6 +103,25 @@ export const AIChatScreen: React.FC = () => {
     newChatRequestNonce,
     bumpChatSessionsRefresh,
   } = useApp();
+
+  // Section 15: Transcript ergonomics width derivation
+  const messageWidthCls = useMemo(() => {
+    switch (transcriptWidth) {
+      case "narrow": return "max-w-2xl"; // ~672px
+      case "wide":   return "max-w-6xl"; // ~1152px
+      case "medium":
+      default:       return "max-w-4xl"; // ~896px
+    }
+  }, [transcriptWidth]);
+
+  const composerWidthCls = useMemo(() => {
+    switch (transcriptWidth) {
+      case "narrow": return "max-w-2xl"; // ~672px
+      case "wide":   return "max-w-5xl"; // ~1024px
+      case "medium":
+      default:       return "max-w-3xl"; // ~768px
+    }
+  }, [transcriptWidth]);
 
   const [inputVal, setInputVal] = useState("");
   // The real, backend-assigned session id for the active conversation. null
@@ -1448,7 +1470,7 @@ export const AIChatScreen: React.FC = () => {
   // ONE of the two positions below, never both/duplicated/mounted twice.
   const isEmptyChat = !loadingSessionId && chatMessages.length === 0;
   const composerContent = (
-    <div className="max-w-4xl mx-auto space-y-4 w-full">
+    <div className={`${composerWidthCls} mx-auto space-y-4 w-full transition-all duration-200`}>
       {/* Suggestion Chips */}
       {chatMessages.length === 0 && (
         <div className="flex flex-wrap gap-2 justify-center">
@@ -1587,7 +1609,7 @@ export const AIChatScreen: React.FC = () => {
           inside the same scrollable thread region. */}
       {chatMessages.length > 0 && (
         <div className="px-4 sm:px-6 pt-4">
-          <div className="max-w-3xl mx-auto">
+          <div className={`${messageWidthCls} mx-auto transition-all duration-200`}>
             {isActiveInvestigation ? (
               <CaseBoard messages={chatMessages} onJumpToMessage={handleJumpToMessage} />
             ) : (
@@ -1603,7 +1625,7 @@ export const AIChatScreen: React.FC = () => {
           separate fetch/re-render, same mechanism the Case Board uses). */}
       {pinnedMessages.length > 0 && (
         <div className="px-4 sm:px-6 pt-3">
-          <div className="max-w-3xl mx-auto rounded-lg border border-[#C79A4E]/25 bg-[#C79A4E]/[0.06] overflow-hidden">
+          <div className={`${messageWidthCls} mx-auto rounded-lg border border-[#C79A4E]/25 bg-[#C79A4E]/[0.06] overflow-hidden transition-all duration-200`}>
             <button
               onClick={() => setPinnedStripExpanded((v) => !v)}
               className="w-full flex items-center gap-2 px-3 py-2 text-left cursor-pointer"
@@ -1638,8 +1660,9 @@ export const AIChatScreen: React.FC = () => {
 
       {/* Messages Thread Container */}
       <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 space-y-6">
+        <div className={`${messageWidthCls} mx-auto space-y-6 w-full transition-all duration-200`}>
         {loadingSessionId ? (
-          <div className="max-w-3xl mx-auto space-y-6 animate-fade-in" aria-live="polite" aria-busy="true">
+          <div className="space-y-6 animate-fade-in" aria-live="polite" aria-busy="true">
             {[1, 2, 3].map((n) => (
               <div key={n} className={`flex ${n % 2 === 0 ? "justify-end" : "justify-start"}`}>
                 <div className="space-y-2 w-2/3">
@@ -1650,7 +1673,7 @@ export const AIChatScreen: React.FC = () => {
             ))}
           </div>
         ) : chatMessages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-center max-w-4xl mx-auto w-full animate-fade-in">
+          <div className="h-full flex flex-col items-center justify-center text-center w-full animate-fade-in">
             <div className="max-w-lg mx-auto space-y-4">
               {/* §9.10 Context-aware greeting -- time/date + officer name (already
                   a global, persisted AppContext value) + a case-load digest that
@@ -1696,19 +1719,33 @@ export const AIChatScreen: React.FC = () => {
               message={msg}
               lang={lang}
               voicePersona={voicePersona}
+              textSize={transcriptTextSize}
+              ttsSettings={ttsSettings}
               sessionId={activeSessionIdRef.current || ""}
               pairedQuery={msg.sender === "assistant" ? (pairedUser?.text || "") : undefined}
               onExpandWidget={(widgetType, widgetData) => {
                 setExpandedWidget({ type: widgetType as any, data: widgetData });
                 if (widgetType === "network") openNetworkWidget(); else setNetworkNewSince(null);
               }}
-              onRetry={msg.retryText ? () => {
-                handleSend(msg.retryText!, [], {
-                  retryOfMsgId: msg.msgId || msg.id,
-                  existingAttachments: pairedUser?.attachments || [],
-                  cachedAttachmentAnalysis: (pairedUser as any)?.attachmentAnalysis || undefined,
-                });
-              } : undefined}
+              onRetry={
+                msg.retryText
+                  ? () => {
+                      handleSend(msg.retryText!, [], {
+                        retryOfMsgId: msg.msgId || msg.id,
+                        existingAttachments: pairedUser?.attachments || [],
+                        cachedAttachmentAnalysis: (pairedUser as any)?.attachmentAnalysis || undefined,
+                      });
+                    }
+                  : (msg.data?.pocso_redacted && pairedUser?.text)
+                  ? () => {
+                      handleSend(pairedUser.text, [], {
+                        retryOfMsgId: msg.msgId || msg.id,
+                        existingAttachments: pairedUser.attachments || [],
+                        cachedAttachmentAnalysis: (pairedUser as any)?.attachmentAnalysis || undefined,
+                      });
+                    }
+                  : undefined
+              }
               onQuickReply={(text) => handleSend(text)}
               addToast={addToast}
               isLast={idx === displayMessages.length - 1}
@@ -1769,6 +1806,7 @@ export const AIChatScreen: React.FC = () => {
         )}
 
         <div ref={messagesEndRef} />
+        </div>
       </div>
 
       {/* Input controls & suggestions footer -- Claude/ChatGPT-style: no

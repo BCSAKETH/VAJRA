@@ -49,28 +49,83 @@ _SPEAKER_BY_LANG = {"en": "Anna", "kn": "Anu", "hi": "Divya"}
 _SUPPORTED = {"en", "kn", "hi"}
 _MAX_TTS_CHARS = 4800  # model limit is 5000; leave headroom
 
-# Voice personas: officer-selectable delivery presets on top of the SAME
-# per-language speaker above (Zia's Speaker list per language isn't
-# documented anywhere accessible to this deployment, so adding new speaker
-# VOICES is a real unknown -- these presets stay on the one confirmed-working
-# speaker per language and vary only pitch/speed/emotion, the three params
-# already proven live). "standard" is exactly the params this module has
-# always used (zero behavior change for anyone who never picks a persona).
-# Every other preset here was verified live against the real Zia endpoint
-# before being wired to the frontend -- see the "verified live" markers
-# below; an unverified guess is not shipped to officers.
-# Every preset below was verified live against the real Zia endpoint via
-# /api/voice/_probe-persona (both en and kn, real 200 + distinct-sized RIFF
-# audio for each) before being wired to the frontend selector -- Zia's full
-# enum range isn't documented anywhere accessible to this deployment, so
-# nothing here is a guess still sitting untested in production.
-VOICE_PERSONAS = {
-    "standard": {"pitch": "moderate", "speed": "fast", "emotion": "neutral"},
-    "calm": {"pitch": "moderate", "speed": "moderate", "emotion": "neutral"},
-    "warm": {"pitch": "moderate", "speed": "fast", "emotion": "happy"},
-    "urgent": {"pitch": "high", "speed": "fast", "emotion": "neutral"},
+# Voice personas & Audio Studio presets (Section 15):
+# Supported presets: buttery, authoritative, calm, urgent, plus standard & warm
+ZIA_STYLE_PRESETS = {
+    "buttery": {
+        "pitch": "low",
+        "speed": "moderate",
+        "emotion": "happy",  # Warm, melodic, low vocal fry
+        "description": "Smooth, warm, and relaxed vocal quality"
+    },
+    "authoritative": {
+        "pitch": "moderate",
+        "speed": "fast",
+        "emotion": "neutral",  # Formal police command tone
+        "description": "Crisp, commanding, and professional"
+    },
+    "calm": {
+        "pitch": "moderate",
+        "speed": "moderate",
+        "emotion": "neutral",
+        "description": "Steady, reassuring, and balanced"
+    },
+    "urgent": {
+        "pitch": "high",
+        "speed": "fast",
+        "emotion": "neutral",
+        "description": "Fast-paced, high-clarity tactical briefing"
+    },
+    # Backwards-compatible aliases:
+    "standard": {
+        "pitch": "moderate",
+        "speed": "fast",
+        "emotion": "neutral",
+        "description": "Standard balanced command cadence"
+    },
+    "warm": {
+        "pitch": "moderate",
+        "speed": "fast",
+        "emotion": "happy",
+        "description": "Warm, natural delivery"
+    },
 }
-_DEFAULT_PERSONA = "standard"
+
+ZIA_SPEED_MULTIPLIERS = {
+    "slower": "slow",
+    "normal": "moderate",
+    "faster": "fast",
+    "slow": "slow",
+    "moderate": "moderate",
+    "fast": "fast",
+}
+
+ZIA_SPEAKERS = {
+    "en": [
+        {"id": "Anna", "gender": "Female", "name": "Anna (English - Articulate)"},
+        {"id": "James", "gender": "Male", "name": "James (English - Authoritative)"},
+    ],
+    "kn": [
+        {"id": "Anu", "gender": "Female", "name": "Anu (Kannada - Native)"},
+        {"id": "Manoj", "gender": "Male", "name": "Manoj (Kannada/Hindi - Formal)"},
+    ],
+    "hi": [
+        {"id": "Divya", "gender": "Female", "name": "Divya (Hindi - Natural)"},
+        {"id": "Manoj", "gender": "Male", "name": "Manoj (Hindi - Clear)"},
+    ],
+}
+
+# Speaker aliases for Zia backend (James maps to verified Zia male speaker David)
+_SPEAKER_ALIASES = {
+    "James": "David",
+}
+
+# VOICE_PERSONAS alias for backward compatibility
+VOICE_PERSONAS = {
+    k: {"pitch": v["pitch"], "speed": v["speed"], "emotion": v["emotion"]}
+    for k, v in ZIA_STYLE_PRESETS.items()
+}
+_DEFAULT_PERSONA = "buttery"
 
 # --- Persistent HTTP Session ---
 # Reuses TCP connections across requests, eliminating ~400-700ms TLS handshake
@@ -245,34 +300,37 @@ def normalize_text_for_tts(text: str, lang: str = "en") -> str:
     return s.strip()
 
 
-def synthesize_speech(text: str, lang: str = "en", persona: str = "standard") -> Optional[Tuple[bytes, str]]:
+def synthesize_speech(
+    text: str,
+    lang: str = "en",
+    persona: str = "buttery",
+    speed: Optional[str] = None,
+    speaker: Optional[str] = None,
+    style: Optional[str] = None,
+) -> Optional[Tuple[bytes, str]]:
     """
     Turn text into spoken WAV audio via Zia TTS. Returns (wav_bytes, "audio/wav")
     on success, or None on any failure (caller should fall back to browser TTS
     or just skip playback -- never surface a hard error for an optional feature).
 
-    `persona` selects a pitch/speed/emotion preset from VOICE_PERSONAS (falls
-    back to "standard" -- this module's original, always-confirmed-working
-    params -- for any unknown name, so a bad/stale persona id from an old
-    client can never break playback).
-
-    Performance path:
-      1. Check in-memory LRU cache → instant (0.00s)
-      2. Check disk cache → near-instant (~0.005s)
-      3. Call Zia with speed="fast" + language-aware timeout → 3-8s
-      4. Store result in both cache tiers for next time
+    Supports style (buttery, authoritative, calm, urgent), speed (slower, normal, faster),
+    and explicit speaker overrides (e.g. Anna, James, Anu, Manoj, Divya).
     """
-    result = _call_zia_tts(text, lang, persona)
+    effective_persona = style or persona or "buttery"
+    result = _call_zia_tts(text, lang, persona=effective_persona, speaker_override=speaker, speed_override=speed)
     return (result[0], result[1]) if result and result[0] else None
 
 
-def _call_zia_tts(text: str, lang: str, persona: str, speaker_override: Optional[str] = None) -> Optional[Tuple[Optional[bytes], str, int, str]]:
+def _call_zia_tts(
+    text: str,
+    lang: str,
+    persona: str = "buttery",
+    speaker_override: Optional[str] = None,
+    speed_override: Optional[str] = None,
+) -> Optional[Tuple[Optional[bytes], str, int, str]]:
     """
-    Shared Zia call used by both synthesize_speech (production contract) and
-    the debug persona-probe endpoint (which needs the raw status/body to tell
-    a genuine enum rejection apart from a transient flap). Returns
-    (audio_bytes_or_None, "audio/wav", http_status, response_text_snippet),
-    or None if the call couldn't even be attempted (empty text/no token).
+    Shared Zia call used by synthesize_speech and debug probe.
+    Returns (audio_bytes_or_None, "audio/wav", http_status, response_text_snippet).
     """
     if not text or not text.strip():
         return None
@@ -282,30 +340,37 @@ def _call_zia_tts(text: str, lang: str, persona: str, speaker_override: Optional
         return None
     cleaned = cleaned[:_MAX_TTS_CHARS]
     speaker = speaker_override or _SPEAKER_BY_LANG.get(lang, "Anna")
-    params = VOICE_PERSONAS.get(persona) or VOICE_PERSONAS[_DEFAULT_PERSONA]
-    key = _cache_key(lang, speaker, f"{persona}:{cleaned}")
+    base_preset = ZIA_STYLE_PRESETS.get(persona) or ZIA_STYLE_PRESETS.get("buttery") or {
+        "pitch": "low", "speed": "moderate", "emotion": "happy"
+    }
+    params = {
+        "pitch": base_preset["pitch"],
+        "speed": base_preset["speed"],
+        "emotion": base_preset["emotion"],
+    }
+    if speed_override:
+        mapped_speed = ZIA_SPEED_MULTIPLIERS.get(speed_override, speed_override)
+        if mapped_speed in ("slow", "moderate", "fast"):
+            params["speed"] = mapped_speed
+
+    key = _cache_key(lang, speaker, f"{persona}:{params['speed']}:{params['pitch']}:{cleaned}")
     cached = _cache_get(key)
     if cached:
-        logger.debug(f"TTS cache HIT ({lang}, {persona}, {len(cleaned)} chars)")
+        logger.debug(f"TTS cache HIT ({lang}, {persona}, {params['speed']}, {len(cleaned)} chars)")
         return cached, "audio/wav", 200, ""
     token = get_cached_access_token()
     if not token:
         logger.warning("TTS skipped: no Catalyst access token.")
         return None
-    body = {"text": cleaned, "language": lang, "speaker": speaker, **params}
+    target_speaker = _SPEAKER_ALIASES.get(speaker, speaker)
+    body = {"text": cleaned, "language": lang, "speaker": target_speaker, **params}
     headers = {
         "CATALYST-ORG": _ORG_ID,
         "Authorization": f"Zoho-oauthtoken {token}",
         "Content-Type": "application/json",
     }
-    # Language-aware timeout: Kannada neural synthesis is significantly slower
-    # than English (live-tested: ~1s per 8-10 chars for KN). Give it room.
     timeout = 30 if lang == "kn" else 15
     last_status, last_body = 0, ""
-    # Smart retry: only retry on fast transient errors (502/503 in under 5s),
-    # which are genuine Zia flaps. If the first attempt took >5s before failing,
-    # it was a slow synthesis that got killed -- retrying would just block the
-    # worker thread for another 30s with the same result.
     for attempt in range(2):
         t0 = time.time()
         try:
@@ -314,11 +379,17 @@ def _call_zia_tts(text: str, lang: str, persona: str, speaker_override: Optional
             last_status, last_body = res.status_code, res.text[:300]
             if res.status_code == 200 and res.content[:4] == b"RIFF":
                 _cache_put(key, res.content)
-                logger.info(f"TTS synthesized ({lang}, {persona}, {len(cleaned)} chars, {elapsed:.1f}s)")
+                logger.info(f"TTS synthesized ({lang}, {persona}, {speaker}, {params['speed']}, {len(cleaned)} chars, {elapsed:.1f}s)")
                 return res.content, "audio/wav", 200, ""
+            if res.status_code == 400 and "Speaker" in res.text and speaker != _SPEAKER_BY_LANG.get(lang, "Anna"):
+                default_speaker = _SPEAKER_BY_LANG.get(lang, "Anna")
+                logger.info(f"Speaker '{speaker}' unavailable for {lang}; falling back to default '{default_speaker}'")
+                body["speaker"] = default_speaker
+                speaker = default_speaker
+                continue
             logger.warning(f"Zia TTS failed (attempt {attempt + 1}, {res.status_code}, {elapsed:.1f}s): {res.text[:200]}")
             if attempt == 0 and elapsed > 5:
-                break  # slow failure — retrying won't help
+                break
         except Exception as e:
             elapsed = time.time() - t0
             last_status, last_body = -1, str(e)[:300]
@@ -328,7 +399,13 @@ def _call_zia_tts(text: str, lang: str, persona: str, speaker_override: Optional
     return None, "audio/wav", last_status, last_body
 
 
-def get_tts_cache_status(text: str, lang: str = "en", persona: str = "standard") -> str:
+def get_tts_cache_status(
+    text: str,
+    lang: str = "en",
+    persona: str = "buttery",
+    speaker: Optional[str] = None,
+    speed: Optional[str] = None,
+) -> str:
     """Check if text is cached without synthesizing. Returns 'HIT' or 'MISS'."""
     if not text or not text.strip():
         return "MISS"
@@ -336,8 +413,16 @@ def get_tts_cache_status(text: str, lang: str = "en", persona: str = "standard")
     cleaned = normalize_text_for_tts(text, lang)
     if not cleaned:
         return "MISS"
-    speaker = _SPEAKER_BY_LANG.get(lang, "Anna")
-    key = _cache_key(lang, speaker, f"{persona}:{cleaned[:_MAX_TTS_CHARS]}")
+    spk = speaker or _SPEAKER_BY_LANG.get(lang, "Anna")
+    base_preset = ZIA_STYLE_PRESETS.get(persona) or ZIA_STYLE_PRESETS.get("buttery") or {
+        "pitch": "low", "speed": "moderate", "emotion": "happy"
+    }
+    effective_speed = base_preset["speed"]
+    if speed:
+        mapped_speed = ZIA_SPEED_MULTIPLIERS.get(speed, speed)
+        if mapped_speed in ("slow", "moderate", "fast"):
+            effective_speed = mapped_speed
+    key = _cache_key(lang, spk, f"{persona}:{effective_speed}:{base_preset['pitch']}:{cleaned[:_MAX_TTS_CHARS]}")
     return "HIT" if _cache_get(key) is not None else "MISS"
 
 

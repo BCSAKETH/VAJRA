@@ -831,7 +831,7 @@ def create_pocso_request(requester_badge: str, requester_name: str, case_no: str
     meta = {
         "request_id": request_id, "requester_badge": str(requester_badge or ""),
         "requester_name": requester_name or "Officer", "case_no": case_no,
-        "reason": (reason or "").strip()[:200], "status": "pending",
+        "reason": (reason or "").strip()[:500], "status": "pending",
         "approver_badge": None, "decided_at": None, "grant_expires_at": None,
         "created_at": datetime.utcnow().isoformat(),
     }
@@ -875,6 +875,30 @@ def find_active_pocso_request(badge: str, case_no: str) -> Optional[Dict[str, An
                     return m
             except Exception:
                 pass
+    return None
+
+
+def find_latest_pocso_request(badge: str, case_no: str) -> Optional[Dict[str, Any]]:
+    """The most recent POCSO request for this officer+case regardless of status
+    (pending, approved, or rejected), used to report rejection decisions."""
+    if not catalyst_app or not badge or not case_no:
+        return None
+    try:
+        res = catalyst_app.zql().execute_query(
+            "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+            f"WHERE AlertType = 'POCSO_ACCESS' AND AlertMessage LIKE '*{case_no}*' "
+            "ORDER BY ROWID DESC LIMIT 30")
+    except Exception:
+        return None
+    for r in res or []:
+        a = r.get("ProactiveAlerts", {})
+        try:
+            m = json.loads(a.get("AlertMessage") or "{}")
+        except Exception:
+            continue
+        if str(m.get("requester_badge")) != str(badge) or m.get("case_no") != case_no:
+            continue
+        return m
     return None
 
 
@@ -1104,11 +1128,11 @@ def has_active_district_access_grant(badge: Optional[str], home_district_id: Any
 def derive_role_tier(rank_id: Optional[int], kgid: Optional[str] = None) -> str:
     """
     Resolve an officer's access tier.
-    Supervisor-tier access is granted if the badge is in SUPERVISOR_KGIDS (e.g. 2346836)
-    OR if the officer holds a supervisory rank (RankID >= 5, PI/Inspector and above).
+    Supervisor-tier access is granted if the badge is in SUPERVISOR_KGIDS (e.g. 2346836).
+    If a specific badge/KGID is evaluated and is not in SUPERVISOR_KGIDS, it is strictly officer-tier.
     """
-    if kgid is not None and str(kgid).strip() in SUPERVISOR_KGIDS:
-        return "supervisor"
+    if kgid is not None:
+        return "supervisor" if str(kgid).strip() in SUPERVISOR_KGIDS else "officer"
     if rank_id is not None:
         try:
             if int(rank_id) >= 5:

@@ -32,6 +32,18 @@ export type ScreenId =
   | "investigations"
   | "all_chats";
 
+export type TranscriptTextSize = "small" | "medium" | "large";
+export type TranscriptWidth = "narrow" | "medium" | "wide";
+export type TtsSpeed = "slower" | "normal" | "faster";
+export type TtsStyle = "buttery" | "authoritative" | "calm" | "urgent";
+
+export interface TtsSettings {
+  language: "en" | "kn" | "hi";
+  style: TtsStyle;
+  speed: TtsSpeed;
+  voice: string; // "Anna" | "Anu" | "James" | "Manoj" | "Divya"
+}
+
 export interface ChatMessage {
   id: string;
   sender: "user" | "assistant" | "system";
@@ -134,6 +146,12 @@ interface AppContextType {
   setTheme: (theme: "light" | "high-contrast-dark") => void;
   voicePersona: string;
   setVoicePersona: (persona: string) => void;
+  transcriptTextSize: TranscriptTextSize;
+  setTranscriptTextSize: (size: TranscriptTextSize) => void;
+  transcriptWidth: TranscriptWidth;
+  setTranscriptWidth: (width: TranscriptWidth) => void;
+  ttsSettings: TtsSettings;
+  setTtsSettings: (settings: Partial<TtsSettings>) => void;
   selectedFirNo: string | null;
   setSelectedFirNo: (firNo: string | null) => void;
   chatMessages: ChatMessage[];
@@ -215,14 +233,17 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
   // server-side from the authenticating badge's own RankID at login time.
   const [roleTierState, setRoleTierState] = useState<"officer" | "supervisor" | null>(() => {
     const badge = localStorage.getItem("vajra_badge");
+    if (badge && badge !== "2346836") return "officer";
     if (badge === "2346836") return "supervisor";
     const saved = localStorage.getItem("vajra_role_tier");
     return saved === "officer" || saved === "supervisor" ? saved : null;
   });
   const setRoleTier = (tier: "officer" | "supervisor" | null) => {
-    setRoleTierState(tier);
-    if (tier) {
-      localStorage.setItem("vajra_role_tier", tier);
+    const badge = localStorage.getItem("vajra_badge");
+    const enforcedTier = badge && badge !== "2346836" ? "officer" : tier;
+    setRoleTierState(enforcedTier);
+    if (enforcedTier) {
+      localStorage.setItem("vajra_role_tier", enforcedTier);
     } else {
       localStorage.removeItem("vajra_role_tier");
     }
@@ -310,6 +331,45 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
   const [voicePersona, setVoicePersonaState] = useState<string>(() => {
     return localStorage.getItem("vajra_voice_persona") || "standard";
   });
+
+  // Section 15: Transcript Ergonomics (Text Sizing & Viewport Width) & Zia Multi-Voice Studio
+  const [transcriptTextSize, setTranscriptTextSizeState] = useState<TranscriptTextSize>(() => {
+    return (localStorage.getItem("vajra_transcript_text_size") as TranscriptTextSize) || "medium";
+  });
+
+  const [transcriptWidth, setTranscriptWidthState] = useState<TranscriptWidth>(() => {
+    return (localStorage.getItem("vajra_transcript_width") as TranscriptWidth) || "medium";
+  });
+
+  const [ttsSettings, setTtsSettingsState] = useState<TtsSettings>(() => {
+    const saved = localStorage.getItem("vajra_tts_settings");
+    if (saved) {
+      try { return JSON.parse(saved); } catch {}
+    }
+    return { language: "en", style: "buttery", speed: "normal", voice: "Anna" };
+  });
+
+  const setTranscriptTextSize = (size: TranscriptTextSize) => {
+    setTranscriptTextSizeState(size);
+    localStorage.setItem("vajra_transcript_text_size", size);
+  };
+
+  const setTranscriptWidth = (width: TranscriptWidth) => {
+    setTranscriptWidthState(width);
+    localStorage.setItem("vajra_transcript_width", width);
+  };
+
+  const setTtsSettings = (settings: Partial<TtsSettings>) => {
+    setTtsSettingsState((prev) => {
+      const updated = { ...prev, ...settings };
+      localStorage.setItem("vajra_tts_settings", JSON.stringify(updated));
+      return updated;
+    });
+    if (settings.style) {
+      setVoicePersonaState(settings.style);
+      localStorage.setItem("vajra_voice_persona", settings.style);
+    }
+  };
 
   const [selectedFirNo, setSelectedFirNoState] = useState<string | null>(() => {
     return localStorage.getItem("vajra_selected_fir_no") || null;
@@ -709,6 +769,12 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         setTheme,
         voicePersona,
         setVoicePersona,
+        transcriptTextSize,
+        setTranscriptTextSize,
+        transcriptWidth,
+        setTranscriptWidth,
+        ttsSettings,
+        setTtsSettings,
         selectedFirNo,
         setSelectedFirNo,
         chatMessages,

@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { ChatMessage, useApp } from "../AppContext";
+import { ChatMessage, useApp, TranscriptTextSize, TtsSettings, TtsSpeed } from "../AppContext";
 import { translations } from "../i18n";
-import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2, Info, Pin, PinOff } from "lucide-react";
+import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ShieldAlert, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2, Info, Pin, PinOff } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 import { API_BASE } from "../config";
+import { ReasonCollectionModal } from "./ReasonCollectionModal";
 
 interface ChatBubbleProps {
   message: ChatMessage;
@@ -14,6 +15,8 @@ interface ChatBubbleProps {
   // shouldn't be any, but this stays defensive) gets the server's own
   // "standard" default via the backend's own fallback.
   voicePersona?: string;
+  textSize?: TranscriptTextSize;
+  ttsSettings?: TtsSettings;
   onExpandWidget: (type: string, data: any) => void;
   onRetry?: () => void;
   // Clickable-answer overlay for a clarifying question: only rendered when
@@ -209,12 +212,46 @@ const renderInline = (s: string, kb: string): React.ReactNode[] => {
   });
 };
 
+// Section 15: Transcript Typography Sizing Cascade
+export const TEXT_SIZE_STYLES = {
+  small: {
+    prose: "text-xs leading-relaxed",
+    h1: "text-sm font-black mt-2.5 mb-1",
+    h2: "text-xs font-bold mt-2 mb-0.5",
+    h3: "text-[11.5px] font-bold mt-1.5 mb-0.5",
+    table: "text-[11px]",
+    code: "text-[10.5px]",
+    badge: "text-[9px]",
+    userBubble: "text-xs leading-relaxed",
+  },
+  medium: {
+    prose: "text-[13.5px] leading-relaxed",
+    h1: "text-[16px] font-black mt-3 mb-1",
+    h2: "text-[14.5px] font-bold mt-2.5 mb-0.5",
+    h3: "text-[13px] font-semibold mt-2 mb-0.5",
+    table: "text-[12.5px]",
+    code: "text-xs",
+    badge: "text-[10px]",
+    userBubble: "text-sm leading-relaxed",
+  },
+  large: {
+    prose: "text-base leading-loose",
+    h1: "text-lg font-black mt-3.5 mb-1.5",
+    h2: "text-base font-bold mt-3 mb-1",
+    h3: "text-sm font-semibold mt-2.5 mb-0.5",
+    table: "text-sm",
+    code: "text-[13px]",
+    badge: "text-xs",
+    userBubble: "text-base leading-loose",
+  },
+};
+
 // Fenced-code-block renderer, its own small component (needs the copy-button
 // click state, which a plain render function can't hold). VAJRA's real text
 // is IDs/hashes/config snippets quoted verbatim, not syntax-highlighted
 // source, so no per-language highlighter is pulled in -- monospace + a copy
 // button covers the real use case without a new dependency.
-const CodeBlock: React.FC<{ text: string }> = ({ text }) => {
+const CodeBlock: React.FC<{ text: string; textSizeCls?: string }> = ({ text, textSizeCls }) => {
   const [copied, setCopied] = useState(false);
   return (
     <div className="my-2 rounded-lg border border-stone-800 bg-stone-950/60 overflow-hidden">
@@ -232,12 +269,13 @@ const CodeBlock: React.FC<{ text: string }> = ({ text }) => {
           {copied ? "Copied" : "Copy"}
         </button>
       </div>
-      <pre className="px-3 py-2 overflow-x-auto"><code className="font-mono text-[12px] text-stone-300 whitespace-pre">{text}</code></pre>
+      <pre className="px-3 py-2 overflow-x-auto"><code className={`font-mono ${textSizeCls || "text-[12px]"} text-stone-300 whitespace-pre`}>{text}</code></pre>
     </div>
   );
 };
 
-const renderRich = (text: string): React.ReactNode => {
+const renderRich = (text: string, styles?: (typeof TEXT_SIZE_STYLES)["medium"]): React.ReactNode => {
+  const s = styles || TEXT_SIZE_STYLES.medium;
   const lines = (text || "").split("\n");
   const blocks: React.ReactNode[] = [];
   let bullets: { node: React.ReactNode; nested: boolean }[] = [];
@@ -276,7 +314,7 @@ const renderRich = (text: string): React.ReactNode => {
       i++;
       while (i < lines.length && !lines[i].trim().startsWith("```")) { codeLines.push(lines[i]); i++; }
       i++; // skip the closing fence
-      blocks.push(<CodeBlock key={"code" + i} text={codeLines.join("\n")} />);
+      blocks.push(<CodeBlock key={"code" + i} text={codeLines.join("\n")} textSizeCls={s.code} />);
       continue;
     }
 
@@ -304,7 +342,7 @@ const renderRich = (text: string): React.ReactNode => {
       while (i < lines.length && lines[i].trim().includes("|")) { rows.push(splitCells(lines[i])); i++; }
       blocks.push(
         <div key={"tblwrap" + i} className="my-2 overflow-x-auto">
-          <table className="w-full text-left border-collapse text-[12.5px]">
+          <table className={`w-full text-left border-collapse ${s.table}`}>
             <thead>
               <tr className="border-b border-stone-800">
                 {headerCells.map((c, ci) => <th key={ci} className="py-1 pr-3 font-semibold text-stone-200">{renderInline(c, "th" + ci)}</th>)}
@@ -342,10 +380,10 @@ const renderRich = (text: string): React.ReactNode => {
       flushBullets("h" + i);
       const level = h[1].length;
       const cls = level === 1
-        ? "font-black text-stone-100 mt-3 mb-1 text-[16px]"
+        ? `font-black text-stone-100 ${s.h1}`
         : level === 2
-        ? "font-bold text-stone-100 mt-2.5 mb-0.5 text-[14.5px]"
-        : "font-semibold text-stone-100 mt-2 mb-0.5 text-[13.5px]";
+        ? `font-bold text-stone-100 ${s.h2}`
+        : `font-semibold text-stone-100 ${s.h3}`;
       blocks.push(<div key={i} className={cls}>{renderInline(h[2], i + "h")}</div>);
     } else if (bulMatch) {
       bullets.push({ node: renderInline(bulMatch[2], i + "b"), nested: bulMatch[1].length >= 2 });
@@ -396,8 +434,7 @@ type SpeakResult = "started" | "unsupported" | "no_kannada_voice";
 // speaking at all: it looks like a working feature that's actually
 // producing noise. Returning "no_kannada_voice" lets the caller tell the
 // officer plainly instead, rather than mispronouncing Kannada through an
-// English voice engine.
-const speakText = (text: string, lang: "en" | "kn", onEnd: () => void): SpeakResult => {
+const speakText = (text: string, lang: "en" | "kn" | "hi", onEnd: () => void, speed?: TtsSpeed): SpeakResult => {
   if (!("speechSynthesis" in window)) return "unsupported";
   window.speechSynthesis.cancel();
 
@@ -409,13 +446,18 @@ const speakText = (text: string, lang: "en" | "kn", onEnd: () => void): SpeakRes
   if (lang === "kn") {
     matchedVoice = voices.find(v => v.lang.toLowerCase().includes("kn") || v.name.toLowerCase().includes("kannada") || v.name.toLowerCase().includes("kn-in"));
     if (!matchedVoice) return "no_kannada_voice";
+  } else if (lang === "hi") {
+    matchedVoice = voices.find(v => v.lang.toLowerCase().includes("hi") || v.name.toLowerCase().includes("hindi") || v.name.toLowerCase().includes("hi-in"));
   } else {
     matchedVoice = voices.find(v => v.lang.toLowerCase().includes("en-in")) || voices.find(v => v.lang.toLowerCase().includes("en-us"));
   }
 
   const utterance = new SpeechSynthesisUtterance(cleaned);
-  utterance.lang = lang === "kn" ? "kn-IN" : "en-US";
-  utterance.rate = lang === "kn" ? 0.92 : 1.0;
+  utterance.lang = lang === "kn" ? "kn-IN" : (lang === "hi" ? "hi-IN" : "en-US");
+  let rate = lang === "kn" ? 0.92 : 1.0;
+  if (speed === "slower") rate *= 0.85;
+  else if (speed === "faster") rate *= 1.25;
+  utterance.rate = rate;
   utterance.pitch = 1.0;
   utterance.voice = matchedVoice;
 
@@ -428,11 +470,14 @@ const speakText = (text: string, lang: "en" | "kn", onEnd: () => void): SpeakRes
 export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   message, lang, voicePersona, onExpandWidget, onRetry, onQuickReply, addToast, isLast,
   onEditMessage, onRetryVariant, totalVariants, activeVariantIndex, onCycleVariant, isReviewMode,
-  onTogglePin, sessionId, pairedQuery,
+  onTogglePin, sessionId, pairedQuery, textSize, ttsSettings,
 }) => {
   const t = translations[lang];
   const isAI = message.sender === "assistant";
-  const { officerName, badgeNumber } = useApp();
+  const { officerName, badgeNumber, transcriptTextSize, ttsSettings: contextTtsSettings } = useApp();
+  const activeTextSize = textSize || transcriptTextSize || "medium";
+  const sizeStyles = TEXT_SIZE_STYLES[activeTextSize] || TEXT_SIZE_STYLES.medium;
+  const effectiveTtsSettings = ttsSettings || contextTtsSettings;
 
   // Section 13: Resolve verified officer identity and badge for forensic attribution
   const resolveSenderLabel = (): string => {
@@ -521,38 +566,129 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   // phrase like "request access" (confirmed live: natural phrasing that
   // missed the text-trigger fell through to GLM and got a fabricated,
   // disconnected-from-reality process instead of this real flow). Shown only
-  // when this specific answer was itself redacted (data.pocso_redacted).
+  // Section 16: POCSO Statutory Justification Handshake & Access Gate
+  // When an answer has redactions (data.pocso_redacted), clicking the button opens
+  // ReasonCollectionModal to collect a valid (min 10 chars) operational justification.
+  const [showPocsoModal, setShowPocsoModal] = useState(false);
   const [pocsoReqStatus, setPocsoReqStatus] = useState<"idle" | "pending" | "approved" | "rejected">("idle");
   const [isPocsoRequesting, setIsPocsoRequesting] = useState(false);
   const pocsoPollRef = useRef<number | null>(null);
-  useEffect(() => () => { if (pocsoPollRef.current) window.clearInterval(pocsoPollRef.current); }, []);
-  const requestPocsoAccess = async () => {
+
+  const startPocsoPolling = (caseNo: string) => {
+    if (pocsoPollRef.current) window.clearInterval(pocsoPollRef.current);
+    pocsoPollRef.current = window.setInterval(async () => {
+      try {
+        const sres = await fetch(`${API_BASE}/api/pocso/request-status?case_no=${encodeURIComponent(caseNo)}`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        });
+        if (sres.ok) {
+          const sd = await sres.json();
+          if (sd.status === "approved" || sd.status === "rejected") {
+            if (pocsoPollRef.current) {
+              window.clearInterval(pocsoPollRef.current);
+              pocsoPollRef.current = null;
+            }
+            setPocsoReqStatus(sd.status);
+            addToast?.(
+              sd.status === "approved"
+                ? (lang === "en" ? "Access Granted" : "ಪ್ರವೇಶ ಅನುಮೋದಿಸಲಾಗಿದೆ")
+                : (lang === "en" ? "Access Denied" : "ಪ್ರವೇಶ ನಿರಾಕರಿಸಲಾಗಿದೆ"),
+              sd.status === "approved"
+                ? (lang === "en" ? "Supervisor approved POCSO access. Refreshing..." : "ಮೇಲ್ವಿಚಾರಕರು ಅನುಮೋದಿಸಿದ್ದಾರೆ. ನವೀಕರಿಸಲಾಗುತ್ತಿದೆ...")
+                : (lang === "en" ? "Supervisor rejected POCSO unredaction request." : "ಮೇಲ್ವಿಚಾರಕರು ವಿನಂತಿಯನ್ನು ತಿರಸ್ಕರಿಸಿದ್ದಾರೆ."),
+              sd.status === "approved" ? "Success" : "Warning"
+            );
+            if (sd.status === "approved") {
+              onRetry?.();
+            }
+          }
+        }
+      } catch {
+        /* transient polling retry */
+      }
+    }, 5000);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (pocsoPollRef.current) window.clearInterval(pocsoPollRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const caseNo = message.data?.case_no;
+    if (!message.data?.pocso_redacted || !caseNo) return;
+    const token = localStorage.getItem("vajra_token") || "";
+    if (!token) return;
+    fetch(`${API_BASE}/api/pocso/request-status?case_no=${encodeURIComponent(caseNo)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && (data.status === "pending" || data.status === "approved" || data.status === "rejected")) {
+          setPocsoReqStatus(data.status);
+          if (data.status === "pending") {
+            startPocsoPolling(caseNo);
+          }
+        }
+      })
+      .catch(() => {});
+  }, [message.data?.pocso_redacted, message.data?.case_no]);
+
+  const handleOpenPocsoRequest = () => {
+    const caseNo = message.data?.case_no;
+    if (!caseNo) {
+      addToast?.(
+        lang === "en" ? "Error" : "ದೋಷ",
+        lang === "en" ? "Case number missing from intelligence card." : "ಬುಲೆಟಿನ್‌ನಲ್ಲಿ ಕೇಸ್ ನಂಬರ್ ಲಭ್ಯವಿಲ್ಲ.",
+        "Critical"
+      );
+      return;
+    }
+    setShowPocsoModal(true);
+  };
+
+  const submitPocsoRequest = async (reason: string) => {
     const caseNo = message.data?.case_no;
     if (!caseNo) return;
     setIsPocsoRequesting(true);
     try {
       const res = await fetch(`${API_BASE}/api/pocso/request`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-        body: JSON.stringify({ case_no: caseNo }),
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}`,
+        },
+        body: JSON.stringify({
+          case_no: caseNo,
+          reason: reason.trim(),
+        }),
       });
-      if (!res.ok) throw new Error("request failed");
-      setPocsoReqStatus("pending");
-      if (pocsoPollRef.current) window.clearInterval(pocsoPollRef.current);
-      pocsoPollRef.current = window.setInterval(async () => {
-        try {
-          const sres = await fetch(`${API_BASE}/api/pocso/request-status?case_no=${encodeURIComponent(caseNo)}`, {
-            headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-          });
-          const sd = await sres.json();
-          if (sd.status === "approved" || sd.status === "rejected") {
-            if (pocsoPollRef.current) window.clearInterval(pocsoPollRef.current);
-            setPocsoReqStatus(sd.status);
-          }
-        } catch { /* transient -- next tick retries */ }
-      }, 5000);
-    } catch {
-      setPocsoReqStatus("idle");
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || (lang === "en" ? "Request failed" : "ವಿನಂತಿ ವಿಫಲವಾಗಿದೆ"));
+      }
+
+      const data = await res.json();
+      setShowPocsoModal(false);
+      setPocsoReqStatus(data.status || "pending");
+      addToast?.(
+        lang === "en" ? "Access Requested" : "ಪ್ರವೇಶ ವಿನಂತಿಸಲಾಗಿದೆ",
+        lang === "en"
+          ? "POCSO unredaction request submitted to Supervisor queue."
+          : "ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗೆ ವಿನಂತಿಯನ್ನು ಕಳುಹಿಸಲಾಗಿದೆ.",
+        "Info"
+      );
+
+      startPocsoPolling(caseNo);
+    } catch (err: any) {
+      addToast?.(
+        lang === "en" ? "Request Failed" : "ವಿನಂತಿ ವಿಫಲವಾಗಿದೆ",
+        err.message || (lang === "en" ? "Could not submit POCSO request." : "ವಿನಂತಿಯನ್ನು ಕಳುಹಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ."),
+        "Critical"
+      );
+      throw err;
     } finally {
       setIsPocsoRequesting(false);
     }
@@ -775,7 +911,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     });
   };
 
-  const fetchChunkAudio = (text: string, vlang: "en" | "kn", key: string): Promise<string | null> => {
+  const fetchChunkAudio = (text: string, vlang: "en" | "kn" | "hi", key: string): Promise<string | null> => {
     const cached = _ttsCache.get(key);
     if (cached) return Promise.resolve(cached);
 
@@ -791,13 +927,30 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
         const headers: Record<string, string> = { "Content-Type": "application/json" };
         if (token) headers["Authorization"] = `Bearer ${token}`;
 
+        const voiceStyle = effectiveTtsSettings?.style || voicePersona || "buttery";
+        const voiceSpeed = effectiveTtsSettings?.speed || "normal";
+        let voiceSpeaker = effectiveTtsSettings?.voice;
+        if (!voiceSpeaker) {
+          voiceSpeaker = vlang === "kn" ? "Anu" : (vlang === "hi" ? "Divya" : "Anna");
+        } else if (vlang === "kn" && !["Anu", "Manoj"].includes(voiceSpeaker)) {
+          voiceSpeaker = "Anu";
+        } else if (vlang === "hi" && !["Divya", "Manoj"].includes(voiceSpeaker)) {
+          voiceSpeaker = "Divya";
+        } else if (vlang === "en" && !["Anna", "James", "David", "Brian", "Emma", "George"].includes(voiceSpeaker)) {
+          voiceSpeaker = "Anna";
+        }
+
         const r = await fetch(`${API_BASE}/api/voice/tts`, {
           method: "POST",
           headers,
           body: JSON.stringify({
             text,
             lang: vlang,
-            persona: voicePersona || "standard",
+            persona: voiceStyle,
+            style: voiceStyle,
+            speed: voiceSpeed,
+            speaker: voiceSpeaker,
+            voice: voiceSpeaker,
           }),
           signal: ctrl.signal,
         });
@@ -831,17 +984,29 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   // INSTANTLY from cache instead of waiting for synthesis.
   React.useEffect(() => {
     if (!isLast || !isAI || message.isSimulated) return;
-    const vlang = effectiveLang;
-    const toSpeak = getSpeakText();
+    const vlang: "en" | "kn" | "hi" = (effectiveTtsSettings?.language as any) || effectiveLang;
+    const toSpeak = vlang === "kn" ? (kannadaText || getSpeakText()) : getSpeakText();
     if (!toSpeak) return;
     const firstChunk = splitIntoSpeechChunks(toSpeak)[0];
     if (!firstChunk) return;
-    const key = `${message.id}:${vlang}:${voicePersona || "standard"}:0`;
+    const voiceStyle = effectiveTtsSettings?.style || voicePersona || "buttery";
+    let voiceSpeaker = effectiveTtsSettings?.voice;
+    if (!voiceSpeaker) {
+      voiceSpeaker = vlang === "kn" ? "Anu" : (vlang === "hi" ? "Divya" : "Anna");
+    } else if (vlang === "kn" && !["Anu", "Manoj"].includes(voiceSpeaker)) {
+      voiceSpeaker = "Anu";
+    } else if (vlang === "hi" && !["Divya", "Manoj"].includes(voiceSpeaker)) {
+      voiceSpeaker = "Divya";
+    } else if (vlang === "en" && !["Anna", "James", "David", "Brian", "Emma", "George"].includes(voiceSpeaker)) {
+      voiceSpeaker = "Anna";
+    }
+    const voiceSpeed = effectiveTtsSettings?.speed || "normal";
+    const key = `${message.id}:${vlang}:${voiceStyle}:${voiceSpeaker}:${voiceSpeed}:0`;
     if (_ttsCache.has(key) || _ttsPending.has(key)) return;
     if (vlang === "kn" && !/[\u0C80-\u0CFF]/.test(firstChunk)) return;
 
     fetchChunkAudio(firstChunk, vlang, key);
-  }, [isLast, isAI, message.id, message.isSimulated, effectiveLang, getSpeakText, voicePersona]);
+  }, [isLast, isAI, message.id, message.isSimulated, effectiveLang, getSpeakText, voicePersona, effectiveTtsSettings, kannadaText]);
 
   const notifyFallback = () => {
     if (fallbackNotifiedRef.current) return;
@@ -855,13 +1020,13 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     );
   };
 
-  const playChunk = async (text: string, vlang: "en" | "kn", key: string): Promise<boolean> => {
+  const playChunk = async (text: string, vlang: "en" | "kn" | "hi", key: string): Promise<boolean> => {
     if (speakCancelRef.current) return false;
 
     if (engineLockRef.current === "local") {
       notifyFallback();
       return await new Promise<boolean>((resolve) => {
-        const result = speakText(text, vlang, () => resolve(true));
+        const result = speakText(text, vlang, () => resolve(true), effectiveTtsSettings?.speed);
         if (result !== "started") resolve(false);
       });
     }
@@ -886,7 +1051,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     engineLockRef.current = "local";
     notifyFallback();
     return await new Promise<boolean>((resolve) => {
-      const result = speakText(text, vlang, () => resolve(true));
+      const result = speakText(text, vlang, () => resolve(true), effectiveTtsSettings?.speed);
       if (result !== "started") resolve(false);
     });
   };
@@ -903,14 +1068,18 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     }
     _activeAudioStop = stopPlayback;
 
-    const vlang = effectiveLang;
+    const vlang: "en" | "kn" | "hi" = (effectiveTtsSettings?.language as any) || effectiveLang;
 
     // If Kannada is selected but translation is not yet ready, fetch it first
     let speakSource = displayText;
-    if (vlang === "kn" && !hasRealKannada && !liveKn && canTranslate) {
-      const translated = await fetchKn();
-      if (translated) {
-        speakSource = decodeDisplayText(translated).replace(/^\n+/, "");
+    if (vlang === "kn") {
+      if (!hasRealKannada && !liveKn && canTranslate) {
+        const translated = await fetchKn();
+        if (translated) {
+          speakSource = decodeDisplayText(translated).replace(/^\n+/, "");
+        }
+      } else if (kannadaText) {
+        speakSource = kannadaText;
       }
     }
 
@@ -936,14 +1105,26 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     fallbackNotifiedRef.current = false;
     setIsSpeaking(true);
 
-    const persona = voicePersona || "standard";
+    const voiceStyle = effectiveTtsSettings?.style || voicePersona || "buttery";
+    let voiceSpeaker = effectiveTtsSettings?.voice;
+    if (!voiceSpeaker) {
+      voiceSpeaker = vlang === "kn" ? "Anu" : (vlang === "hi" ? "Divya" : "Anna");
+    } else if (vlang === "kn" && !["Anu", "Manoj"].includes(voiceSpeaker)) {
+      voiceSpeaker = "Anu";
+    } else if (vlang === "hi" && !["Divya", "Manoj"].includes(voiceSpeaker)) {
+      voiceSpeaker = "Divya";
+    } else if (vlang === "en" && !["Anna", "James", "David", "Brian", "Emma", "George"].includes(voiceSpeaker)) {
+      voiceSpeaker = "Anna";
+    }
+    const voiceSpeed = effectiveTtsSettings?.speed || "normal";
+    const makeKey = (idx: number) => `${message.id}:${vlang}:${voiceStyle}:${voiceSpeaker}:${voiceSpeed}:${idx}`;
 
     // Pipelined prefetching:
     // Prefetch chunk 0 and chunk 1 immediately so speech begins promptly
-    const key0 = `${message.id}:${vlang}:${persona}:0`;
+    const key0 = makeKey(0);
     fetchChunkAudio(chunks[0], vlang, key0);
     if (chunks.length > 1) {
-      const key1 = `${message.id}:${vlang}:${persona}:1`;
+      const key1 = makeKey(1);
       fetchChunkAudio(chunks[1], vlang, key1);
     }
 
@@ -953,11 +1134,11 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
 
       // Pipeline prefetch chunk i + 1 in background while chunk i is playing
       if (i + 1 < chunks.length) {
-        const nextKey = `${message.id}:${vlang}:${persona}:${i + 1}`;
+        const nextKey = makeKey(i + 1);
         fetchChunkAudio(chunks[i + 1], vlang, nextKey);
       }
 
-      const key = `${message.id}:${vlang}:${persona}:${i}`;
+      const key = makeKey(i);
       const ok = await playChunk(chunks[i], vlang, key);
       anyPlayed = anyPlayed || ok;
 
@@ -1295,8 +1476,8 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
               </div>
             </div>
           ) : isAI
-            ? <div className="font-sans text-stone-200 text-[13.5px]">{renderRich(displayText)}</div>
-            : <div className="whitespace-pre-wrap font-sans text-stone-200">{displayText}</div>}
+            ? <div className={`font-sans text-stone-200 ${sizeStyles.prose}`}>{renderRich(displayText, sizeStyles)}</div>
+            : <div className={`whitespace-pre-wrap font-sans text-stone-200 ${sizeStyles.userBubble}`}>{displayText}</div>}
 
           {/* Clarifying-question quick-reply chips: only when the answer
               carries REAL structured candidates (an ambiguous name matching
@@ -1365,11 +1546,11 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                   ) : (
                     <button
                       type="button"
-                      onClick={requestPocsoAccess}
+                      onClick={handleOpenPocsoRequest}
                       disabled={isPocsoRequesting}
-                      className="flex items-center gap-1 text-[10px] font-mono text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/40 px-2 py-0.5 rounded transition-colors disabled:opacity-50 cursor-pointer"
+                      className="flex items-center gap-1.5 text-[10px] font-mono text-rose-300 bg-rose-500/10 hover:bg-rose-500/20 border border-rose-500/40 px-2 py-0.5 rounded transition-colors disabled:opacity-50 cursor-pointer"
                     >
-                      <ShieldCheck className="w-2.5 h-2.5 shrink-0" />
+                      <ShieldAlert className="w-2.5 h-2.5 shrink-0 text-rose-400" />
                       {isPocsoRequesting
                         ? (lang === "en" ? "Requesting..." : "ವಿನಂತಿಸಲಾಗುತ್ತಿದೆ...")
                         : (lang === "en" ? "Request Access" : "ಪ್ರವೇಶ ವಿನಂತಿಸಿ")}
@@ -1861,6 +2042,27 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
             />
           </div>
         </div>,
+        document.body
+      )}
+      {/* Section 16: POCSO Statutory Justification Reason Collection Modal */}
+      {showPocsoModal && createPortal(
+        <ReasonCollectionModal
+          isOpen={showPocsoModal}
+          title={lang === "en" ? "POCSO Section 74 Statutory Justification" : "ಪೋಕ್ಸೊ ಕಲಂ 74 ಶಾಸನಬದ್ಧ ಸಮರ್ಥನೆ"}
+          subtitle={
+            lang === "en"
+              ? `Case ${message.data?.case_no}: Unredacting victim particulars requires recorded operational necessity for senior supervisory approval.`
+              : `ಪ್ರಕರಣ ${message.data?.case_no}: ಸಂತ್ರಸ್ತರ ವಿವರಗಳನ್ನು ವೀಕ್ಷಿಸಲು ಹಿರಿಯ ಅಧಿಕಾರಿಗಳ ಅನುಮೋದನೆಗೆ ಕಾರಣವನ್ನು ನಮೂದಿಸಬೇಕು.`
+          }
+          minChars={10}
+          placeholder={
+            lang === "en"
+              ? "Enter operational justification (e.g., Required for court charge sheet filing under Sec 35 POCSO Act)..."
+              : "ಕಾರ್ಯಾಚರಣೆಯ ಕಾರಣವನ್ನು ನಮೂದಿಸಿ (ಕನಿಷ್ಠ 10 ಅಕ್ಷರಗಳು)..."
+          }
+          onClose={() => setShowPocsoModal(false)}
+          onSubmit={submitPocsoRequest}
+        />,
         document.body
       )}
     </div>

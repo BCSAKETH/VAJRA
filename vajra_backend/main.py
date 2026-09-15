@@ -74,6 +74,7 @@ from vajra_core import (
     POCSO_GRANT_HOURS,
     create_pocso_request,
     find_active_pocso_request,
+    find_latest_pocso_request,
     find_district_access_row,
     create_district_access_request,
     find_active_district_access_request,
@@ -6696,24 +6697,19 @@ async def review_consistency_flag(flag_id: int, payload: ReviewFlagRequest, requ
 class TTSRequest(BaseModel):
     text: str
     lang: str = "en"
-    # Voice persona (pitch/speed/emotion preset on the same per-language
-    # speaker) -- see catalyst_speech.VOICE_PERSONAS. Unknown/omitted values
-    # fall back to "standard" (this endpoint's original, always-safe params).
-    persona: str = "standard"
+    # Voice persona (pitch/speed/emotion preset on the per-language speaker)
+    persona: str = "buttery"
+    style: Optional[str] = None
+    speed: Optional[str] = None
+    voice: Optional[str] = None
+    speaker: Optional[str] = None
 
 
 @app.post("/api/voice/tts")
 async def tts_endpoint(payload: TTSRequest, request: Request):
     """
     Real server-side text-to-speech via Zia (Kannada/English/Hindi), returning
-    WAV audio. Replaces the browser SpeechSynthesis path, which mispronounced
-    Kannada on any device without a Kannada voice installed. Resilient optional
-    auth allows active browser turns to synthesize without 401 token dropouts.
-    Returns 502 (not a hard error) if Zia is unavailable so the frontend can
-    fall back to the browser voice.
-
-    Performance: checks in-memory LRU and disk cache before calling Zia. Returns
-    X-Cache: HIT on cache hits (0ms synthesis) or X-Cache: MISS on fresh synthesis.
+    WAV audio. Supports style, speed, and speaker overrides from the Multi-Voice Audio Studio.
     """
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
@@ -6725,14 +6721,59 @@ async def tts_endpoint(payload: TTSRequest, request: Request):
             except Exception:
                 pass
 
-    from catalyst_speech import synthesize_speech, get_tts_cache_status, VOICE_PERSONAS
-    persona = payload.persona if payload.persona in VOICE_PERSONAS else "standard"
-    cache_status = get_tts_cache_status(payload.text, payload.lang, persona)
-    result = await run_in_threadpool(synthesize_speech, payload.text, payload.lang, persona)
+    from catalyst_speech import (
+        synthesize_speech,
+        get_tts_cache_status,
+        ZIA_STYLE_PRESETS,
+    )
+    style = payload.style or payload.persona or "buttery"
+    if style not in ZIA_STYLE_PRESETS:
+        style = "buttery"
+    speaker = payload.speaker or payload.voice
+    speed = payload.speed
+
+    cache_status = get_tts_cache_status(payload.text, payload.lang, persona=style, speaker=speaker, speed=speed)
+    result = await run_in_threadpool(
+        synthesize_speech,
+        payload.text,
+        payload.lang,
+        persona=style,
+        speed=speed,
+        speaker=speaker,
+        style=style,
+    )
     if not result:
         raise HTTPException(status_code=502, detail="Speech synthesis is temporarily unavailable.")
     audio_bytes, media_type = result
     return Response(content=audio_bytes, media_type=media_type, headers={"X-Cache": cache_status})
+
+
+@app.get("/api/voice/studio-options")
+async def get_voice_studio_options():
+    """Zia Multi-Voice Audio Studio options (Section 15)."""
+    from catalyst_speech import ZIA_STYLE_PRESETS, ZIA_SPEAKERS
+    languages = [
+        {"id": "en", "name": "English (India)", "label": {"en": "English (India)", "kn": "ಇಂಗ್ಲಿಷ್ (ಭಾರತ)"}},
+        {"id": "kn", "name": "ಕನ್ನಡ (Kannada)", "label": {"en": "Kannada", "kn": "ಕನ್ನಡ"}},
+        {"id": "hi", "name": "हिन्दी (Hindi)", "label": {"en": "Hindi", "kn": "ಹಿಂದಿ"}},
+    ]
+    styles = [
+        {"id": "buttery", "name": "Buttery (Smooth & Warm)", "description": "Smooth, warm, and relaxed vocal quality"},
+        {"id": "authoritative", "name": "Authoritative (Command Briefing)", "description": "Crisp, commanding, and professional"},
+        {"id": "calm", "name": "Calm (Reassuring)", "description": "Steady, reassuring, and balanced"},
+        {"id": "urgent", "name": "Urgent (Tactical Dispatch)", "description": "Fast-paced, high-clarity tactical briefing"},
+    ]
+    speeds = [
+        {"id": "slower", "name": "0.85x (Slower)", "value": "slower"},
+        {"id": "normal", "name": "1.0x (Normal)", "value": "normal"},
+        {"id": "faster", "name": "1.25x (Faster)", "value": "faster"},
+    ]
+    return {
+        "languages": languages,
+        "styles": styles,
+        "speeds": speeds,
+        "speakers": ZIA_SPEAKERS,
+    }
 
 
 class SendInvestigationEmailRequest(BaseModel):
@@ -6776,10 +6817,12 @@ async def list_voice_personas(location_context: str = Depends(security_firewall)
     """Officer-selectable TTS delivery presets for the Settings screen."""
     from catalyst_speech import VOICE_PERSONAS
     labels = {
-        "standard": {"en": "Standard", "kn": "ಸ್ಟ್ಯಾಂಡರ್ಡ್"},
+        "buttery": {"en": "Buttery (Smooth & Warm)", "kn": "ಬಟರಿ (ಮೃದು ಮತ್ತು ಆತ್ಮೀಯ)"},
+        "authoritative": {"en": "Authoritative (Command)", "kn": "ಅಧಿಕೃತ (ಕಮಾಂಡ್)"},
         "calm": {"en": "Calm", "kn": "ಶಾಂತ"},
-        "warm": {"en": "Warm", "kn": "ಆತ್ಮೀಯ"},
         "urgent": {"en": "Urgent", "kn": "ತುರ್ತು"},
+        "standard": {"en": "Standard", "kn": "ಸ್ಟ್ಯಾಂಡರ್ಡ್"},
+        "warm": {"en": "Warm", "kn": "ಆತ್ಮೀಯ"},
     }
     return {"personas": [{"id": p, "label": labels.get(p, {"en": p, "kn": p})} for p in VOICE_PERSONAS]}
 
@@ -10117,11 +10160,22 @@ async def pocso_request_status_for_case(case_no: str, request: Request = None,
     request state (idle/pending/approved/rejected) without needing to have
     kept the request_id around client-side."""
     badge = getattr(request.state, "kgid", None)
-    m = find_active_pocso_request(badge, (case_no or "").strip().upper())
-    if not m:
-        return {"status": "idle"}
-    return {"status": m.get("status", "pending"), "request_id": m.get("request_id"),
-            "grant_expires_at": m.get("grant_expires_at")}
+    clean_case = (case_no or "").strip().upper()
+    m = find_active_pocso_request(badge, clean_case)
+    if m:
+        return {"status": m.get("status", "pending"), "request_id": m.get("request_id"),
+                "grant_expires_at": m.get("grant_expires_at")}
+    # Check if this request was recently rejected
+    latest = find_latest_pocso_request(badge, clean_case)
+    if latest and latest.get("status") == "rejected":
+        decided_at = latest.get("decided_at")
+        if decided_at:
+            try:
+                if datetime.utcnow() - datetime.fromisoformat(decided_at) < timedelta(hours=2):
+                    return {"status": "rejected", "request_id": latest.get("request_id")}
+            except Exception:
+                pass
+    return {"status": "idle"}
 
 
 @app.get("/api/pocso/pending")
