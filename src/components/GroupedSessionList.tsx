@@ -271,6 +271,11 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
     return arr;
   }, [unpinnedItems, filter.sortBy]);
 
+  // Full visible list (pinned + unpinned combined) -- used by "Select all" on
+  // the "View all conversations" page, which doesn't care about the pinned/
+  // unpinned split, just every row currently on screen.
+  const sorted = useMemo(() => [...sortedPinned, ...sortedUnpinned], [sortedPinned, sortedUnpinned]);
+
   // ---- grouping ----
   const groupsById = useMemo(() => new Map(groups.map((g) => [String(g.group_id), g])), [groups]);
   const grouped = useMemo(() => {
