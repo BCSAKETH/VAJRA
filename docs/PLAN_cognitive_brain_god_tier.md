@@ -1,18 +1,28 @@
-> **STATUS UPDATE (2026-09-15, later same day):** Tier 1 items 2.1-2.4,
-> Tier 2 items 3.1/3.2/3.3/3.6/3.7, and Tier 7 item 7b.2 are now BUILT and
-> DEPLOYED (see `vajra_cognitive_brain.py`/`agent_loop.py` git history same
-> date). Two corrections to this document's own earlier claims, found while
-> building: (1) §7b.1's "networkx not yet called anywhere" was WRONG --
-> Louvain community detection (`louvain_communities`) was already live in
+> **STATUS UPDATE (2026-09-16):** ALL of Tier 1 (2.1-2.4), Tier 2
+> (3.1/3.2/3.3/3.4/3.5/3.6/3.7), and Tier 7 (7b.1 confirmed already done,
+> 7b.2 built) are now BUILT and DEPLOYED (see `vajra_cognitive_brain.py`/
+> `agent_loop.py`/`functions/proactive_alerts/index.py` git history
+> 2026-09-15/16). Only 7b.3 (risk model recalibration) remains -- it needs
+> an actual retrain/redeploy session, not a request-time code change, and
+> is the single highest real-world-impact item left.
+>
+> Corrections to this document's own earlier claims, found while building:
+> (1) §7b.1's "networkx not yet called anywhere" was WRONG -- Louvain
+> community detection (`louvain_communities`) was already live in
 > `vajra_core.py`/`agent_loop.py` since an earlier commit (`bd03289`,
 > predating this doc); that item was already done, not built again. (2)
 > §3.1's plan to check "ForensicReport/CCTV/WitnessStatement" tables was
 > aspirational -- those tables don't exist in the real schema
 > (`docs/SCHEMA.md`, confirmed absent); the shipped version checks real
 > existing signals instead (chargesheet filed, arrest/surrender recorded,
-> complainant/victim details on file). Still open: 3.4/3.5 (flagged as
-> needing a separate design review, not built blind) and 7b.3 (needs an
-> actual retrain/redeploy session, not a request-time code change).
+> complainant/victim details on file). (3) §3.5's evidence checklist ships
+> as a small, honestly-generic per-crime-category reference list (per
+> explicit direction), not per-CrimeHead SOP content, and is never
+> presented as a verified-present/absent claim about a specific case --
+> this system has no table that could honestly answer that. (4) §3.4
+> extends the ALREADY-SCHEDULED `functions/proactive_alerts` job rather
+> than standing up a new Catalyst Cron job -- reuses its proven
+> pagination/insert infra and needs zero new console/cron setup.
 >
 > ---
 
