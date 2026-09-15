@@ -2808,16 +2808,49 @@ class VajraAgentLoop(CognitiveBrainMixin):
             if _last_assistant_idx is not None:
                 _last_assistant = _hist[_last_assistant_idx].get("content", "").lower()
                 if any(p in _last_assistant for p in _refusal_phrases):
+                    # CONFIRMED LIVE BUG (2026-09-15): on a SECOND+ retry
+                    # ("try again to add to task" after an earlier "try
+                    # again" already got the same copy-paste refusal), the
+                    # walk-back below used to stop at the nearest preceding
+                    # user turn -- which, on a repeat retry, is just the
+                    # PREVIOUS short confirm-cue message itself ("try again
+                    # to add to task"), not the true original detailed
+                    # request. That degenerate original_request then got
+                    # reused turn after turn, producing the identical
+                    # refusal forever. Skip any user turn that is itself
+                    # just a bare confirm-cue (no substantial content beyond
+                    # the cue phrase) so this always resolves to the real
+                    # original ask.
                     _original_request = ""
                     for i in range(_last_assistant_idx - 1, -1, -1):
                         _h = _hist[i]
-                        if _h.get("role") == "user" and _h.get("content", "").strip() and not _h.get("content", "").startswith("Tool '"):
-                            _original_request = _h.get("content", "").strip()
-                            break
+                        _content = _h.get("content", "").strip()
+                        if _h.get("role") != "user" or not _content or _content.startswith("Tool '"):
+                            continue
+                        _c_lower = _content.lower()
+                        _is_bare_confirm = (
+                            any(cue in _c_lower for cue in _confirm_cues)
+                            and len(_content) < 60
+                        )
+                        if _is_bare_confirm:
+                            continue
+                        _original_request = _content
+                        break
                     if _original_request:
-                        return (f"{_original_request} -- yes, actually call add_case_diary_entry and/or "
-                                 f"add_investigation_task now using the content you already drafted above; "
-                                 f"do not just describe it again.")
+                        # Always fold in the exact natural-language cue
+                        # phrases _is_complex_query's _COMPLEX_STRONG_CUES
+                        # list matches on ("add the tasks", "update the case
+                        # diary") -- the raw tool-name-style instruction used
+                        # here previously ("call add_case_diary_entry
+                        # and/or add_investigation_task") named the tools
+                        # correctly but matched NONE of the keyword-router's
+                        # natural-language cues, so the rewritten query kept
+                        # falling through to a tool-less chat completion
+                        # instead of ever reaching the compiler that could
+                        # actually call them.
+                        return (f"{_original_request} -- yes, actually add the tasks and update the case "
+                                 f"diary now by calling add_case_diary_entry and/or add_investigation_task "
+                                 f"using the content you already drafted above; do not just describe it again.")
 
         # Check for pronoun / correction / follow-up cues
         cues = ("that", "it", "they", "this", "its", "their", "them", "wrong", "accurate", "again", "earlier", 
