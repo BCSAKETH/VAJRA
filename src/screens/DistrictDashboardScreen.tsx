@@ -21,7 +21,7 @@ import {
   Area,
   CartesianGrid,
 } from "recharts";
-import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2, FolderOpen } from "lucide-react";
+import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2, FolderOpen, ArrowLeft } from "lucide-react";
 import { DistrictSpatialAnalystPanel } from "../components/DistrictSpatialAnalystPanel";
 import { DistrictDemographicPanel } from "../components/DistrictDemographicPanel";
 import { DistrictFIRPanel } from "../components/DistrictFIRPanel";
@@ -200,6 +200,95 @@ export const DistrictDashboardScreen: React.FC = () => {
     if (accessPollRef.current) { window.clearInterval(accessPollRef.current); accessPollRef.current = null; }
   };
 
+  // Section 18: Real-Time District Emergency Access Grant tracking & 3s Security Heartbeat
+  const [activeEmergencyGrant, setActiveEmergencyGrant] = useState<{
+    requestId: string;
+    districtId: number;
+    expiresAt?: string;
+  } | null>(null);
+  const [isRevokedModalOpen, setIsRevokedModalOpen] = useState(false);
+  const [homeDistrictId, setHomeDistrictId] = useState<number | null>(null);
+  const grantHeartbeatRef = useRef<number | null>(null);
+
+  const stopGrantHeartbeat = () => {
+    if (grantHeartbeatRef.current) {
+      window.clearInterval(grantHeartbeatRef.current);
+      grantHeartbeatRef.current = null;
+    }
+  };
+
+  useEffect(() => () => stopGrantHeartbeat(), []);
+
+  const terminateEmergencySession = (_reason?: string) => {
+    stopGrantHeartbeat();
+    setActiveEmergencyGrant(null);
+
+    // Wipe all sensitive non-home district intelligence from memory immediately
+    setDetail(null);
+    setDistrictDetailCache(null);
+    setStations([]);
+    setSelectedStationId(null);
+    setSpikes(null);
+    setAnomalies(null);
+    setSyndicateGroups(null);
+    setSignals(null);
+    setGatedInfo(null);
+    setAccessRequestStatus("rejected");
+
+    // Activate un-dismissible lockdown overlay
+    setIsRevokedModalOpen(true);
+    addToast(
+      lang === "en" ? "Access Terminated" : "ಪ್ರವೇಶ ರದ್ದುಗೊಳಿಸಲಾಗಿದೆ",
+      lang === "en" ? "Emergency access has been immediately revoked by your supervisor under Section 185 BNSS." : "ಮೇಲ್ವಿಚಾರಕರು ಕಲಂ 185 BNSS ಅಡಿಯಲ್ಲಿ ನಿಮ್ಮ ತುರ್ತು ಪ್ರವೇಶವನ್ನು ತಕ್ಷಣವೇ ರದ್ದುಗೊಳಿಸಿದ್ದಾರೆ.",
+      "Critical"
+    );
+  };
+
+  const handleReturnHome = () => {
+    setIsRevokedModalOpen(false);
+    setActiveEmergencyGrant(null);
+    setDetail(null);
+    setDistrictDetailCache(null);
+    setStations([]);
+    setSelectedStationId(null);
+    setSpikes(null);
+    setAnomalies(null);
+    setSyndicateGroups(null);
+    setSignals(null);
+    setGatedInfo(null);
+    if (homeDistrictId) {
+      handleSelectDistrict(homeDistrictId);
+    } else {
+      setSelectedId(null);
+    }
+  };
+
+  const handleEmergencyAccessSuccess = (requestId: string, districtId: number, expiresAt?: string, retryFn?: () => void) => {
+    setGatedInfo(null);
+    setAccessRequestStatus("idle");
+    setActiveEmergencyGrant({ requestId, districtId, expiresAt });
+    if (retryFn) retryFn();
+
+    stopGrantHeartbeat();
+    grantHeartbeatRef.current = window.setInterval(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/district-access/${requestId}/status`, {
+          headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.status === "revoked") {
+            terminateEmergencySession("Supervisor revoked emergency access grant under Section 185 BNSS.");
+          }
+        } else if (res.status === 403 || res.status === 404) {
+          terminateEmergencySession("Emergency access authorization has expired or was revoked.");
+        }
+      } catch {
+        /* transient network blip -- next tick retries */
+      }
+    }, 3000); // 3-second rapid security heartbeat
+  };
+
   // E.1: written justification collected before a cross-district request is
   // raised (D.8: the server enforces a real minimum length here too, not
   // just this modal).
@@ -230,7 +319,7 @@ export const DistrictDashboardScreen: React.FC = () => {
             stopAccessPoll();
             setAccessRequestStatus("approved");
             setGatedInfo(null);
-            retryFn();
+            handleEmergencyAccessSuccess(d.request_id, gatedInfo.districtId, sd.grant_expires_at, retryFn);
           } else if (sd.status === "rejected") {
             stopAccessPoll();
             setAccessRequestStatus("rejected");
@@ -284,9 +373,10 @@ export const DistrictDashboardScreen: React.FC = () => {
         body: JSON.stringify({ district_id: gatedInfo.districtId, reason: trimmedReason }),
       });
       if (!res.ok) throw new Error("emergency request failed");
+      const d = await res.json();
       setGatedInfo(null);
       setAccessRequestStatus("idle");
-      retryFn();
+      handleEmergencyAccessSuccess(d.request_id, gatedInfo.districtId, d.grant_expires_at, retryFn);
       addToast(
         lang === "en" ? "Emergency Access Granted" : "ತುರ್ತು ಪ್ರವೇಶ ನೀಡಲಾಗಿದೆ",
         lang === "en" ? "This is logged and will be reviewed by a supervisor." : "ಇದನ್ನು ದಾಖಲಿಸಲಾಗಿದೆ ಮತ್ತು ಮೇಲ್ವಿಚಾರಕರು ಪರಿಶೀಲಿಸುತ್ತಾರೆ.",
@@ -395,6 +485,10 @@ export const DistrictDashboardScreen: React.FC = () => {
     setAccessRequestId(null);
     setAccessRequestStatus("idle");
     stopAccessPoll();
+    if (activeEmergencyGrant && activeEmergencyGrant.districtId !== districtId) {
+      stopGrantHeartbeat();
+      setActiveEmergencyGrant(null);
+    }
     setIsLoadingStations(true);
     fetch(`${API_BASE}/api/dashboard/districts/${districtId}/stations`, {
       headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
@@ -450,7 +544,14 @@ export const DistrictDashboardScreen: React.FC = () => {
       if (res.status === 403) {
         const body = await res.json().catch(() => null);
         const info = body?.detail;
+        if (info?.revoked) {
+          terminateEmergencySession("Supervisor revoked emergency access grant under Section 185 BNSS.");
+          return;
+        }
         if (info?.gated) {
+          if (info.home_district_id) {
+            setHomeDistrictId(info.home_district_id);
+          }
           setGatedInfo({ districtId: info.target_district_id ?? districtId, message: info.message || "" });
           return;
         }
@@ -490,7 +591,14 @@ export const DistrictDashboardScreen: React.FC = () => {
       if (res.status === 403) {
         const body = await res.json().catch(() => null);
         const info = body?.detail;
+        if (info?.revoked) {
+          terminateEmergencySession("Supervisor revoked emergency access grant under Section 185 BNSS.");
+          return;
+        }
         if (info?.gated) {
+          if (info.home_district_id) {
+            setHomeDistrictId(info.home_district_id);
+          }
           setGatedInfo({ districtId: info.target_district_id, message: info.message || "" });
           return;
         }
@@ -1407,6 +1515,42 @@ export const DistrictDashboardScreen: React.FC = () => {
           await requestDistrictAccess(districtReasonRetryFn || (() => {}), reason);
         }}
       />
+
+      {/* Section 18: Un-dismissible Immediate Revocation Shield Modal */}
+      {isRevokedModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-stone-900 border-2 border-rose-600/80 rounded-2xl p-6 shadow-2xl space-y-5 text-center animate-fade-in">
+            <div className="w-16 h-16 rounded-full bg-rose-500/10 border border-rose-500/30 mx-auto flex items-center justify-center text-rose-500">
+              <ShieldAlert className="w-8 h-8 animate-pulse" />
+            </div>
+
+            <div className="space-y-2">
+              <h2 className="text-lg font-black text-rose-400 uppercase tracking-wide">
+                {lang === "en" ? "EMERGENCY ACCESS REVOKED" : "ತುರ್ತು ಪ್ರವೇಶವನ್ನು ರದ್ದುಗೊಳಿಸಲಾಗಿದೆ"}
+              </h2>
+              <p className="text-xs text-stone-300 leading-relaxed">
+                {lang === "en"
+                  ? "Your supervisor has reviewed and immediately revoked this out-of-jurisdiction emergency grant under Section 185 BNSS 2023. All sensitive case records and maps have been purged from memory."
+                  : "ಮೇಲ್ವಿಚಾರಕರು ಕಲಂ 185 BNSS ಅಡಿಯಲ್ಲಿ ನಿಮ್ಮ ತುರ್ತು ಪ್ರವೇಶವನ್ನು ತಕ್ಷಣವೇ ರದ್ದುಗೊಳಿಸಿದ್ದಾರೆ. ಎಲ್ಲಾ ಗೌಪ್ಯ ದಾಖಲೆಗಳನ್ನು ತೆರವುಗೊಳಿಸಲಾಗಿದೆ."}
+              </p>
+            </div>
+
+            <div className="p-3 bg-stone-950/60 rounded-xl border border-stone-800 text-[11px] font-mono text-stone-400 text-left">
+              <div><span className="text-stone-500">Statutory Order:</span> BNSS §185 Supervisory Revocation</div>
+              <div><span className="text-stone-500">Action Taken:</span> Immediate Session Termination & Memory Flush</div>
+              <div><span className="text-stone-500">Audit Chain:</span> Logged to Immutable Ledger</div>
+            </div>
+
+            <button
+              onClick={handleReturnHome}
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs uppercase tracking-wider transition-colors cursor-pointer shadow-lg"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              {lang === "en" ? "Return to Home Station" : "ಸ್ವಂತ ಠಾಣೆಗೆ ಹಿಂತಿರುಗಿ"}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

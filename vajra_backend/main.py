@@ -78,6 +78,7 @@ from vajra_core import (
     find_district_access_row,
     create_district_access_request,
     find_active_district_access_request,
+    find_latest_district_access_request,
     has_active_district_access_grant,
     DISTRICT_ACCESS_GRANT_HOURS,
     create_emergency_district_access,
@@ -10269,6 +10270,18 @@ def _require_district_access(request: Request, target_district_id: Any) -> None:
     home_district_id = getattr(request.state, "home_district_id", None)
     if has_active_district_access_grant(badge, home_district_id, target_district_id):
         return
+    latest = find_latest_district_access_request(badge, target_district_id)
+    if latest and latest.get("status") == "revoked":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "gated": True,
+                "revoked": True,
+                "home_district_id": home_district_id,
+                "target_district_id": target_district_id,
+                "message": "Emergency access was revoked by supervisor under Section 185 BNSS.",
+            }
+        )
     raise HTTPException(status_code=403, detail={
         "gated": True, "reason": "inter_district_access_required",
         "home_district_id": home_district_id, "target_district_id": target_district_id,

@@ -1010,6 +1010,31 @@ def find_active_district_access_request(badge: str, target_district_id: Any) -> 
     return None
 
 
+def find_latest_district_access_request(badge: str, target_district_id: Any) -> Optional[Dict[str, Any]]:
+    """The most recent request (pending, approved, revoked, or rejected) for this
+    officer + target district, used to detect supervisor revocation under Section 185 BNSS."""
+    if not catalyst_app or not badge or target_district_id is None:
+        return None
+    try:
+        res = catalyst_app.zql().execute_query(
+            "SELECT ROWID, AlertMessage FROM ProactiveAlerts "
+            f"WHERE AlertType = 'DISTRICT_ACCESS' AND AlertMessage LIKE '*{target_district_id}*' "
+            "ORDER BY ROWID DESC LIMIT 30")
+    except Exception:
+        return None
+    for r in res or []:
+        a = r.get("ProactiveAlerts", {})
+        try:
+            m = json.loads(a.get("AlertMessage") or "{}")
+        except Exception:
+            continue
+        if str(m.get("requester_badge")) != str(badge) or str(m.get("target_district_id")) != str(target_district_id):
+            continue
+        return m
+    return None
+
+
+
 # ---- Emergency "Break-Glass" override (Section 185 BNSS emergency-entry
 # principle applied to the data air-lock): the normal request/approve flow
 # above requires a supervisor to be online. A genuine emergency ("active
