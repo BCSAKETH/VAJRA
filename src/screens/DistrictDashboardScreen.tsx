@@ -24,6 +24,7 @@ import {
 import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2, FolderOpen, ArrowLeft } from "lucide-react";
 import { DistrictSpatialAnalystPanel } from "../components/DistrictSpatialAnalystPanel";
 import { DistrictDemographicPanel } from "../components/DistrictDemographicPanel";
+import { ComparisonDeltaHUD } from "../components/ComparisonDeltaHUD";
 import { DistrictFIRPanel } from "../components/DistrictFIRPanel";
 import { ReasonCollectionModal } from "../components/ReasonCollectionModal";
 
@@ -153,6 +154,11 @@ export const DistrictDashboardScreen: React.FC = () => {
   const [compareMode, setCompareMode] = useState(false);
   const [compareDistrict, setCompareDistrict] = useState<string>("");
   const [sharedViewport, setSharedViewport] = useState<{ center: [number, number]; zoom: number }>({ center: [14.5, 75.7], zoom: 7 });
+  // Finals-part 3.md §25 (L225): real per-panel incident/cluster counts
+  // reported by each DistrictSpatialAnalystPanel via onStatsChange, fed
+  // into ComparisonDeltaHUD above the two maps.
+  const [primaryStats, setPrimaryStats] = useState<{ incidents: number; clusters: number } | null>(null);
+  const [secondaryStats, setSecondaryStats] = useState<{ incidents: number; clusters: number } | null>(null);
   const [stateNews, setStateNews] = useState<{ title: string; source: string; url: string }[]>([]);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
   // Open-Source Signals lane (live news) — kept in its OWN state and rendered
@@ -731,6 +737,16 @@ export const DistrictDashboardScreen: React.FC = () => {
                   ))}
                 </select>
               </div>
+              {(() => {
+                const primaryLabel = selectedId && districtDetailCache ? districtDetailCache.district : (lang === "en" ? "Statewide" : "ರಾಜ್ಯವ್ಯಾಪಿ");
+                return (
+                  <ComparisonDeltaHUD
+                    primary={primaryStats ? { label: primaryLabel, ...primaryStats } : null}
+                    secondary={secondaryStats && compareDistrict ? { label: compareDistrict, ...secondaryStats } : null}
+                    lang={lang}
+                  />
+                );
+              })()}
               <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
                 <div>
                   <p className="text-[10px] font-mono font-bold text-stone-500 uppercase mb-1.5">
@@ -740,6 +756,7 @@ export const DistrictDashboardScreen: React.FC = () => {
                     district={selectedId && districtDetailCache ? districtDetailCache.district : ""}
                     sharedViewport={sharedViewport}
                     onViewportChange={setSharedViewport}
+                    onStatsChange={setPrimaryStats}
                   />
                 </div>
                 <div>
@@ -750,6 +767,7 @@ export const DistrictDashboardScreen: React.FC = () => {
                       district={compareDistrict}
                       sharedViewport={sharedViewport}
                       onViewportChange={setSharedViewport}
+                      onStatsChange={setSecondaryStats}
                     />
                   )}
                 </div>

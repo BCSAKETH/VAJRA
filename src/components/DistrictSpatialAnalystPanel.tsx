@@ -187,9 +187,13 @@ interface DistrictSpatialAnalystPanelProps {
   // completely unchanged).
   sharedViewport?: { center: [number, number]; zoom: number };
   onViewportChange?: (v: { center: [number, number]; zoom: number }) => void;
+  // Finals-part 3.md §25 (L225): lets a parent in Compare mode read this
+  // panel's own incident/cluster counts to drive a ComparisonDeltaHUD --
+  // undefined/omitted means "standalone" (no behavior change).
+  onStatsChange?: (stats: { incidents: number; clusters: number }) => void;
 }
 
-export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelProps> = ({ district, sharedViewport, onViewportChange }) => {
+export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelProps> = ({ district, sharedViewport, onViewportChange, onStatsChange }) => {
   const [points, setPoints] = useState<HotspotPoint[]>([]);
   const [hexbins, setHexbins] = useState<HexBin[]>([]);
   const [viewMode, setViewMode] = useState<"heat" | "hex">("heat");
@@ -233,8 +237,20 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
         });
         if (!response.ok) throw new Error("Geospatial engine unreachable.");
         const data = await response.json();
-        setPoints(data?.hotspots || []);
+        const fetchedPoints: HotspotPoint[] = data?.hotspots || [];
+        setPoints(fetchedPoints);
         setHexbins(data?.hexbins || []);
+        if (onStatsChange) {
+          // Each HotspotPoint IS a cluster centroid (F.15's own comment:
+          // `total_case_count`/`point_count` is how many real incidents
+          // that cluster represents) -- not a flat list of individual
+          // incidents, so clusters = points.length, incidents = the sum of
+          // each cluster's own case count.
+          const incidentTotal = fetchedPoints.reduce(
+            (sum, p) => sum + (p.total_case_count ?? p.point_count ?? 0), 0
+          );
+          onStatsChange({ incidents: incidentTotal, clusters: fetchedPoints.length });
+        }
         const months: string[] = data?.available_months || [];
         setHotspotsByMonth(data?.hotspots_by_month || {});
         setAvailableMonths(months);
