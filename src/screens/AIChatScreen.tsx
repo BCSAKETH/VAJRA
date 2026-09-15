@@ -10,6 +10,7 @@ import { CaseChipStrip } from "../components/CaseChipStrip";
 import { TaskChecklist } from "../components/TaskChecklist";
 import { CaseDiary } from "../components/CaseDiary";
 import { ReasonCollectionModal } from "../components/ReasonCollectionModal";
+import { InvestigationBrowser } from "../components/InvestigationBrowser";
 import { Download, Sparkles, X, Users, FileText, Globe, Check, MoreVertical, ListChecks, BookText, Pin, ChevronDown, ChevronUp } from "lucide-react";
 
 // ExpandedOverlay pulls in Leaflet + Recharts directly (~250KB+ of the main
@@ -1280,6 +1281,8 @@ export const AIChatScreen: React.FC = () => {
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportTargetLang, setExportTargetLang] = useState<"en" | "kn">("en");
   const [activeApprovalId, setActiveApprovalId] = useState<string | null>(null);
+  // Section 19: sandboxed in-app investigation browser overlay.
+  const [showBrowser, setShowBrowser] = useState(false);
 
   // Export Transcript to PDF -- with the AI pre-screen + live supervisor-approval
   // flow. Supports explicit language selection (English / Kannada) and embeds
@@ -1602,6 +1605,13 @@ export const AIChatScreen: React.FC = () => {
             <span>{isExportingPdf ? (lang === "en" ? "Exporting…" : "ರಫ್ತು ಮಾಡಲಾಗುತ್ತಿದೆ…") : t.exportPdf}</span>
           </button>
         )}
+        <button
+          onClick={() => setShowBrowser(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-white transition-all shadow-md cursor-pointer"
+        >
+          <Globe className="w-3.5 h-3.5" />
+          <span>{lang === "en" ? "Browse with VAJRA" : "VAJRA ಬ್ರೌಸ್"}</span>
+        </button>
       </div>
 
       {/* §9.4 Case Board (Investigation, full panel) / Chip Strip (regular
@@ -1956,6 +1966,19 @@ export const AIChatScreen: React.FC = () => {
         onClose={() => setShowReasonModal(false)}
         onSubmit={handleReasonSubmit}
       />
+
+      {/* Section 19: Sandboxed Investigation Browser overlay */}
+      {showBrowser && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-fade-in">
+          <div className="w-full max-w-4xl h-[85vh]">
+            <InvestigationBrowser
+              isOpen={showBrowser}
+              onClose={() => setShowBrowser(false)}
+              onSendToChat={(text) => { setShowBrowser(false); handleSend(text); }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Language Selection Modal for Official PDF Dossier Export */}
       {showExportModal && (

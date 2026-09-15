@@ -38,6 +38,9 @@ import hashlib
 import logging
 import random
 import uuid
+import socket
+import ipaddress
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
@@ -9845,6 +9848,105 @@ async def get_export_transcript(request_id: str, request: Request = None,
             logger.warning(f"get_export_transcript: Stratus fetch failed for {stratus_id}: {e}")
     fallback = meta.get("transcript_inline_fallback")
     return fallback if isinstance(fallback, list) else []
+
+
+# ---- Sandboxed Investigation Browser (Section 19, SmartBrowz proxy) ----
+# A prior attempt at this exact feature took the whole AppSail process down
+# with a startup 503 ("Execution failed. Please check the startup command or
+# port"). Root-caused (not guessed) by reading the actual blueprint that
+# produced it: it called `smartbrowz_screenshot()` and
+# `smartbrowz_search_and_extract(url, "summary", "en", False)` -- NEITHER
+# exists in catalyst_smartbrowz.py. The real functions are
+# `smartbrowz_screenshot_bytes(url, timeout_ms)` and
+# `smartbrowz_deep_dive_page(url, extract_intent, max_chars)`, both already
+# used successfully in production today (smartbrowz_lookup_organization
+# calls the latter). This rebuild uses ONLY those real functions, and --
+# matching every other catalyst_smartbrowz caller in this file -- imports
+# them LAZILY inside the request handler, never at module top level, so a
+# bad import can only ever fail one request (a normal 502/500), never crash
+# the process at startup the way a broken top-level import would.
+def is_safe_public_url(url: str) -> bool:
+    """SSRF guard: only a real, publicly-routable http(s) URL may be fetched
+    server-side. Resolves DNS and rejects loopback/private/link-local/
+    reserved/multicast ranges so an officer can never use this to probe the
+    KSP intranet or a cloud metadata endpoint (169.254.169.254 etc.)."""
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        hostname = parsed.hostname
+        if not hostname or hostname.lower() in ("localhost", "metadata.google.internal"):
+            return False
+        ip_obj = ipaddress.ip_address(socket.gethostbyname(hostname))
+        if (ip_obj.is_loopback or ip_obj.is_private or ip_obj.is_link_local
+                or ip_obj.is_reserved or ip_obj.is_multicast or ip_obj.is_unspecified):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+@app.post("/api/investigation/browser/navigate")
+async def investigation_browser_navigate(payload: Dict[str, Any] = Body(default={}),
+                                         request: Request = None,
+                                         location_context: str = Depends(security_firewall)):
+    """Sandboxed navigation for the in-app Investigation Browser: fetches the
+    target URL server-side (the officer's own IP/fingerprint never reaches
+    the target site) via Catalyst SmartBrowz, returning a real rendered
+    screenshot, extracted page text, and a SHA-256 evidence seal for chain-
+    of-custody. Gated behind the same security_firewall auth as every other
+    officer-facing endpoint; SSRF-guarded so it can never be pointed at the
+    KSP intranet or a cloud metadata IP."""
+    url = (payload.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Target URL is required.")
+    if not re.match(r"^https?://", url, re.IGNORECASE):
+        url = f"https://{url}"
+    if not is_safe_public_url(url):
+        raise HTTPException(status_code=403,
+                            detail="Security Firewall: navigation to private, local, or non-public network addresses is prohibited.")
+
+    from catalyst_smartbrowz import smartbrowz_screenshot_bytes, smartbrowz_deep_dive_page
+    try:
+        extracted = await asyncio.wait_for(
+            run_in_threadpool(smartbrowz_deep_dive_page, url, "general", 6000), timeout=20)
+    except Exception as e:
+        logger.warning(f"investigation_browser_navigate: page extraction failed for {url}: {e}")
+        extracted = {"ok": False, "title": "", "text": "", "leadership": [], "contacts": []}
+
+    screenshot_data_url = None
+    try:
+        shot = await asyncio.wait_for(
+            run_in_threadpool(smartbrowz_screenshot_bytes, url, 20000), timeout=22)
+        if shot:
+            import base64
+            screenshot_data_url = "data:image/png;base64," + base64.b64encode(shot).decode("ascii")
+    except Exception as e:
+        logger.warning(f"investigation_browser_navigate: screenshot failed for {url}: {e}")
+
+    if not extracted.get("ok") and not screenshot_data_url:
+        raise HTTPException(status_code=502, detail="Could not reach or render the target page.")
+
+    badge = getattr(request.state, "kgid", None) or "UNKNOWN"
+    evidence_seal = hashlib.sha256(f"{url}|{badge}|{datetime.utcnow().isoformat()}".encode("utf-8")).hexdigest()
+    try:
+        client_ip = request.headers.get("x-forwarded-for", "").split(",")[0].strip() or (request.client.host if request.client else "")
+        from session_manager import record_auth_audit_log
+        record_auth_audit_log(badge, "INVESTIGATION_BROWSER_NAVIGATE",
+                              f"Sandboxed browser navigation to {url} (evidence seal {evidence_seal[:16]}...)", client_ip)
+    except Exception as e:
+        logger.warning(f"investigation_browser_navigate: audit log skipped: {e}")
+
+    return {
+        "status": "success",
+        "url": url,
+        "page_title": extracted.get("title") or url,
+        "extracted_text": (extracted.get("text") or "")[:6000],
+        "leadership": extracted.get("leadership") or [],
+        "contacts": extracted.get("contacts") or [],
+        "screenshot_data_url": screenshot_data_url,
+        "sha256_evidence_seal": evidence_seal,
+    }
 
 
 # --- PROFILE IMMUTABILITY: an officer's identity fields (name/station/rank/
