@@ -50,6 +50,11 @@ from vajra_core import catalyst_app, is_pocso_sensitive, is_supervisor_badge, ha
 
 logger = logging.getLogger(__name__)
 
+# §2.3: module-scope cache for _is_complex_query_semantic's exemplar
+# embeddings -- computed once on first use, not per VajraAgentLoop call
+# (that singleton is process-wide, per main.py's own construction).
+_complex_exemplar_embeddings = None
+
 
 class CognitiveBrainMixin:
     """Mixed into VajraAgentLoop. Every method assumes the full set of
@@ -531,6 +536,28 @@ class CognitiveBrainMixin:
         "cluster", "associate", "syndicate", "ranking", "station", "rising", "fastest",
     )
 
+    # Cognitive Brain plan §2.3 (NEXT): a handful of known-complex query
+    # shapes, embedded once and cached, so a NOVEL paraphrase of the same
+    # underlying pattern (multi-facet ask, bundled write action, compound
+    # comparison) is still caught without needing a new substring added to
+    # _COMPLEX_STRONG_CUES by hand every time one is missed live -- exactly
+    # the failure mode that list's own comments document happening twice
+    # already (the "rising fastest" miss, the "add the tasks" miss). Reuses
+    # the SAME SentenceTransformer already loaded in-process for semantic
+    # memory (vajra_core.VajraSemanticMemory) -- no new model, no new
+    # dependency, ~10 lines per the plan's own feasibility note.
+    _COMPLEX_QUERY_EXEMPLARS = (
+        "show me the suspect network and also their risk score",
+        "compare crime trends between two districts this year",
+        "tell me what to do to solve this case and add the tasks and update the case diary",
+        "which crime type is rising fastest in this district and what stations are seeing the most cases",
+        "find the financial network of this suspect as well as their offender history",
+        "what is the modus operandi here and who else is connected to them",
+        "give me a full breakdown for each station in this district",
+        "summarize this case and suggest applicable sections and find similar cases",
+    )
+    _COMPLEX_SIMILARITY_THRESHOLD = 0.62
+
     def _is_complex_query(self, query: str) -> bool:
         """Auto-router heuristic: a Standard query is 'complex' (route to the AI
         Reasoning compiler) when it has an explicit multi-step cue, OR touches 2+
@@ -540,7 +567,45 @@ class CognitiveBrainMixin:
         if any(c in q for c in self._COMPLEX_STRONG_CUES):
             return True
         hits = sum(1 for k in self._CAP_KEYWORDS if k in q)
-        return hits >= 2 and (" and " in q or ", " in q)
+        if hits >= 2 and (" and " in q or ", " in q):
+            return True
+        # §2.3: cheap substring/keyword checks above miss a genuinely novel
+        # phrasing every so often (confirmed live, twice) -- fall back to
+        # semantic similarity against known-complex exemplars before
+        # settling on "simple". Fails closed to the ORIGINAL behavior (False)
+        # on any error, so a broken embedder never blocks the fast path.
+        return self._is_complex_query_semantic(query)
+
+    def _is_complex_query_semantic(self, query: str) -> bool:
+        """§2.3 NEXT: embedding fallback for _is_complex_query. Lazily
+        imports and reuses agent_loop.py's module-level `semantic_memory`
+        singleton (same SentenceTransformer instance the MO/similar-case
+        matching already uses) rather than loading a second model -- lazy
+        import to avoid a circular import with agent_loop.py, matching this
+        codebase's established convention for every other optional
+        cross-module dependency. Exemplar embeddings are computed once and
+        cached at module scope (not per-instance -- VajraAgentLoop is a
+        process-wide singleton per main.py's own construction), so this
+        costs one embedding call (the query itself) on the rare turns that
+        reach it, not a fresh encode of all exemplars every time."""
+        if not query:
+            return False
+        try:
+            from agent_loop import semantic_memory
+            if not getattr(semantic_memory, "use_transformer", False):
+                return False  # TF-IDF fallback mode -- no shared embedding space to compare in
+            import numpy as np
+            global _complex_exemplar_embeddings
+            if _complex_exemplar_embeddings is None:
+                _complex_exemplar_embeddings = semantic_memory.transformer.encode(
+                    list(self._COMPLEX_QUERY_EXEMPLARS), show_progress_bar=False)
+            q_emb = semantic_memory.transformer.encode([query], show_progress_bar=False)
+            sims = np.dot(_complex_exemplar_embeddings, q_emb.T).squeeze()
+            best = float(np.max(sims)) if getattr(sims, "size", 1) else float(sims)
+            return best >= self._COMPLEX_SIMILARITY_THRESHOLD
+        except Exception as e:
+            logger.warning(f"_is_complex_query_semantic check failed (non-fatal, defaulting to simple): {e}")
+            return False
 
     @staticmethod
     def _resolve_plan_ref(ref: str, results: Dict[str, Any]) -> Any:
@@ -958,6 +1023,41 @@ class CognitiveBrainMixin:
                         lines.append(f"\n**Devil's Advocate -- counter-evidence to check before relying on the "
                                      f"leading theory:** {hyp['devils_advocate']}")
                     text_out += "\n".join(lines)
+
+                # §3.3 Legal/Prosecutor Brain: a SEPARATE, distinct critique
+                # from the investigative hypotheses above -- only when the
+                # officer's own phrasing is chargesheet/prosecution-framed
+                # ("can we charge", "is this enough evidence"), never by
+                # default, so this never fires on an ordinary investigate
+                # -this-case Dossier request.
+                if self._is_prosecution_framed_query(query):
+                    critique = self._generate_prosecution_sufficiency_critique(query, combined)
+                    if critique and critique.get("sufficiency"):
+                        data_payload["prosecution_critique"] = critique
+                        _suff_label = {"sufficient": "LIKELY SUFFICIENT", "borderline": "BORDERLINE",
+                                       "insufficient": "LIKELY INSUFFICIENT"}.get(
+                            str(critique.get("sufficiency")).lower(), str(critique.get("sufficiency")).upper())
+                        _lines = [f"\n\n---\n**Legal/Prosecutor Review -- Chargesheet Sufficiency: {_suff_label}**"]
+                        if critique.get("assessment"):
+                            _lines.append(critique["assessment"])
+                        if critique.get("key_gap"):
+                            _lines.append(f"**Key gap to resolve:** {critique['key_gap']}")
+                        text_out += "\n".join(_lines)
+
+        # §3.6 Standing Red-Team Brain: the devil's-advocate HALF only (no
+        # full hypothesis list -- keeps the Standard-mode latency budget
+        # intact), triggered narrowly (explicit arrest/charge question, or a
+        # risk score close enough to a decision boundary that a second look
+        # is genuinely warranted). Deliberately OUTSIDE the len(panels)==1
+        # vs. multi-panel split above -- a single-tool "what's this
+        # suspect's risk score" lookup (the single most common shape this
+        # trigger needs to catch) is exactly the len(panels)==1 case, so
+        # this must run for both, not just multi-panel compiled answers.
+        if not deep and combined and not _is_narrow_followup and self._standard_mode_redteam_trigger(query, data_payload):
+            _counter = self._generate_devils_advocate_only(query, combined)
+            if _counter:
+                data_payload["red_team_counter_check"] = _counter
+                text_out += f"\n\n**Before you act -- verify:** {_counter}"
         citations.append({"type": "AI Execution Plan", "id": (intent[:60] or "plan"),
                           "details": (f"Compiled to {len(panels)} grounded step(s): "
                                       f"{', '.join(p['panel_key'] for p in panels)}. "
@@ -1016,6 +1116,135 @@ class CognitiveBrainMixin:
                 if isinstance(h, dict) and h.get("theory") and float(h.get("confidence") or 0) >= 0.30]
         hyps.sort(key=lambda h: float(h.get("confidence") or 0), reverse=True)
         return {"hypotheses": hyps[:3], "devils_advocate": plan.get("devils_advocate") if hyps else None}
+
+    # Cognitive Brain plan §3.3: chargesheet/prosecution query shape --
+    # a distinct trigger from the general Dossier hypothesis pass, only
+    # fired when the officer's own phrasing is asking about SUFFICIENCY
+    # for prosecution, not just "investigate this."
+    _PROSECUTION_FRAMED_CUES = (
+        "can we charge", "can we prosecute", "enough evidence", "sufficient evidence",
+        "is this enough", "chargesheet ready", "ready for chargesheet", "case for prosecution",
+        "will this hold up", "hold up in court", "strong enough case", "enough to convict",
+        "enough to arrest",
+    )
+
+    def _is_prosecution_framed_query(self, query: str) -> bool:
+        q = (query or "").lower()
+        return any(c in q for c in self._PROSECUTION_FRAMED_CUES)
+
+    def _generate_prosecution_sufficiency_critique(self, query: str, combined_findings: List[str]) -> Optional[Dict[str, Any]]:
+        """
+        §3.3 Legal/Prosecutor Brain: NOT a new trained model -- a second,
+        distinct prompt/persona over the same GLM-4.7-Flash, reusing the
+        EXACT scaffolding already proven safe in
+        _generate_hypotheses_and_devils_advocate (bounded single call,
+        reasons only over already-grounded findings, "return null rather
+        than invent" discipline). Only triggered when the officer's own
+        phrasing is chargesheet/prosecution-framed (see
+        _is_prosecution_framed_query) -- repurposes the devil's-advocate
+        habit of mind into a chargesheet-sufficiency critique: does the
+        evidence actually support the sections already cited in these
+        findings, and is there a visible chain-of-custody gap? Returns None
+        on any failure -- enrichment only, never a hard dependency.
+        """
+        findings_text = "\n".join(f"- {f}" for f in combined_findings[:6])[:3000]
+        sys_prompt = (
+            "You are a police prosecution-review officer assessing whether ALREADY-GATHERED, grounded "
+            "findings for one case/suspect (below) are sufficient to support a chargesheet. You do NOT have "
+            "access to any other data and must NOT invent facts, sections, or evidence not implied by these "
+            "findings.\n\n"
+            f"GROUNDED FINDINGS:\n{findings_text}\n\n"
+            "Task: (1) State plainly whether these findings, AS THEY STAND, look sufficient, borderline, or "
+            "insufficient to support the legal section(s) already cited among them (if any section is cited) -- "
+            "be honest, most partial investigations are borderline. (2) Name ONE concrete gap that would "
+            "strengthen or weaken the case if resolved: a missing corroborating statement, an evidence "
+            "chain-of-custody step not yet visible in these findings, a forensic report not yet on file, or "
+            "similar -- only if genuinely implied by what's missing from the findings above, never invented.\n\n"
+            'Output ONLY one JSON object: {"sufficiency": "sufficient|borderline|insufficient", '
+            '"assessment": "one to two sentences", "key_gap": "one concrete gap, or null if none is visible"}\n'
+            "If the findings are too thin to assess sufficiency at all (e.g. no legal section or charge is even "
+            'named), return {"sufficiency": null, "assessment": null, "key_gap": null}.'
+        )
+        try:
+            res = self.llm.chat([{"role": "system", "content": sys_prompt},
+                                 {"role": "user", "content": query}], None, use_agent_system_prompt=False, max_tokens=500)
+            if res.get("error"):
+                return None
+            raw = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+            plan = json.loads(self._extract_json(raw))
+        except Exception as e:
+            logger.warning(f"prosecution sufficiency critique failed (non-fatal): {e}")
+            return None
+        if not isinstance(plan, dict) or not plan.get("sufficiency"):
+            return None
+        return {
+            "sufficiency": plan.get("sufficiency"),
+            "assessment": plan.get("assessment"),
+            "key_gap": plan.get("key_gap"),
+        }
+
+    # Cognitive Brain plan §3.6: Standing Red-Team Brain -- elevates the
+    # devil's-advocate half of the hypothesis mechanism (today: Dossier-only)
+    # into an always-on pass for STANDARD-mode answers that cross a narrow,
+    # explicit stakes threshold, so a consequential answer never goes out
+    # completely unchallenged just because the officer asked a "simple"
+    # question. Kept deliberately narrow (not every answer) so it never adds
+    # latency to routine lookups -- same reasoning as the trigger list below.
+    _ARREST_CHARGE_QUERY_CUES = (
+        "should we arrest", "should i arrest", "should we charge", "should i charge",
+        "can we arrest", "recommend arrest", "arrest recommendation",
+    )
+
+    def _standard_mode_redteam_trigger(self, query: str, data_payload: Dict[str, Any]) -> bool:
+        """True when a Standard-mode (non-Dossier) answer is consequential
+        enough to deserve an always-on devil's-advocate pass: an explicit
+        arrest/charge question, or a risk score landing within +/-10 of
+        either decision boundary _assemble_master_dossier already uses
+        (HIGH >= 65, MODERATE >= 35) -- i.e. close enough to the line that a
+        second look before the officer acts on it is genuinely warranted."""
+        if self._is_prosecution_framed_query(query) or any(c in (query or "").lower() for c in self._ARREST_CHARGE_QUERY_CUES):
+            return True
+        risk_sc = data_payload.get("risk_score")
+        if risk_sc is None:
+            return False
+        try:
+            risk_sc = float(risk_sc)
+        except (TypeError, ValueError):
+            return False
+        return (55 <= risk_sc <= 75) or (25 <= risk_sc <= 45)
+
+    def _generate_devils_advocate_only(self, query: str, combined_findings: List[str]) -> Optional[str]:
+        """§3.6: a leaner version of _generate_hypotheses_and_devils_advocate
+        for the Standard-mode latency budget (~3s path) -- skips the 2-3
+        hypothesis list entirely and asks for ONLY the single-sentence
+        counter-check, with a hard 6s bound via its own ThreadPoolExecutor
+        (matching _review_task_completion's exact pattern) so a slow LLM
+        call never holds up an otherwise-fast Standard answer. Returns None
+        on any failure/timeout -- advisory only, never blocks the answer."""
+        findings_text = "\n".join(f"- {f}" for f in combined_findings[:6])[:2000]
+        prompt = (
+            "A police officer is about to act on this finding for one case/suspect. In ONE short sentence, "
+            "name the single most important counter-check they should verify first before relying on it "
+            "(a gap, an alternative explanation, missing corroboration) -- ONLY if genuinely implied by the "
+            "finding below, never invented. If there is truly nothing to flag, respond with exactly: NONE.\n\n"
+            f"FINDING:\n{findings_text}\n\nQUESTION ASKED: {query}"
+        )
+        try:
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                res = ex.submit(
+                    self.llm.chat, [{"role": "user", "content": prompt}],
+                    use_agent_system_prompt=False, max_tokens=150,
+                ).result(timeout=6)
+            if res.get("error"):
+                return None
+            content = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+            text = self._strip_think(content).strip()
+            if not text or text.upper().startswith("NONE"):
+                return None
+            return text
+        except Exception as e:
+            logger.warning(f"Standing Red-Team devil's-advocate check failed/timed out (non-fatal): {e}")
+            return None
 
     def _assemble_master_dossier(self, query: str, intent: str, panels: List[Dict[str, Any]], combined: List[str], data_payload: Dict[str, Any]) -> str:
         """
@@ -1271,6 +1500,66 @@ class CognitiveBrainMixin:
                     data = dict(data)
                     data["grounding_guardrail_caught"] = sorted(fabricated)
                     result["data"] = data
+
+            # --- Cognitive Brain plan §2.1: generalize the grounding net
+            # beyond case numbers. Same "cited vs. mentioned" discipline as
+            # Item 24 above, extended to any other structurally-identifiable
+            # entity a narrative might state as fact: phone numbers, vehicle
+            # plates, IFSC codes, Aadhaar-shaped numbers. Rather than
+            # hand-listing every tool's own data field names (which would
+            # need updating every time a new tool surfaces one of these),
+            # the "grounded" set is derived structurally: every matching
+            # pattern found anywhere in this answer's own raw `data`
+            # payload (the tool outputs that actually produced this answer)
+            # is trusted; anything the narrative states that ISN'T anywhere
+            # in that payload is flagged UNVERIFIED. Only runs when `data`
+            # itself contains at least one real value of that entity type --
+            # an answer whose tools never surface phone numbers at all can
+            # never false-positive here, same guard Item 24 uses for case
+            # numbers. Pure regex/set comparison, no LLM, no extra DB round
+            # trip -- fails open like everything else in this function.
+            _ENTITY_PATTERNS = (
+                ("phone number", re.compile(r"\b[6-9]\d{9}\b")),
+                ("vehicle plate", re.compile(r"\b[A-Z]{2}[ -]?\d{1,2}[ -]?[A-Z]{1,3}[ -]?\d{4}\b")),
+                ("IFSC code", re.compile(r"\b[A-Z]{4}0[A-Z0-9]{6}\b")),
+                ("Aadhaar number", re.compile(r"\b\d{4}[ -]?\d{4}[ -]?\d{4}\b")),
+            )
+            try:
+                _data_blob = json.dumps(data, default=str)
+            except Exception:
+                _data_blob = str(data)
+            _norm = lambda s: re.sub(r"[ -]", "", s).upper()
+            _all_caught: Dict[str, List[str]] = {}
+            for _label, _pattern in _ENTITY_PATTERNS:
+                _grounded = {_norm(m) for m in _pattern.findall(_data_blob)}
+                if not _grounded:
+                    continue  # this answer never surfaced this entity type -- nothing to cross-check
+                _fabricated = []
+                for _raw in _pattern.findall(text):
+                    if _norm(_raw) not in _grounded and _raw not in _fabricated:
+                        _fabricated.append(_raw)
+                if _fabricated:
+                    _all_caught[_label] = _fabricated
+                    for _fake in _fabricated:
+                        text = text.replace(_fake, f"{_fake} [UNVERIFIED — not among this answer's grounded records]")
+            if _all_caught:
+                logger.warning(
+                    f"_grounding_safety_net: narrative mentions {_all_caught} not present among this "
+                    f"answer's own tool-produced data -- flagging as unverified rather than letting it stand as fact."
+                )
+                try:
+                    self._write_audit_log(
+                        employee_id, "Grounding Guardrail Catch", ", ".join(_all_caught.keys()),
+                        f"The narrative named entities not present in this answer's own retrieved "
+                        f"records: {_all_caught} -- flagged as unverified before reaching the officer.",
+                        "Flagged at final gate", session_id)
+                except Exception:
+                    pass
+                result = dict(result)
+                result["text"] = text
+                data = dict(data)
+                data["grounding_guardrail_caught_entities"] = _all_caught
+                result["data"] = data
 
             case_no = data.get("case_no")
             if not case_no:
