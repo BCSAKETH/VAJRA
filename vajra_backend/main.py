@@ -8229,6 +8229,28 @@ def _screen_export_sensitivity(transcript: List[Dict[str, Any]]) -> Tuple[bool, 
     phones = set(re.findall(r"\b[6-9]\d{9}\b", blob))
     if len(phones) >= 5:
         reasons.append(f"bulk personal data ({len(phones)} phone numbers)")
+
+    # Broadened per direct user request (2026-09-15): the original 6 keyword
+    # categories above missed the realistic common case -- an export that
+    # discusses a SPECIFIC real case, vehicle, financial trail, or a named
+    # subject's computed risk/conviction assessment is inherently about a
+    # real person or case file, not a generic statistical query, and belongs
+    # under the same supervisor hold. Deliberately structural/regex-anchored
+    # (an exact case-number, plate, or IFSC shape) rather than loose keywords
+    # like "accused"/"suspect", which would match nearly every VAJRA
+    # conversation and collapse this back into "gate everything" -- the
+    # broader design goal (risk-proportionate, not blanket) stays intact.
+    if re.search(r"\bcr-\d{4}-\d{3,6}\b", blob, re.IGNORECASE):
+        reasons.append("specific case/FIR reference")
+    if re.search(r"\b[a-z]{2}-?\d{2}-?[a-z]{1,2}-?\d{3,4}\b", blob, re.IGNORECASE):
+        reasons.append("vehicle registration identifier")
+    if re.search(r"\b[a-z]{4}0[a-z0-9]{6}\b", blob, re.IGNORECASE):
+        reasons.append("bank IFSC / financial identifier")
+    if any(t in blob for t in ("risk_score", "conviction risk", "shap_factors", "chargesheet detail")):
+        reasons.append("named-subject risk/conviction assessment")
+
+    seen = set()
+    reasons = [r for r in reasons if not (r in seen or seen.add(r))]
     return (len(reasons) > 0), reasons
 
 

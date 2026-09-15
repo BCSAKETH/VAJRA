@@ -2559,7 +2559,44 @@ class VajraAgentLoop(CognitiveBrainMixin):
             return current_query
 
         cq_lower = current_query.lower().strip()
-        
+
+        # Part H.0: resume a diary/task write action the assistant just claimed
+        # it couldn't perform. A short confirmation like "now try" carries none
+        # of the entity/property cues below, so without this branch it falls
+        # through unchanged and never reaches the planner a second time --
+        # confirmed live (nifty-marinating-blossom.md, Part H.0). Only fires
+        # when BOTH a confirm-cue AND the exact prior-refusal phrasing match,
+        # so an ordinary "now try" after a normal informational answer is
+        # untouched.
+        _confirm_cues = ("now try", "try now", "try again", "do it", "add it", "add them",
+                          "add those", "go ahead", "please add", "please do", "yes add", "yes please")
+        if any(cue in cq_lower for cue in _confirm_cues):
+            _hist = history[:-1]
+            _refusal_phrases = (
+                "i can't push that to the system", "i cannot push that to the system",
+                "i can't add that to the system", "i cannot add that to the system",
+                "i can't add this to the system", "i cannot add this to the system",
+                "copy-paste for diary entry", "copy-paste for task entry",
+            )
+            _last_assistant_idx = None
+            for i in range(len(_hist) - 1, -1, -1):
+                if _hist[i].get("role") == "assistant" and _hist[i].get("content", "").strip():
+                    _last_assistant_idx = i
+                    break
+            if _last_assistant_idx is not None:
+                _last_assistant = _hist[_last_assistant_idx].get("content", "").lower()
+                if any(p in _last_assistant for p in _refusal_phrases):
+                    _original_request = ""
+                    for i in range(_last_assistant_idx - 1, -1, -1):
+                        _h = _hist[i]
+                        if _h.get("role") == "user" and _h.get("content", "").strip() and not _h.get("content", "").startswith("Tool '"):
+                            _original_request = _h.get("content", "").strip()
+                            break
+                    if _original_request:
+                        return (f"{_original_request} -- yes, actually call add_case_diary_entry and/or "
+                                 f"add_investigation_task now using the content you already drafted above; "
+                                 f"do not just describe it again.")
+
         # Check for pronoun / correction / follow-up cues
         cues = ("that", "it", "they", "this", "its", "their", "them", "wrong", "accurate", "again", "earlier", 
                 "same", "what about", "who is he", "who is she", "tell me more", "what else")
