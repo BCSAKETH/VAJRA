@@ -1,3 +1,18 @@
+> **STATUS (2026-09-15): ALL THREE FEATURES ALREADY BUILT.** This plan was
+> "awaiting approval to build" when written (2026-09-07); a later session
+> (marker `C.6`/`C.7` in the code) shipped all of it before this session
+> started. Confirmed by reading the live code, not assumed: Feature 1
+> (day-of-week + real eps/min_samples) is live in `agent_loop.py`'s
+> `query_hotspots` handler and `main.py`'s `/api/cases/spatial-hotspots`;
+> Feature 2 (H3 hex grid) is live via `_compute_hexbins` (`h3` is vendored)
+> and rendered in `src/components/DistrictSpatialAnalystPanel.tsx` (Heat/Hex
+> toggle, EPS slider, day-of-week button row, hexbin polygons); Feature 3
+> (2-signal weighted Louvain syndicate graph with honesty disclosure) is
+> live in `vajra_core.py::_compute_syndicate_clusters`. Nothing left to do
+> here -- kept for historical record, not a live build queue.
+>
+> ---
+
 # Build Plan: Day-of-Week Time Filter, H3 Hex Grid, Syndicate Radar (Louvain)
 
 > Captured 2026-09-07, post-deadline. Full codebase research done first (two Explore
