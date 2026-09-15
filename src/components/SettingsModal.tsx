@@ -1,5 +1,4 @@
 import React, { useEffect, useRef } from "react";
-import { X } from "lucide-react";
 import { SettingsScreen } from "../screens/SettingsScreen";
 
 /**
@@ -111,15 +110,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
         aria-label="Settings"
         className="relative z-[105] flex flex-col w-full h-full sm:h-[85vh] sm:max-h-[720px] md:h-[640px] max-w-none sm:max-w-4xl bg-[#181614] border border-stone-800 sm:rounded-xl shadow-2xl overflow-hidden"
       >
-        <button
-          onClick={onClose}
-          aria-label="Close settings"
-          className="absolute top-3 right-3 z-10 p-1.5 rounded-lg bg-stone-900/85 border border-stone-800 text-stone-400 hover:text-white hover:border-stone-600 transition-colors cursor-pointer"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        {/* §32: the close button now lives INSIDE SettingsScreen's own
+            per-tab header (matching the source document's exact layout:
+            X sits next to the active tab's title, not floating over the
+            whole dialog) -- onClose passed straight through instead of a
+            second, redundant floating button here. */}
         <div className="flex-1 min-h-0">
-          <SettingsScreen />
+          <SettingsScreen onClose={onClose} />
         </div>
       </div>
     </div>

@@ -1,8 +1,20 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useMemo } from "react";
 import { useApp, TranscriptTextSize, TranscriptWidth, TtsSpeed, TtsStyle } from "../AppContext";
 import { API_BASE } from "../config";
-import { Settings, ShieldCheck, Database, Languages, Clock, User, IdCard, MapPin, Lock, Pencil, X, Hourglass, Mail, KeyRound, Maximize2, Type, Volume2, Play, Square, CheckCircle2, Loader2 } from "lucide-react";
+import { Settings, ShieldCheck, Database, Languages, Clock, User, IdCard, MapPin, Lock, Pencil, X, Hourglass, Mail, KeyRound, Maximize2, Type, Volume2, Play, Square, CheckCircle2, Loader2, Search, Palette, Info } from "lucide-react";
 import { ChangePasswordModal } from "../components/ChangePasswordModal";
+import { ProportionalWidthWireframe } from "../components/ProportionalWidthWireframe";
+
+type SettingsTab = "account" | "appearance" | "voice" | "about";
+
+interface SettingsScreenProps {
+  // Finals-part 3.md §32: optional so SettingsScreen still works if ever
+  // rendered outside SettingsModal (defensive, not currently done anywhere
+  // else) -- when provided, the new per-tab header renders a real close
+  // button matching the doc's exact layout instead of SettingsModal owning
+  // a separate floating one.
+  onClose?: () => void;
+}
 
 interface OfficerProfile {
   kgid: string;
@@ -19,7 +31,7 @@ interface OfficerProfile {
 
 interface RefOption { id: number | string; name: string }
 
-export const SettingsScreen: React.FC = () => {
+export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
   const {
     t,
     lang,
@@ -148,6 +160,11 @@ export const SettingsScreen: React.FC = () => {
     ],
   };
 
+
+  // §32: left-nav + single-category-at-a-time layout (matching the source
+  // document exactly, not the prior always-show-everything 2-column page).
+  const [activeTab, setActiveTab] = useState<SettingsTab>("account");
+  const [searchQuery, setSearchQuery] = useState("");
 
   const [profile, setProfile] = useState<OfficerProfile | null>(null);
   useEffect(() => {
@@ -331,601 +348,547 @@ export const SettingsScreen: React.FC = () => {
     }
   };
 
+  // §32: left-nav items with search filter -- matches the doc's exact
+  // 4-category structure (Account/Appearance/Voice/About), each with a
+  // real icon + label + one-line sub-description.
+  const navItems = useMemo(() => [
+    {
+      id: "account" as SettingsTab,
+      label: lang === "en" ? "Account" : "ಖಾತೆ",
+      sub: lang === "en" ? "Officer Profile" : "ಅಧಿಕಾರಿ ವಿವರ",
+      icon: User,
+      keywords: "profile name badge kgid rank designation station email password",
+    },
+    {
+      id: "appearance" as SettingsTab,
+      label: lang === "en" ? "Appearance" : "ಗೋಚರತೆ",
+      sub: lang === "en" ? "Theme & Ergonomics" : "ವಿನ್ಯಾಸ ಮತ್ತು ಗಾತ್ರ",
+      icon: Palette,
+      keywords: "theme language dark contrast font text size scaling width transcript",
+    },
+    {
+      id: "voice" as SettingsTab,
+      label: lang === "en" ? "Voice" : "ಧ್ವನಿ",
+      sub: lang === "en" ? "Zia Audio Studio" : "ಜಿಯಾ ಆಡಿಯೋ ಸ್ಟುಡಿಯೋ",
+      icon: Volume2,
+      keywords: "voice zia audio sound speak speech synthesizer speed timbre",
+    },
+    {
+      id: "about" as SettingsTab,
+      label: lang === "en" ? "About" : "ಕುರಿತು",
+      sub: lang === "en" ? "Security & Diagnostics" : "ಭದ್ರತೆ ಮತ್ತು ಡೇಟಾಬೇಸ್",
+      icon: Info,
+      keywords: "security database diagnostics policies bnss timeout session status",
+    },
+  ], [lang]);
+
+  const filteredNav = useMemo(() => {
+    if (!searchQuery.trim()) return navItems;
+    const q = searchQuery.toLowerCase();
+    return navItems.filter((item) => item.label.toLowerCase().includes(q) || item.sub.toLowerCase().includes(q) || item.keywords.includes(q));
+  }, [navItems, searchQuery]);
+
+  // L256: if the search filters out the currently-active tab, jump to the
+  // first remaining match instead of showing an empty right pane.
+  useEffect(() => {
+    if (filteredNav.length && !filteredNav.some((i) => i.id === activeTab)) {
+      setActiveTab(filteredNav[0].id);
+    }
+  }, [filteredNav, activeTab]);
+
+  const tabTitles: Record<SettingsTab, { title: string; sub: string }> = {
+    account: {
+      title: lang === "en" ? "Account — Officer Profile" : "ಖಾತೆ — ಅಧಿಕಾರಿ ವಿವರ",
+      sub: lang === "en" ? "Authorized personnel credentials and operational station attachment" : "ಅಧಿಕೃತ ಸಿಬ್ಬಂದಿ ವಿವರಗಳು",
+    },
+    appearance: {
+      title: lang === "en" ? "Appearance — Preferences & Ergonomics" : "ಗೋಚರತೆ — ವಿನ್ಯಾಸ ಮತ್ತು ಗಾತ್ರ",
+      sub: lang === "en" ? "Display themes, semantic font sizing, and visual window scaling" : "ಪ್ರದರ್ಶನ ಥೀಮ್‌ಗಳು ಮತ್ತು ಫಾಂಟ್ ಗಾತ್ರ",
+    },
+    voice: {
+      title: lang === "en" ? "Voice — Zia Multi-Voice Studio" : "ಧ್ವನಿ — ಜಿಯಾ ಆಡಿಯೋ ಸ್ಟುಡಿಯೋ",
+      sub: lang === "en" ? "Neural speech synthesis parameters for field audio briefs" : "ಕ್ಷೇತ್ರ ಆಡಿಯೋ ಬ್ರೀಫ್‌ಗಳಿಗಾಗಿ ಧ್ವನಿ ಸಂಶ್ಲೇಷಣೆ",
+    },
+    about: {
+      title: lang === "en" ? "About — Security Policies & Diagnostics" : "ಕುರಿತು — ಭದ್ರತೆ ಮತ್ತು ಡೇಟಾಬೇಸ್",
+      sub: lang === "en" ? "System health telemetry, ZCQL database connectivity, and BNSS compliance" : "ಸಿಸ್ಟಮ್ ಆರೋಗ್ಯ ಮತ್ತು ದತ್ತಸಂಚಯ ಸಂಪರ್ಕ",
+    },
+  };
+
   return (
-    <div className="h-full flex flex-col p-6 space-y-6 bg-stone-950/20 overflow-y-auto">
-      {/* Top Header */}
-      <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center border-b border-stone-850 pb-4 shrink-0">
-        <div className="space-y-1">
-          <h2 className="text-base font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">
-            <Settings className="w-5 h-5 text-[#C79A4E]" />
-            <span>{t.navSettings}</span>
-          </h2>
-          <p className="text-[11px] text-stone-550 leading-relaxed font-mono">
-            {t.settingsDesc}
-          </p>
+    <div className="flex flex-col md:flex-row h-full min-h-0 bg-[#181614] text-stone-200">
+      {/* LEFT NAVIGATION COLUMN */}
+      <div className="w-full md:w-64 bg-[#141210] border-b md:border-b-0 md:border-r border-stone-800 flex flex-col shrink-0">
+        <div className="p-3 border-b border-stone-800/80">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-stone-500" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder={lang === "en" ? "Search settings..." : "ಹುಡುಕಿ..."}
+              className="w-full pl-8 pr-3 py-1.5 bg-stone-900/90 border border-stone-800 rounded-md text-xs font-mono text-stone-200 placeholder-stone-500 focus:outline-none focus:border-[#C79A4E]/60 transition-colors"
+            />
+          </div>
+        </div>
+
+        <div className="flex md:flex-col overflow-x-auto md:overflow-y-auto p-2 gap-1 flex-1">
+          {filteredNav.map((item) => {
+            const Icon = item.icon;
+            const isActive = activeTab === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => setActiveTab(item.id)}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-left transition-all shrink-0 cursor-pointer ${
+                  isActive
+                    ? "bg-[#C79A4E]/15 text-[#C79A4E] border border-[#C79A4E]/40 font-medium shadow-sm"
+                    : "text-stone-400 hover:text-stone-200 hover:bg-stone-900/60 border border-transparent"
+                }`}
+              >
+                <Icon className={`w-4 h-4 shrink-0 ${isActive ? "text-[#C79A4E]" : "text-stone-500"}`} />
+                <div className="min-w-0">
+                  <p className="text-xs font-mono font-bold leading-none">{item.label}</p>
+                  <p className="text-[10px] text-stone-500 truncate mt-1">{item.sub}</p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="hidden md:flex items-center gap-2 p-3 border-t border-stone-800/80 bg-stone-950/40 text-[10px] font-mono text-stone-500">
+          <span className={`w-2 h-2 rounded-full ${isDbConnected ? "bg-emerald-500 animate-pulse" : "bg-rose-500"}`} />
+          <span>KSP POLICE NET • 2026</span>
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-start">
-        {/* Left Side: General Prefs & System Health */}
-        <div className="space-y-6">
-          {/* Card 0: Officer Profile -- same /api/auth/me the sidebar
-              popover uses, surfaced here too as the canonical "who am I,
-              what can I see" reference point. */}
-          <div className="glass-card p-5 border border-stone-850 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-2">
-                <IdCard className="w-4 h-4 text-[#C79A4E]" />
-                <span>{lang === "en" ? "Officer Profile" : "ಅಧಿಕಾರಿ ಪ್ರೊಫೈಲ್"}</span>
-                <span className="flex items-center gap-1 text-[9px] font-bold text-stone-550 normal-case tracking-normal bg-stone-950/50 border border-stone-900 rounded-full px-2 py-0.5 ml-1">
+      {/* RIGHT CONTENT COLUMN */}
+      <div className="flex-1 flex flex-col min-w-0 bg-[#181614] overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-stone-800/80 bg-stone-900/20 shrink-0">
+          <div>
+            <h2 className="text-sm font-mono font-bold text-stone-100 uppercase tracking-wider">{tabTitles[activeTab].title}</h2>
+            <p className="text-[11px] font-mono text-stone-500 mt-0.5">{tabTitles[activeTab].sub}</p>
+          </div>
+          {onClose && (
+            <button
+              onClick={onClose}
+              aria-label="Close settings"
+              className="p-1.5 rounded-lg bg-stone-900 border border-stone-800 text-stone-400 hover:text-stone-100 hover:bg-stone-800 transition-colors cursor-pointer"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {/* 1. ACCOUNT TAB */}
+          {activeTab === "account" && (
+            <div className="space-y-5">
+              <div className="flex items-center gap-4 p-4 bg-stone-900/60 border border-stone-800 rounded-lg">
+                <div className="w-12 h-12 rounded-full bg-stone-800 border-2 border-[#C79A4E] flex items-center justify-center text-sm font-mono font-bold text-[#C79A4E] shrink-0">
+                  {(profile?.first_name || badgeNumber || "KG").slice(0, 2).toUpperCase()}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-mono font-bold text-stone-100 truncate">{profile?.first_name || "—"}</h3>
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-mono uppercase bg-[#C79A4E]/20 text-[#C79A4E] border border-[#C79A4E]/30">
+                      {(roleTier || "officer").toUpperCase()}
+                    </span>
+                  </div>
+                  <p className="text-xs font-mono text-stone-400 mt-0.5">
+                    KGID: {profile?.kgid || badgeNumber || "—"} • {profile?.designation || (lang === "en" ? "Designation not on file" : "ಪದನಾಮ ಇಲ್ಲ")}
+                  </p>
+                </div>
+                <span className="flex items-center gap-1 text-[9px] font-bold text-stone-550 normal-case tracking-normal bg-stone-950/50 border border-stone-900 rounded-full px-2 py-0.5 shrink-0">
                   <Lock className="w-2.5 h-2.5" />
                   {lang === "en" ? "Read-only" : "ಓದಲು-ಮಾತ್ರ"}
                 </span>
-              </h3>
-              <div className="flex items-center gap-2">
+              </div>
+
+              {myRequest && myRequest.status === "pending" && (
+                <div className="bg-amber-500/[0.06] border border-amber-500/25 rounded-lg px-3 py-2 text-[10.5px] text-amber-300/90 font-mono">
+                  {lang === "en" ? "Requested: " : "ಕೋರಿದ್ದು: "}
+                  {Object.entries(myRequest.requested_changes || {}).map(([k, v]) => {
+                    const lookup: Record<string, RefOption[]> = { RankID: refData.ranks, DesignationID: refData.designations, UnitID: refData.units };
+                    const fieldLabel: Record<string, string> = { FirstName: lang === "en" ? "Name" : "ಹೆಸರು", RankID: lang === "en" ? "Rank" : "ಶ್ರೇಣಿ", DesignationID: lang === "en" ? "Designation" : "ಪದನಾಮ", UnitID: lang === "en" ? "Station" : "ಠಾಣೆ", Email: "Email" };
+                    const resolved = lookup[k]?.find((o) => String(o.id) === String(v))?.name || v;
+                    return `${fieldLabel[k] || k} → ${resolved}`;
+                  }).join(", ")}
+                  {" — "}
+                  {lang === "en" ? "awaiting supervisor sign-off." : "ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗಾಗಿ ಕಾಯಲಾಗುತ್ತಿದೆ."}
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs font-mono">
+                <div className="p-3 bg-stone-900/40 border border-stone-800/80 rounded-lg">
+                  <span className="text-[10px] text-stone-500 uppercase block">{lang === "en" ? "Rank / Grade" : "ಶ್ರೇಣಿ"}</span>
+                  <span className="text-stone-200 font-bold mt-1 block">{profile?.rank || "—"}</span>
+                </div>
+                <div className="p-3 bg-stone-900/40 border border-stone-800/80 rounded-lg">
+                  <span className="text-[10px] text-stone-500 uppercase block">{lang === "en" ? "Designation" : "ಪದನಾಮ"}</span>
+                  <span className="text-stone-200 font-bold mt-1 block">{profile?.designation || "—"}</span>
+                </div>
+                <div className="p-3 bg-stone-900/40 border border-stone-800/80 rounded-lg">
+                  <span className="text-[10px] text-stone-500 uppercase block">{lang === "en" ? "Home Police Station" : "ಠಾಣೆ"}</span>
+                  <span className="text-stone-200 font-bold mt-1 block">{profile?.station || "—"}</span>
+                </div>
+                <div className="p-3 bg-stone-900/40 border border-stone-800/80 rounded-lg space-y-1.5">
+                  <span className="text-[10px] text-stone-500 uppercase flex items-center gap-1">
+                    <Mail className="w-3 h-3" />
+                    {lang === "en" ? "Official Email" : "ಇಮೇಲ್"}
+                  </span>
+                  {profile?.email ? (
+                    <span className="text-stone-200 font-bold truncate block">{profile.email}</span>
+                  ) : (
+                    <div className="flex gap-1.5">
+                      <input
+                        value={emailDraft}
+                        onChange={(e) => setEmailDraft(e.target.value)}
+                        placeholder="you@ksp.gov.in"
+                        className="flex-1 bg-stone-950 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-2 py-1 text-stone-200 font-bold text-[11px] min-w-0"
+                      />
+                      <button
+                        onClick={submitEmailOnce}
+                        disabled={isSavingEmail}
+                        className="px-2.5 py-1 rounded-lg bg-[#C79A4E] text-stone-950 text-[10px] font-black uppercase cursor-pointer hover:bg-[#E4C590] disabled:opacity-50 shrink-0"
+                      >
+                        {isSavingEmail ? "…" : (lang === "en" ? "Save" : "ಉಳಿಸಿ")}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3 pt-2">
                 <button
                   onClick={() => setIsChangePasswordOpen(true)}
-                  className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-stone-300 hover:text-white border border-stone-700 hover:border-stone-500 rounded-md px-2 py-1 cursor-pointer transition-colors"
+                  className="flex items-center gap-1.5 px-3 py-2 bg-stone-900 hover:bg-stone-800 border border-stone-700 text-stone-200 rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
                 >
-                  <KeyRound className="w-3 h-3 text-[#C79A4E]" />
+                  <KeyRound className="w-3.5 h-3.5 text-[#C79A4E]" />
                   {lang === "en" ? "Change Password" : "ರಹಸ್ಯಪದ ಬದಲಿಸಿ"}
                 </button>
                 {!myRequest || myRequest.status !== "pending" ? (
                   <button
                     onClick={openRequestModal}
-                    className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-[#C79A4E] hover:text-[#E4C590] border border-[#C79A4E]/30 hover:border-[#C79A4E]/60 rounded-md px-2 py-1 cursor-pointer transition-colors"
+                    className="flex items-center gap-1.5 px-3 py-2 bg-stone-900 hover:bg-stone-800 border border-stone-700 text-[#C79A4E] hover:text-[#E4C590] rounded-lg text-xs font-mono font-bold transition-colors cursor-pointer"
                   >
-                    <Pencil className="w-3 h-3" />
+                    <Pencil className="w-3.5 h-3.5" />
                     {lang === "en" ? "Request Profile Modification" : "ಪ್ರೊಫೈಲ್ ಬದಲಾವಣೆ ಕೋರಿ"}
                   </button>
                 ) : (
-                  <span className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-amber-400 border border-amber-500/30 rounded-md px-2 py-1">
-                    <Hourglass className="w-3 h-3" />
+                  <span className="flex items-center gap-1.5 px-3 py-2 text-xs font-mono font-bold uppercase text-amber-400 border border-amber-500/30 rounded-lg">
+                    <Hourglass className="w-3.5 h-3.5" />
                     {lang === "en" ? "Pending review" : "ಪರಿಶೀಲನೆ ಬಾಕಿ"}
                   </span>
                 )}
               </div>
             </div>
-            {myRequest && myRequest.status === "pending" && (
-              <div className="bg-amber-500/[0.06] border border-amber-500/25 rounded-lg px-3 py-2 text-[10.5px] text-amber-300/90 font-mono">
-                {lang === "en" ? "Requested: " : "ಕೋರಿದ್ದು: "}
-                {Object.entries(myRequest.requested_changes || {}).map(([k, v]) => {
-                  // Resolve an ID-based field (RankID, DesignationID, UnitID)
-                  // to its real name for a readable label, instead of the
-                  // raw numeric ID -- falls back to the raw value if the
-                  // reference list hasn't loaded or the ID isn't found.
-                  const lookup: Record<string, RefOption[]> = { RankID: refData.ranks, DesignationID: refData.designations, UnitID: refData.units };
-                  const fieldLabel: Record<string, string> = { FirstName: lang === "en" ? "Name" : "ಹೆಸರು", RankID: lang === "en" ? "Rank" : "ಶ್ರೇಣಿ", DesignationID: lang === "en" ? "Designation" : "ಪದನಾಮ", UnitID: lang === "en" ? "Station" : "ಠಾಣೆ", Email: "Email" };
-                  const resolved = lookup[k]?.find((o) => String(o.id) === String(v))?.name || v;
-                  return `${fieldLabel[k] || k} → ${resolved}`;
-                }).join(", ")}
-                {" — "}
-                {lang === "en" ? "awaiting supervisor sign-off." : "ಮೇಲ್ವಿಚಾರಕರ ಅನುಮೋದನೆಗಾಗಿ ಕಾಯಲಾಗುತ್ತಿದೆ."}
+          )}
+
+          {/* 2. APPEARANCE TAB */}
+          {activeTab === "appearance" && (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-mono text-stone-400 font-bold block">{t.settingsAppLanguage}</label>
+                  <select
+                    value={lang}
+                    onChange={(e) => setLang(e.target.value as any)}
+                    className="w-full bg-stone-900 border border-stone-800 rounded-lg px-3 py-2 text-xs font-mono text-stone-200 focus:outline-none focus:border-[#C79A4E] cursor-pointer"
+                  >
+                    <option value="en">{t.settingsLangOptEn}</option>
+                    <option value="kn">{t.settingsLangOptKn}</option>
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-mono text-stone-400 font-bold block">{t.settingsDisplayTheme}</label>
+                  <select
+                    value={theme}
+                    onChange={(e) => setTheme(e.target.value as any)}
+                    className="w-full bg-stone-900 border border-stone-800 rounded-lg px-3 py-2 text-xs font-mono text-stone-200 focus:outline-none focus:border-[#C79A4E] cursor-pointer"
+                  >
+                    <option value="high-contrast-dark">{t.settingsThemeDark}</option>
+                    <option value="light">{t.settingsThemeLight}</option>
+                  </select>
+                </div>
               </div>
-            )}
-            <div className="grid grid-cols-2 gap-2.5 pt-1 font-mono text-[11px]">
-              <div className="bg-stone-950/40 p-2.5 rounded-lg border border-stone-900">
-                <div className="text-[9px] text-stone-550 uppercase">{lang === "en" ? "Name" : "ಹೆಸರು"}</div>
-                <div className="font-bold text-stone-200 truncate">{profile?.first_name || "—"}</div>
-              </div>
-              <div className="bg-stone-950/40 p-2.5 rounded-lg border border-stone-900">
-                <div className="text-[9px] text-stone-550 uppercase">KGID</div>
-                <div className="font-bold text-stone-200 truncate">{profile?.kgid || badgeNumber || "—"}</div>
-              </div>
-              <div className="bg-stone-950/40 p-2.5 rounded-lg border border-stone-900">
-                <div className="text-[9px] text-stone-550 uppercase">{lang === "en" ? "Rank" : "ಶ್ರೇಣಿ"}</div>
-                <div className="font-bold text-stone-200 truncate">{profile?.rank || "—"}</div>
-              </div>
-              <div className="bg-stone-950/40 p-2.5 rounded-lg border border-stone-900">
-                <div className="text-[9px] text-stone-550 uppercase">{lang === "en" ? "Designation" : "ಪದನಾಮ"}</div>
-                <div className="font-bold text-stone-200 truncate">{profile?.designation || "—"}</div>
-              </div>
-              <div className="bg-stone-950/40 p-2.5 rounded-lg border border-stone-900 col-span-2">
-                <div className="text-[9px] text-stone-550 uppercase">{lang === "en" ? "Home Station" : "ಠಾಣೆ"}</div>
-                <div className="font-bold text-stone-200 truncate">{profile?.station || "—"}</div>
-              </div>
-              {/* Email: the ONLY address VAJRA's "email me X" chat feature
-                  ever sends to. Genuinely empty for everyone at first, so
-                  setting it once needs no approval; once set it locks like
-                  every other field above and needs the same request-change
-                  flow (see set-email-once's backend docstring). */}
-              <div className="bg-stone-950/40 p-2.5 rounded-lg border border-stone-900 col-span-2 space-y-1.5">
+
+              {/* Semantic Text Sizing -- zero pixel mentions, per the source
+                  document's own explicit complaint about raw px labels. */}
+              <div className="space-y-3 pt-3 border-t border-stone-800/80">
                 <div className="flex items-center justify-between">
-                  <div className="text-[9px] text-stone-550 uppercase flex items-center gap-1">
-                    <Mail className="w-3 h-3" />
-                    {lang === "en" ? "Email (for VAJRA's mail feature)" : "ಇಮೇಲ್ (VAJRA ಮೇಲ್ ವೈಶಿಷ್ಟ್ಯಕ್ಕಾಗಿ)"}
-                  </div>
-                </div>
-                {profile?.email ? (
-                  <div className="font-bold text-stone-200 truncate">{profile.email}</div>
-                ) : (
-                  <div className="flex gap-1.5">
-                    <input
-                      value={emailDraft}
-                      onChange={(e) => setEmailDraft(e.target.value)}
-                      placeholder={lang === "en" ? "you@ksp.gov.in" : "you@ksp.gov.in"}
-                      className="flex-1 bg-stone-950 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-2.5 py-1.5 text-stone-200 font-bold text-[11px]"
-                    />
-                    <button
-                      onClick={submitEmailOnce}
-                      disabled={isSavingEmail}
-                      className="px-3 py-1.5 rounded-lg bg-[#C79A4E] text-stone-950 text-[10px] font-black uppercase cursor-pointer hover:bg-[#E4C590] disabled:opacity-50 shrink-0"
-                    >
-                      {isSavingEmail ? "…" : (lang === "en" ? "Save" : "ಉಳಿಸಿ")}
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Card 1: Preferences */}
-          <div className="glass-card p-5 border border-stone-850 space-y-4">
-            <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-2">
-              <Languages className="w-4 h-4 text-[#C79A4E]" />
-              <span>{t.settingsLangThemeTitle}</span>
-            </h3>
-
-            <div className="space-y-3.5 pt-2 text-xs">
-              {/* Language Selection */}
-              <div className="flex justify-between items-center bg-stone-950/40 p-3 rounded-lg border border-stone-900">
-                <span className="font-semibold text-stone-400">{t.settingsAppLanguage}</span>
-                <select
-                  value={lang}
-                  onChange={(e) => setLang(e.target.value as any)}
-                  className="bg-stone-900 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-2.5 py-1 text-stone-200 font-bold text-xs"
-                >
-                  <option value="en">{t.settingsLangOptEn}</option>
-                  <option value="kn">{t.settingsLangOptKn}</option>
-                </select>
-              </div>
-
-              {/* Theme Selector */}
-              <div className="flex justify-between items-center bg-stone-950/40 p-3 rounded-lg border border-stone-900">
-                <span className="font-semibold text-stone-400">{t.settingsDisplayTheme}</span>
-                <select
-                  value={theme}
-                  onChange={(e) => setTheme(e.target.value as any)}
-                  className="bg-stone-900 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-2.5 py-1 text-stone-200 font-bold text-xs"
-                >
-                  <option value="high-contrast-dark">{t.settingsThemeDark}</option>
-                  <option value="light">{t.settingsThemeLight}</option>
-                </select>
-              </div>
-            </div>
-          </div>
-
-          {/* Card: Transcript Ergonomics (Section 15) */}
-          <div className="glass-card p-5 border border-stone-850 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-2">
-                <Maximize2 className="w-4 h-4 text-[#C79A4E]" />
-                <span>{lang === "en" ? "Transcript Ergonomics" : "ಸಂಭಾಷಣೆ ವಿನ್ಯಾಸ ಮತ್ತು ದಕ್ಷತೆ"}</span>
-              </h3>
-              <span className="text-[9px] font-mono text-[#C79A4E] bg-[#C79A4E]/10 border border-[#C79A4E]/25 px-2 py-0.5 rounded-full font-bold uppercase">
-                {lang === "en" ? "Live Viewport" : "ಲೈವ್ ವ್ಯೂಪೋರ್ಟ್"}
-              </span>
-            </div>
-
-            {/* Typography Sizing Tier */}
-            <div className="space-y-2 pt-1">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold text-stone-300 flex items-center gap-1.5">
-                  <Type className="w-3.5 h-3.5 text-[#C79A4E]" />
-                  {lang === "en" ? "Text Sizing (Intelligence Bubbles & Prompts)" : "ಪಠ್ಯದ ಗಾತ್ರ (ಮಾಹಿತಿ ಗುಳ್ಳೆಗಳು ಮತ್ತು ಪ್ರಾಂಪ್ಟ್)"}
-                </span>
-                <span className="text-[10px] font-mono font-bold text-stone-500 uppercase">
-                  {transcriptTextSize}
-                </span>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { id: "small" as TranscriptTextSize, label: lang === "en" ? "Small (12px)" : "ಚಿಕ್ಕದು (12px)", sub: lang === "en" ? "Dense / CDR" : "ದಟ್ಟ ವಿವರ", sample: "text-xs" },
-                  { id: "medium" as TranscriptTextSize, label: lang === "en" ? "Medium (14px)" : "ಮಧ್ಯಮ (14px)", sub: lang === "en" ? "Standard" : "ಸ್ಟ್ಯಾಂಡರ್ಡ್", sample: "text-sm" },
-                  { id: "large" as TranscriptTextSize, label: lang === "en" ? "Large (16px)" : "ದೊಡ್ಡದು (16px)", sub: lang === "en" ? "Patrol / 4K" : "ಸ್ಪಷ್ಟ ಓದುವಿಕೆ", sample: "text-base" },
-                ].map((tier) => (
-                  <button
-                    key={tier.id}
-                    type="button"
-                    onClick={() => setTranscriptTextSize(tier.id)}
-                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                      transcriptTextSize === tier.id
-                        ? "border-[#C79A4E] bg-[#C79A4E]/10 ring-1 ring-[#C79A4E]/40"
-                        : "border-stone-800 bg-stone-950/40 hover:border-stone-700"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between w-full">
-                      <span className={`text-[11px] font-bold ${transcriptTextSize === tier.id ? "text-[#C79A4E]" : "text-stone-200"}`}>
-                        {tier.label}
-                      </span>
-                      {transcriptTextSize === tier.id && (
-                        <CheckCircle2 className="w-3 h-3 text-[#C79A4E]" />
-                      )}
-                    </div>
-                    <span className="text-[9.5px] text-stone-500 font-mono mt-0.5">{tier.sub}</span>
-                    <div className={`mt-2 p-1.5 rounded bg-stone-950/60 border border-stone-850/60 text-stone-300 font-sans ${tier.sample} truncate`}>
-                      § 420 IPC
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Transcript Width Layout */}
-            <div className="space-y-2 pt-2 border-t border-stone-850">
-              <div className="flex items-center justify-between text-xs">
-                <span className="font-semibold text-stone-300 flex items-center gap-1.5">
-                  <Maximize2 className="w-3.5 h-3.5 text-[#C79A4E]" />
-                  {lang === "en" ? "Transcript Width Constraint" : "ಸಂಭಾಷಣಾ ಕಾಲಮ್ ಅಗಲ"}
-                </span>
-                <span className="text-[10px] font-mono font-bold text-stone-500 uppercase">
-                  {transcriptWidth}
-                </span>
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  {
-                    id: "narrow" as TranscriptWidth,
-                    label: lang === "en" ? "Narrow" : "ಕಿರಿದಾದ",
-                    pixels: "~672px",
-                    desc: lang === "en" ? "Reading Focus" : "ಓದುವ ಏಕಾಗ್ರತೆ",
-                    barCls: "w-1/2",
-                  },
-                  {
-                    id: "medium" as TranscriptWidth,
-                    label: lang === "en" ? "Medium" : "ಮಧ್ಯಮ",
-                    pixels: "~896px",
-                    desc: lang === "en" ? "Balanced Ops" : "ಸಾಮಾನ್ಯ ಕಾರ್ಯಾಚರಣೆ",
-                    barCls: "w-3/4",
-                  },
-                  {
-                    id: "wide" as TranscriptWidth,
-                    label: lang === "en" ? "Wide" : "ವಿಸ್ತಾರ",
-                    pixels: "~1152px",
-                    desc: lang === "en" ? "Full CCTNS Tables" : "ಪೂರ್ಣ ಕೋಷ್ಟಕಗಳು",
-                    barCls: "w-full",
-                  },
-                ].map((tier) => (
-                  <button
-                    key={tier.id}
-                    type="button"
-                    onClick={() => setTranscriptWidth(tier.id)}
-                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                      transcriptWidth === tier.id
-                        ? "border-[#C79A4E] bg-[#C79A4E]/10 ring-1 ring-[#C79A4E]/40"
-                        : "border-stone-800 bg-stone-950/40 hover:border-stone-700"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between w-full">
-                      <span className={`text-[11px] font-bold ${transcriptWidth === tier.id ? "text-[#C79A4E]" : "text-stone-200"}`}>
-                        {tier.label}
-                      </span>
-                      {transcriptWidth === tier.id && (
-                        <CheckCircle2 className="w-3 h-3 text-[#C79A4E]" />
-                      )}
-                    </div>
-                    <span className="text-[9px] text-[#C79A4E]/80 font-mono mt-0.5">{tier.pixels}</span>
-                    <span className="text-[9.5px] text-stone-500 font-mono mt-0.5">{tier.desc}</span>
-                    <div className="mt-2 h-2 rounded-full bg-stone-900 border border-stone-800 overflow-hidden flex items-center p-0.5">
-                      <div className={`h-full rounded-full ${tier.barCls} ${transcriptWidth === tier.id ? "bg-[#C79A4E]" : "bg-stone-600"}`} />
-                    </div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          {/* Card 2: Core Diagnostics */}
-          <div className="glass-card p-5 border border-stone-850 space-y-4">
-            <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-2">
-              <Database className="w-4 h-4 text-[#C79A4E]" />
-              <span>{t.settingsDbDiagTitle}</span>
-            </h3>
-
-            <div className="space-y-2.5 pt-2 font-mono text-xs">
-              {/* Zoho Catalyst Datastore Status */}
-              <div className="flex justify-between items-center p-2.5 rounded bg-stone-950/40 border border-stone-900">
-                <span className="text-stone-400">{t.settingsZcqlLabel}</span>
-                <span className={`font-bold text-[11px] ${isDbConnected ? "text-[#C79A4E]" : "text-rose-500"}`}>
-                  {isDbConnected ? t.settingsOnline : t.settingsOffline}
-                </span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Side: Zia Multi-Voice Audio Studio & Security Policies */}
-        <div className="space-y-6">
-          {/* Card: Zoho Zia Multi-Voice Audio Studio (Section 15) */}
-          <div className="glass-card p-5 border border-stone-850 space-y-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-2">
-                <Volume2 className="w-4 h-4 text-[#C79A4E]" />
-                <span>{lang === "en" ? "Zia Multi-Voice Audio Studio" : "ಝಿಯಾ ಮಲ್ಟಿ-ವಾಯ್ಸ್ ಆಡಿಯೊ ಸ್ಟುಡಿಯೋ"}</span>
-              </h3>
-              <span className="text-[9px] font-mono text-[#5DCAA5] bg-[#5DCAA5]/10 border border-[#5DCAA5]/30 px-2 py-0.5 rounded-full font-bold uppercase flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#5DCAA5] animate-pulse" />
-                Catalyst QuickML
-              </span>
-            </div>
-            <p className="text-[11px] text-stone-450 leading-relaxed font-mono">
-              {lang === "en"
-                ? "Configure neural speech synthesis parameters for intelligence briefings and field audio dossiers."
-                : "ಗುಪ್ತಚರ ಬ್ರೀಫಿಂಗ್‌ಗಳು ಮತ್ತು ಆಡಿಯೊ ದೋಶಿಯರ್‌ಗಳಿಗಾಗಿ ನರ ಭಾಷಣ ಸಂಶ್ಲೇಷಣೆಯ ನಿಯತಾಂಕಗಳನ್ನು ಹೊಂದಿಸಿ."}
-            </p>
-
-            {/* Language Selection Tabs */}
-            <div className="space-y-1.5 pt-1">
-              <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider">
-                {lang === "en" ? "Primary Audio Language" : "ಪ್ರಾಥಮಿಕ ಆಡಿಯೊ ಭಾಷೆ"}
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                {[
-                  { id: "en", label: "English (India)", native: "Articulate" },
-                  { id: "kn", label: "ಕನ್ನಡ (Kannada)", native: "ಸ್ಥಳೀಯ ಉಚ್ಚಾರಣೆ" },
-                  { id: "hi", label: "हिन्दी (Hindi)", native: "प्राकृतिक" },
-                ].map((l) => (
-                  <button
-                    key={l.id}
-                    type="button"
-                    onClick={() => {
-                      const newLang = l.id as "en" | "kn" | "hi";
-                      const defaultSpeaker = newLang === "kn" ? "Anu" : (newLang === "hi" ? "Divya" : "Anna");
-                      setTtsSettings({ language: newLang, voice: defaultSpeaker });
-                    }}
-                    className={`p-2 rounded-lg border text-center transition-all cursor-pointer ${
-                      ttsSettings.language === l.id
-                        ? "border-[#C79A4E] bg-[#C79A4E]/10 text-stone-100 font-bold"
-                        : "border-stone-800 bg-stone-950/40 text-stone-400 hover:border-stone-700"
-                    }`}
-                  >
-                    <div className="text-xs">{l.label}</div>
-                    <div className="text-[9px] text-stone-500 font-mono mt-0.5">{l.native}</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Voice Persona / Style Cards */}
-            <div className="space-y-1.5 pt-2 border-t border-stone-850">
-              <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider">
-                {lang === "en" ? "Voice Persona & Timbre" : "ಧ್ವನಿ ವ್ಯಕ್ತಿತ್ವ ಮತ್ತು ಟೋನ್"}
-              </label>
-              <div className="grid grid-cols-2 gap-2">
-                {[
-                  {
-                    id: "buttery" as TtsStyle,
-                    name: lang === "en" ? "Buttery" : "ಬಟರಿ (ಮೃದು)",
-                    badge: lang === "en" ? "Warm & Relaxed" : "ಆತ್ಮೀಯ",
-                    desc: lang === "en" ? "Smooth, warm vocal delivery for fatigue-free listening" : "ದಣಿವು-ಮುಕ್ತ ದೀರ್ಘ ಆಲಿಸುವಿಕೆ",
-                  },
-                  {
-                    id: "authoritative" as TtsStyle,
-                    name: lang === "en" ? "Authoritative" : "ಅಧಿಕೃತ",
-                    badge: lang === "en" ? "Command Briefing" : "ಕಮಾಂಡ್",
-                    desc: lang === "en" ? "Crisp, formal police command cadence" : "ಖಚಿತ ಮತ್ತು ಅಧಿಕೃತ ಕಮಾಂಡ್ ಟೋನ್",
-                  },
-                  {
-                    id: "calm" as TtsStyle,
-                    name: lang === "en" ? "Calm" : "ಶಾಂತ",
-                    badge: lang === "en" ? "Empathetic" : "ಸಹಾನುಭೂತಿ",
-                    desc: lang === "en" ? "Steady, reassuring cadence for sensitive cases" : "ಸ್ಥಿರ ಮತ್ತು ಸಮಾಧಾನಕರ ಶೈಲಿ",
-                  },
-                  {
-                    id: "urgent" as TtsStyle,
-                    name: lang === "en" ? "Urgent" : "ತುರ್ತು",
-                    badge: lang === "en" ? "Tactical Dispatch" : "ಕ್ಷಿಪ್ರ ರವಾನೆ",
-                    desc: lang === "en" ? "Fast-paced tactical briefing and alerts" : "ವೇಗದ ಗತಿಯ ತಂತ್ರೋಪಾಯ ಬ್ರೀಫಿಂಗ್",
-                  },
-                ].map((s) => (
-                  <button
-                    key={s.id}
-                    type="button"
-                    onClick={() => {
-                      setTtsSettings({ style: s.id });
-                      setVoicePersona(s.id);
-                    }}
-                    className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                      ttsSettings.style === s.id
-                        ? "border-[#C79A4E] bg-[#C79A4E]/10 ring-1 ring-[#C79A4E]/40"
-                        : "border-stone-800 bg-stone-950/40 hover:border-stone-700"
-                    }`}
-                  >
-                    <div className="flex items-center justify-between w-full">
-                      <span className={`text-[11px] font-bold ${ttsSettings.style === s.id ? "text-[#C79A4E]" : "text-stone-200"}`}>
-                        {s.name}
-                      </span>
-                      <span className="text-[8.5px] font-mono px-1.5 py-0.5 rounded bg-stone-900 border border-stone-800 text-stone-400">
-                        {s.badge}
-                      </span>
-                    </div>
-                    <p className="text-[9.5px] text-stone-500 leading-snug mt-1">{s.desc}</p>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Playback Speed & Speaker Selection */}
-            <div className="grid grid-cols-2 gap-3 pt-2 border-t border-stone-850">
-              {/* Speed Selector */}
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider">
-                  {lang === "en" ? "Playback Speed" : "ಪ್ಲೇಬ್ಯಾಕ್ ವೇಗ"}
-                </label>
-                <div className="flex rounded-lg border border-stone-800 bg-stone-950/50 p-1 gap-1">
-                  {[
-                    { id: "slower" as TtsSpeed, label: "0.85x" },
-                    { id: "normal" as TtsSpeed, label: "1.0x" },
-                    { id: "faster" as TtsSpeed, label: "1.25x" },
-                  ].map((spd) => (
-                    <button
-                      key={spd.id}
-                      type="button"
-                      onClick={() => setTtsSettings({ speed: spd.id })}
-                      className={`flex-1 py-1 text-center text-[10.5px] font-mono font-bold rounded-md transition-all cursor-pointer ${
-                        ttsSettings.speed === spd.id
-                          ? "bg-[#C79A4E] text-stone-950"
-                          : "text-stone-400 hover:text-stone-200 hover:bg-stone-900"
-                      }`}
-                    >
-                      {spd.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Speaker Selector */}
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider">
-                  {lang === "en" ? "Neural Speaker" : "ನ್ಯೂರಲ್ ಸ್ಪೀಕರ್"}
-                </label>
-                <div className="flex rounded-lg border border-stone-800 bg-stone-950/50 p-1 gap-1">
-                  {(speakersByLang[ttsSettings.language] || speakersByLang.en).map((spk) => (
-                    <button
-                      key={spk.id}
-                      type="button"
-                      onClick={() => setTtsSettings({ voice: spk.id })}
-                      className={`flex-1 py-1 text-center text-[10.5px] font-mono font-bold rounded-md transition-all cursor-pointer ${
-                        ttsSettings.voice === spk.id
-                          ? "bg-[#C79A4E] text-stone-950"
-                          : "text-stone-400 hover:text-stone-200 hover:bg-stone-900"
-                      }`}
-                      title={spk.gender}
-                    >
-                      {spk.name}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Live Audio Test Button ("Preview Voice") */}
-            <div className="pt-2 border-t border-stone-850 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                {isPlayingPreview ? (
-                  <div className="flex items-center gap-1 h-5 px-2 bg-[#C79A4E]/10 border border-[#C79A4E]/30 rounded-md">
-                    <span className="w-1 bg-[#C79A4E] animate-pulse h-3 rounded-full" />
-                    <span className="w-1 bg-[#C79A4E] animate-pulse h-4 rounded-full" />
-                    <span className="w-1 bg-[#C79A4E] animate-pulse h-2 rounded-full" />
-                    <span className="w-1 bg-[#C79A4E] animate-pulse h-4 rounded-full" />
-                    <span className="text-[10px] text-[#C79A4E] font-mono font-bold ml-1.5">
-                      {lang === "en" ? "Streaming Preview..." : "ಪ್ಲೇ ಆಗುತ್ತಿದೆ..."}
+                  <div>
+                    <span className="text-xs font-mono font-bold text-stone-200 block">
+                      {lang === "en" ? "Typography & Information Density" : "ಪಠ್ಯದ ಗಾತ್ರ"}
+                    </span>
+                    <span className="text-[10px] font-mono text-stone-500">
+                      {lang === "en" ? "Semantic text hierarchy tailored for operational scanning" : "ಕಾರ್ಯಾಚರಣಾ ಸ್ಕ್ಯಾನಿಂಗ್‌ಗಾಗಿ ಪಠ್ಯ ಶ್ರೇಣಿ"}
                     </span>
                   </div>
-                ) : (
-                  <span className="text-[10px] font-mono text-stone-500">
-                    {lang === "en" ? "Sample voice test sentence" : "ಮಾದರಿ ಧ್ವನಿ ಪರೀಕ್ಷೆ ವಾಕ್ಯ"}
+                  <span className="text-[10px] font-mono font-bold text-[#C79A4E] uppercase tracking-wider">
+                    {transcriptTextSize === "small" && (lang === "en" ? "Compact" : "ಸಾಂದ್ರ")}
+                    {transcriptTextSize === "medium" && (lang === "en" ? "Standard" : "ಸ್ಟ್ಯಾಂಡರ್ಡ್")}
+                    {transcriptTextSize === "large" && (lang === "en" ? "Expanded" : "ವಿಸ್ತೃತ")}
                   </span>
-                )}
+                </div>
+
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { key: "small" as TranscriptTextSize, label: lang === "en" ? "Compact" : "ಸಾಂದ್ರ", sub: lang === "en" ? "Dense / High-Yield Intel" : "ದಟ್ಟ ವಿವರ", sample: "text-xs" },
+                    { key: "medium" as TranscriptTextSize, label: lang === "en" ? "Standard" : "ಸ್ಟ್ಯಾಂಡರ್ಡ್", sub: lang === "en" ? "Balanced CCTNS Dialogue" : "ಸಮತೋಲಿತ", sample: "text-sm" },
+                    { key: "large" as TranscriptTextSize, label: lang === "en" ? "Expanded" : "ವಿಸ್ತೃತ", sub: lang === "en" ? "Command Presentation" : "ಕಮಾಂಡ್ ಪ್ರಸ್ತುತಿ", sample: "text-base" },
+                  ].map((opt) => (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => setTranscriptTextSize(opt.key)}
+                      className={`p-3 rounded-lg border text-left transition-all cursor-pointer ${
+                        transcriptTextSize === opt.key
+                          ? "bg-[#C79A4E]/15 border-[#C79A4E] text-[#C79A4E] shadow-sm"
+                          : "bg-stone-900/50 border-stone-800 text-stone-400 hover:text-stone-200 hover:bg-stone-900"
+                      }`}
+                    >
+                      <p className="text-xs font-mono font-bold">{opt.label}</p>
+                      <p className="text-[10px] font-mono text-stone-500 mt-0.5">{opt.sub}</p>
+                    </button>
+                  ))}
+                </div>
+
+                {/* Live Typography Preview Card -- real statutory-style
+                    sample text, not lorem ipsum. */}
+                <div className="p-3.5 bg-stone-950/70 border border-stone-800/90 rounded-lg">
+                  <span className="text-[9px] font-mono text-stone-500 uppercase block mb-1">
+                    {lang === "en" ? "Live Optical Preview" : "ಲೈವ್ ಪೂರ್ವವೀಕ್ಷಣೆ"}
+                  </span>
+                  <p className={`font-mono text-stone-300 leading-relaxed ${
+                    transcriptTextSize === "small" ? "text-xs" : transcriptTextSize === "large" ? "text-base" : "text-sm"
+                  }`}>
+                    "FIR No. 2026/0420 registered at Rajajinagar PS under Section 318(4) BNS. Predictive risk score calibrated at 78.4%."
+                  </p>
+                </div>
               </div>
 
-              <button
-                type="button"
-                onClick={handleTestVoice}
-                disabled={isPreviewLoading}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all cursor-pointer disabled:opacity-50 ${
-                  isPlayingPreview
-                    ? "bg-rose-500/20 text-rose-400 border border-rose-500/40 hover:bg-rose-500/30"
-                    : "bg-[#C79A4E] text-stone-950 hover:bg-[#E4C590]"
-                }`}
-              >
-                {isPreviewLoading ? (
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                ) : isPlayingPreview ? (
-                  <Square className="w-3.5 h-3.5 fill-current" />
-                ) : (
-                  <Play className="w-3.5 h-3.5 fill-current" />
-                )}
-                <span>
-                  {isPreviewLoading
-                    ? (lang === "en" ? "Synthesizing..." : "ಸಂಶ್ಲೇಷಿಸಲಾಗುತ್ತಿದೆ...")
-                    : isPlayingPreview
-                    ? (lang === "en" ? "Stop" : "ನಿಲ್ಲಿಸಿ")
-                    : (lang === "en" ? "Preview Voice" : "ಧ್ವನಿ ಪೂರ್ವವೀಕ್ಷಣೆ")}
-                </span>
-              </button>
-            </div>
-          </div>
-
-          {/* Card: Security Policies */}
-          <div className="glass-card p-5 border border-stone-850 space-y-4">
-            <h3 className="text-xs font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-2">
-              <ShieldCheck className="w-4 h-4 text-[#C79A4E]" />
-              <span>{t.settingsSecurityPoliciesTitle}</span>
-            </h3>
-
-            <div className="space-y-3.5 pt-2 text-xs">
-              {/* Access Scope -- explains what this officer's own role_tier
-                  actually gates, grounded in the real enforcement (station-
-                  scoped RLS for everyone, Supervisor Dashboard + consistency-
-                  flag review gated to role_tier == "supervisor" server-side). */}
-              <div className="bg-stone-950/40 p-4 rounded-xl border border-stone-900 flex gap-3.5 items-start">
-                <MapPin className="w-6 h-6 text-[#C79A4E] shrink-0 mt-0.5" />
-                <div className="space-y-1 flex-1">
-                  <span className="font-bold text-stone-200 block text-[12px] font-mono uppercase tracking-wide">
-                    {lang === "en" ? "Access Scope" : "ಪ್ರವೇಶ ವ್ಯಾಪ್ತಿ"}
+              <div className="space-y-3 pt-3 border-t border-stone-800/80">
+                <div>
+                  <span className="text-xs font-mono font-bold text-stone-200 block">
+                    {lang === "en" ? "Workspace Scaling & Proportion" : "ಕಾರ್ಯಕ್ಷೇತ್ರ ಅಳತೆ"}
                   </span>
-                  <p className="text-[11px] leading-relaxed text-stone-500">
-                    {lang === "en"
-                      ? "Every query is row-level scoped to your own station -- you only ever see cases, suspects, and analytics for your assigned unit, enforced server-side on every request, not just hidden in the UI."
-                      : "ಪ್ರತಿ ಪ್ರಶ್ನೆಯು ನಿಮ್ಮ ಸ್ವಂತ ಠಾಣೆಗೆ ಸೀಮಿತವಾಗಿದೆ -- ಪ್ರತಿ ವಿನಂತಿಯಲ್ಲಿ ಸರ್ವರ್-ಸೈಡ್ ಜಾರಿಗೊಳಿಸಲಾಗಿದೆ, ಕೇವಲ UI ಯಲ್ಲಿ ಮರೆಮಾಡಿಲ್ಲ."}
-                  </p>
-                  <div className="text-[10px] font-mono text-[#C79A4E] font-bold uppercase tracking-wider">
-                    {lang === "en" ? "Tier: " : "ಸ್ತರ: "}{roleTier === "supervisor" ? (lang === "en" ? "Supervisor (PI and above)" : "ಮೇಲ್ವಿಚಾರಕ") : (lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ")}
+                  <span className="text-[10px] font-mono text-stone-500">
+                    {lang === "en" ? "Visual window proportion scaling modeled after Linux display ergonomics" : "Linux ಪ್ರದರ್ಶನ ದಕ್ಷತೆಯ ಮಾದರಿಯಲ್ಲಿ"}
+                  </span>
+                </div>
+                <ProportionalWidthWireframe activeWidth={transcriptWidth} onSelectWidth={setTranscriptWidth} lang={lang} />
+              </div>
+            </div>
+          )}
+
+          {/* 3. VOICE TAB */}
+          {activeTab === "voice" && (
+            <div className="space-y-5">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
+                  {lang === "en" ? "Primary Audio Language" : "ಪ್ರಾಥಮಿಕ ಆಡಿಯೊ ಭಾಷೆ"}
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { id: "en", label: "English (India)", native: "Articulate" },
+                    { id: "kn", label: "ಕನ್ನಡ (Kannada)", native: "ಸ್ಥಳೀಯ ಉಚ್ಚಾರಣೆ" },
+                    { id: "hi", label: "हिन्दी (Hindi)", native: "प्राकृतिक" },
+                  ].map((l) => (
+                    <button
+                      key={l.id}
+                      type="button"
+                      onClick={() => {
+                        const newLang = l.id as "en" | "kn" | "hi";
+                        const defaultSpeaker = newLang === "kn" ? "Anu" : (newLang === "hi" ? "Divya" : "Anna");
+                        setTtsSettings({ language: newLang, voice: defaultSpeaker });
+                      }}
+                      className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer ${
+                        ttsSettings.language === l.id
+                          ? "border-[#C79A4E] bg-[#C79A4E]/10 text-stone-100 font-bold"
+                          : "border-stone-800 bg-stone-950/40 text-stone-400 hover:border-stone-700"
+                      }`}
+                    >
+                      <p className="text-xs font-mono font-bold">{l.label}</p>
+                      <p className="text-[10px] font-mono text-stone-500">{l.native}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
+                  {lang === "en" ? "Voice Persona & Timbre" : "ಧ್ವನಿ ವ್ಯಕ್ತಿತ್ವ ಮತ್ತು ಟೋನ್"}
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { id: "buttery" as TtsStyle, name: lang === "en" ? "Buttery" : "ಬಟರಿ", badge: lang === "en" ? "Warm & Relaxed" : "ಆತ್ಮೀಯ", desc: lang === "en" ? "Smooth vocal delivery for fatigue-free listening" : "ದಣಿವು-ಮುಕ್ತ ಆಲಿಸುವಿಕೆ" },
+                    { id: "authoritative" as TtsStyle, name: lang === "en" ? "Authoritative" : "ಅಧಿಕೃತ", badge: lang === "en" ? "Command Briefing" : "ಕಮಾಂಡ್", desc: lang === "en" ? "Crisp, formal police command cadence" : "ಖಚಿತ ಕಮಾಂಡ್ ಟೋನ್" },
+                    { id: "calm" as TtsStyle, name: lang === "en" ? "Calm" : "ಶಾಂತ", badge: lang === "en" ? "Empathetic" : "ಸಹಾನುಭೂತಿ", desc: lang === "en" ? "Steady, reassuring cadence for sensitive cases" : "ಸ್ಥಿರ ಶೈಲಿ" },
+                    { id: "urgent" as TtsStyle, name: lang === "en" ? "Urgent" : "ತುರ್ತು", badge: lang === "en" ? "Tactical Dispatch" : "ಕ್ಷಿಪ್ರ", desc: lang === "en" ? "Fast-paced tactical briefing and alerts" : "ವೇಗದ ಬ್ರೀಫಿಂಗ್" },
+                  ].map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => { setTtsSettings({ style: p.id }); setVoicePersona(p.id); }}
+                      className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                        ttsSettings.style === p.id
+                          ? "border-[#C79A4E] bg-[#C79A4E]/10 ring-1 ring-[#C79A4E]/40"
+                          : "border-stone-800 bg-stone-950/40 hover:border-stone-700"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between w-full">
+                        <span className={`text-[11px] font-bold ${ttsSettings.style === p.id ? "text-[#C79A4E]" : "text-stone-200"}`}>{p.name}</span>
+                        <span className="text-[8.5px] font-mono px-1.5 py-0.5 rounded bg-stone-900 border border-stone-800 text-stone-400">{p.badge}</span>
+                      </div>
+                      <p className="text-[9.5px] text-stone-500 leading-snug mt-1">{p.desc}</p>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 pt-2 border-t border-stone-850">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
+                    {lang === "en" ? "Playback Speed" : "ಪ್ಲೇಬ್ಯಾಕ್ ವೇಗ"}
+                  </label>
+                  <div className="flex rounded-lg border border-stone-800 bg-stone-950/50 p-1 gap-1">
+                    {[{ id: "slower" as TtsSpeed, label: "0.85x" }, { id: "normal" as TtsSpeed, label: "1.0x" }, { id: "faster" as TtsSpeed, label: "1.25x" }].map((spd) => (
+                      <button
+                        key={spd.id}
+                        type="button"
+                        onClick={() => setTtsSettings({ speed: spd.id })}
+                        className={`flex-1 py-1 text-center text-[10.5px] font-mono font-bold rounded-md transition-all cursor-pointer ${
+                          ttsSettings.speed === spd.id ? "bg-[#C79A4E] text-stone-950" : "text-stone-400 hover:text-stone-200 hover:bg-stone-900"
+                        }`}
+                      >
+                        {spd.label}
+                      </button>
+                    ))}
                   </div>
-                  {roleTier === "supervisor" ? (
-                    <p className="text-[10.5px] text-stone-600 leading-relaxed pt-0.5">
-                      {lang === "en"
-                        ? "Additionally unlocks the Supervisor Dashboard: consistency-flag review/dismissal and audit ledger verification."
-                        : "ಹೆಚ್ಚುವರಿಯಾಗಿ ಮೇಲ್ವಿಚಾರಕ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್ ಅನ್ನು ಅನ್‌ಲಾಕ್ ಮಾಡುತ್ತದೆ: ಸ್ಥಿರತೆ-ಫ್ಲ್ಯಾಗ್ ಪರಿಶೀಲನೆ ಮತ್ತು ಆಡಿಟ್ ಲೆಡ್ಜರ್ ಪರಿಶೀಲನೆ."}
-                    </p>
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
+                    {lang === "en" ? "Neural Speaker" : "ನ್ಯೂರಲ್ ಸ್ಪೀಕರ್"}
+                  </label>
+                  <div className="flex rounded-lg border border-stone-800 bg-stone-950/50 p-1 gap-1">
+                    {(speakersByLang[ttsSettings.language] || speakersByLang.en).map((spk) => (
+                      <button
+                        key={spk.id}
+                        type="button"
+                        onClick={() => setTtsSettings({ voice: spk.id })}
+                        className={`flex-1 py-1 text-center text-[10.5px] font-mono font-bold rounded-md transition-all cursor-pointer ${
+                          ttsSettings.voice === spk.id ? "bg-[#C79A4E] text-stone-950" : "text-stone-400 hover:text-stone-200 hover:bg-stone-900"
+                        }`}
+                        title={spk.gender}
+                      >
+                        {spk.name}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-stone-850 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  {isPlayingPreview ? (
+                    <div className="flex items-center gap-1 h-5 px-2 bg-[#C79A4E]/10 border border-[#C79A4E]/30 rounded-md">
+                      <span className="w-1 bg-[#C79A4E] animate-pulse h-3 rounded-full" />
+                      <span className="w-1 bg-[#C79A4E] animate-pulse h-4 rounded-full" />
+                      <span className="w-1 bg-[#C79A4E] animate-pulse h-2 rounded-full" />
+                      <span className="text-[10px] text-[#C79A4E] font-mono font-bold ml-1.5">
+                        {lang === "en" ? "Streaming Preview..." : "ಪ್ಲೇ ಆಗುತ್ತಿದೆ..."}
+                      </span>
+                    </div>
                   ) : (
-                    <p className="text-[10.5px] text-stone-600 leading-relaxed pt-0.5">
-                      {lang === "en"
-                        ? "The Supervisor Dashboard (consistency-flag review, ledger verification) requires PI rank or above -- gated server-side, not just hidden from the sidebar."
-                        : "ಮೇಲ್ವಿಚಾರಕ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್‌ಗೆ PI ಶ್ರೇಣಿ ಅಥವಾ ಅದಕ್ಕಿಂತ ಹೆಚ್ಚಿನ ಅಗತ್ಯವಿದೆ -- ಸರ್ವರ್-ಸೈಡ್ ನಿರ್ಬಂಧಿಸಲಾಗಿದೆ."}
-                    </p>
+                    <span className="text-[10px] font-mono text-stone-500">
+                      {lang === "en" ? "Sample voice test sentence" : "ಮಾದರಿ ಧ್ವನಿ ಪರೀಕ್ಷೆ ವಾಕ್ಯ"}
+                    </span>
                   )}
                 </div>
-              </div>
-
-              {/* Session Timeout */}
-              <div className="bg-stone-950/40 p-4 rounded-xl border border-stone-900 flex gap-3.5 items-start">
-                <Clock className="w-6 h-6 text-[#C79A4E] shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <span className="font-bold text-stone-200 block text-[12px] font-mono uppercase tracking-wide">
-                    {t.settingsSessionTimeoutTitle}
+                <button
+                  type="button"
+                  onClick={handleTestVoice}
+                  disabled={isPreviewLoading}
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all cursor-pointer disabled:opacity-50 ${
+                    isPlayingPreview ? "bg-rose-500/20 text-rose-400 border border-rose-500/40 hover:bg-rose-500/30" : "bg-[#C79A4E] text-stone-950 hover:bg-[#E4C590]"
+                  }`}
+                >
+                  {isPreviewLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : isPlayingPreview ? <Square className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+                  <span>
+                    {isPreviewLoading ? (lang === "en" ? "Synthesizing..." : "ಸಂಶ್ಲೇಷಿಸಲಾಗುತ್ತಿದೆ...") : isPlayingPreview ? (lang === "en" ? "Stop" : "ನಿಲ್ಲಿಸಿ") : (lang === "en" ? "Preview Voice" : "ಧ್ವನಿ ಪೂರ್ವವೀಕ್ಷಣೆ")}
                   </span>
-                  <p className="text-[11px] leading-relaxed text-stone-500">
-                    {lang === "en" ? (
-                      <>Logs you out of this device and clears your local session after <strong>15 minutes</strong> of operator inactivity. (Note: does not remotely invalidate the underlying token -- real server-side revocation is a separate, tracked item.)</>
-                    ) : (
-                      <>ಆಪರೇಟರ್ ನಿಷ್ಕ್ರಿಯತೆಯ <strong>೧೫ ನಿಮಿಷಗಳ</strong> ನಂತರ ಈ ಸಾಧನದಿಂದ ಲಾಗ್ ಔಟ್ ಮಾಡಿ ನಿಮ್ಮ ಸ್ಥಳೀಯ ಅಧಿವೇಶನವನ್ನು ತೆರವುಗೊಳಿಸುತ್ತದೆ. (ಗಮನಿಸಿ: ಇದು ಮೂಲ ಟೋಕನ್ ಅನ್ನು ದೂರದಿಂದ ಅಮಾನ್ಯಗೊಳಿಸುವುದಿಲ್ಲ -- ನಿಜವಾದ ಸರ್ವರ್-ಸೈಡ್ ರದ್ದತಿ ಪ್ರತ್ಯೇಕ, ಟ್ರ್ಯಾಕ್ ಮಾಡಲಾದ ಐಟಂ ಆಗಿದೆ.)</>
-                    )}
-                  </p>
-                  <div className="text-[10px] font-mono text-amber-500 font-bold uppercase tracking-wider">
-                    {t.settingsPolicyEnforced}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* 4. ABOUT TAB */}
+          {activeTab === "about" && (
+            <div className="space-y-5 text-xs font-mono">
+              <div className="space-y-3">
+                <span className="text-xs font-bold text-stone-200 block uppercase tracking-wider">
+                  {t.settingsSecurityPoliciesTitle}
+                </span>
+                <div className="space-y-3">
+                  <div className="bg-stone-950/40 p-4 rounded-xl border border-stone-900 flex gap-3.5 items-start">
+                    <MapPin className="w-6 h-6 text-[#C79A4E] shrink-0 mt-0.5" />
+                    <div className="space-y-1 flex-1">
+                      <span className="font-bold text-stone-200 block text-[12px] uppercase tracking-wide">
+                        {lang === "en" ? "Access Scope" : "ಪ್ರವೇಶ ವ್ಯಾಪ್ತಿ"}
+                      </span>
+                      <p className="text-[11px] leading-relaxed text-stone-500">
+                        {lang === "en"
+                          ? "Every query is row-level scoped to your own station -- you only ever see cases, suspects, and analytics for your assigned unit, enforced server-side on every request, not just hidden in the UI."
+                          : "ಪ್ರತಿ ಪ್ರಶ್ನೆಯು ನಿಮ್ಮ ಸ್ವಂತ ಠಾಣೆಗೆ ಸೀಮಿತವಾಗಿದೆ."}
+                      </p>
+                      <div className="text-[10px] text-[#C79A4E] font-bold uppercase tracking-wider">
+                        {lang === "en" ? "Tier: " : "ಸ್ತರ: "}{roleTier === "supervisor" ? (lang === "en" ? "Supervisor (PI and above)" : "ಮೇಲ್ವಿಚಾರಕ") : (lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ")}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="bg-stone-950/40 p-4 rounded-xl border border-stone-900 flex gap-3.5 items-start">
+                    <Clock className="w-6 h-6 text-amber-400 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <span className="font-bold text-stone-200 block text-[12px] uppercase tracking-wide">{t.settingsSessionTimeoutTitle}</span>
+                      <p className="text-[11px] leading-relaxed text-stone-500">
+                        {lang === "en" ? (
+                          <>Logs you out of this device and clears your local session after <strong>15 minutes</strong> of operator inactivity.</>
+                        ) : (
+                          <>ಆಪರೇಟರ್ ನಿಷ್ಕ್ರಿಯತೆಯ <strong>೧೫ ನಿಮಿಷಗಳ</strong> ನಂತರ ಲಾಗ್ ಔಟ್ ಮಾಡುತ್ತದೆ.</>
+                        )}
+                      </p>
+                      <div className="text-[10px] text-amber-500 font-bold uppercase tracking-wider">{t.settingsPolicyEnforced}</div>
+                    </div>
+                  </div>
+                  <div className="bg-stone-950/40 p-4 rounded-xl border border-stone-900 flex gap-3.5 items-start">
+                    <ShieldCheck className="w-6 h-6 text-[#C79A4E] shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <span className="font-bold text-stone-200 block text-[12px] uppercase tracking-wide">{t.settingsTwoPersonTitle}</span>
+                      <p className="text-[11px] leading-relaxed text-stone-500">{t.settingsTwoPersonDesc}</p>
+                      <div className="text-[10px] text-emerald-500 font-bold uppercase tracking-wider">{t.settingsControlEngaged}</div>
+                    </div>
                   </div>
                 </div>
               </div>
 
-              {/* Two-Person Integrity */}
-              <div className="bg-stone-950/40 p-4 rounded-xl border border-stone-900 flex gap-3.5 items-start">
-                <User className="w-6 h-6 text-[#C79A4E] shrink-0 mt-0.5" />
-                <div className="space-y-1">
-                  <span className="font-bold text-stone-200 block text-[12px] font-mono uppercase tracking-wide">
-                    {t.settingsTwoPersonTitle}
-                  </span>
-                  <p className="text-[11px] leading-relaxed text-stone-500">
-                    {t.settingsTwoPersonDesc}
-                  </p>
-                  <div className="text-[10px] font-mono text-emerald-500 font-bold uppercase tracking-wider">
-                    {t.settingsControlEngaged}
+              <div className="space-y-3 pt-2">
+                <span className="text-xs font-bold text-stone-200 block uppercase tracking-wider">{t.settingsDbDiagTitle}</span>
+                <div className="p-3 bg-stone-900/50 border border-stone-800 rounded-lg flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Database className="w-4 h-4 text-stone-400" />
+                    <span className="text-stone-300">{t.settingsZcqlLabel}</span>
                   </div>
+                  <span className={`flex items-center gap-1.5 font-bold px-2 py-0.5 rounded border ${
+                    isDbConnected ? "text-emerald-400 bg-emerald-500/10 border-emerald-500/30" : "text-rose-400 bg-rose-500/10 border-rose-500/30"
+                  }`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${isDbConnected ? "bg-emerald-400 animate-pulse" : "bg-rose-400"}`} />
+                    {isDbConnected ? t.settingsOnline : t.settingsOffline}
+                  </span>
                 </div>
               </div>
             </div>
-          </div>
+          )}
         </div>
       </div>
 
