@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
+import { useClickOutside } from "../lib/useClickOutside";
 import { Bell, Check, X, ShieldAlert, AlertTriangle, Info, CheckCircle, Trash2, CheckSquare } from "lucide-react";
 
 interface CoworkInvitation {
@@ -24,6 +25,9 @@ export const NotificationBellPanel: React.FC = () => {
   const [invitations, setInvitations] = useState<CoworkInvitation[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"alerts" | "cowork">("alerts");
+  // Confirmed live bug: this panel had no click-outside handler at all --
+  // once open, the only way to close it was clicking the bell again.
+  const panelRef = useClickOutside<HTMLDivElement>(isOpen, useCallback(() => setIsOpen(false), []));
 
   const loadInvitations = async () => {
     try {
@@ -96,7 +100,7 @@ export const NotificationBellPanel: React.FC = () => {
   };
 
   return (
-    <div className="relative">
+    <div className="relative" ref={panelRef}>
       {/* Bell Icon Trigger */}
       <button
         onClick={() => setIsOpen((v) => !v)}

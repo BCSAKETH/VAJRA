@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useApp } from "../AppContext";
-import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2, PieChart as PieChartIcon, ShieldCheck, Scale, CheckCircle2, Sparkles } from "lucide-react";
+import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2, PieChart as PieChartIcon, BarChart3, ShieldCheck, Scale, CheckCircle2, Sparkles } from "lucide-react";
 import { OffenderTimelineStrip } from "./OffenderTimelineStrip";
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell, LineChart, Line, CartesianGrid, PieChart, Pie, ReferenceLine } from "recharts";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
@@ -277,6 +277,12 @@ interface ExpandedOverlayProps {
 export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType, data: rawData, onClose, inline = false, onFollowUpQuery, networkNewSinceTimestamp }) => {
   const { lang, officerName, badgeNumber } = useApp();
   const contentRef = useRef<HTMLDivElement>(null);
+  // Confirmed live feedback: case_distribution was hardcoded to a pie
+  // chart with no way for an officer to view the SAME data as a bar chart
+  // instead. The underlying data (data.series) already supports either --
+  // this is a pure presentation toggle over data that's already there, not
+  // a new data source.
+  const [distributionChartType, setDistributionChartType] = useState<"pie" | "bar">("pie");
 
   // Resolve sub-data across top-level keys, nested sub-objects, or panels
   const netData = (rawData?.nodes && rawData.nodes.length > 0)
@@ -1306,36 +1312,69 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                 </div>
               </div>
 
+              {/* Chart-type toggle: the SAME data.series, two presentations
+                  -- per live feedback that a pie-only view left no way to
+                  ask for a bar chart instead. */}
+              <div className="flex items-center gap-1.5 self-start">
+                <button
+                  type="button"
+                  onClick={() => setDistributionChartType("pie")}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10.5px] font-bold uppercase tracking-wide border cursor-pointer transition-colors ${distributionChartType === "pie" ? "bg-[#C79A4E]/15 border-[#C79A4E]/40 text-[#C79A4E]" : "border-stone-800 text-stone-500 hover:text-stone-300"}`}
+                >
+                  <PieChartIcon className="w-3 h-3" /> {lang === "en" ? "Pie" : "ಪೈ"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDistributionChartType("bar")}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10.5px] font-bold uppercase tracking-wide border cursor-pointer transition-colors ${distributionChartType === "bar" ? "bg-[#C79A4E]/15 border-[#C79A4E]/40 text-[#C79A4E]" : "border-stone-800 text-stone-500 hover:text-stone-300"}`}
+                >
+                  <BarChart3 className="w-3 h-3" /> {lang === "en" ? "Bar" : "ಬಾರ್"}
+                </button>
+              </div>
+
               <div className="flex-1 flex flex-col md:flex-row items-center justify-center gap-8 min-h-[280px]">
-                {/* Pie Chart */}
                 <div className="w-full md:w-1/2 h-[280px] flex items-center justify-center">
                   <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        data={data.series || []}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={60}
-                        outerRadius={90}
-                        paddingAngle={3}
-                        dataKey="value"
-                        // Recharts places one label per slice at a fixed angle with
-                        // no collision detection -- with ~20 real crime categories
-                        // (several under 2%), that reliably produced the overlapping,
-                        // cut-off label mess confirmed live. Below ~4% there's no
-                        // room to draw a readable label anyway; those slices are
-                        // still fully visible by color and covered completely by
-                        // the ledger list beside the chart, so hiding just the
-                        // on-chart label (not the data) is a strict readability win.
-                        label={(entry: any) => (entry.percent >= 0.04 ? `${entry.name} (${(entry.percent * 100).toFixed(0)}%)` : "")}
-                        labelLine={(entry: any) => entry.percent >= 0.04}
-                      >
-                        {(data.series || []).map((entry: any, index: number) => (
-                          <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }} />
-                    </PieChart>
+                    {distributionChartType === "pie" ? (
+                      <PieChart>
+                        <Pie
+                          data={data.series || []}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={60}
+                          outerRadius={90}
+                          paddingAngle={3}
+                          dataKey="value"
+                          // Recharts places one label per slice at a fixed angle with
+                          // no collision detection -- with ~20 real crime categories
+                          // (several under 2%), that reliably produced the overlapping,
+                          // cut-off label mess confirmed live. Below ~4% there's no
+                          // room to draw a readable label anyway; those slices are
+                          // still fully visible by color and covered completely by
+                          // the ledger list beside the chart, so hiding just the
+                          // on-chart label (not the data) is a strict readability win.
+                          label={(entry: any) => (entry.percent >= 0.04 ? `${entry.name} (${(entry.percent * 100).toFixed(0)}%)` : "")}
+                          labelLine={(entry: any) => entry.percent >= 0.04}
+                        >
+                          {(data.series || []).map((entry: any, index: number) => (
+                            <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                          ))}
+                        </Pie>
+                        <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }} />
+                      </PieChart>
+                    ) : (
+                      <BarChart data={data.series || []} layout="vertical" margin={{ left: 8, right: 16 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" horizontal={false} />
+                        <XAxis type="number" stroke="#94A3B8" fontSize={10} allowDecimals={false} />
+                        <YAxis type="category" dataKey="name" stroke="#94A3B8" fontSize={9.5} width={110} tick={{ fill: "#a89f92" }} />
+                        <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }} />
+                        <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                          {(data.series || []).map((entry: any, index: number) => (
+                            <Cell key={`bar-cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    )}
                   </ResponsiveContainer>
                 </div>
 
