@@ -4856,6 +4856,31 @@ async def _run_ai_turn_and_persist(
         "client_msg_id": f"{client_msg_id}-ai" if client_msg_id else None
     })
 
+    # Dynamic re-titling (Finals-part 3.md Section 53): CONFIRMED LIVE GAP --
+    # a session opened with a generic query ("hi", "status report") kept that
+    # title frozen forever even once the conversation pivoted into a real
+    # investigation. One-time upgrade at exactly turn 2 (2 user + 2 assistant
+    # messages now persisted); see retitle_after_second_turn's own docstring
+    # for why this deliberately doesn't continue re-titling past turn 2.
+    try:
+        if catalyst_app:
+            _msg_count_res = catalyst_app.zql().execute_query(
+                f"SELECT COUNT(ROWID) FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}'")
+            _msg_count = int(_msg_count_res[0].get("ChatMessage", {}).get("COUNT(ROWID)") or 0) if _msg_count_res else 0
+            if _msg_count == 4:
+                _first_user_res = catalyst_app.zql().execute_query(
+                    f"SELECT text FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}' "
+                    f"AND sender = 'user' ORDER BY ROWID ASC LIMIT 1")
+                _first_user_text = (_first_user_res[0].get("ChatMessage", {}).get("text") if _first_user_res else "") or ""
+                from dynamic_titler import retitle_after_second_turn
+                _new_title = retitle_after_second_turn(_first_user_text, message, agent_loop)
+                if _new_title and _update_chat_session_by_id(session_id, {"title": _new_title[:60]}):
+                    await connection_manager.broadcast(session_id, {
+                        "type": "session_title_updated", "session_id": session_id, "title": _new_title[:60],
+                    })
+    except Exception as e:
+        logger.debug(f"Dynamic re-titling at turn 2 failed (non-fatal): {e}")
+
     # --- Eager TTS Pre-Synthesis ---
     # Fire-and-forget: pre-synthesize the response and store it in the TTS
     # cache. By the time the officer reaches for the speaker button, the

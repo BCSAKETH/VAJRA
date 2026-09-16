@@ -511,7 +511,17 @@ export const AIChatScreen: React.FC = () => {
               if (!line) continue;
               try {
                 const payload = JSON.parse(line.slice(5).trim());
-                if (payload._reconnect || payload.type !== "message") continue;
+                if (payload._reconnect) continue;
+                // Dynamic re-titling (Finals-part 3.md Section 53): the
+                // backend renamed this session in the background after turn
+                // 2 -- refresh the sidebar's session list so the new title
+                // appears live, same live-push mechanism already used for a
+                // Cowork partner's message arriving.
+                if (payload.type === "session_title_updated") {
+                  bumpChatSessionsRefresh();
+                  continue;
+                }
+                if (payload.type !== "message") continue;
                 if (payload.client_msg_id && sentClientMsgIdsRef.current.has(payload.client_msg_id)) {
                   sentClientMsgIdsRef.current.delete(payload.client_msg_id);
                   if (payload.sender === "assistant") clearPending(activeSessionId ?? "__new__");
