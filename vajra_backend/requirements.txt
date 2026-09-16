@@ -20,6 +20,13 @@ Pillow>=10.0.0
 imageio-ffmpeg==0.6.0
 h3==4.5.0
 networkx==3.6.1
+# Universal Dynamic Plotting Engine (Finals-part 3.md Section 57) --
+# CONFIRMED these were NOT actually in this file despite the plan doc
+# claiming they were "already installed in the VAJRA environment" (true only
+# of this local dev machine, not the deployed AppSail build, which installs
+# from exactly this file). Headless Agg backend only -- no GUI deps needed.
+matplotlib==3.10.8
+seaborn==0.13.2
 cffi==2.1.1
 cryptography==50.0.1
 pycparser==3.0

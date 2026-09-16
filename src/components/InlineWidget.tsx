@@ -606,6 +606,12 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                 <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Offender Timeline" : "ಅಪರಾಧಿ ಕಾಲಾನುಕ್ರಮ"}</span>
               </>
             )}
+            {effectiveType === "custom_chart" && (
+              <>
+                <PieChart className="w-4 h-4 text-[#C79A4E]" />
+                <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{safeEffectiveData?.title || (lang === "en" ? "Custom Chart" : "ಕಸ್ಟಮ್ ಚಾರ್ಟ್")}</span>
+              </>
+            )}
             {effectiveType === "unit_scorecards" && (
               <>
                 <ShieldCheck className="w-4 h-4 text-[#C79A4E]" />
@@ -951,7 +957,22 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
               </div>
             </div>
           );
-        })() : effectiveType === "priority_concerns" ? (
+        })() : effectiveType === "custom_chart" ? (
+          // Universal Dynamic Plotting Engine (Section 57): server-rendered
+          // SVG from ksp_plot_engine.py -- a fixed matplotlib dispatcher over
+          // a whitelist of chart types with numeric-only real-data inputs,
+          // never model-authored markup, so rendering it directly is safe.
+          safeEffectiveData?.svg ? (
+            <div
+              className="w-full flex items-center justify-center bg-stone-950/40 rounded-lg p-2 [&_svg]:max-w-full [&_svg]:h-auto"
+              dangerouslySetInnerHTML={{ __html: safeEffectiveData.svg }}
+            />
+          ) : (
+            <div className="bg-stone-950/65 rounded-lg p-3 font-mono text-[11px] text-stone-400 border border-stone-900">
+              {lang === "en" ? "Chart could not be rendered." : "ಚಾರ್ಟ್ ರೆಂಡರ್ ಮಾಡಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ."}
+            </div>
+          )
+        ) : effectiveType === "priority_concerns" ? (
           <PriorityConcernsView data={safeEffectiveData} lang={lang} />
         ) : effectiveType === "news" ? (
           <NewsView data={safeEffectiveData} lang={lang} />

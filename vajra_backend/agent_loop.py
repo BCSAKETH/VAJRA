@@ -373,6 +373,36 @@ class VajraAgentLoop(CognitiveBrainMixin):
             }
         },
         {
+            "name": "generate_custom_chart",
+            "description": (
+                "Render a custom KSP-themed chart (bar/line/area/pie/radar/box) for a request that doesn't fit "
+                "the standard trend/risk/map widgets -- e.g. 'plot case types as a pie chart', 'radar comparison "
+                "of top districts', 'box plot of accused ages by crime type'. Data is always real (pulled live "
+                "from CaseMaster/Accused), never invented. Use ONLY for an explicit visualization request naming "
+                "a chart type or asking to 'plot'/'graph'/'chart' something -- not for a normal text question."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "chart_type": {"type": "string", "enum": ["bar", "line", "area", "pie", "radar", "box"], "description": "The kind of chart the officer asked for."},
+                    "data_source": {
+                        "type": "string",
+                        "enum": ["case_types_distribution", "crime_trend_by_month", "district_benchmark", "accused_age_by_crime_type"],
+                        "description": (
+                            "Which real, already-grounded dataset to plot: 'case_types_distribution' (case counts "
+                            "by crime category -- pairs with pie/bar), 'crime_trend_by_month' (monthly incident "
+                            "counts -- pairs with line/area), 'district_benchmark' (top districts' case volume + "
+                            "arrest/chargesheet/conviction rates -- pairs with radar/bar), 'accused_age_by_crime_type' "
+                            "(age spread of accused persons grouped by crime category -- pairs with box)."
+                        )
+                    },
+                    "district": {"type": "string", "description": "Optional district name to scope case_types_distribution or crime_trend_by_month to."},
+                    "crime_group": {"type": "string", "description": "Optional crime category name to scope crime_trend_by_month to."}
+                },
+                "required": ["chart_type", "data_source"]
+            }
+        },
+        {
             "name": "get_offender_risk",
             "description": "Retrieve re-offending risk score probability and SHAP feature attributions for a suspect.",
             "parameters": {
@@ -1902,6 +1932,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
         "detect_financial_ring": ["money laundering", "hawala", "mule account", "financial ring",
                                   "money network", "laundering", "money ring"],
         "query_hotspots": ["hotspot", "cluster map", "crime map", "dbscan", "where are crimes", "concentration"],
+        "generate_custom_chart": ["plot", "graph", "chart", "pie chart", "bar chart", "radar", "box plot",
+                                  "visualize", "visualise", "draw a", "make a chart"],
         "cluster_crime_patterns": ["serial offender", "serial pattern", "similar mo cases", "similar modus operandi",
                                    "unflagged pattern", "hidden pattern", "cluster of cases", "mo cluster",
                                    "same pattern crimes", "pattern nobody flagged"],
@@ -5948,6 +5980,118 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
             data = {"forecast": forecast_results}
             self._write_audit_log(employee_id, "Crime Trend Forecast", f"{district}-{crime_type}", f"Forecast {crime_type} in {district}", text_result, session_id)
+
+        # Universal Dynamic Plotting Engine (Finals-part 3.md Section 57):
+        # generate_custom_chart. Every data_source below reuses an EXISTING,
+        # already-grounded aggregation helper (or a real, bounded new one for
+        # accused_age_by_crime_type) -- this tool never asks the model to
+        # supply raw numbers itself (a model with no real data in front of it
+        # would have nothing to draw on but a plausible-looking guess), and
+        # ksp_plot_engine.render_chart never executes model-authored code
+        # (see that module's own docstring on why literal code-gen execution
+        # is out of scope here).
+        elif tool_name == "generate_custom_chart":
+            chart_type = (params.get("chart_type") or "bar").strip().lower()
+            data_source = (params.get("data_source") or "").strip()
+            district = self.sanitize_sql_input(params.get("district", ""))
+            crime_group = self.sanitize_sql_input(params.get("crime_group", ""))
+            import ksp_plot_engine
+
+            chart_spec = None
+            chart_title = ""
+            if data_source == "case_types_distribution":
+                dist_result = self._compute_case_types_distribution(district)
+                distribution = (dist_result or {}).get("distribution") or {}
+                if distribution:
+                    items = sorted(distribution.items(), key=lambda kv: kv[1], reverse=True)[:10]
+                    chart_spec = {
+                        "chart_type": chart_type if chart_type in ("pie", "bar") else "pie",
+                        "series": [{"name": "Cases", "values": [v for _, v in items]}],
+                        "categories": [k for k, _ in items],
+                    }
+                    chart_title = f"Case Types Distribution — {district or 'Statewide'}"
+            elif data_source == "crime_trend_by_month":
+                trend_result = self._compute_crime_trends(district, crime_group, 12)
+                series = (trend_result.get("data") or {}).get("series") or []
+                if series:
+                    chart_spec = {
+                        "chart_type": chart_type if chart_type in ("line", "area", "bar") else "line",
+                        "series": [{"name": crime_group or "Incidents", "values": [s["count"] for s in series]}],
+                        "categories": [s["label"] for s in series],
+                    }
+                    chart_title = f"Monthly Trend — {crime_group or 'All Crimes'} in {district or 'Statewide'}"
+            elif data_source == "district_benchmark":
+                benchmark = self._compute_district_benchmark(top_n=6)
+                if benchmark:
+                    if chart_type == "radar":
+                        chart_spec = {
+                            "chart_type": "radar",
+                            "series": [
+                                {"name": b["district"], "values": [
+                                    round((b.get("arrest_rate") or 0) * 100),
+                                    round((b.get("chargesheet_rate") or 0) * 100),
+                                    round((b.get("conviction_rate") or 0) * 100),
+                                ]} for b in benchmark[:4]  # radar legend gets crowded past ~4 series
+                            ],
+                            "categories": ["Arrest Rate %", "Chargesheet Rate %", "Conviction Rate %"],
+                        }
+                    else:
+                        chart_spec = {
+                            "chart_type": "bar",
+                            "series": [{"name": "Case Volume", "values": [b["case_volume"] for b in benchmark]}],
+                            "categories": [b["district"] for b in benchmark],
+                        }
+                    chart_title = "District Benchmark — Top Districts by Case Volume"
+            elif data_source == "accused_age_by_crime_type":
+                # New, bounded, real aggregation: Accused.AgeYear grouped by
+                # the crime category of the case they're accused in. Capped
+                # sample (same 250-row-batch discipline as this file's other
+                # full-table scans) -- a box plot doesn't need every row to
+                # show a real, representative spread.
+                age_by_group: Dict[str, List[float]] = {}
+                if catalyst_app:
+                    try:
+                        heads_res = catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead")
+                        heads = {r.get("CrimeHead", {}).get("CrimeHeadID"): r.get("CrimeHead", {}).get("CrimeGroupName") for r in heads_res}
+                        cm_res = catalyst_app.zql().execute_query("SELECT CaseMasterID, CrimeMajorHeadID FROM CaseMaster ORDER BY ROWID DESC LIMIT 250")
+                        cm_group = {int(r["CaseMaster"]["CaseMasterID"]): heads.get(r["CaseMaster"].get("CrimeMajorHeadID"), "Other")
+                                    for r in cm_res if r.get("CaseMaster", {}).get("CaseMasterID")}
+                        if cm_group:
+                            id_list = ",".join(str(c) for c in cm_group.keys())
+                            acc_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID, AgeYear FROM Accused WHERE CaseMasterID IN ({id_list})")
+                            for r in acc_res:
+                                a = r.get("Accused", {})
+                                cid, age = a.get("CaseMasterID"), a.get("AgeYear")
+                                if cid is not None and age is not None:
+                                    group = cm_group.get(int(cid), "Other")
+                                    age_by_group.setdefault(group, []).append(float(age))
+                    except Exception as e:
+                        logger.warning(f"accused_age_by_crime_type aggregation failed: {e}")
+                # Only groups with enough samples for a meaningful spread.
+                usable = {g: ages for g, ages in age_by_group.items() if len(ages) >= 3}
+                top_groups = sorted(usable.items(), key=lambda kv: len(kv[1]), reverse=True)[:5]
+                if top_groups:
+                    chart_spec = {
+                        "chart_type": "box",
+                        "series": [{"name": g, "values": ages} for g, ages in top_groups],
+                    }
+                    chart_title = "Accused Age Distribution by Crime Type (recent 250 cases)"
+
+            if not chart_spec:
+                text_result = f"No real data available yet to plot '{data_source}'{f' for {district}' if district else ''}."
+                data = {}
+            else:
+                chart_result = ksp_plot_engine.render_chart(title=chart_title, x_label="", y_label="", **chart_spec)
+                if chart_result.get("error"):
+                    text_result = f"Chart generation failed: {chart_result['error']}"
+                    data = {}
+                else:
+                    response_type = "custom_chart"
+                    final_answer = True
+                    data = {"title": chart_title, "svg": chart_result["svg"], "chart_type": chart_spec["chart_type"]}
+                    text_result = chart_title
+                    citations.append({"type": "Custom Chart", "id": data_source, "details": "Rendered from live CCTNS aggregates via ksp_plot_engine"})
+            self._write_audit_log(employee_id, "Custom Chart Generated", data_source, f"chart_type={chart_type}", text_result, session_id)
 
         # 9. get_offender_risk
         elif tool_name == "get_offender_risk":
