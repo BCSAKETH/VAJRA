@@ -826,10 +826,19 @@ def find_pocso_row(request_id: str) -> Optional[Dict[str, Any]]:
 
 
 def create_pocso_request(requester_badge: str, requester_name: str, case_no: str,
-                         reason: str = "") -> Dict[str, Any]:
+                         reason: str = "", session_id: Optional[str] = None,
+                         message_id: Optional[str] = None) -> Dict[str, Any]:
     """Create a pending POCSO access request. Returns the request metadata
     (includes request_id). A duplicate pending request for the same
-    badge+case is reused instead of creating a new one."""
+    badge+case is reused instead of creating a new one.
+
+    `session_id`/`message_id` (Finals-part 3.md Section 93): when present,
+    identify the exact redacted chat bubble this request was raised from, so
+    an approval can patch that message's text in place (see decide_pocso in
+    main.py) instead of forcing the officer to re-ask the same question for
+    a second, wholly avoidable ~15-30s GLM round-trip. Optional -- a request
+    raised any other way (e.g. a future non-chat entry point) still works,
+    it just falls back to the old "ask again" behavior on approval."""
     existing = find_active_pocso_request(requester_badge, case_no)
     if existing:
         return existing
@@ -840,6 +849,7 @@ def create_pocso_request(requester_badge: str, requester_name: str, case_no: str
         "reason": (reason or "").strip()[:500], "status": "pending",
         "approver_badge": None, "decided_at": None, "grant_expires_at": None,
         "created_at": datetime.utcnow().isoformat(),
+        "session_id": session_id or None, "message_id": message_id or None,
     }
     try:
         insert_proactive_alert({  # C.3: whitelist-checked, was a raw zcql_insert_row

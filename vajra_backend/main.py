@@ -3576,13 +3576,13 @@ def _find_message_row_by_msg_id(session_id: str, msg_id: str) -> Optional[Dict[s
         return None
     try:
         rows = catalyst_app.zql().execute_query(
-            f"SELECT ROWID, data_json FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}' ORDER BY sent_at DESC LIMIT 300"
+            f"SELECT ROWID, data_json, text, citations_json FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}' ORDER BY sent_at DESC LIMIT 300"
         )
         for r in rows:
             m = r.get("ChatMessage", {})
             d = _safe_json_loads(m.get("data_json"), {})
             if d.get("msg_id") == msg_id:
-                return {"rowid": m.get("ROWID"), "data": d}
+                return {"rowid": m.get("ROWID"), "data": d, "text": m.get("text"), "citations": _safe_json_loads(m.get("citations_json"), [])}
     except Exception as e:
         logger.warning(f"_find_message_row_by_msg_id failed: {e}")
     return None
@@ -11386,7 +11386,11 @@ async def request_pocso_access(payload: Dict[str, Any] = Body(default={}),
             raise HTTPException(status_code=400,
                                 detail="Please provide a detailed justification (minimum 10 characters).")
     officer_name = (getattr(request.state, "user_profile", {}) or {}).get("FirstName") or "Officer"
-    meta = create_pocso_request(badge, officer_name, case_no, reason=(payload.get("reason") or "").strip())
+    meta = create_pocso_request(
+        badge, officer_name, case_no, reason=(payload.get("reason") or "").strip(),
+        session_id=(payload.get("session_id") or "").strip() or None,
+        message_id=(payload.get("message_id") or "").strip() or None,
+    )
     return {"status": meta.get("status"), "request_id": meta.get("request_id"), "case_no": case_no}
 
 
@@ -11400,8 +11404,27 @@ async def pocso_request_status_for_case(case_no: str, request: Request = None,
     clean_case = (case_no or "").strip().upper()
     m = find_active_pocso_request(badge, clean_case)
     if m:
-        return {"status": m.get("status", "pending"), "request_id": m.get("request_id"),
-                "grant_expires_at": m.get("grant_expires_at")}
+        out = {"status": m.get("status", "pending"), "request_id": m.get("request_id"),
+               "grant_expires_at": m.get("grant_expires_at")}
+        # In-Place Dynamic Unmasking (Finals-part 3.md Section 93): this poll
+        # is the RELIABLE delivery path for the patched text -- the
+        # WebSocket broadcast in decide_pocso only actually reaches a
+        # browser for genuine multi-participant Cowork sessions (see
+        # cowork_feed.py's own docstring: AppSail's gateway 404s a raw WS
+        # upgrade, so a normal single-officer session never has that SSE
+        # stream open at all). Piggybacking the patched text on this
+        # already-proven-working 5s poll means the officer sees the
+        # unmasked name with zero re-prompt regardless of session type.
+        if out["status"] == "approved" and m.get("session_id") and m.get("message_id"):
+            try:
+                found = _find_message_row_by_msg_id(m["session_id"], m["message_id"])
+                if found and found.get("data", {}).get("pocso_unmasked"):
+                    out["text"] = found.get("text")
+                    out["data"] = found.get("data")
+                    out["message_id"] = m["message_id"]
+            except Exception as e:
+                logger.warning(f"pocso_request_status_for_case: patched-text lookup failed: {e}")
+        return out
     # Check if this request was recently rejected
     latest = find_latest_pocso_request(badge, clean_case)
     if latest and latest.get("status") == "rejected":
@@ -11472,6 +11495,78 @@ async def decide_pocso(request_id: str, payload: Dict[str, Any] = Body(default={
             "ROWID": row["rowid"], "AlertMessage": json.dumps(meta), "IsRead": True})
     except Exception as e:
         logger.warning(f"decide_pocso update: {e}")
+
+    # In-Place Dynamic Unmasking (Finals-part 3.md Section 93): previously
+    # an approval only flipped this ProactiveAlerts row -- the officer's
+    # already-redacted chat bubble stayed exactly as it was, so the frontend
+    # had to re-ask the same question (a second, wholly avoidable ~15-30s
+    # GLM round-trip) just to see the now-authorized name. When the request
+    # was raised from a specific chat bubble (session_id + message_id
+    # captured at request time), patch that bubble's persisted text directly
+    # and push it live -- zero re-prompt.
+    if decision == "approved" and meta.get("session_id") and meta.get("message_id"):
+        try:
+            found = _find_message_row_by_msg_id(meta["session_id"], meta["message_id"])
+            if found and found.get("text") and "REDACTED UNDER POCSO" in found["text"]:
+                case_id = agent_loop._resolve_case_no(meta.get("case_no")) if meta.get("case_no") else None
+                real_victim, real_complainant = None, None
+                if case_id is not None and catalyst_app:
+                    try:
+                        v_res = catalyst_app.zql().execute_query(f"SELECT VictimName FROM Victim WHERE CaseMasterID = {case_id} LIMIT 1")
+                        if v_res:
+                            real_victim = v_res[0].get("Victim", {}).get("VictimName")
+                    except Exception as e:
+                        logger.warning(f"decide_pocso: victim lookup failed: {e}")
+                    try:
+                        c_res = catalyst_app.zql().execute_query(f"SELECT ComplainantName FROM ComplainantDetails WHERE CaseMasterID = {case_id} LIMIT 1")
+                        if c_res:
+                            real_complainant = c_res[0].get("ComplainantDetails", {}).get("ComplainantName")
+                    except Exception as e:
+                        logger.warning(f"decide_pocso: complainant lookup failed: {e}")
+
+                provenance = (
+                    f"\n\n[🔓 UNMASKED · SUPERVISOR APPROVED by KSP-{request.state.kgid} "
+                    f"· Valid for {POCSO_GRANT_HOURS}h]"
+                )
+                new_text = found["text"]
+                # Replace every redaction instance -- a message can carry the
+                # same masked string more than once (victim named in both a
+                # summary line and a facts panel).
+                if real_victim:
+                    new_text = new_text.replace("[REDACTED UNDER POCSO ACT §74 JJA]", real_victim, 1)
+                if real_complainant:
+                    new_text = new_text.replace("[REDACTED UNDER POCSO ACT §74 JJA]", real_complainant, 1)
+                # Anything left unmatched (e.g. no real Victim/Complainant row
+                # for this case) stays masked -- never guess a name.
+                if new_text != found["text"]:
+                    new_text += provenance
+                    updated_data = dict(found["data"])
+                    updated_data["pocso_redacted"] = False
+                    updated_data["pocso_unmasked"] = True
+                    updated_data["approver_badge"] = request.state.kgid
+                    updated_data["grant_expires_at"] = meta.get("grant_expires_at")
+                    updated_data["_text_en"] = new_text
+                    updated_data["_text_kn"] = new_text
+                    zcql_update_row("ChatMessage", {
+                        "ROWID": found["rowid"], "text": new_text,
+                        "data_json": _fit_json(updated_data, 9000)})
+                    _SESSION_MESSAGES_CACHE.pop(meta["session_id"], None)
+                    await connection_manager.broadcast(meta["session_id"], {
+                        "type": "message_update", "session_id": meta["session_id"],
+                        "message_id": meta["message_id"], "text": new_text,
+                        "text_en": new_text, "text_kn": new_text,
+                        "data": updated_data, "citations": found.get("citations") or [],
+                    })
+                    try:
+                        agent_loop._write_audit_log(
+                            request.state.kgid, "POCSO In-Place Unmask", meta.get("case_no") or "unknown",
+                            f"Patched chat message {meta['message_id']} in session {meta['session_id']} with unmasked identity.",
+                            "Unmasked in place", meta["session_id"])
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning(f"decide_pocso: in-place unmask patch failed (officer falls back to re-asking): {e}")
+
     return {"status": decision, "request_id": meta.get("request_id"), "grant_expires_at": meta.get("grant_expires_at")}
 
 

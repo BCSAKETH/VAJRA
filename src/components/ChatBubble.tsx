@@ -65,6 +65,10 @@ interface ChatBubbleProps {
   // SOTIE (Section 10): Session and query context for telemetry binding
   sessionId?: string;
   pairedQuery?: string;
+  // Section 93: In-Place Dynamic Unmasking -- fired when a supervisor-
+  // approved POCSO request patches THIS message's text server-side, so the
+  // parent (owner of chatMessages) can update it without a re-ask/re-fetch.
+  onMessageContentUpdate?: (msgId: string, text: string, data: any) => void;
 }
 
 // Panel types that InlineWidget can render as a visual (everything else in a
@@ -483,7 +487,7 @@ const speakText = (text: string, lang: "en" | "kn" | "hi", onEnd: () => void, sp
 export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   message, lang, voicePersona, onExpandWidget, onRetry, onQuickReply, addToast, isLast,
   onEditMessage, onRetryVariant, totalVariants, activeVariantIndex, onCycleVariant, isReviewMode,
-  onTogglePin, sessionId, pairedQuery, textSize, ttsSettings,
+  onTogglePin, sessionId, pairedQuery, textSize, ttsSettings, onMessageContentUpdate,
 }) => {
   const t = translations[lang];
   const isAI = message.sender === "assistant";
@@ -586,6 +590,14 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   const [pocsoReqStatus, setPocsoReqStatus] = useState<"idle" | "pending" | "approved" | "rejected">("idle");
   const [isPocsoRequesting, setIsPocsoRequesting] = useState(false);
   const pocsoPollRef = useRef<number | null>(null);
+  // Section 93: always-current snapshot of the `message` prop for the
+  // polling callback below to read -- a plain closure over `message` would
+  // see whatever it was at the moment startPocsoPolling was called, which
+  // can be stale by the time the interval fires (the in-place unmask patch
+  // updates `message` via a WebSocket push that can land before or after
+  // this poll tick).
+  const messageRef = useRef(message);
+  useEffect(() => { messageRef.current = message; }, [message]);
 
   const startPocsoPolling = (caseNo: string) => {
     if (pocsoPollRef.current) window.clearInterval(pocsoPollRef.current);
@@ -607,12 +619,27 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                 ? (lang === "en" ? "Access Granted" : "ಪ್ರವೇಶ ಅನುಮೋದಿಸಲಾಗಿದೆ")
                 : (lang === "en" ? "Access Denied" : "ಪ್ರವೇಶ ನಿರಾಕರಿಸಲಾಗಿದೆ"),
               sd.status === "approved"
-                ? (lang === "en" ? "Supervisor approved POCSO access. Refreshing..." : "ಮೇಲ್ವಿಚಾರಕರು ಅನುಮೋದಿಸಿದ್ದಾರೆ. ನವೀಕರಿಸಲಾಗುತ್ತಿದೆ...")
+                ? (lang === "en" ? "Supervisor approved POCSO access." : "ಮೇಲ್ವಿಚಾರಕರು ಅನುಮೋದಿಸಿದ್ದಾರೆ.")
                 : (lang === "en" ? "Supervisor rejected POCSO unredaction request." : "ಮೇಲ್ವಿಚಾರಕರು ವಿನಂತಿಯನ್ನು ತಿರಸ್ಕರಿಸಿದ್ದಾರೆ."),
               sd.status === "approved" ? "Success" : "Warning"
             );
+            // Section 93: this SAME poll response carries the server-patched
+            // unmasked text once decide_pocso has resolved it (see
+            // pocso_request_status_for_case) -- zero re-prompt, no GLM
+            // round-trip. Only fall back to the old re-ask behavior if the
+            // patch hasn't landed after a short grace window (e.g. this
+            // request predates session_id/message_id capture, or the real
+            // Victim/Complainant row couldn't be resolved).
             if (sd.status === "approved") {
-              onRetry?.();
+              if (sd.text && sd.message_id && onMessageContentUpdate) {
+                onMessageContentUpdate(sd.message_id, sd.text, sd.data || {});
+              } else {
+                window.setTimeout(() => {
+                  if (!messageRef.current?.data?.pocso_unmasked) {
+                    onRetry?.();
+                  }
+                }, 2500);
+              }
             }
           }
         }
@@ -675,6 +702,10 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
         body: JSON.stringify({
           case_no: caseNo,
           reason: reason.trim(),
+          // Section 93: lets an approval patch THIS exact bubble in place
+          // (message_update WS event) instead of forcing a re-ask.
+          session_id: sessionId || undefined,
+          message_id: message.msgId || message.id || undefined,
         }),
       });
 

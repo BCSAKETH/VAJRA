@@ -521,6 +521,20 @@ export const AIChatScreen: React.FC = () => {
                   bumpChatSessionsRefresh();
                   continue;
                 }
+                // Section 93: secondary delivery path for the same in-place
+                // POCSO unmask patch ChatBubble's own polling already
+                // applies directly (the reliable path for a normal single-
+                // officer session -- see pocso_request_status_for_case's own
+                // comment on why this cowork stream isn't always open). Only
+                // reaches here for a genuine multi-participant session.
+                if (payload.type === "message_update") {
+                  setChatMessages((prev) => prev.map((m) =>
+                    (m.id === payload.message_id || m.msgId === payload.message_id)
+                      ? { ...m, text: payload.text, textEn: payload.text_en || payload.text, textKn: payload.text_kn || payload.text, data: { ...(m.data || {}), ...(payload.data || {}) }, citations: payload.citations || m.citations }
+                      : m
+                  ));
+                  continue;
+                }
                 if (payload.type !== "message") continue;
                 if (payload.client_msg_id && sentClientMsgIdsRef.current.has(payload.client_msg_id)) {
                   sentClientMsgIdsRef.current.delete(payload.client_msg_id);
@@ -1777,6 +1791,13 @@ export const AIChatScreen: React.FC = () => {
               onQuickReply={(text) => handleSend(text)}
               addToast={addToast}
               isLast={idx === displayMessages.length - 1}
+              onMessageContentUpdate={(msgId, text, data) => {
+                setChatMessages((prev) => prev.map((m) =>
+                  (m.id === msgId || m.msgId === msgId)
+                    ? { ...m, text, textEn: text, textKn: text, data: { ...(m.data || {}), ...data } }
+                    : m
+                ));
+              }}
               onEditMessage={msg.sender === "user" && msg.msgId ? (newText) => handleEditMessage(msg.msgId!, newText) : undefined}
               onRetryVariant={msg.sender === "assistant" && msg.msgId ? () => {
                 if (pairedUser) handleRetryVariant(msg.msgId!, pairedUser.text);
