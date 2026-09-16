@@ -1,7 +1,19 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
-import { Map as MapLibreMap, Marker, LngLatBounds } from "maplibre-gl";
+import { Map as MapLibreMap, Marker, LngLatBounds, setWorkerUrl } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Plus, Minus, Compass, Maximize2 } from "lucide-react";
+// CONFIRMED LIVE BUG (2026-09-16): MapLibre GL JS v6 is ESM-only and
+// locates its tile-processing worker via `new URL("./maplibre-gl-worker.mjs",
+// import.meta.url)` at runtime. Vite rewrites import.meta.url to this
+// component's own hashed production chunk and never emits a separate
+// maplibre-gl-worker.mjs file next to it, so that request 404s (silently
+// falls through to the SPA's index.html) and the map never finishes
+// loading -- exactly the "map is not loading" symptom reported live.
+// Routing the worker through Vite's own `?worker&url` import makes Vite
+// emit it as its own real, fetchable chunk and gives MapLibre the correct
+// URL via setWorkerUrl() before any Map is constructed.
+import maplibreWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
+setWorkerUrl(maplibreWorkerUrl);
 
 /**
  * Finals-part 3.md §21-22: Tactical 3D Vector Geospatial Intelligence map.

@@ -125,6 +125,16 @@ export const CrimeIntelligenceScreen: React.FC = () => {
         </select>
       </div>
 
+      {/* L204 + L210: real statutory/ethical disclosures, not decorative --
+          matches this project's own established discipline of stating a
+          feature's real limits/scope plainly rather than implying more
+          precision or authority than the underlying data supports. */}
+      <p className="text-[9.5px] text-stone-600 leading-relaxed shrink-0 -mt-1">
+        {lang === "en"
+          ? "3D building envelopes are derived from crowd-sourced OpenStreetMap data for spatial orientation only -- not surveyed architectural elevations. This view computes exclusively from historical registered-case density and day-of-week patterns; it never uses demographics, ethnicity, caste, or individual profiling."
+          : "3D ಕಟ್ಟಡ ಆಕಾರಗಳು OpenStreetMap ಡೇಟಾದಿಂದ ಪಡೆಯಲಾಗಿದೆ -- ಸಮೀಕ್ಷಿತ ವಾಸ್ತುಶಿಲ್ಪದ ಎತ್ತರಗಳಲ್ಲ. ಈ ವೀಕ್ಷಣೆಯು ಐತಿಹಾಸಿಕ ಪ್ರಕರಣ ಸಾಂದ್ರತೆಯಿಂದ ಮಾತ್ರ ಲೆಕ್ಕಹಾಕಲ್ಪಡುತ್ತದೆ."}
+      </p>
+
       <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-3">
         <div className="flex flex-col gap-3 min-h-0">
           <div className="flex-1 min-h-[320px]">

@@ -1,6 +1,7 @@
-import React from "react";
-import { Shield, Info, Loader2 } from "lucide-react";
+import React, { useState } from "react";
+import { Shield, Info, Loader2, Send, CheckCircle2 } from "lucide-react";
 import { TacticalStation } from "./Tactical3DMap";
+import { API_BASE } from "../config";
 
 /**
  * Finals-part 3.md §21, "Component C: Station Intelligence & Decision
@@ -9,8 +10,15 @@ import { TacticalStation } from "./Tactical3DMap";
  * doc's fabricated "SHAP TreeExplainer" attribution list or "Back-Test
  * Error Band: 0%-42% / Confidence: High" (hardcoded boilerplate in the
  * source document, identical for every station regardless of its real
- * data) or the "Send Patrol" dispatch button (no patrol/dispatch tracking
- * exists in this codebase's real schema).
+ * data).
+ *
+ * The doc's "Send Patrol" dispatch button IS built below, honestly: no
+ * patrol/dispatch-team routing system exists in this schema, so this
+ * calls POST /api/patrol/flag-station instead -- a real action with a
+ * real AuditLog entry + a real supervisor-visible ProactiveAlerts row
+ * (L206), never a fabricated "patrol dispatched" confirmation. L199
+ * (multi-click spam) covered both ends: button disables immediately on
+ * click, and the server enforces its own 60s per-station cooldown.
  */
 export interface StationForecastResult {
   status: "ok" | "insufficient_data" | "unavailable" | "error";
@@ -44,6 +52,28 @@ export const StationIntelligencePanel: React.FC<StationIntelligencePanelProps> =
   isLoading,
   lang = "en",
 }) => {
+  const [isFlagging, setIsFlagging] = useState(false);
+  const [flagResult, setFlagResult] = useState<"ok" | "error" | null>(null);
+
+  const handleFlagStation = async () => {
+    if (!station || isFlagging) return;
+    setIsFlagging(true);
+    setFlagResult(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/patrol/flag-station`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        body: JSON.stringify({ unit_id: station.unit_id, station_name: station.name }),
+      });
+      setFlagResult(res.ok ? "ok" : "error");
+    } catch {
+      setFlagResult("error");
+    } finally {
+      setIsFlagging(false);
+      setTimeout(() => setFlagResult(null), 4000);
+    }
+  };
+
   if (!station) {
     return (
       <div className="w-full h-full flex flex-col items-center justify-center p-8 text-center bg-stone-900/60 border border-stone-800 rounded-xl">
@@ -132,6 +162,25 @@ export const StationIntelligencePanel: React.FC<StationIntelligencePanelProps> =
           </div>
         </>
       )}
+
+      <div className="mt-auto pt-3 border-t border-stone-800">
+        <button
+          onClick={handleFlagStation}
+          disabled={isFlagging}
+          className="w-full py-2.5 px-4 rounded-lg bg-[#C79A4E] hover:bg-[#b0853e] disabled:bg-stone-800 text-stone-950 font-bold text-xs flex items-center justify-center gap-2 transition-all shadow-lg active:scale-[0.98] cursor-pointer disabled:cursor-not-allowed"
+        >
+          {isFlagging ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : flagResult === "ok" ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Send className="w-3.5 h-3.5" />}
+          <span>
+            {isFlagging
+              ? (lang === "en" ? "Flagging..." : "ಗುರುತಿಸಲಾಗುತ್ತಿದೆ...")
+              : flagResult === "ok"
+              ? (lang === "en" ? "Flagged -- supervisor notified" : "ಗುರುತಿಸಲಾಗಿದೆ")
+              : flagResult === "error"
+              ? (lang === "en" ? "Could not flag -- try again" : "ವಿಫಲವಾಗಿದೆ -- ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ")
+              : (lang === "en" ? "Flag Station for Patrol Attention" : "ಗಸ್ತು ಗಮನಕ್ಕಾಗಿ ಗುರುತಿಸಿ")}
+          </span>
+        </button>
+      </div>
     </div>
   );
 };

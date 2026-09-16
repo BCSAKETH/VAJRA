@@ -768,12 +768,26 @@ export const DistrictDashboardScreen: React.FC = () => {
               </div>
               {(() => {
                 const primaryLabel = selectedId && districtDetailCache ? districtDetailCache.district : (lang === "en" ? "Statewide" : "ರಾಜ್ಯವ್ಯಾಪಿ");
+                // L217: comparing a district against itself gives a
+                // meaningless (identical) comparison -- nudge toward a
+                // genuine differential instead of silently showing two
+                // copies of the same map.
+                const isSameDistrict = !!compareDistrict && compareDistrict === primaryLabel;
                 return (
-                  <ComparisonDeltaHUD
-                    primary={primaryStats ? { label: primaryLabel, ...primaryStats } : null}
-                    secondary={secondaryStats && compareDistrict ? { label: compareDistrict, ...secondaryStats } : null}
-                    lang={lang}
-                  />
+                  <>
+                    {isSameDistrict && (
+                      <div className="px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/25 text-[10.5px] text-amber-300/90 font-mono">
+                        {lang === "en"
+                          ? "Comparing this district against itself won't show anything new -- pick a different district on the right, or use the day-of-week filter on one side for a genuine temporal comparison."
+                          : "ಒಂದೇ ಜಿಲ್ಲೆಯನ್ನು ಹೋಲಿಸುವುದರಿಂದ ಹೊಸದೇನೂ ಕಾಣುವುದಿಲ್ಲ -- ಬಲಭಾಗದಲ್ಲಿ ಬೇರೆ ಜಿಲ್ಲೆಯನ್ನು ಆರಿಸಿ."}
+                      </div>
+                    )}
+                    <ComparisonDeltaHUD
+                      primary={primaryStats ? { label: primaryLabel, ...primaryStats } : null}
+                      secondary={secondaryStats && compareDistrict ? { label: compareDistrict, ...secondaryStats } : null}
+                      lang={lang}
+                    />
+                  </>
                 );
               })()}
               <div className={`grid gap-4 ${compareLayout === "stacked" ? "grid-cols-1" : "grid-cols-1 xl:grid-cols-2"}`}>
@@ -789,7 +803,20 @@ export const DistrictDashboardScreen: React.FC = () => {
                   />
                 </div>
                 <div>
-                  <p className="text-[10px] font-mono font-bold text-stone-500 uppercase mb-1.5">{compareDistrict || "—"}</p>
+                  <div className="flex items-center justify-between gap-2 mb-1.5 flex-wrap">
+                    <p className="text-[10px] font-mono font-bold text-stone-500 uppercase">{compareDistrict || "—"}</p>
+                    {/* L229: Section 185 BNSS territorial-jurisdiction
+                        disclosure on the comparative/secondary panel --
+                        real statute, same one already cited in Settings'
+                        Two-Person Integrity policy card. */}
+                    {compareDistrict && (
+                      <span className="text-[8.5px] font-mono font-bold uppercase tracking-wide text-stone-500 bg-stone-950/60 border border-stone-800 rounded px-1.5 py-0.5">
+                        {lang === "en"
+                          ? "Comparative Intel • §185 BNSS Clearance • Read-Only, Audit Logged"
+                          : "ತುಲನಾತ್ಮಕ • §185 BNSS • ಓದಲು-ಮಾತ್ರ"}
+                      </span>
+                    )}
+                  </div>
                   {compareDistrict && (
                     <DistrictSpatialAnalystPanel
                       key={compareDistrict}

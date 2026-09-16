@@ -320,6 +320,12 @@ ALL_VALID_ALERT_TYPES = {
     "OSINT_THREAT", "EXPORT_APPROVAL", "PROFILE_CHANGE", "POCSO_ACCESS", "DISTRICT_ACCESS",
     "REPEAT_OFFENDER", "SPATIAL_SPIKE",
     "SERIAL_PATTERN_AUTO_MATCH",  # §5.3/C.21: auto cross-match on new case insert
+    # Finals-part 3.md §21 (L206): the Tactical 3D Map's real replacement for
+    # the source document's fabricated "Send Patrol" dispatch button (no
+    # patrol/dispatch-team tracking table exists in this schema). An officer
+    # flagging a station for attention IS a real, honest action -- it just
+    # doesn't claim to route to a dispatch team that doesn't exist.
+    "PATROL_FLAG",
 }
 
 # Loophole L2: this is meant to be the ONLY sanctioned way to write a

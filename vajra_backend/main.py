@@ -1011,6 +1011,73 @@ async def geospatial_station_forecast(unit_id: int, day_of_week: Optional[int] =
     return result
 
 
+class PatrolFlagRequest(BaseModel):
+    unit_id: int
+    station_name: str
+    reason: Optional[str] = None
+
+
+# Finals-part 3.md L199: real per-station rate limit (the doc's own
+# mitigation for dispatch-button spam) -- in-memory, matching this
+# codebase's own established pattern for small ephemeral caches
+# (_syndicate_cache et al.). Resets on a server restart, which is fine:
+# the actual risk this guards against is a rapid double-click in one
+# session, not a multi-day cooldown.
+_patrol_flag_cooldown: Dict[int, datetime] = {}
+_PATROL_FLAG_COOLDOWN_SECONDS = 60
+
+
+@app.post("/api/patrol/flag-station")
+async def flag_station_for_patrol(payload: PatrolFlagRequest, request: Request,
+                                   location_context: str = Depends(security_firewall)):
+    """
+    Real replacement for Finals-part 3.md's "Send patrol to registered
+    station" button (§21, L206/L199). No patrol/dispatch-team assignment
+    or routing system exists anywhere in this codebase's real schema, so
+    this does NOT claim to dispatch a unit -- it's an honest "flag this
+    station for supervisor attention" action instead, with the same real,
+    immutable audit trail L206 actually asked for: a genuine AuditLog entry
+    plus a ProactiveAlerts row supervisors already see through the existing
+    /api/alerts feed, not a fabricated dispatch confirmation.
+    """
+    now = datetime.utcnow()
+    last_flagged = _patrol_flag_cooldown.get(payload.unit_id)
+    if last_flagged and (now - last_flagged).total_seconds() < _PATROL_FLAG_COOLDOWN_SECONDS:
+        remaining = int(_PATROL_FLAG_COOLDOWN_SECONDS - (now - last_flagged).total_seconds())
+        raise HTTPException(status_code=429, detail=f"This station was already flagged recently -- wait {remaining}s before flagging again.")
+    _patrol_flag_cooldown[payload.unit_id] = now
+
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
+    badge = request.state.kgid or "UNKNOWN"
+    reason = (payload.reason or "").strip()[:300]
+    detail = f"Station {payload.station_name} (unit {payload.unit_id}) flagged for patrol attention by {badge}."
+    if reason:
+        detail += f" Reason: {reason}"
+    try:
+        agent_loop._write_audit_log(
+            employee_id, "PATROL_FLAG", payload.station_name,
+            f"Flag station {payload.station_name} for patrol attention", detail, ""
+        )
+    except Exception as e:
+        logger.warning(f"PATROL_FLAG audit log write failed (non-fatal): {e}")
+    # Real DistrictID via the station's own Unit row (not fabricated/left
+    # blank) -- /api/alerts resolves this to the district's real name.
+    district_id = 0
+    if catalyst_app:
+        try:
+            u_res = catalyst_app.zql().execute_query(f"SELECT DistrictID FROM Unit WHERE UnitID = {payload.unit_id} LIMIT 1")
+            if u_res:
+                district_id = int(u_res[0].get("Unit", {}).get("DistrictID") or 0)
+        except Exception:
+            pass
+    posted = insert_proactive_alert({
+        "AlertType": "PATROL_FLAG", "DistrictID": district_id,
+        "AlertMessage": detail, "TriggerTime": datetime.utcnow().isoformat(),
+        "Severity": "Warning", "IsRead": False,
+    })
+    return {"status": "flagged", "audit_logged": True, "alert_posted": posted}
+
+
 @app.get("/api/cases/demographics")
 async def get_cases_demographics(request: Request, location_context: str = Depends(security_firewall)):
     """

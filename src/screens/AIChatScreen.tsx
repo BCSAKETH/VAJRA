@@ -378,6 +378,11 @@ export const AIChatScreen: React.FC = () => {
                 // any-increase-since-last-check signal.
                 DISTRICT_TREND_ANOMALY: "🧭 Supervisor Radar: District Anomaly",
                 OFFICER_WORKLOAD_ANOMALY: "🧭 Supervisor Radar: Officer Workload Anomaly",
+                // Finals-part 3.md §21: real replacement for the doc's fake
+                // "Send Patrol" dispatch confirmation -- an honest station
+                // attention-flag, audit-logged, surfaced the same way every
+                // other real alert already is.
+                PATROL_FLAG: "🚓 Station Flagged for Patrol Attention",
               };
               addNotification(
                 ALERT_TITLES[alert.type] ?? "🔔 System Alert",
