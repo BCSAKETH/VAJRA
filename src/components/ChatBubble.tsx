@@ -1448,6 +1448,16 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
               the original). */}
           {!isAI && isEditing ? (
             <div className="w-full flex flex-col gap-2">
+              {message.attachments && message.attachments.length > 0 && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/30 text-[11px] font-mono text-[#E4C590]">
+                  <Paperclip className="w-3.5 h-3.5 text-[#C79A4E] shrink-0" />
+                  <span>
+                    {lang === "en"
+                      ? `${message.attachments.length} attachment${message.attachments.length > 1 ? "s" : ""} preserved for Update & Run`
+                      : `${message.attachments.length} ಲಗತ್ತು(ಗಳು) ಅಪ್‌ಡೇಟ್‌ಗಾಗಿ ಸಂರಕ್ಷಿಸಲಾಗಿದೆ`}
+                  </span>
+                </div>
+              )}
               <textarea
                 value={editDraft}
                 onChange={(e) => setEditDraft(e.target.value)}

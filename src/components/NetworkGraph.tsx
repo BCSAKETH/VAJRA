@@ -362,6 +362,7 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
   };
   const handleBgMouseDown = (e: React.MouseEvent<SVGRectElement>) => {
     setIsDragging(true);
+    setSelectedEdge(null);
     dragState.current = { x: e.clientX, y: e.clientY, tx: zoom.tx, ty: zoom.ty };
   };
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -390,6 +391,18 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
     onFollowUpQuery(`how are ${selectedTraceNodes[0].label} and ${selectedTraceNodes[1].label} connected`);
     setSelectedForTrace([]);
   };
+
+  // CONFIRMED LIVE GAP (2026-09-16): edges rendered as plain <line>s with no
+  // interaction at all -- a real shared-case/transaction count backs every
+  // edge (weight/first_seen/txn_time/amount, see GraphEdge above) but an
+  // officer had no way to see it short of asking a follow-up chat question.
+  // Click-to-inspect surfaces that same real data directly on the graph.
+  const [selectedEdge, setSelectedEdge] = useState<GraphEdge | null>(null);
+  const nodeLabelById = useMemo(() => {
+    const m = new Map<string, string>();
+    nodes.forEach((n) => m.set(n.id, n.label));
+    return m;
+  }, [nodes]);
 
   if (nodes.length === 0) {
     return (
@@ -494,6 +507,41 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
           <button onClick={() => setSelectedForTrace([])} className="px-2 py-0.5 rounded-lg border border-stone-700 text-stone-400 cursor-pointer">Cancel</button>
         </div>
       )}
+      {/* Edge click inspection: real shared-case/transaction data behind the
+          clicked edge, not just a decorative line. */}
+      {selectedEdge && (() => {
+        const srcLabel = nodeLabelById.get(getEdgeEndpoints(selectedEdge).source) || getEdgeEndpoints(selectedEdge).source;
+        const tgtLabel = nodeLabelById.get(getEdgeEndpoints(selectedEdge).target) || getEdgeEndpoints(selectedEdge).target;
+        const rows: { label: string; value: string }[] = [];
+        if (selectedEdge.layer) rows.push({ label: "Layer", value: LAYER_LABELS[selectedEdge.layer] || selectedEdge.layer });
+        if (selectedEdge.weight != null) rows.push({ label: "Shared cases/txns", value: String(selectedEdge.weight) });
+        if (selectedEdge.hop != null && selectedEdge.hop > 1) rows.push({ label: "Hop distance", value: String(selectedEdge.hop) });
+        if (selectedEdge.amount != null) rows.push({ label: "Amount", value: `₹${selectedEdge.amount.toLocaleString("en-IN")}` });
+        if (selectedEdge.txn_time) rows.push({ label: "Transaction time", value: new Date(selectedEdge.txn_time).toLocaleString() });
+        if (selectedEdge.first_seen) rows.push({ label: "First seen", value: new Date(selectedEdge.first_seen).toLocaleDateString() });
+        return (
+          <div className="absolute top-2 right-2 z-10 bg-stone-900 border border-[#C79A4E]/40 rounded-xl px-3 py-2.5 shadow-xl text-[11px] max-w-[260px]">
+            <div className="flex items-start justify-between gap-2 mb-1.5">
+              <span className="text-stone-200 font-bold leading-snug">
+                {srcLabel} <span className="text-stone-500">↔</span> {tgtLabel}
+              </span>
+              <button onClick={() => setSelectedEdge(null)} className="text-stone-500 hover:text-stone-300 cursor-pointer shrink-0 leading-none" aria-label="Close">×</button>
+            </div>
+            {rows.length > 0 ? (
+              <div className="space-y-0.5 font-mono text-[10px] text-stone-400">
+                {rows.map((r) => (
+                  <div key={r.label} className="flex justify-between gap-3">
+                    <span className="text-stone-500">{r.label}:</span>
+                    <span className="text-stone-300">{r.value}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-[10px] text-stone-500 font-mono">No additional edge metadata on this connection.</p>
+            )}
+          </div>
+        );
+      })()}
       <svg
         width={width} height={Math.max(height, minHeight)} viewBox={`0 0 ${width} ${Math.max(height, minHeight)}`}
         className={`block mx-auto ${isDragging ? "cursor-grabbing" : "cursor-grab"}`}
@@ -522,14 +570,27 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
           // distinct from a direct 1-hop connection.
           const isMultiHop = ((rawE as GraphEdge).hop || 1) > 1;
           const edgeIsNew = isNew((rawE as GraphEdge).first_seen) || isNew((rawE as GraphEdge).txn_time);
+          const isSelectedEdge = selectedEdge === rawE;
+          const srcLabel = nodeLabelById.get(e.source) || e.source;
+          const tgtLabel = nodeLabelById.get(e.target) || e.target;
           return (
-            <g key={idx}>
+            <g key={idx} className="cursor-pointer" onClick={(ev) => { ev.stopPropagation(); setSelectedEdge(rawE as GraphEdge); }}>
+              {/* Wider transparent hit-area -- the visible stroke (1-6px) is
+                  too thin to reliably click on its own. */}
               <line
                 x1={from.x} y1={from.y}
                 x2={to.x} y2={to.y}
-                stroke={edgeIsNew ? "#5DCAA5" : "#64748b"}
-                strokeWidth={strokeWidth}
-                strokeOpacity={isMultiHop ? 0.35 : 0.65}
+                stroke="transparent"
+                strokeWidth={Math.max(14, strokeWidth + 10)}
+              >
+                <title>{`${srcLabel} ↔ ${tgtLabel}${(rawE as GraphEdge).weight ? ` · ${(rawE as GraphEdge).weight} shared` : ""}`}</title>
+              </line>
+              <line
+                x1={from.x} y1={from.y}
+                x2={to.x} y2={to.y}
+                stroke={isSelectedEdge ? "#C79A4E" : edgeIsNew ? "#5DCAA5" : "#64748b"}
+                strokeWidth={isSelectedEdge ? strokeWidth + 1 : strokeWidth}
+                strokeOpacity={isSelectedEdge ? 0.95 : isMultiHop ? 0.35 : 0.65}
                 strokeDasharray={isMultiHop ? "4 3" : undefined}
               />
               {edgeIsNew && (

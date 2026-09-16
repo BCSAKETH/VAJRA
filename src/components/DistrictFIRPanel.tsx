@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { Search, ShieldAlert, FolderOpen, Calendar, MapPin, Eye } from "lucide-react";
+import { Search, ShieldAlert, FolderOpen, Calendar, MapPin, Eye, Users, Phone, Car, Network, Scale } from "lucide-react";
 
 interface CaseRecord {
   CaseMasterID: number;
@@ -15,6 +15,43 @@ interface CaseRecord {
   AccusedCount: number;
 }
 
+interface AccusedRosterEntry {
+  accused_master_id: number | null;
+  name: string;
+  age: number | null;
+  gender: string;
+  phone: string | null;
+  vehicle: string | null;
+  status: string;
+}
+
+interface CaseConnection {
+  accused: string;
+  linked_case?: string;
+  associate?: string;
+  type: string;
+}
+
+interface CaseIntelligence {
+  case_no: string;
+  legal_sections: string[];
+  accused_roster: AccusedRosterEntry[];
+  connections: CaseConnection[];
+  syndicate: {
+    detection_status: string;
+    is_syndicate_member: boolean;
+    cluster_size?: number;
+    is_hub?: boolean;
+    hub_name?: string;
+    threat_score_pct?: number;
+    shared_case_count?: number;
+    cross_district?: boolean;
+    districts_involved?: string[];
+    synthetic_data_disclosure?: boolean;
+  };
+  section_111_bns_eligible: boolean;
+}
+
 // FIR fold-in (Part G): this used to be a standalone "FIR Repository" nav
 // screen (FIRSearchScreen.tsx) -- same precedent already set for Spatial
 // Analyst/Demographic Correlation, which retired as separate routes and now
@@ -25,23 +62,65 @@ interface CaseRecord {
 // `district` query param (server-side District->Unit->PoliceStationID
 // resolution, ANDed with the existing per-officer row-level security that's
 // unchanged either way).
+const PAGE_SIZE = 100;
+
 export const DistrictFIRPanel: React.FC<{ district: string | null }> = ({ district }) => {
   const { lang, addToast, setIsAuthenticated } = useApp();
   const [query, setQuery] = useState("");
   const [firs, setFirs] = useState<CaseRecord[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [selectedCase, setSelectedCase] = useState<CaseRecord | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [intelligence, setIntelligence] = useState<CaseIntelligence | null>(null);
+  const [isLoadingIntelligence, setIsLoadingIntelligence] = useState(false);
 
-  const handleSearch = async (searchStr: string) => {
+  // CONFIRMED LIVE GAP (2026-09-16, Finals-part 3.md Section 40): this
+  // dossier panel showed only 5 flat CaseMaster fields -- no accused names,
+  // no phone/vehicle assets, no cross-case connections, no syndicate
+  // context, even though all of that data exists in the database. Fetches
+  // the enrichment separately from the base case row (a second, slower
+  // call) so the panel still opens instantly with what it already has.
+  useEffect(() => {
+    if (!selectedCase) {
+      setIntelligence(null);
+      return;
+    }
+    let cancelled = false;
+    setIsLoadingIntelligence(true);
+    setIntelligence(null);
+    fetch(`${API_BASE}/api/cases/${encodeURIComponent(selectedCase.CrimeNo)}/intelligence`, {
+      headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled) setIntelligence(d); })
+      .catch(() => { if (!cancelled) setIntelligence(null); })
+      .finally(() => { if (!cancelled) setIsLoadingIntelligence(false); });
+    return () => { cancelled = true; };
+  }, [selectedCase]);
+
+  // CONFIRMED LIVE BUG (2026-09-16): both endpoints below used to hardcode
+  // LIMIT 300 server-side with no offset -- against a 1.69M-row CaseMaster
+  // table, an officer browsing (or searching a common term) could only ever
+  // see the newest 300 matches, with no way to page further. The backend now
+  // takes real limit/offset and returns {cases, total, has_more}; this
+  // fetches one page at a time and appends on "Load more" instead of always
+  // replacing, so paging in doesn't lose what's already on screen.
+  const fetchPage = async (searchStr: string, offset: number, append: boolean) => {
     try {
-      setIsLoading(true);
-      setErrorMsg(null);
+      if (append) setIsLoadingMore(true);
+      else {
+        setIsLoading(true);
+        setErrorMsg(null);
+      }
 
       const districtParam = district ? `district=${encodeURIComponent(district)}` : "";
+      const pageParams = `limit=${PAGE_SIZE}&offset=${offset}`;
       const endpoint = searchStr.trim()
-        ? `${API_BASE}/api/cases/search?query=${encodeURIComponent(searchStr)}${districtParam ? `&${districtParam}` : ""}`
-        : `${API_BASE}/api/cases/all${districtParam ? `?${districtParam}` : ""}`;
+        ? `${API_BASE}/api/cases/search?query=${encodeURIComponent(searchStr)}${districtParam ? `&${districtParam}` : ""}&${pageParams}`
+        : `${API_BASE}/api/cases/all${districtParam ? `?${districtParam}&${pageParams}` : `?${pageParams}`}`;
 
       const response = await fetch(endpoint, {
         headers: {
@@ -64,7 +143,11 @@ export const DistrictFIRPanel: React.FC<{ district: string | null }> = ({ distri
       }
 
       const data = await response.json();
-      if (!data || data.length === 0) {
+      const page: CaseRecord[] = Array.isArray(data) ? data : (data?.cases || []);
+      setTotal(Array.isArray(data) ? null : (data?.total ?? null));
+      setHasMore(Array.isArray(data) ? false : !!data?.has_more);
+
+      if (page.length === 0 && !append) {
         setFirs([]);
         if (searchStr.trim()) {
           addToast(
@@ -74,16 +157,20 @@ export const DistrictFIRPanel: React.FC<{ district: string | null }> = ({ distri
           );
         }
       } else {
-        setFirs(data);
+        setFirs((prev) => (append ? [...prev, ...page] : page));
       }
     } catch (err: any) {
       console.error(err);
       setErrorMsg(err.message || "Failed to contact database registry.");
-      setFirs([]);
+      if (!append) setFirs([]);
     } finally {
       setIsLoading(false);
+      setIsLoadingMore(false);
     }
   };
+
+  const handleSearch = (searchStr: string) => fetchPage(searchStr, 0, false);
+  const handleLoadMore = () => fetchPage(query, firs.length, true);
 
   useEffect(() => {
     setQuery("");
@@ -156,6 +243,17 @@ export const DistrictFIRPanel: React.FC<{ district: string | null }> = ({ distri
         ) : (
           <>
             <div className="flex-1 bg-stone-900/10 border border-stone-850 rounded-2xl overflow-hidden flex flex-col">
+              <div className="flex items-center justify-between px-4 pt-3 text-[10px] font-mono text-stone-500">
+                <span>
+                  {total != null
+                    ? lang === "en"
+                      ? `Showing ${firs.length} of ${total.toLocaleString()} matching records`
+                      : `${total.toLocaleString()} ದಾಖಲೆಗಳಲ್ಲಿ ${firs.length} ತೋರಿಸಲಾಗುತ್ತಿದೆ`
+                    : lang === "en"
+                    ? `${firs.length} records`
+                    : `${firs.length} ದಾಖಲೆಗಳು`}
+                </span>
+              </div>
               <div className="overflow-x-auto flex-1 max-h-[420px] overflow-y-auto">
                 <table className="w-full text-left text-xs font-mono border-collapse">
                   <thead className="sticky top-0 bg-stone-950/95 backdrop-blur-sm">
@@ -203,6 +301,23 @@ export const DistrictFIRPanel: React.FC<{ district: string | null }> = ({ distri
                   </tbody>
                 </table>
               </div>
+              {hasMore && (
+                <div className="border-t border-stone-850 p-2.5 shrink-0">
+                  <button
+                    onClick={handleLoadMore}
+                    disabled={isLoadingMore}
+                    className="w-full py-2 rounded-lg text-[10.5px] font-bold font-mono uppercase tracking-wider text-[#C79A4E] bg-[#C79A4E]/5 hover:bg-[#C79A4E]/10 border border-[#C79A4E]/20 transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    {isLoadingMore
+                      ? lang === "en"
+                        ? "Loading..."
+                        : "ಲೋಡ್ ಆಗುತ್ತಿದೆ..."
+                      : lang === "en"
+                      ? `Load next ${PAGE_SIZE}`
+                      : `ಮುಂದಿನ ${PAGE_SIZE} ಲೋಡ್ ಮಾಡಿ`}
+                  </button>
+                </div>
+              )}
             </div>
 
             {selectedCase && (
@@ -256,6 +371,101 @@ export const DistrictFIRPanel: React.FC<{ district: string | null }> = ({ distri
                       <span className="font-extrabold text-stone-250">{selectedCase.AccusedCount}</span>
                     </div>
                   </div>
+
+                  {isLoadingIntelligence && (
+                    <div className="border-t border-stone-850 pt-3.5 text-[10.5px] text-stone-500 font-mono">
+                      {lang === "en" ? "Resolving forensic intelligence..." : "ವಿಧಿವಿಜ್ಞಾನ ಮಾಹಿತಿ ಪಡೆಯಲಾಗುತ್ತಿದೆ..."}
+                    </div>
+                  )}
+
+                  {intelligence && (
+                    <>
+                      {intelligence.legal_sections.length > 0 && (
+                        <div className="border-t border-stone-850 pt-3.5 space-y-1.5">
+                          <div className="flex items-center gap-1.5 text-stone-200 font-bold font-mono text-[11px]">
+                            <Scale className="w-3.5 h-3.5 text-[#C79A4E]" />
+                            <span>{lang === "en" ? "Applied Legal Sections" : "ಅನ್ವಯಿಕ ಸೆಕ್ಷನ್‌ಗಳು"}</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {intelligence.legal_sections.map((s, i) => (
+                              <span key={i} className="px-2 py-0.5 rounded bg-stone-800 text-stone-300 text-[9.5px] font-mono">{s}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {intelligence.accused_roster.length > 0 && (
+                        <div className="border-t border-stone-850 pt-3.5 space-y-1.5">
+                          <div className="flex items-center gap-1.5 text-stone-200 font-bold font-mono text-[11px]">
+                            <Users className="w-3.5 h-3.5 text-[#C79A4E]" />
+                            <span>{lang === "en" ? "Accused Roster" : "ಆರೋಪಿಗಳ ಪಟ್ಟಿ"}</span>
+                          </div>
+                          <div className="space-y-1.5">
+                            {intelligence.accused_roster.map((a, i) => (
+                              <div key={i} className="bg-stone-950/45 rounded-lg p-2.5 border border-stone-900 font-mono text-[10px] space-y-1">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-stone-200 font-bold">{a.name}</span>
+                                  <span className="text-stone-500">{a.age ?? "?"}{a.gender !== "Unknown" ? `, ${a.gender}` : ""}</span>
+                                </div>
+                                <div className="text-stone-450">{a.status}</div>
+                                {(a.phone || a.vehicle) && (
+                                  <div className="flex items-center gap-3 text-stone-500 pt-0.5">
+                                    {a.phone && <span className="flex items-center gap-1"><Phone className="w-3 h-3" />{a.phone}</span>}
+                                    {a.vehicle && <span className="flex items-center gap-1"><Car className="w-3 h-3" />{a.vehicle}</span>}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {intelligence.connections.length > 0 && (
+                        <div className="border-t border-stone-850 pt-3.5 space-y-1.5">
+                          <div className="flex items-center gap-1.5 text-stone-200 font-bold font-mono text-[11px]">
+                            <Network className="w-3.5 h-3.5 text-[#C79A4E]" />
+                            <span>{lang === "en" ? "Criminal Connections" : "ಅಪರಾಧ ಸಂಪರ್ಕಗಳು"}</span>
+                          </div>
+                          <ul className="space-y-1 font-mono text-[10px] text-stone-400">
+                            {intelligence.connections.slice(0, 8).map((c, i) => (
+                              <li key={i}>
+                                <span className="text-stone-300">{c.accused}</span>
+                                {c.linked_case && <> · {lang === "en" ? "prior case" : "ಹಿಂದಿನ ಪ್ರಕರಣ"} <span className="text-stone-300">{c.linked_case}</span></>}
+                                {c.associate && <> · {lang === "en" ? "co-accused with" : "ಸಹ-ಆರೋಪಿ"} <span className="text-stone-300">{c.associate}</span></>}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {intelligence.syndicate.is_syndicate_member && (
+                        <div className="border-t border-rose-500/20 pt-3.5 space-y-1.5">
+                          <div className="flex items-center gap-1.5 text-rose-300 font-bold font-mono text-[11px]">
+                            <ShieldAlert className="w-3.5 h-3.5" />
+                            <span>{lang === "en" ? "Syndicate-Linked (co-offending cluster)" : "ಸಿಂಡಿಕೇಟ್ ಸಂಪರ್ಕ"}</span>
+                          </div>
+                          <div className="bg-rose-500/5 border border-rose-500/20 rounded-lg p-2.5 font-mono text-[10px] text-stone-400 space-y-1">
+                            <div>{lang === "en" ? "Cluster size" : "ಗುಂಪಿನ ಗಾತ್ರ"}: <span className="text-stone-200 font-bold">{intelligence.syndicate.cluster_size}</span></div>
+                            <div>{lang === "en" ? "Threat score" : "ಬೆದರಿಕೆ ಸ್ಕೋರ್"}: <span className="text-stone-200 font-bold">{intelligence.syndicate.threat_score_pct}%</span></div>
+                            {intelligence.syndicate.cross_district && (
+                              <div className="text-amber-400">{lang === "en" ? "Cross-district footprint" : "ಅಂತರ-ಜಿಲ್ಲಾ ಚಟುವಟಿಕೆ"}: {intelligence.syndicate.districts_involved?.join(", ")}</div>
+                            )}
+                            {intelligence.syndicate.synthetic_data_disclosure && (
+                              <div className="text-stone-600 italic">{lang === "en" ? "Includes synthetic demo phone/vehicle linkage data." : "ಸಿಂಥೆಟಿಕ್ ಡೆಮೊ ಡೇಟಾ ಒಳಗೊಂಡಿದೆ."}</div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {intelligence.section_111_bns_eligible && (
+                        <div className="text-[9.5px] font-mono px-2.5 py-1.5 rounded-lg bg-amber-500/10 border border-amber-500/25 text-amber-300">
+                          {lang === "en"
+                            ? "⚖ Heuristic flag: pattern may warrant Section 111 BNS (organized crime) review — not a legal determination."
+                            : "⚖ ಸೂಚನೆ: ಸೆಕ್ಷನ್ 111 BNS ಪರಿಶೀಲನೆ ಅಗತ್ಯವಿರಬಹುದು — ಕಾನೂನು ನಿರ್ಧಾರವಲ್ಲ."}
+                        </div>
+                      )}
+                    </>
+                  )}
                 </div>
               </div>
             )}

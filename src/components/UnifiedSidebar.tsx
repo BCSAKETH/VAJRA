@@ -4,7 +4,7 @@ import { API_BASE } from "../config";
 import {
   MessageSquarePlus, FolderKanban, Map, UserCheck, Loader2,
   ChevronLeft, ChevronRight, Shield, IdCard, Building2, X, LogOut,
-  Settings as SettingsIcon, Search, LayoutList, Radar,
+  Settings as SettingsIcon, Search, LayoutList,
 } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
 import { GroupedSessionList, SessionSummary, Investigation, SessionMetaEntry, GroupInfo } from "./GroupedSessionList";
@@ -130,7 +130,6 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
     // itself anymore; that entire list moved to the page this opens.
     { id: "investigations" as ScreenId, label: t.navInvestigations, icon: FolderKanban },
     { id: "district_dashboard", label: t.navDistrictDashboard, icon: Map },
-    { id: "crime_intelligence" as ScreenId, label: t.navCrimeIntelligence, icon: Radar },
     ...(roleTier === "supervisor" && badgeNumber === "2346836" ? [{ id: "supervisor" as ScreenId, label: t.navSupervisor, icon: UserCheck }] : []),
   ];
 
@@ -259,11 +258,6 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
           <div className="text-[10px] text-stone-600 text-center py-4 font-mono">{t.loadingLabel}</div>
         ) : (
           <div>
-            {isExpanded && (
-              <div className="text-[10px] font-black text-stone-500 uppercase tracking-wider px-1 mb-1">
-                {lang === "en" ? "Chats" : "ಚಾಟ್‌ಗಳು"}
-              </div>
-            )}
             <GroupedSessionList
               kind="chats"
               items={sessions}
@@ -274,6 +268,7 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
               isExpanded={isExpanded}
               onMutated={bumpRefresh}
               investigationsForPicker={investigations}
+              headerLabel={lang === "en" ? "Chats" : "ಚಾಟ್‌ಗಳು"}
             />
             {sessions.length > 0 && (
               <button

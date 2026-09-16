@@ -2069,29 +2069,28 @@ class VajraAgentLoop(CognitiveBrainMixin):
         batches for a statewide request."""
         if not catalyst_app:
             return []
-        where = f" WHERE PoliceStationID IN ({','.join(map(str, unit_filter_ids))})" if unit_filter_ids else ""
+        # CONFIRMED LIVE BUG (2026-09-16): an unbounded `GROUP BY
+        # PoliceStationID` caps at 300 output rows in ZCQL -- silently
+        # dropped most stations once Unit grew past 300 real rows (now
+        # 1,112). _get_case_counts_by_station batches by station ID so no
+        # single call's output can hit the cap. Also fixes the unpaginated
+        # `SELECT UnitID, UnitName FROM Unit` below the same way.
+        from main import _get_case_counts_by_station, _get_all_units
         try:
-            vol_rows = catalyst_app.zql().execute_query(
-                f"SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster{where} GROUP BY PoliceStationID")
+            all_volumes = _get_case_counts_by_station()
         except Exception as e:
             logger.warning(f"_compute_station_scorecards: volume query failed: {e}")
             return []
-        volumes: Dict[int, int] = {}
-        for r in vol_rows:
-            cm = r.get("CaseMaster", {})
-            psid = cm.get("PoliceStationID") or cm.get("policestationid")
-            cnt = cm.get("COUNT(CaseMasterID)") or cm.get("count(casemasterid)")
-            if psid is not None and cnt is not None:
-                try:
-                    volumes[int(psid)] = int(cnt)
-                except (TypeError, ValueError):
-                    continue
+        if unit_filter_ids:
+            allowed = set(unit_filter_ids)
+            volumes = {k: v for k, v in all_volumes.items() if k in allowed}
+        else:
+            volumes = all_volumes
         ranked = sorted(volumes.items(), key=lambda kv: kv[1], reverse=True)[:top_n]
 
         unit_names: Dict[int, str] = {}
         try:
-            for u in catalyst_app.zql().execute_query("SELECT UnitID, UnitName FROM Unit"):
-                ud = u.get("Unit", {})
+            for ud in _get_all_units():
                 if ud.get("UnitID"):
                     unit_names[int(ud["UnitID"])] = ud.get("UnitName") or f"Unit {ud['UnitID']}"
         except Exception:
@@ -2128,30 +2127,23 @@ class VajraAgentLoop(CognitiveBrainMixin):
             if dd.get("DistrictID"):
                 dist_names[int(dd["DistrictID"])] = dd.get("DistrictName") or f"District {dd['DistrictID']}"
 
+        # Both queries below used to be unbounded (GROUP BY / plain SELECT
+        # FROM Unit) and silently capped at 300 rows -- see
+        # _get_case_counts_by_station's docstring in main.py.
+        from main import _get_case_counts_by_station, _get_all_units
         try:
-            vol_rows = catalyst_app.zql().execute_query("SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster GROUP BY PoliceStationID")
+            station_volumes = _get_case_counts_by_station()
         except Exception as e:
             logger.warning(f"_compute_district_benchmark: volume query failed: {e}")
             return []
-        station_volumes: Dict[int, int] = {}
-        for r in vol_rows:
-            cm = r.get("CaseMaster", {})
-            psid = cm.get("PoliceStationID") or cm.get("policestationid")
-            cnt = cm.get("COUNT(CaseMasterID)") or cm.get("count(casemasterid)")
-            if psid is not None and cnt is not None:
-                try:
-                    station_volumes[int(psid)] = int(cnt)
-                except (TypeError, ValueError):
-                    continue
 
         try:
-            unit_res = catalyst_app.zql().execute_query("SELECT UnitID, DistrictID FROM Unit")
+            all_units = _get_all_units()
         except Exception as e:
             logger.warning(f"_compute_district_benchmark: unit->district map failed: {e}")
             return []
         station_to_district: Dict[int, int] = {}
-        for u in unit_res:
-            ud = u.get("Unit", {})
+        for ud in all_units:
             uid, did = ud.get("UnitID"), ud.get("DistrictID")
             if uid and did:
                 try:
@@ -4601,8 +4593,11 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # every peer case, instead of per-case lookups (bounded query cost).
         lookup_cache: Dict[str, Dict[Any, str]] = {"unit_name": {}, "unit_to_district": {}, "district_name": {}, "crime_group": {}, "fir_type": {}}
         try:
-            for u in catalyst_app.zql().execute_query("SELECT UnitID, UnitName, DistrictID FROM Unit"):
-                ud = u.get("Unit", {})
+            from main import _get_all_units
+            # Was an unpaginated `SELECT ... FROM Unit` -- silently capped
+            # at 300 of the now-1,112 real stations. See main.py's
+            # _get_all_units docstring.
+            for ud in _get_all_units():
                 if ud.get("UnitID"):
                     lookup_cache["unit_name"][ud["UnitID"]] = ud.get("UnitName")
                     lookup_cache["unit_to_district"][ud["UnitID"]] = ud.get("DistrictID")
@@ -5645,8 +5640,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         pass
                     station_names_by_id: Dict[Any, str] = {}
                     try:
-                        for u in catalyst_app.zql().execute_query("SELECT UnitID, UnitName FROM Unit"):
-                            ud = u.get("Unit", {})
+                        from main import _get_all_units
+                        # Was unpaginated -- capped at 300 of 1,112 real
+                        # stations. See main.py's _get_all_units docstring.
+                        for ud in _get_all_units():
                             if ud.get("UnitID"):
                                 station_names_by_id[str(ud["UnitID"])] = ud.get("UnitName")
                     except Exception:
@@ -6336,8 +6333,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
             else:
                 unit_names = {}
                 try:
-                    all_units = catalyst_app.zql().execute_query("SELECT UnitID, UnitName FROM Unit")
-                    unit_names = {str(u.get("Unit", {}).get("UnitID")): u.get("Unit", {}).get("UnitName") for u in all_units}
+                    from main import _get_all_units
+                    # Was unpaginated -- capped at 300 of 1,112 real
+                    # stations. See main.py's _get_all_units docstring.
+                    unit_names = {str(u.get("UnitID")): u.get("UnitName") for u in _get_all_units()}
                 except Exception:
                     pass
                 lines = [f"\"{suspect}\" has {len(conflicts)} date(s) with case records at MORE THAN ONE police station -- worth verifying whether this is one person or a duplicate-name data entry:"]
@@ -10360,13 +10359,17 @@ class VajraAgentLoop(CognitiveBrainMixin):
                  "response_type": "text", "data": {}, "citations": []}
         if not catalyst_app:
             return empty
+        # unit_to_district/counts below were both silently capped at 300
+        # rows (unpaginated Unit SELECT, unbounded GROUP BY) -- see
+        # main.py's _get_all_units / _get_case_counts_by_station
+        # docstrings. Both helpers here so their int-keyed outputs match.
+        from main import _get_all_units, _get_case_counts_by_station
         unit_to_district: Dict[Any, Any] = {}
         district_name: Dict[Any, str] = {}
         try:
-            for u in catalyst_app.zql().execute_query("SELECT UnitID, DistrictID FROM Unit"):
-                ud = u.get("Unit", {})
+            for ud in _get_all_units():
                 if ud.get("UnitID") is not None:
-                    unit_to_district[ud.get("UnitID")] = ud.get("DistrictID")
+                    unit_to_district[int(ud["UnitID"])] = ud.get("DistrictID")
             for d in catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District"):
                 dd = d.get("District", {})
                 district_name[dd.get("DistrictID")] = dd.get("DistrictName")
@@ -10375,11 +10378,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             return empty
         counts: Dict[Any, int] = {}
         try:
-            for r in catalyst_app.zql().execute_query(
-                    "SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster GROUP BY PoliceStationID"):
-                cm = r.get("CaseMaster", {})
-                sid = cm.get("PoliceStationID")
-                c = int(cm.get("COUNT(CaseMasterID)") or 0)
+            for sid, c in _get_case_counts_by_station().items():
                 did = unit_to_district.get(sid)
                 if did is not None and c:
                     counts[did] = counts.get(did, 0) + c
@@ -10544,11 +10543,14 @@ class VajraAgentLoop(CognitiveBrainMixin):
         if head_id is None:
             return {"data": {}, "text_result": f"No crime category matching '{cg}' is on record, so its district distribution can't be shown.",
                     "citation": {"type": "Crime Distribution", "id": cg, "details": "unmatched crime category"}, "final": True}
-        # unit -> district maps
+        # unit -> district maps. Was unpaginated -- capped at 300 of 1,112
+        # real stations. See main.py's _get_all_units docstring.
+        from main import _get_all_units
+        all_units = []
         unit_to_district, district_name = {}, {}
         try:
-            for u in catalyst_app.zql().execute_query("SELECT UnitID, DistrictID FROM Unit"):
-                ud = u.get("Unit", {})
+            all_units = _get_all_units()
+            for ud in all_units:
                 if ud.get("UnitID") is not None:
                     unit_to_district[ud.get("UnitID")] = ud.get("DistrictID")
             for d in catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District"):
@@ -10563,14 +10565,24 @@ class VajraAgentLoop(CognitiveBrainMixin):
             _yr_note = f" over the last {years_back} years (since {start_year})"
         counts = {}
         try:
-            q = (f"SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster "
-                 f"WHERE CrimeMajorHeadID = {head_id}{date_filter} GROUP BY PoliceStationID")
-            for r in catalyst_app.zql().execute_query(q):
-                cm = r.get("CaseMaster", {})
-                did = unit_to_district.get(cm.get("PoliceStationID"))
-                c = int(cm.get("COUNT(CaseMasterID)") or 0)
-                if did is not None and c:
-                    counts[did] = counts.get(did, 0) + c
+            # Was one unbounded GROUP BY -- a common crime type can easily
+            # span more than 300 of the now-1,112 real stations, silently
+            # hitting ZCQL's 300-output-row GROUP BY cap. Batched by
+            # station ID (<=250/call, same fix as
+            # _get_case_counts_by_station) so no single call's output can
+            # hit that cap.
+            station_ids = [u.get("UnitID") for u in all_units if u.get("UnitID") is not None]
+            for i in range(0, len(station_ids), 250):
+                batch = station_ids[i:i + 250]
+                id_list = ",".join(str(u) for u in batch)
+                q = (f"SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster "
+                     f"WHERE CrimeMajorHeadID = {head_id} AND PoliceStationID IN ({id_list}){date_filter} GROUP BY PoliceStationID")
+                for r in catalyst_app.zql().execute_query(q):
+                    cm = r.get("CaseMaster", {})
+                    did = unit_to_district.get(cm.get("PoliceStationID"))
+                    c = int(cm.get("COUNT(CaseMasterID)") or 0)
+                    if did is not None and c:
+                        counts[did] = counts.get(did, 0) + c
         except Exception as e:
             logger.warning(f"crime_type_by_district count failed: {e}")
         ranked = sorted(

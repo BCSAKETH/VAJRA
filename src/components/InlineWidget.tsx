@@ -326,6 +326,12 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
   // no other useState calls to piggyback the ordering on).
   const [chartExplanation, setChartExplanation] = useState<string | null>(null);
   const [isExplainingChart, setIsExplainingChart] = useState(false);
+  // Deterministic fallback (see explain_chart's _deterministic_chart_
+  // explanation): true when the narration text was computed directly from
+  // the chart's own real data rather than the LLM -- surfaced so an officer
+  // can tell the difference, not because it's less trustworthy (it's
+  // actually guaranteed-correct, unlike a model narration).
+  const [isDeterministicExplanation, setIsDeterministicExplanation] = useState(false);
   // F.14: Hotspot Time-Lapse -- null means "All" (the combined view, same as
   // before this item). Set to the latest real month once map data with more
   // than one month arrives (see the effectiveType === "map" render below).
@@ -382,6 +388,7 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
   const handleExplainChart = async () => {
     setIsExplainingChart(true);
     setChartExplanation(null);
+    setIsDeterministicExplanation(false);
     // Real bug found live: `safeEffectiveData` carries internal-only debug
     // fields (e.g. _zcql_provenance -- the raw SQL trail behind the
     // separate "View Grounding" button) alongside the real chart fields.
@@ -413,6 +420,7 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
       });
       const j = await res.json().catch(() => ({}));
       setChartExplanation(j?.explanation || (lang === "en" ? "Explanation unavailable right now." : "ವಿವರಣೆ ಸದ್ಯಕ್ಕೆ ಲಭ್ಯವಿಲ್ಲ."));
+      setIsDeterministicExplanation(!!j?.deterministic);
     } catch {
       setChartExplanation(lang === "en" ? "Explanation unavailable right now -- the chart data itself is still accurate." : "ವಿವರಣೆ ಸದ್ಯಕ್ಕೆ ಲಭ್ಯವಿಲ್ಲ -- ಚಾರ್ಟ್ ಡೇಟಾ ಇನ್ನೂ ನಿಖರವಾಗಿದೆ.");
     } finally {
@@ -646,7 +654,14 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
         {(isExplainingChart || chartExplanation) && (
           <div className="px-4 py-2 border-b border-[#C79A4E]/15 bg-[#C79A4E]/[0.03] text-[11px] text-stone-300 leading-relaxed flex items-start gap-2">
             <Sparkles className="w-3.5 h-3.5 text-[#C79A4E] shrink-0 mt-0.5" />
-            <span>{isExplainingChart ? (lang === "en" ? "Explaining..." : "ವಿವರಿಸಲಾಗುತ್ತಿದೆ...") : chartExplanation}</span>
+            <span>
+              {isExplainingChart ? (lang === "en" ? "Explaining..." : "ವಿವರಿಸಲಾಗುತ್ತಿದೆ...") : chartExplanation}
+              {!isExplainingChart && isDeterministicExplanation && (
+                <span className="ml-1.5 text-[9px] font-mono uppercase tracking-wide text-stone-500">
+                  {lang === "en" ? "(computed from chart data)" : "(ಚಾರ್ಟ್ ಡೇಟಾದಿಂದ ಲೆಕ್ಕಹಾಕಲಾಗಿದೆ)"}
+                </span>
+              )}
+            </span>
           </div>
         )}
 

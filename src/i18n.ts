@@ -78,7 +78,6 @@ export interface Translations {
   navAudit: string;
   navSettings: string;
   navDistrictDashboard: string;
-  navCrimeIntelligence: string;
   navInvestigations: string;
   investigationsScreenTitle: string;
   investigationsScreenDesc: string;
@@ -229,7 +228,6 @@ export const translations: Record<Language, Translations> = {
     navAudit: "Immutable Audit Ledger",
     navSettings: "System Settings",
     navDistrictDashboard: "District Analytics",
-    navCrimeIntelligence: "Crime Intelligence",
     navInvestigations: "Investigations",
     investigationsScreenTitle: "Investigations",
     investigationsScreenDesc: "Every case you own or collaborate on, in one place.",
@@ -368,7 +366,6 @@ export const translations: Record<Language, Translations> = {
     navAudit: "ಅಸ್ಥಿರವಲ್ಲದ ದಾಖಲೆ ಲಾಗ್",
     navSettings: "ಸಿಸ್ಟಮ್ ಸೆಟ್ಟಿಂಗ್ಗಳು",
     navDistrictDashboard: "ಜಿಲ್ಲಾ ವಿಶ್ಲೇಷಣೆ",
-    navCrimeIntelligence: "ಅಪರಾಧ ಗುಪ್ತಚರ",
     navInvestigations: "ತನಿಖೆಗಳು",
     investigationsScreenTitle: "ತನಿಖೆಗಳು",
     investigationsScreenDesc: "ನೀವು ಹೊಂದಿರುವ ಅಥವಾ ಸಹಯೋಗಿಸುವ ಪ್ರತಿಯೊಂದು ಪ್ರಕರಣ, ಒಂದೇ ಸ್ಥಳದಲ್ಲಿ.",

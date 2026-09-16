@@ -32,12 +32,6 @@ const DistrictDashboardScreen = lazy(() =>
 const InvestigationsScreen = lazy(() =>
   import("./screens/InvestigationsScreen").then((m) => ({ default: m.InvestigationsScreen }))
 );
-// §21-22: Tactical 3D Map -- its own chunk since it pulls in maplibre-gl
-// (a real, sizeable WebGL library), so nobody pays for it until they
-// actually open Crime Intelligence.
-const CrimeIntelligenceScreen = lazy(() =>
-  import("./screens/CrimeIntelligenceScreen").then((m) => ({ default: m.CrimeIntelligenceScreen }))
-);
 // "View all conversations" -- reached only via the sidebar's own link, no
 // nav-rail icon (same lazy-chunk pattern as every other secondary screen).
 const AllChatsScreen = lazy(() =>
@@ -96,7 +90,7 @@ const AppContent: React.FC = () => {
   // Every other screen is fine to unmount/remount (no long-lived state to
   // preserve) and stays lazy/code-split as before.
   const isChatActive = currentScreen === "ai_chat" || !(
-    ["supervisor", "audit", "district_dashboard", "investigations", "all_chats", "crime_intelligence"].includes(currentScreen)
+    ["supervisor", "audit", "district_dashboard", "investigations", "all_chats"].includes(currentScreen)
   );
 
   const renderOtherScreen = () => {
@@ -126,8 +120,6 @@ const AppContent: React.FC = () => {
         return <SupervisorDashboardScreen />;
       case "district_dashboard":
         return <DistrictDashboardScreen />;
-      case "crime_intelligence":
-        return <CrimeIntelligenceScreen />;
       default:
         return null;
     }

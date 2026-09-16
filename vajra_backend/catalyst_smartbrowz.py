@@ -573,11 +573,36 @@ def render_dossier_html(
     footer_left = "ವಜ್ರ ಕಾಗ್ನಿಟಿವ್ ಎಂಜಿನ್ • Zoho Catalyst SmartBrowz ನಿಂದ ರಚಿಸಲಾಗಿದೆ" if is_kn else "VAJRA Intelligence Engine • Powered by Zoho Catalyst SmartBrowz"
     footer_right = "ಅಧಿಕೃತ ಪರಿಶೀಲಿತ ದಾಖಲೆ (ಪುಟ ೧/೧)" if is_kn else "Official Verified Record (Page 1/1)"
 
-    # Build sections HTML with visual cards
+    # Build sections HTML with visual cards. A panel with role="user" is the
+    # officer's own question -- rendered as a right-aligned bubble with no
+    # numbering/type tag (it's not an "analysis section", just what they
+    # asked); every other panel (role absent or "assistant") keeps the
+    # existing numbered section-card treatment for AI analysis output, now
+    # additionally wrapped in a left-aligned bubble row so the two read as
+    # one continuous conversation, same left/right convention as the live
+    # chat (ChatBubble.tsx).
+    officer_label_text = "ಅಧಿಕಾರಿಯ ಪ್ರಶ್ನೆ" if is_kn else "OFFICER QUERY"
+    ai_label_text = "ವಜ್ರ.AI" if is_kn else "VAJRA.AI"
+    section_counter = 0
     sections_html = ""
-    for idx, panel in enumerate(panels):
-        p_title = panel.get("title_kn" if is_kn else "title_en") or panel.get("title_en") or f"Section {idx+1}"
+    for panel in panels:
+        p_role = panel.get("role", "assistant")
         p_text = panel.get("text_kn" if is_kn else "text") or panel.get("text") or ""
+
+        if p_role == "user":
+            formatted_body = _clean_and_format_text(p_text)
+            sections_html += f"""
+            <div class="chat-turn turn-officer">
+                <div class="chat-bubble bubble-officer">
+                    <span class="bubble-label label-officer">{officer_label_text}</span>
+                    <div class="bubble-text">{formatted_body}</div>
+                </div>
+            </div>
+            """
+            continue
+
+        section_counter += 1
+        p_title = panel.get("title_kn" if is_kn else "title_en") or panel.get("title_en") or f"Section {section_counter}"
         p_type = panel.get("type", "text").lower()
         p_data = panel.get("data")
 
@@ -585,15 +610,20 @@ def render_dossier_html(
         visual_card = _render_visual_widget_card(p_type, p_data, lang) if p_data else ""
 
         sections_html += f"""
-        <div class="section-card">
-            <div class="section-header">
-                <span class="section-num">{idx+1:02d}</span>
-                <span class="section-title">{p_title}</span>
-                <span class="section-type">[{p_type.upper()}]</span>
-            </div>
-            <div class="section-body">
-                {formatted_body}
-                {visual_card}
+        <div class="chat-turn turn-ai">
+            <div class="chat-bubble bubble-ai" style="max-width: 92%;">
+                <span class="bubble-label label-ai">{ai_label_text}</span>
+                <div class="section-card" style="border: none; margin-bottom: 0;">
+                    <div class="section-header">
+                        <span class="section-num">{section_counter:02d}</span>
+                        <span class="section-title">{p_title}</span>
+                        <span class="section-type">[{p_type.upper()}]</span>
+                    </div>
+                    <div class="section-body" style="padding: 6px 0 0 0;">
+                        {formatted_body}
+                        {visual_card}
+                    </div>
+                </div>
             </div>
         </div>
         """
@@ -739,6 +769,51 @@ def render_dossier_html(
         padding: 8px 10px;
         font-size: 9.5pt;
         color: #334155;
+    }}
+    /* CONFIRMED LIVE GAP (2026-09-16): the dossier used to discard every
+       officer question entirely (only assistant turns were ever added to
+       `panels`) and render each surviving assistant turn as an identical,
+       anonymous numbered "section-card" -- a printed record with no visible
+       question context and no visual distinction between who said what,
+       unlike the actual on-screen conversation (ChatBubble.tsx: AI
+       left-aligned, officer right-aligned). These mirror that same
+       convention for the printed dossier. */
+    .chat-turn {{
+        display: flex;
+        margin-bottom: 10px;
+        page-break-inside: avoid;
+    }}
+    .chat-turn.turn-officer {{ justify-content: flex-end; }}
+    .chat-turn.turn-ai {{ justify-content: flex-start; }}
+    .chat-bubble {{
+        max-width: 82%;
+        border-radius: 10px;
+        padding: 8px 12px;
+    }}
+    .bubble-officer {{
+        background: #fdf6ea;
+        border: 1px solid #eacd8f;
+        border-bottom-right-radius: 2px;
+    }}
+    .bubble-ai {{
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-bottom-left-radius: 2px;
+    }}
+    .bubble-label {{
+        font-size: 7.5pt;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        margin-bottom: 4px;
+        display: block;
+    }}
+    .bubble-label.label-officer {{ color: #92400E; text-align: right; }}
+    .bubble-label.label-ai {{ color: #475569; }}
+    .bubble-text {{
+        font-size: 9.5pt;
+        color: #334155;
+        line-height: 1.45;
     }}
     .section-subhead {{
         font-size: 9.5pt;

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from "react";
 import { geoMercator, geoPath } from "d3-geo";
 import type { Feature, Geometry } from "geojson";
 import { useApp } from "../AppContext";
@@ -21,18 +21,35 @@ import {
   Area,
   CartesianGrid,
 } from "recharts";
-import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2, Rows2, FolderOpen, ArrowLeft } from "lucide-react";
+import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2, Rows2, FolderOpen, ArrowLeft, Box } from "lucide-react";
 import { DistrictSpatialAnalystPanel } from "../components/DistrictSpatialAnalystPanel";
 import { DistrictDemographicPanel } from "../components/DistrictDemographicPanel";
 import { ComparisonDeltaHUD } from "../components/ComparisonDeltaHUD";
 import { DistrictFIRPanel } from "../components/DistrictFIRPanel";
 import { ReasonCollectionModal } from "../components/ReasonCollectionModal";
 
+// Own chunk, same as the retired CrimeIntelligenceScreen.tsx used to keep --
+// it pulls in maplibre-gl (a real, sizeable WebGL library), so nobody pays
+// for it until they actually open the Tactical 3D Map tab.
+const DistrictTacticalPanel = lazy(() =>
+  import("../components/DistrictTacticalPanel").then((m) => ({ default: m.DistrictTacticalPanel }))
+);
+
 interface DistrictSummaryRow {
   district_id: number;
   district: string;
   active_cases: number;
   most_wanted: { suspect: string; case_count: number } | null;
+}
+
+// Entries for jurisdictions with real case counts but no map polygon:
+// statewide special units (CID, Karnataka Railways, Coastal Security
+// Police, ISD Bengaluru) and Vijayanagara (a real district created 2021,
+// not yet in the map's 2011-census-era polygon dataset). Backend folds
+// city commissionerates into their parent district's map tile instead of
+// listing them here -- see DISTRICT_FOLD_MAP in vajra_backend/main.py.
+interface SpecialUnitRow extends DistrictSummaryRow {
+  reason: "special_unit" | "unmapped_district";
 }
 
 interface DistrictDetail {
@@ -115,6 +132,16 @@ const GEOJSON_TO_DB_NAME: Record<string, string> = {
   "Shivamogga": "Shimoga",
 };
 
+function formatSummaryRelativeTime(isoString: string): string {
+  const then = new Date(isoString).getTime();
+  if (Number.isNaN(then)) return "";
+  const diffSec = Math.max(0, Math.floor((Date.now() - then) / 1000));
+  if (diffSec < 60) return "just now";
+  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+  return `${Math.floor(diffSec / 86400)}d ago`;
+}
+
 const PIE_COLORS = ["#C79A4E", "#5DCAA5", "#9085e9", "#e66767", "#3987e5", "#F59E0B", "#77a6e0", "#c98fd6"];
 const OUTCOME_COLORS: Record<string, string> = { Solved: "#5DCAA5", Unsolved: "#E24B4A", Unclassified: "#77746e" };
 
@@ -139,7 +166,10 @@ const StatCard: React.FC<{ icon: React.ElementType; label: string; value: React.
 export const DistrictDashboardScreen: React.FC = () => {
   const { lang, addToast } = useApp();
   const [rows, setRows] = useState<DistrictSummaryRow[]>([]);
+  const [specialUnits, setSpecialUnits] = useState<SpecialUnitRow[]>([]);
+  const [summaryComputedAt, setSummaryComputedAt] = useState<string | null>(null);
   const [isLoadingSummary, setIsLoadingSummary] = useState(true);
+  const [isRefreshingSummary, setIsRefreshingSummary] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [hoveredId, setHoveredId] = useState<number | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -199,7 +229,7 @@ export const DistrictDashboardScreen: React.FC = () => {
   // scoped to whichever district/station is currently selected -- instead
   // of an officer navigating away and having to re-establish which district
   // they meant on a disconnected page.
-  const [detailTab, setDetailTab] = useState<"overview" | "spatial" | "demographic" | "fir">("overview");
+  const [detailTab, setDetailTab] = useState<"overview" | "spatial" | "demographic" | "fir" | "tactical">("overview");
   const [gatedInfo, setGatedInfo] = useState<{ districtId: number; message: string } | null>(null);
   const [accessRequestId, setAccessRequestId] = useState<string | null>(null);
   const [accessRequestStatus, setAccessRequestStatus] = useState<"idle" | "pending" | "approved" | "rejected">("idle");
@@ -426,10 +456,11 @@ export const DistrictDashboardScreen: React.FC = () => {
     });
   }, []);
 
-  // Fixed architecture: every number is a live query, no caching. One
-  // grouped summary fetch per load/refresh -- never per-hover. Also refetch
-  // on window focus so newly-added cases (e.g. via simulate_new_cases.py)
-  // show up without a manual reload.
+  // Served from a validated backend snapshot cache (near-instant) -- see
+  // /api/dashboard/districts/summary in vajra_backend/main.py. Fetched
+  // once per load, plus on window focus, exactly as before; the Refresh
+  // button below (handleRefreshSummary) is now the only thing that
+  // triggers the real live recomputation.
   const fetchSummary = useCallback(async () => {
     setIsLoadingSummary(true);
     setErrorMsg(null);
@@ -440,6 +471,8 @@ export const DistrictDashboardScreen: React.FC = () => {
       if (!res.ok) throw new Error("Failed to load district summary.");
       const data = await res.json();
       setRows(data.districts || []);
+      setSpecialUnits(data.special_units || []);
+      setSummaryComputedAt(data.computed_at || null);
     } catch (err: any) {
       console.error(err);
       setErrorMsg(err.message || "District summary unreachable.");
@@ -447,6 +480,38 @@ export const DistrictDashboardScreen: React.FC = () => {
       setIsLoadingSummary(false);
     }
   }, []);
+
+  // Runs the real live recomputation, validated before it's allowed to
+  // overwrite the served snapshot. Rejections (cooldown or a failed
+  // validation check) keep whatever's currently on screen and surface the
+  // reason via toast -- the officer never sees a blank/partial map.
+  const handleRefreshSummary = useCallback(async () => {
+    setIsRefreshingSummary(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/dashboard/districts/summary/refresh`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.status === "rejected") {
+        addToast(
+          lang === "en" ? "Refresh Not Applied" : "ರಿಫ್ರೆಶ್ ಅನ್ವಯಿಸಲಾಗಿಲ್ಲ",
+          data.reason || (lang === "en" ? "Previous data retained." : "ಹಿಂದಿನ ಡೇಟಾ ಉಳಿಸಿಕೊಳ್ಳಲಾಗಿದೆ."),
+          "Warning"
+        );
+        return;
+      }
+      await fetchSummary();
+    } catch (err: any) {
+      addToast(
+        lang === "en" ? "Refresh Failed" : "ರಿಫ್ರೆಶ್ ವಿಫಲವಾಗಿದೆ",
+        err.message || (lang === "en" ? "Could not reach the server." : "ಸರ್ವರ್ ತಲುಪಲಾಗಲಿಲ್ಲ."),
+        "Critical"
+      );
+    } finally {
+      setIsRefreshingSummary(false);
+    }
+  }, [fetchSummary, lang, addToast]);
 
   useEffect(() => {
     fetchSummary();
@@ -655,18 +720,26 @@ export const DistrictDashboardScreen: React.FC = () => {
           </h2>
           <p className="text-[11px] text-stone-550 leading-relaxed font-mono">
             {lang === "en"
-              ? "Hover a district for live case counts. Click to drill into socio-economic, hotspot, and outcome analytics -- every figure is a live query, never cached."
-              : "ಜೀವಂತ ಪ್ರಕರಣ ಎಣಿಕೆಗಾಗಿ ಜಿಲ್ಲೆಯ ಮೇಲೆ ಹೋವರ್ ಮಾಡಿ. ಸಾಮಾಜಿಕ-ಆರ್ಥಿಕ ವಿಶ್ಲೇಷಣೆಗಾಗಿ ಕ್ಲಿಕ್ ಮಾಡಿ."}
+              ? "Overview map loads from a validated snapshot for speed -- click Refresh to recompute live. Drill into a district for socio-economic, hotspot, and outcome analytics -- those stay live queries."
+              : "ವೇಗಕ್ಕಾಗಿ ಅವಲೋಕನ ನಕ್ಷೆ ಪರಿಶೀಲಿಸಿದ ಸ್ನ್ಯಾಪ್‌ಶಾಟ್‌ನಿಂದ ಲೋಡ್ ಆಗುತ್ತದೆ -- ಇತ್ತೀಚಿನದಕ್ಕಾಗಿ ರಿಫ್ರೆಶ್ ಕ್ಲಿಕ್ ಮಾಡಿ."}
           </p>
         </div>
-        <button
-          onClick={fetchSummary}
-          disabled={isLoadingSummary}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-white transition-all disabled:opacity-50 disabled:cursor-wait cursor-pointer"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${isLoadingSummary ? "animate-spin" : ""}`} />
-          <span>{lang === "en" ? "Refresh" : "ರಿಫ್ರೆಶ್"}</span>
-        </button>
+        <div className="flex flex-col items-end gap-1">
+          <button
+            onClick={handleRefreshSummary}
+            disabled={isLoadingSummary || isRefreshingSummary}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-white transition-all disabled:opacity-50 disabled:cursor-wait cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingSummary ? "animate-spin" : ""}`} />
+            <span>{lang === "en" ? "Refresh" : "ರಿಫ್ರೆಶ್"}</span>
+          </button>
+          {summaryComputedAt && (
+            <span className="text-[10px] text-stone-600 font-mono">
+              {lang === "en" ? "Last updated: " : "ಕೊನೆಯ ನವೀಕರಣ: "}
+              {formatSummaryRelativeTime(summaryComputedAt)}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Part G (district redesign): fixed page-level tab bar -- Spatial
@@ -683,6 +756,7 @@ export const DistrictDashboardScreen: React.FC = () => {
           { id: "spatial" as const, label: lang === "en" ? "Spatial Analyst" : "ಪ್ರಾದೇಶಿಕ ವಿಶ್ಲೇಷಣೆ", Icon: MapPin },
           { id: "demographic" as const, label: lang === "en" ? "Demographic Correlation" : "ಜನಸಂಖ್ಯಾ ಪರಸ್ಪರ ಸಂಬಂಧ", Icon: BarChart3 },
           { id: "fir" as const, label: lang === "en" ? "Case Registry" : "ಪ್ರಕರಣ ರಿಜಿಸ್ಟ್ರಿ", Icon: FolderOpen },
+          { id: "tactical" as const, label: lang === "en" ? "Tactical 3D Map" : "ಟ್ಯಾಕ್ಟಿಕಲ್ 3D ನಕ್ಷೆ", Icon: Box },
         ]).map((t) => (
           <button
             key={t.id}
@@ -695,7 +769,12 @@ export const DistrictDashboardScreen: React.FC = () => {
           >
             <t.Icon className="w-3.5 h-3.5" />
             {t.label}
-            {t.id !== "overview" && (
+            {/* Tactical has no statewide mode (per-station 3D geometry needs
+                a real district) -- it manages its own district selector
+                independently of Overview's pick, so this suffix would
+                misleadingly claim "Statewide" while the panel is actually
+                showing one specific district. */}
+            {t.id !== "overview" && t.id !== "tactical" && (
               <span className="text-[9px] font-mono normal-case tracking-normal text-stone-600">
                 {selectedId && districtDetailCache ? `· ${districtDetailCache.district}` : `· ${lang === "en" ? "Statewide" : "ರಾಜ್ಯವ್ಯಾಪಿ"}`}
               </span>
@@ -851,6 +930,24 @@ export const DistrictDashboardScreen: React.FC = () => {
           key={selectedId && districtDetailCache ? districtDetailCache.district : "__statewide__"}
           district={selectedId && districtDetailCache ? districtDetailCache.district : null}
         />
+      )}
+
+      {/* Tactical 3D Map fold-in: retired CrimeIntelligenceScreen.tsx as a
+          standalone nav destination, same precedent as Spatial/Demographic/
+          FIR above -- see DistrictTacticalPanel.tsx for why this one keeps
+          its own internal district selector instead of the null=statewide
+          convention the other three use. */}
+      {detailTab === "tactical" && (
+        <Suspense fallback={
+          <div className="glass-card p-4 border border-stone-850 min-h-[560px] flex items-center justify-center">
+            <div className="w-8 h-8 border-2 border-stone-800 border-t-[#C79A4E] rounded-full animate-spin" />
+          </div>
+        }>
+          <DistrictTacticalPanel
+            key={selectedId && districtDetailCache ? districtDetailCache.district : "__statewide__"}
+            district={selectedId && districtDetailCache ? districtDetailCache.district : null}
+          />
+        </Suspense>
       )}
 
       {detailTab === "overview" && (
@@ -1044,6 +1141,35 @@ export const DistrictDashboardScreen: React.FC = () => {
               </div>
             )}
           </div>
+
+          {/* Special Units & Pending Districts: CID, Karnataka Railways,
+              Coastal Security Police, ISD Bengaluru have real case counts
+              but no single geographic home to render as a map tile, and
+              Vijayanagara (a real district since 2021) isn't in the map's
+              polygon dataset yet. Backend folds city commissionerates
+              (Belagavi City, Mysuru City, etc.) into their parent
+              district's tile instead of listing them here -- so nothing
+              from the live data is silently invisible. */}
+          {specialUnits.length > 0 && (
+            <div className="rounded-2xl border border-stone-850 bg-stone-950/40 p-4">
+              <h3 className="text-[11px] font-bold text-stone-400 uppercase tracking-wider font-mono mb-3">
+                {lang === "en" ? "Special Units & Pending Districts" : "ವಿಶೇಷ ಘಟಕಗಳು"}
+              </h3>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
+                {specialUnits.map((u) => (
+                  <div key={u.district_id} className="rounded-lg border border-stone-800 bg-stone-900/50 p-2.5">
+                    <p className="text-[10.5px] font-semibold text-stone-200 truncate" title={u.district}>{u.district}</p>
+                    <p className="text-lg font-black text-[#C79A4E] font-mono leading-tight">{u.active_cases}</p>
+                    <p className="text-[9px] text-stone-500 font-mono">
+                      {u.reason === "unmapped_district"
+                        ? (lang === "en" ? "map shape pending" : "ನಕ್ಷೆ ಬಾಕಿ")
+                        : (lang === "en" ? "statewide unit" : "ರಾಜ್ಯವ್ಯಾಪಿ ಘಟಕ")}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Drill-down panel */}
           {selectedId && (

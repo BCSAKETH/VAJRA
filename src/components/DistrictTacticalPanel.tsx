@@ -1,10 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Compass } from "lucide-react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { Tactical3DMap, TacticalStation } from "../components/Tactical3DMap";
-import { ForecastTimeSlider } from "../components/ForecastTimeSlider";
-import { StationIntelligencePanel, StationForecastResult } from "../components/StationIntelligencePanel";
+import { Tactical3DMap, TacticalStation } from "./Tactical3DMap";
+import { ForecastTimeSlider } from "./ForecastTimeSlider";
+import { StationIntelligencePanel, StationForecastResult } from "./StationIntelligencePanel";
 
 interface DistrictSummaryRow {
   district_id: number;
@@ -12,26 +11,28 @@ interface DistrictSummaryRow {
 }
 
 /**
- * Finals-part 3.md §21-22, "Component E: Workspace Screen Integration."
- * Hosts the Tactical 3D Map + day-of-week pattern selector + station
- * intelligence panel, all wired to real data (spatiotemporal_forecast.py).
- * See Tactical3DMap.tsx / ForecastTimeSlider.tsx / StationIntelligencePanel.tsx
- * for the specific corrections made against the source document (no
- * hour-of-day forecast, no fabricated SHAP attribution, no per-station
- * hardcoded coordinates, no fake patrol-dispatch action).
+ * Tactical 3D Map fold-in: same precedent already set for Spatial Analyst /
+ * Demographic Correlation / Case Registry, which retired as standalone nav
+ * screens and now live only as District Analytics tabs. CrimeIntelligenceScreen.tsx
+ * is retired as a nav destination in favor of this; all the real data wiring
+ * and the 3 confirmed-live bug fixes made against it (MapLibre v6 worker 404,
+ * camera stuck on district switch, sequential district-stations round-trips)
+ * carry over unchanged -- this is the same component tree, just hosted here.
+ *
+ * Per-station 3D geometry has no statewide equivalent (the backend requires a
+ * district -- there is no "all 1,112 stations at once" 3D scene), so unlike
+ * the other three folded-in panels this keeps its own district selector
+ * rather than accepting null-as-statewide; it seeds from the district already
+ * selected on the Overview tab when there is one.
  */
-export const CrimeIntelligenceScreen: React.FC = () => {
+export const DistrictTacticalPanel: React.FC<{ district: string | null }> = ({ district }) => {
   const { lang, theme } = useApp();
   const authHeaders = { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` };
 
   const [districts, setDistricts] = useState<DistrictSummaryRow[]>([]);
-  const [selectedDistrict, setSelectedDistrict] = useState<string>("");
+  const [selectedDistrict, setSelectedDistrict] = useState<string>(district || "");
   const [stations, setStations] = useState<TacticalStation[]>([]);
   const [isLoadingStations, setIsLoadingStations] = useState(false);
-  // Real diagnostics from get_district_stations (district matched? real
-  // Unit count? real geocoded CaseMaster row count?) -- surfaced to the
-  // officer instead of a bare "no stations" so a genuine data gap reads
-  // differently from what would otherwise look like a broken feature.
   const [stationsDebug, setStationsDebug] = useState<{
     district_matched?: boolean; unit_count?: number; geocoded_case_rows?: number;
   } | null>(null);
@@ -40,21 +41,18 @@ export const CrimeIntelligenceScreen: React.FC = () => {
   const [forecast, setForecast] = useState<StationForecastResult | null>(null);
   const [isLoadingForecast, setIsLoadingForecast] = useState(false);
 
-  // Real district list -- same endpoint DistrictDashboardScreen already uses.
   useEffect(() => {
     fetch(`${API_BASE}/api/dashboard/districts/summary`, { headers: authHeaders })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         const rows: DistrictSummaryRow[] = d?.districts || [];
         setDistricts(rows);
-        if (rows.length && !selectedDistrict) setSelectedDistrict(rows[0].district);
+        if (!selectedDistrict && rows.length) setSelectedDistrict(rows[0].district);
       })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Real stations + centroids for the selected district. L196: AbortController
-  // guards against a fast district switch racing a slower earlier fetch.
   useEffect(() => {
     if (!selectedDistrict) return;
     const controller = new AbortController();
@@ -106,11 +104,6 @@ export const CrimeIntelligenceScreen: React.FC = () => {
     setSelectedStation(station);
   }, []);
 
-  // Overlay each station's own tier (from its OWN forecast, once fetched)
-  // so the map itself carries the same signal -- but only the currently
-  // selected station's tier is known at any time (fetching all stations'
-  // forecasts eagerly would be one request per station); other pins render
-  // neutral until clicked.
   const mapStations: TacticalStation[] = stations.map((s) =>
     selectedStation && String(s.unit_id) === String(selectedStation.unit_id) && forecast?.status === "ok"
       ? { ...s, tier: forecast.tier }
@@ -118,12 +111,18 @@ export const CrimeIntelligenceScreen: React.FC = () => {
   );
 
   return (
-    <div className="h-full flex flex-col p-4 gap-3 bg-stone-950/20">
-      <div className="flex items-center justify-between flex-wrap gap-2 shrink-0">
-        <h2 className="text-base font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">
-          <Compass className="w-5 h-5 text-[#C79A4E]" />
-          <span>{lang === "en" ? "Crime Intelligence" : "ಅಪರಾಧ ಗುಪ್ತಚರ"}</span>
-        </h2>
+    <div className="glass-card p-4 border border-stone-850 space-y-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="space-y-0.5">
+          <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono">
+            {lang === "en" ? "Tactical 3D Map" : "ಟ್ಯಾಕ್ಟಿಕಲ್ 3D ನಕ್ಷೆ"}
+          </h3>
+          <p className="text-[9.5px] text-stone-600 leading-relaxed">
+            {lang === "en"
+              ? "3D building envelopes are derived from crowd-sourced OpenStreetMap data for spatial orientation only -- not surveyed architectural elevations. Computed exclusively from historical registered-case density and day-of-week patterns; never demographics, ethnicity, caste, or individual profiling."
+              : "3D ಕಟ್ಟಡ ಆಕಾರಗಳು OpenStreetMap ಡೇಟಾದಿಂದ ಪಡೆಯಲಾಗಿದೆ -- ಸಮೀಕ್ಷಿತ ವಾಸ್ತುಶಿಲ್ಪದ ಎತ್ತರಗಳಲ್ಲ. ಈ ವೀಕ್ಷಣೆಯು ಐತಿಹಾಸಿಕ ಪ್ರಕರಣ ಸಾಂದ್ರತೆಯಿಂದ ಮಾತ್ರ ಲೆಕ್ಕಹಾಕಲ್ಪಡುತ್ತದೆ."}
+          </p>
+        </div>
         <select
           value={selectedDistrict}
           onChange={(e) => setSelectedDistrict(e.target.value)}
@@ -135,17 +134,7 @@ export const CrimeIntelligenceScreen: React.FC = () => {
         </select>
       </div>
 
-      {/* L204 + L210: real statutory/ethical disclosures, not decorative --
-          matches this project's own established discipline of stating a
-          feature's real limits/scope plainly rather than implying more
-          precision or authority than the underlying data supports. */}
-      <p className="text-[9.5px] text-stone-600 leading-relaxed shrink-0 -mt-1">
-        {lang === "en"
-          ? "3D building envelopes are derived from crowd-sourced OpenStreetMap data for spatial orientation only -- not surveyed architectural elevations. This view computes exclusively from historical registered-case density and day-of-week patterns; it never uses demographics, ethnicity, caste, or individual profiling."
-          : "3D ಕಟ್ಟಡ ಆಕಾರಗಳು OpenStreetMap ಡೇಟಾದಿಂದ ಪಡೆಯಲಾಗಿದೆ -- ಸಮೀಕ್ಷಿತ ವಾಸ್ತುಶಿಲ್ಪದ ಎತ್ತರಗಳಲ್ಲ. ಈ ವೀಕ್ಷಣೆಯು ಐತಿಹಾಸಿಕ ಪ್ರಕರಣ ಸಾಂದ್ರತೆಯಿಂದ ಮಾತ್ರ ಲೆಕ್ಕಹಾಕಲ್ಪಡುತ್ತದೆ."}
-      </p>
-
-      <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-3">
+      <div className="min-h-[560px] grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-3">
         <div className="flex flex-col gap-3 min-h-0">
           <div className="flex-1 min-h-[320px] relative">
             {isLoadingStations ? (
@@ -154,12 +143,6 @@ export const CrimeIntelligenceScreen: React.FC = () => {
               </div>
             ) : (
               <>
-                {/* Honest empty-state: a district with real stations but
-                    none of them having geocoded (lat/lng) cases on file is
-                    a real, disclosed data gap, not a silent, unexplained
-                    blank map -- an officer seeing an empty statewide view
-                    with zero feedback has no way to tell "no data for this
-                    district" apart from "this is broken". */}
                 {stations.length === 0 && (
                   <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 px-3 py-2 rounded-lg bg-stone-950/90 border border-amber-500/30 text-[11px] text-amber-300/90 font-mono shadow-xl max-w-md text-center">
                     {!stationsDebug?.district_matched

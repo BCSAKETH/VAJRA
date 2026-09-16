@@ -321,6 +321,47 @@ export const SupervisorDashboardScreen: React.FC = () => {
     }
   };
 
+  // Unrecognized-login / session-eviction reports (Section 14: an officer
+  // flags "this wasn't me" via RemoteEvictionModal.tsx). CONFIRMED LIVE GAP
+  // (2026-09-16): these CRITICAL security alerts had no dedicated
+  // supervisor-facing list before -- same live-queue polling pattern as
+  // exports/POCSO/district/profile above, but "dismiss" only acknowledges
+  // the report; actually suspending the account uses the existing Officer
+  // Access Oversight block action elsewhere on this screen.
+  const [pendingSecurity, setPendingSecurity] = useState<any[]>([]);
+  const [dismissingSecurityId, setDismissingSecurityId] = useState<string | null>(null);
+
+  const fetchPendingSecurity = async () => {
+    try {
+      const r = await fetch(`${API_BASE}/api/security/unrecognized-logins`, {
+        headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      });
+      if (!r.ok) return;
+      const d = await r.json();
+      setPendingSecurity(d.pending || []);
+    } catch { /* transient -- next poll retries */ }
+  };
+
+  const dismissSecurity = async (rowid: string) => {
+    setDismissingSecurityId(rowid);
+    try {
+      const r = await fetch(`${API_BASE}/api/security/unrecognized-logins/${rowid}/dismiss`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      });
+      if (r.ok) {
+        setPendingSecurity((prev) => prev.filter((p) => String(p.rowid) !== String(rowid)));
+        addToast(
+          lang === "en" ? "Report dismissed" : "ವರದಿ ವಜಾಗೊಳಿಸಲಾಗಿದೆ",
+          lang === "en" ? "Marked as reviewed." : "ಪರಿಶೀಲಿಸಲಾಗಿದೆ ಎಂದು ಗುರುತಿಸಲಾಗಿದೆ.",
+          "Info"
+        );
+      }
+    } catch { /* ignore */ } finally {
+      setDismissingSecurityId(null);
+    }
+  };
+
   // Break-glass (Section 185 BNSS) post-hoc review: an emergency grant is
   // already active by the time a supervisor sees it -- there's nothing to
   // "approve", only to acknowledge (or revoke if the use wasn't justified).
@@ -579,9 +620,11 @@ export const SupervisorDashboardScreen: React.FC = () => {
     fetchPendingPocso();
     fetchPendingDistrict();
     fetchPendingProfile();
+    fetchPendingSecurity();
     // Live poll for held exports + POCSO + inter-district access + profile-
-    // change requests so all four queues + counts update with no manual refresh.
-    const iv = setInterval(() => { fetchPendingExports(); fetchPendingPocso(); fetchPendingDistrict(); fetchPendingProfile(); }, 5000);
+    // change + unrecognized-login requests so all five queues + counts
+    // update with no manual refresh.
+    const iv = setInterval(() => { fetchPendingExports(); fetchPendingPocso(); fetchPendingDistrict(); fetchPendingProfile(); fetchPendingSecurity(); }, 5000);
     return () => clearInterval(iv);
   }, []);
 
@@ -821,8 +864,8 @@ export const SupervisorDashboardScreen: React.FC = () => {
   // tab row (Exports/POCSO/District/Profile) -- District's distinct
   // break-glass Acknowledge/Revoke item rendering is copied over completely
   // unchanged, this only changes the outer container.
-  const [activeApprovalTab, setActiveApprovalTab] = useState<"exports" | "pocso" | "district" | "profile">("exports");
-  const totalPendingApprovals = pendingExports.length + pendingPocso.length + pendingDistrict.length + pendingProfile.length;
+  const [activeApprovalTab, setActiveApprovalTab] = useState<"exports" | "pocso" | "district" | "profile" | "security">("exports");
+  const totalPendingApprovals = pendingExports.length + pendingPocso.length + pendingDistrict.length + pendingProfile.length + pendingSecurity.length;
 
   // Every section on this page is always fully visible (no collapse/expand --
   // removed per explicit feedback). sectionRefs still backs the Command
@@ -991,6 +1034,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
                 { id: "pocso" as const, label: "POCSO", count: pendingPocso.length, accent: "text-fuchsia-300", activeBg: "bg-fuchsia-500/15 border-fuchsia-500/40" },
                 { id: "district" as const, label: lang === "en" ? "District" : "ಜಿಲ್ಲೆ", count: pendingDistrict.length, accent: "text-sky-300", activeBg: "bg-sky-500/15 border-sky-500/40" },
                 { id: "profile" as const, label: lang === "en" ? "Profile" : "ಪ್ರೊಫೈಲ್", count: pendingProfile.length, accent: "text-teal-300", activeBg: "bg-teal-500/15 border-teal-500/40" },
+                { id: "security" as const, label: lang === "en" ? "Security" : "ಭದ್ರತೆ", count: pendingSecurity.length, accent: "text-rose-300", activeBg: "bg-rose-500/15 border-rose-500/40" },
               ]).map((tab) => (
                 <button
                   key={tab.id}
@@ -1189,6 +1233,53 @@ export const SupervisorDashboardScreen: React.FC = () => {
               </div>
             ))}
           </div>
+              )
+            )}
+            {activeApprovalTab === "security" && (
+              pendingSecurity.length === 0 ? (
+                <div className="py-8 text-center text-xs font-mono text-stone-550">{lang === "en" ? "No unrecognized-login reports pending review." : "ಪರಿಶೀಲನೆಗೆ ಬಾಕಿ ಇರುವ ಅಪರಿಚಿತ ಲಾಗಿನ್ ವರದಿಗಳಿಲ್ಲ."}</div>
+              ) : (
+              <div className="space-y-2">
+                <div className="text-[10px] text-stone-500 font-mono pb-1">
+                  {lang === "en"
+                    ? "An officer flagged a session termination they didn't initiate -- possible credential compromise. Dismiss once reviewed; suspend the account from Personnel Roster below if warranted."
+                    : "ಒಬ್ಬ ಅಧಿಕಾರಿ ತಾವು ಪ್ರಾರಂಭಿಸದ ಸೆಷನ್ ಮುಕ್ತಾಯವನ್ನು ಗುರುತಿಸಿದ್ದಾರೆ -- ಸಂಭಾವ್ಯ ಪ್ರಮಾಣಪತ್ರ ರಾಜಿ."}
+                </div>
+                {pendingSecurity.map((s) => (
+                  <div key={s.rowid} className="flex items-center gap-3 rounded-lg bg-stone-950/40 border border-rose-500/20 px-3 py-2.5">
+                    <div className="min-w-0 flex-1">
+                      <div className="text-[12px] text-stone-200 font-mono truncate flex items-center gap-1.5">
+                        <span className={`text-[8.5px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+                          s.alert_type === "ACCOUNT_LOCKOUT_ALERT" ? "bg-amber-500/15 text-amber-300" : "bg-rose-500/15 text-rose-300"
+                        }`}>
+                          {s.alert_type === "ACCOUNT_LOCKOUT_ALERT"
+                            ? (lang === "en" ? "Lockout" : "ಲಾಕ್‌ಔಟ್")
+                            : (lang === "en" ? "Unrecognized Login" : "ಅಪರಿಚಿತ ಲಾಗಿನ್")}
+                        </span>
+                        KSP-{s.requester_badge} · {s.incident_id}
+                      </div>
+                      <div className="text-[10px] text-stone-500 truncate">
+                        {s.reported_ip ? `${lang === "en" ? "Reported from IP" : "ಐಪಿ ಮೂಲಕ ವರದಿ"} ${s.reported_ip} · ` : ""}
+                        {s.reported_at ? new Date(s.reported_at).toLocaleString() : (s.trigger_time ? new Date(s.trigger_time).toLocaleString() : "")}
+                      </div>
+                      {s.message && <div className="text-[10px] text-stone-600 truncate italic">"{s.message}"</div>}
+                    </div>
+                    <button
+                      onClick={() => dismissSecurity(String(s.rowid))}
+                      disabled={dismissingSecurityId === String(s.rowid)}
+                      className="px-3 py-1.5 rounded-md bg-stone-800 border border-stone-700 text-[11px] font-bold uppercase tracking-wide text-stone-300 hover:bg-stone-750 disabled:opacity-50 cursor-pointer"
+                    >
+                      {lang === "en" ? "Dismiss" : "ವಜಾಗೊಳಿಸಿ"}
+                    </button>
+                    <button
+                      onClick={() => scrollToSection("officers")}
+                      className="px-3 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/40 text-[11px] font-bold uppercase tracking-wide text-rose-300 hover:bg-rose-500/20 cursor-pointer"
+                    >
+                      {lang === "en" ? "Review Officer" : "ಅಧಿಕಾರಿ ಪರಿಶೀಲಿಸಿ"}
+                    </button>
+                  </div>
+                ))}
+              </div>
               )
             )}
           </>

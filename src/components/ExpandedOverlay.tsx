@@ -965,7 +965,17 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                           stroke="#64748B"
                           fontSize={10}
                           tickLine={{ stroke: "rgba(255,255,255,0.1)" }}
-                          tickFormatter={(v) => `${v > 0 ? "+" : ""}${v}`}
+                          // CONFIRMED LIVE BUG (2026-09-16): this rendered the
+                          // raw SHAP log-odds coefficient verbatim (e.g.
+                          // "+0.15238471...") -- a float straight off the
+                          // model, not something an officer reading the axis
+                          // can act on. Every other reading of this same
+                          // value on this card (the tooltip's "Conviction
+                          // Impact" row, the evidence-panel badges below)
+                          // already frames it as a whole-integer percentage;
+                          // the axis now matches, so the same number reads
+                          // the same way everywhere on this widget.
+                          tickFormatter={(v) => `${v > 0 ? "+" : v < 0 ? "-" : ""}${Math.round(Math.abs(v) * 100)}%`}
                         />
                         <YAxis
                           dataKey="name"
@@ -1026,7 +1036,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                             const item = payload[0].payload;
                             const isPos = item.contribution === "positive";
                             const absVal = Math.abs(item.value);
-                            const pctEffect = (absVal * 100).toFixed(1);
+                            const pctEffect = Math.round(absVal * 100);
                             return (
                               <div className="bg-stone-900/95 backdrop-blur-md border border-stone-700/80 rounded-lg p-3 shadow-2xl min-w-[230px] max-w-[320px] pointer-events-none z-50">
                                 <div className="flex items-center justify-between border-b border-stone-800 pb-1.5 mb-2">
@@ -1054,7 +1064,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                                   </div>
                                   <div className="flex justify-between items-center text-[10px] text-stone-500">
                                     <span>{lang === "en" ? "SHAP Log-Odds Weight:" : "ಮಾದರಿ ತೂಕ (SHAP):"}</span>
-                                    <span className="font-mono">{item.value > 0 ? `+${item.value}` : item.value}</span>
+                                    <span className="font-mono">{item.value > 0 ? `+${item.value.toFixed(2)}` : item.value.toFixed(2)}</span>
                                   </div>
                                   {item.desc && (
                                     <div className="pt-1 border-t border-stone-800 text-[10px] text-stone-400 font-sans leading-relaxed">
@@ -1120,7 +1130,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                           <li key={idx} className="flex items-start justify-between text-xs text-stone-300 bg-stone-950/50 px-2.5 py-1.5 rounded-lg border border-stone-850">
                             <span className="font-medium text-stone-200">{f.name}</span>
                             <span className="font-mono text-emerald-400 font-bold shrink-0 ml-2">
-                              {f.value}
+                              -{Math.round(Math.abs(f.value) * 100)}%
                             </span>
                           </li>
                         ))}
@@ -1153,7 +1163,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                           <li key={idx} className="flex items-start justify-between text-xs text-stone-300 bg-stone-950/50 px-2.5 py-1.5 rounded-lg border border-stone-850">
                             <span className="font-medium text-stone-200">{f.name}</span>
                             <span className="font-mono text-amber-400 font-bold shrink-0 ml-2">
-                              +{f.value}
+                              +{Math.round(Math.abs(f.value) * 100)}%
                             </span>
                           </li>
                         ))}

@@ -5,7 +5,7 @@ import {
   MessageSquare, Folder, Users, Loader2, MoreVertical, Trash2,
   ChevronDown, ChevronRight as ChevronRightIcon, Filter, Pin, PinOff,
   Circle, Archive, ArchiveRestore, Copy, FolderInput, FileStack, Pencil, Plus,
-  Check, CheckSquare, Square, Hand, X,
+  Check, CheckSquare, Square,
 } from "lucide-react";
 import { FilterSortPanel, FilterSortState, DEFAULT_FILTER_SORT_STATE } from "./FilterSortPanel";
 
@@ -64,6 +64,14 @@ interface GroupedSessionListProps {
   // mutation logic below is 100% shared regardless of variant -- only
   // renderRow's outer JSX branches on it.
   variant?: "sidebar" | "page";
+  // Sidebar spatial-rhythm fix (confirmed live gap): the sidebar used to
+  // stack a standalone "Chats" label directly above this component's own
+  // header row (which held only the Filter button, right-aligned, with
+  // nothing on the left) -- two rows of near-empty space for what reads as
+  // one logical header. Passing the label in here merges them into a single
+  // row: label on the left, Filter button on the right, same as the "Select"
+  // controls already occupy that slot on the All Chats page.
+  headerLabel?: string;
 }
 
 const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` });
@@ -105,7 +113,7 @@ function loadFilterState(kind: string): FilterSortState {
 
 const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
   kind, items, meta, groups, activeSessionId, onSelectSession, loadingSessionId,
-  isExpanded, onMutated, investigationsForPicker, variant = "sidebar",
+  isExpanded, onMutated, investigationsForPicker, variant = "sidebar", headerLabel,
 }) => {
   const { lang, addToast, requestNewChat } = useApp();
   const [filter, setFilter] = useState<FilterSortState>(() => loadFilterState(kind));
@@ -119,14 +127,6 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
   const [isDragOverPinned, setIsDragOverPinned] = useState(false);
   const [isDragOverUngrouped, setIsDragOverUngrouped] = useState(false);
   const [isDraggingSession, setIsDraggingSession] = useState(false);
-  const [showDragTip, setShowDragTip] = useState(() => {
-    return localStorage.getItem("vajra_hide_pin_drag_tip") !== "true";
-  });
-
-  const dismissDragTip = () => {
-    setShowDragTip(false);
-    localStorage.setItem("vajra_hide_pin_drag_tip", "true");
-  };
 
   const handleDragStart = (e: React.DragEvent, sessionId: string) => {
     e.dataTransfer.setData("text/vajra-session-id", sessionId);
@@ -584,7 +584,13 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
             {isLoadingThis || isBusy ? (
               <Loader2 className="w-3 h-3 shrink-0 animate-spin text-[#C79A4E]" />
             ) : (
-              <Circle className="w-2.5 h-2.5 text-stone-500 shrink-0" />
+              // CONFIRMED LIVE GAP: this row lives exclusively inside the
+              // "Pinned" section, but its leading icon was a generic hollow
+              // Circle -- unrelated to "pinned" and easy to mistake for the
+              // unread-dot indicator used elsewhere in this same file. Pin
+              // is the icon this row's own context menu (below) already uses
+              // for the pin/unpin action, so it now matches.
+              <Pin className="w-2.5 h-2.5 text-[#C79A4E] shrink-0" />
             )}
             <span className="truncate">{item.title || (lang === "en" ? "New Conversation" : "ಹೊಸ ಸಂಭಾಷಣೆ")}</span>
           </div>
@@ -842,7 +848,7 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
       {(openMenuId || showAddToInvestigationFor || showFilterPanel) && (
         <div className="fixed inset-0 z-40" onClick={() => { setOpenMenuId(null); setShowAddToInvestigationFor(null); setShowFilterPanel(false); }} />
       )}
-      {isExpanded && items.length > 0 && (
+      {isExpanded && (items.length > 0 || !!headerLabel) && (
         <div className="relative flex items-center justify-between gap-2 px-1 mb-1">
           {isAllChatsPage ? (
             selectMode ? (
@@ -878,6 +884,10 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
                 {lang === "en" ? "Select" : "ಆಯ್ಕೆಮಾಡಿ"}
               </button>
             )
+          ) : headerLabel ? (
+            <span className="text-[10px] font-black text-stone-500 uppercase tracking-wider">
+              {headerLabel}
+            </span>
           ) : (
             <span />
           )}
@@ -925,32 +935,6 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
                 <span className="text-[10.5px] font-bold text-stone-400 uppercase tracking-wider font-mono">
                   {lang === "en" ? "Pinned" : "ಪಿನ್ ಮಾಡಲಾದ"}
                 </span>
-
-                {/* Blue Tip Callout Tooltip (Section 17 / User Screenshot 1) */}
-                {isExpanded && showDragTip && sortedPinned.length > 0 && (
-                  <div className="absolute left-full ml-3 top-1/2 -translate-y-1/2 z-50 flex items-center gap-2.5 bg-blue-600 text-white px-3.5 py-2 rounded-xl shadow-2xl whitespace-nowrap animate-fade-in border border-blue-400/30">
-                    {/* Speech bubble arrow pointer pointing left */}
-                    <div className="absolute right-full top-1/2 -translate-y-1/2 border-8 border-transparent border-r-blue-600" />
-
-                    <div className="w-5 h-5 rounded-full bg-white/20 flex items-center justify-center shrink-0">
-                      <Hand className="w-3 h-3 text-white" />
-                    </div>
-
-                    <span className="text-xs font-medium">
-                      {lang === "en"
-                        ? "Tip: you can drag tasks here to pin them"
-                        : "ಸುಳಿವು: ಪಿನ್ ಮಾಡಲು ನೀವು ಕಾರ್ಯಗಳನ್ನು ಇಲ್ಲಿಗೆ ಎಳೆಯಬಹುದು"}
-                    </span>
-
-                    <button
-                      onClick={dismissDragTip}
-                      className="ml-1 text-white/80 hover:text-white cursor-pointer p-0.5"
-                      aria-label="Dismiss tip"
-                    >
-                      <X className="w-3 h-3" />
-                    </button>
-                  </div>
-                )}
               </div>
 
               {/* Empty drop guide when dragging over an empty pinned section */}

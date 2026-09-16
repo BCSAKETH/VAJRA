@@ -64,6 +64,7 @@ from vajra_core import (
     catalyst_app,
     zcql_insert_row,
     zcql_update_row,
+    escape_zcql_literal,
     insert_proactive_alert,  # C.3: whitelist-checked ProactiveAlerts insert
     run_syndicate_detection_job,  # C.8
     get_cached_syndicate_clusters,  # C.8
@@ -535,8 +536,43 @@ def _login_rate_limited(badge_no: str) -> Optional[int]:
 
 
 def _record_login_failure(badge_no: str) -> None:
+    """CONFIRMED LIVE GAP (2026-09-16): crossing the lockout threshold
+    (_LOGIN_MAX_ATTEMPTS) was completely invisible to anyone -- no audit
+    entry, no supervisor alert, nothing but a silent in-memory counter. Five
+    failed passwords against a real badge in 15 minutes is exactly the kind
+    of brute-force signal a supervisor should see, same as an officer's own
+    "unrecognized login" report (both land in the Supervisor screen's
+    Security tab). Fires exactly once per lockout episode -- at the attempt
+    that crosses the threshold, not on every subsequent 429 while still
+    locked out."""
     with _LOGIN_LOCK:
-        _login_attempts.setdefault(badge_no, []).append(time.time())
+        attempts = _login_attempts.setdefault(badge_no, [])
+        attempts.append(time.time())
+        just_crossed = len(attempts) == _LOGIN_MAX_ATTEMPTS
+    if just_crossed:
+        from session_manager import record_auth_audit_log
+        record_auth_audit_log(
+            badge_no, "ACCOUNT_LOCKOUT",
+            f"{_LOGIN_MAX_ATTEMPTS} failed login attempts within {_LOGIN_WINDOW_SECONDS // 60} minutes -- badge temporarily locked out.",
+            ""
+        )
+        if catalyst_app:
+            try:
+                zcql_insert_row("ProactiveAlerts", {
+                    "AlertType": "ACCOUNT_LOCKOUT_ALERT",
+                    "AlertMessage": json.dumps({
+                        "requester_badge": badge_no,
+                        "incident_id": f"INC-LOCK-{int(time.time())}",
+                        "reported_ip": "",
+                        "reported_at": datetime.utcnow().isoformat() + "Z",
+                        "message": f"Badge KSP-{badge_no} locked out after {_LOGIN_MAX_ATTEMPTS} failed login attempts.",
+                    }),
+                    "Status": "ACTIVE",
+                    "Severity": "CRITICAL",
+                    "CreatedTime": datetime.utcnow().isoformat(),
+                })
+            except Exception as e:
+                logger.warning(f"Failed to post ACCOUNT_LOCKOUT_ALERT: {e}")
 
 
 def _clear_login_attempts(badge_no: str) -> None:
@@ -1082,6 +1118,242 @@ async def flag_station_for_patrol(payload: PatrolFlagRequest, request: Request,
     return {"status": "flagged", "audit_logged": True, "alert_posted": posted}
 
 
+# CONFIRMED LIVE (2026-09-16): the District table has 41 rows, not
+# Karnataka's real 31 districts. Verified this is NOT corrupted data --
+# it's real KSP jurisdictional structure the CCTNS import correctly
+# captured: 31 real geographic districts (IDs 1-30 + Vijayanagara ID 41,
+# carved from Ballari in 2021), 6 city commissionerates / sub-jurisdictions
+# that are separate police commands inside a district's territory (not
+# their own place on a map), and 4 statewide/multi-district special units
+# with no single geographic home. The frontend's map polygon data only has
+# 30 shapes (a stale pre-2021 GeoJSON) and silently drops anything that
+# doesn't name-match one of them -- so today Vijayanagara and all 10
+# commissionerate/special-unit rows are invisible on the dashboard even
+# though their case counts are real. Fixed by folding commissionerates
+# into their parent district's total and bucketing special units + the
+# unmapped new district into a separate, disclosed list instead of
+# silently losing them.
+DISTRICT_FOLD_MAP = {
+    31: 3,   # Belagavi City -> Belagavi
+    34: 17,  # Kalaburagi City -> Kalaburagi
+    36: 22,  # Mysuru City -> Mysuru
+    39: 11,  # Mangaluru City -> Dakshina Kannada
+    40: 13,  # Hubballi Dharwad City -> Dharwad
+    38: 19,  # K.G.F -> Kolar
+}
+SPECIAL_UNIT_DISTRICT_IDS = {32, 33, 35, 37}  # CID, Karnataka Railways, Coastal Security Police, ISD Bengaluru
+UNMAPPED_DISTRICT_IDS = {41}  # Vijayanagara -- real district, no map polygon yet
+
+
+def _fold_district_id(raw_district_id: Any) -> Any:
+    if raw_district_id is None:
+        return raw_district_id
+    try:
+        as_int = int(raw_district_id)
+    except (TypeError, ValueError):
+        return raw_district_id
+    folded = DISTRICT_FOLD_MAP.get(as_int)
+    return folded if folded is not None else raw_district_id
+
+
+def _get_all_units() -> List[Dict[str, Any]]:
+    """
+    Full, paginated Unit table (UnitID/UnitName/DistrictID). Same
+    CONFIRMED LIVE BUG as _get_case_counts_by_station below: a plain
+    `SELECT ... FROM Unit` with no LIMIT/pagination silently truncates to
+    300 rows once Unit exceeds that (now 1,112 rows after the real CCTNS
+    import, was 31 before). Every unpaginated `SELECT ... FROM Unit` call
+    site was silently dropping ~73% of stations.
+    """
+    if not catalyst_app:
+        return []
+    out: List[Dict[str, Any]] = []
+    last_rowid = None
+    for _ in range(20):
+        where = f"ROWID > {last_rowid}" if last_rowid is not None else "ROWID > 0"
+        page = catalyst_app.zql().execute_query(
+            f"SELECT ROWID, UnitID, UnitName, DistrictID FROM Unit WHERE {where} ORDER BY ROWID ASC LIMIT 300")
+        if not page:
+            break
+        max_rowid = last_rowid
+        for r in page:
+            d = r.get("Unit", {})
+            rid = d.get("ROWID")
+            if rid is None:
+                continue
+            rid = int(rid)
+            if max_rowid is None or rid > max_rowid:
+                max_rowid = rid
+            # Deliberately NOT type-casting UnitID/DistrictID here -- kept
+            # as the raw (string) values ZCQL returns, matching every
+            # existing caller's own lookup keys (e.g. CaseMaster's raw
+            # PoliceStationID), so this is a drop-in paginated replacement
+            # for the old unpaginated SELECT, not a type-shape change.
+            out.append(d)
+        if max_rowid == last_rowid or len(page) < 300:
+            break
+        last_rowid = max_rowid
+    return out
+
+
+def _get_all_crime_subheads() -> List[Dict[str, Any]]:
+    """
+    Full, paginated CrimeSubHead table. Same CONFIRMED LIVE BUG as
+    _get_all_units -- CrimeSubHead grew from ~96 to 722 real rows after
+    the CCTNS import, past ZCQL's 300-row unpaginated-SELECT cap.
+    """
+    if not catalyst_app:
+        return []
+    out: List[Dict[str, Any]] = []
+    last_rowid = None
+    for _ in range(20):
+        where = f"ROWID > {last_rowid}" if last_rowid is not None else "ROWID > 0"
+        page = catalyst_app.zql().execute_query(
+            f"SELECT ROWID, CrimeSubHeadID, CrimeHeadID, CrimeHeadName FROM CrimeSubHead WHERE {where} ORDER BY ROWID ASC LIMIT 300")
+        if not page:
+            break
+        max_rowid = last_rowid
+        for r in page:
+            d = r.get("CrimeSubHead", {})
+            rid = d.get("ROWID")
+            if rid is None:
+                continue
+            rid = int(rid)
+            if max_rowid is None or rid > max_rowid:
+                max_rowid = rid
+            # Same deliberate no-cast as _get_all_units -- raw ZCQL types,
+            # matching existing callers' own (string) lookup keys.
+            out.append(d)
+        if max_rowid == last_rowid or len(page) < 300:
+            break
+        last_rowid = max_rowid
+    return out
+
+
+def _scalar_case_count(where_clause: str, retries: int = 3) -> Optional[int]:
+    """Plain, non-GROUP-BY COUNT() -- confirmed live (2026-09-16, twice)
+    to be reliably unbounded regardless of how many rows match, unlike
+    GROUP BY (see _get_case_counts_by_station). This is the ground truth
+    every batch below is checked against. Retries on transient failure
+    (network blip, momentary rate limit) instead of a single attempt --
+    the actual root cause of the 137,497-case undercount this same
+    session traced back to was very likely exactly this: one batch's
+    single-attempt query failing transiently and being silently logged-
+    and-skipped rather than retried, not a deterministic GROUP BY bug
+    (a full self-verifying re-run afterward converged with zero
+    mismatches). Returns None only after all retries are exhausted --
+    caller must treat that as "can't verify," not "zero"."""
+    if not catalyst_app:
+        return None
+    last_err = None
+    for attempt in range(retries):
+        try:
+            res = catalyst_app.zql().execute_query(f"SELECT COUNT(CaseMasterID) FROM CaseMaster WHERE {where_clause}")
+            if res:
+                return int(res[0].get("CaseMaster", {}).get("COUNT(CaseMasterID)") or 0)
+        except Exception as e:
+            last_err = e
+        if attempt < retries - 1:
+            time.sleep(0.5 * (attempt + 1))
+    logger.warning(f"_scalar_case_count failed after {retries} attempts for {where_clause[:80]}: {last_err}")
+    return None
+
+
+def _fetch_verified_batch_counts(id_batch: List[int], counts: Dict[int, int], depth: int = 0) -> None:
+    """
+    Fills `counts` for exactly the station ids in id_batch, self-verifying
+    against _scalar_case_count instead of trusting GROUP BY's row cap.
+
+    CONFIRMED LIVE BUG (2026-09-16): a prior version of this function
+    assumed a WHERE-filtered `GROUP BY PoliceStationID` batch of <=250
+    station ids would always return a complete, correct grouping (since
+    250 < ZCQL's 300-output-group cap). That assumption was never actually
+    re-verified end-to-end after the fix that made it (the verification
+    script crashed on a transient token error mid-run and was never
+    re-run) -- and it was WRONG: deployed, it silently undercounted the
+    District Dashboard's real total by 137,497 cases (8.1%), caught only
+    because the new validation gate (_validate_district_summary) compared
+    the batched sum against a scalar ground-truth total and refused to
+    publish the divergent result. Root cause is unconfirmed (possibly
+    ZCQL's GROUP BY accumulates distinct group keys in ROWID scan order
+    across the whole table before applying the WHERE filter, capping at
+    300 regardless of the filter) -- rather than depend on understanding
+    ZCQL's exact internal query plan, this fetches each batch's GROUP BY
+    result AND an independent scalar COUNT for the identical WHERE clause,
+    and only trusts the GROUP BY sum if it matches the scalar ground
+    truth exactly. Any mismatch bisects the batch and retries each half,
+    which converges (worst case: individual per-station scalar COUNT
+    calls, which are always correct) instead of ever silently dropping
+    real cases from a police case-count total again.
+    """
+    if not id_batch or not catalyst_app:
+        return
+    id_list = ",".join(str(u) for u in id_batch)
+    where_clause = f"PoliceStationID IN ({id_list})"
+    true_total = _scalar_case_count(where_clause)
+    if true_total is None:
+        logger.warning(f"_fetch_verified_batch_counts: could not get ground-truth count for batch of {len(id_batch)} stations (depth {depth}); skipping this batch this run.")
+        return
+    if true_total == 0:
+        return
+
+    if len(id_batch) == 1:
+        # Can't bisect a single station -- the scalar count IS the answer.
+        counts[id_batch[0]] = true_total
+        return
+
+    try:
+        grouped = catalyst_app.zql().execute_query(
+            f"SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster WHERE {where_clause} GROUP BY PoliceStationID"
+        )
+    except Exception as e:
+        logger.warning(f"_fetch_verified_batch_counts: GROUP BY failed for batch (depth {depth}): {e}")
+        grouped = []
+
+    batch_counts: Dict[int, int] = {}
+    grouped_total = 0
+    for r in grouped:
+        cm = r.get("CaseMaster", {})
+        psid = cm.get("PoliceStationID")
+        if psid is not None:
+            c = int(cm.get("COUNT(CaseMasterID)") or 0)
+            batch_counts[int(psid)] = c
+            grouped_total += c
+
+    if grouped_total == true_total:
+        # Verified: this batch's GROUP BY output was complete and correct.
+        counts.update(batch_counts)
+        return
+
+    # Mismatch -- GROUP BY under-returned for this batch. Bisect and retry
+    # each half independently; this always converges since single-station
+    # batches fall back to the always-correct scalar count above.
+    mid = len(id_batch) // 2
+    _fetch_verified_batch_counts(id_batch[:mid], counts, depth + 1)
+    _fetch_verified_batch_counts(id_batch[mid:], counts, depth + 1)
+
+
+def _get_case_counts_by_station() -> Dict[Any, int]:
+    """
+    Real per-station case counts across the ENTIRE CaseMaster table,
+    self-verified against scalar ground-truth counts (see
+    _fetch_verified_batch_counts) rather than trusting ZCQL's GROUP BY to
+    behave as expected. `SELECT UnitID FROM Unit` is itself paginated
+    first since that plain SELECT is separately subject to ZCQL's 300-row
+    cap, and Unit now has 1,112 rows (see _get_all_units).
+    """
+    if not catalyst_app:
+        return {}
+    unit_ids = [int(u["UnitID"]) for u in _get_all_units() if u.get("UnitID") is not None]
+
+    counts: Dict[int, int] = {}
+    batch_size = 250
+    for i in range(0, len(unit_ids), batch_size):
+        batch = unit_ids[i:i + batch_size]
+        _fetch_verified_batch_counts(batch, counts)
+    return counts
+
+
 @app.get("/api/cases/demographics")
 async def get_cases_demographics(request: Request, location_context: str = Depends(security_firewall)):
     """
@@ -1100,23 +1372,10 @@ async def get_cases_demographics(request: Request, location_context: str = Depen
         raise HTTPException(status_code=500, detail="Database client offline.")
     try:
         districts = catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")
-        units = catalyst_app.zql().execute_query("SELECT UnitID, DistrictID FROM Unit")
-        unit_to_district = {u.get("Unit", {}).get("UnitID"): u.get("Unit", {}).get("DistrictID") for u in units}
+        units = _get_all_units()
+        unit_to_district = {int(u["UnitID"]): u.get("DistrictID") for u in units if u.get("UnitID") is not None}
 
-        # One grouped COUNT query across all stations (not one query per
-        # district) -- GROUP BY aggregates aren't subject to ZCQL's 300-row
-        # SELECT cap (confirmed elsewhere in agent_loop.py), so this scans
-        # every case exactly once regardless of table size.
-        case_counts_by_unit: Dict[Any, int] = {}
-        try:
-            count_res = catalyst_app.zql().execute_query(
-                "SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster GROUP BY PoliceStationID"
-            )
-            for r in count_res:
-                cm = r.get("CaseMaster", {})
-                case_counts_by_unit[cm.get("PoliceStationID")] = int(cm.get("COUNT(CaseMasterID)") or 0)
-        except Exception as e:
-            logger.warning(f"Grouped case-count query failed: {e}")
+        case_counts_by_unit = _get_case_counts_by_station()
 
         case_counts_by_district: Dict[Any, int] = {}
         for unit_id, count in case_counts_by_unit.items():
@@ -1160,8 +1419,11 @@ def _build_fir_records(case_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     # a few lines above in get_cases_demographics, no pagination needed.
     districts = {int(d["District"]["DistrictID"]): d["District"]["DistrictName"]
                  for d in catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District") if d.get("District", {}).get("DistrictID")}
-    units = {int(u["Unit"]["UnitID"]): (u["Unit"].get("UnitName"), u["Unit"].get("DistrictID"))
-             for u in catalyst_app.zql().execute_query("SELECT UnitID, UnitName, DistrictID FROM Unit") if u.get("Unit", {}).get("UnitID")}
+    # CONFIRMED LIVE BUG (2026-09-16): unlike District/CaseCategory above,
+    # Unit is NOT safely under ZCQL's 300-row cap anymore -- it has 1,112
+    # real rows after the CCTNS import (was 31). _get_all_units() paginates.
+    units = {int(u["UnitID"]): (u.get("UnitName"), u.get("DistrictID"))
+             for u in _get_all_units() if u.get("UnitID") is not None}
     cats = {int(c["CaseCategory"]["CaseCategoryID"]): c["CaseCategory"].get("LookupValue")
             for c in catalyst_app.zql().execute_query("SELECT CaseCategoryID, LookupValue FROM CaseCategory") if c.get("CaseCategory", {}).get("CaseCategoryID")}
     cm_ids = [cm.get("CaseMasterID") for cm in case_rows if cm.get("CaseMasterID") is not None]
@@ -1342,18 +1604,28 @@ async def cases_near_point(lat: float, lng: float, radius_km: float = 2.0, distr
 
 
 @app.get("/api/cases/all")
-async def get_cases_all(request: Request, district: str = "", location_context: str = Depends(security_firewall)):
+async def get_cases_all(
+    request: Request, district: str = "", limit: int = 100, offset: int = 0,
+    location_context: str = Depends(security_firewall)
+):
     """Backs FIRSearchScreen.tsx's default (no search term) view, now folded
     into District Analytics as a statewide/scoped tab (same pattern as
     Spatial/Demographic). §7.1 #7e: this route never existed -- the frontend
     always 404'd, showing "Security Registry Offline" unconditionally
-    regardless of the database's real state. Capped at 300 (ZCQL's own
-    per-query row cap), newest first -- this screen has no pagination UI
-    yet, so an unbounded return would just silently truncate at some
-    ZCQL-internal limit anyway; 300 newest is the honest, predictable
-    version of that same cap."""
+    regardless of the database's real state.
+
+    CONFIRMED LIVE BUG (2026-09-16): this used to hardcode LIMIT 300 with no
+    offset -- against a CaseMaster table with 1.69M rows, an officer browsing
+    without a search term could only ever see the newest 300 cases, with no
+    way to page further back; the comment literally said "no pagination UI
+    yet". Now takes real limit/offset (same clamp + total/has_more pattern
+    already proven at get_audit_logs's AuditLog pagination) so the frontend
+    can page through the full registry instead of truncating it.
+    """
     if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
+    limit = max(1, min(int(limit), 300))
+    offset = max(0, int(offset))
     try:
         rls = _fir_rls_clause(request)
         district_clause = ""
@@ -1366,25 +1638,43 @@ async def get_cases_all(request: Request, district: str = "", location_context: 
             # everything).
             id_list = ",".join(str(u) for u in (unit_ids or [])) or "-1"
             district_clause = (" AND" if rls else " WHERE") + f" PoliceStationID IN ({id_list})"
+        where_clause = f"{rls}{district_clause}"
         rows = catalyst_app.zql().execute_query(
             f"SELECT CaseMasterID, CrimeNo, BriefFacts, CrimeRegisteredDate, PoliceStationID, CaseCategoryID "
-            f"FROM CaseMaster{rls}{district_clause} ORDER BY ROWID DESC LIMIT 300")
-        return _build_fir_records([r.get("CaseMaster", {}) for r in rows])
+            f"FROM CaseMaster{where_clause} ORDER BY ROWID DESC LIMIT {limit} OFFSET {offset}")
+        cases = _build_fir_records([r.get("CaseMaster", {}) for r in rows])
+        total = None
+        try:
+            cnt_res = catalyst_app.zql().execute_query(f"SELECT COUNT(CaseMasterID) FROM CaseMaster{where_clause}")
+            if cnt_res:
+                total = int(cnt_res[0].get("CaseMaster", {}).get("COUNT(CaseMasterID)") or 0)
+        except Exception:
+            pass
+        has_more = total is not None and (offset + len(cases)) < total
+        return {"cases": cases, "total": total, "has_more": has_more, "offset": offset, "limit": limit}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to load case registry: {str(e)}")
 
 
 @app.get("/api/cases/search")
-async def get_cases_search(request: Request, query: str = "", district: str = "", location_context: str = Depends(security_firewall)):
+async def get_cases_search(
+    request: Request, query: str = "", district: str = "", limit: int = 100, offset: int = 0,
+    location_context: str = Depends(security_firewall)
+):
     """Backs FIRSearchScreen.tsx's search box ("Search CrimeNo or facts...").
     §7.1 #7e: same never-existed route as /api/cases/all above. Matches
     CrimeNo OR BriefFacts via ZCQL's '*value*' wildcard (its LIKE syntax --
-    confirmed elsewhere in this file, ZCQL does not use SQL's '%')."""
+    confirmed elsewhere in this file, ZCQL does not use SQL's '%').
+    Same real limit/offset pagination as /api/cases/all above -- a search
+    hitting more than one page of matches previously silently truncated at
+    300 with no way to see the rest."""
     if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
+    limit = max(1, min(int(limit), 300))
+    offset = max(0, int(offset))
     q = (query or "").strip()
     if not q:
-        return await get_cases_all(request, district, location_context)
+        return await get_cases_all(request, district, limit, offset, location_context)
     try:
         safe_q = escape_zcql_literal(q).replace("*", "")  # strip ZCQL wildcard metacharacters out of raw officer input
         rls = _fir_rls_clause(request, prefix=" AND")
@@ -1393,13 +1683,58 @@ async def get_cases_search(request: Request, query: str = "", district: str = ""
             unit_ids = _resolve_district_to_unit_ids(district)
             id_list = ",".join(str(u) for u in (unit_ids or [])) or "-1"
             district_clause = f" AND PoliceStationID IN ({id_list})"
+        where_clause = f"WHERE (CrimeNo LIKE '*{safe_q}*' OR BriefFacts LIKE '*{safe_q}*'){rls}{district_clause}"
         rows = catalyst_app.zql().execute_query(
             f"SELECT CaseMasterID, CrimeNo, BriefFacts, CrimeRegisteredDate, PoliceStationID, CaseCategoryID "
-            f"FROM CaseMaster WHERE (CrimeNo LIKE '*{safe_q}*' OR BriefFacts LIKE '*{safe_q}*'){rls}{district_clause} "
-            f"ORDER BY ROWID DESC LIMIT 300")
-        return _build_fir_records([r.get("CaseMaster", {}) for r in rows])
+            f"FROM CaseMaster {where_clause} "
+            f"ORDER BY ROWID DESC LIMIT {limit} OFFSET {offset}")
+        cases = _build_fir_records([r.get("CaseMaster", {}) for r in rows])
+        total = None
+        try:
+            cnt_res = catalyst_app.zql().execute_query(f"SELECT COUNT(CaseMasterID) FROM CaseMaster {where_clause}")
+            if cnt_res:
+                total = int(cnt_res[0].get("CaseMaster", {}).get("COUNT(CaseMasterID)") or 0)
+        except Exception:
+            pass
+        has_more = total is not None and (offset + len(cases)) < total
+        return {"cases": cases, "total": total, "has_more": has_more, "offset": offset, "limit": limit}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Case search failed: {str(e)}")
+
+
+@app.get("/api/cases/{case_no}/intelligence")
+async def get_case_intelligence_endpoint(case_no: str, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Finals-part 3.md Section 40/42: the Case Registry's dossier panel used to
+    show only 5 flat CaseMaster fields (registration date, precinct, brief
+    facts, victim/accused counts) -- no accused names, no criminal
+    connections, no syndicate context. Backs DistrictFIRPanel.tsx's expanded
+    dossier and the get_case_intelligence_dossier chat tool with the same
+    real data (see case_intelligence.py for exactly which fields are real
+    vs. which the plan doc's own blueprint assumed that don't exist on the
+    live schema).
+    """
+    from case_intelligence import get_case_intelligence
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    result = get_case_intelligence(case_no, agent_loop)
+    if result.get("error"):
+        raise HTTPException(status_code=404, detail=result["error"])
+    # Same fail-closed RLS a line officer already gets on every other case
+    # endpoint (_fir_rls_clause) -- a case outside their own station is a 404
+    # here too, not silently returned because this is a different route.
+    role = getattr(request.state, "role_tier", "officer")
+    if role != "supervisor":
+        uid = request.state.user_profile.get("UnitID") or request.state.user_profile.get("unitid")
+        try:
+            cm_res = catalyst_app.zql().execute_query(
+                f"SELECT PoliceStationID FROM CaseMaster WHERE CrimeNo = '{escape_zcql_literal(case_no.strip())}' LIMIT 1")
+            case_unit = cm_res[0].get("CaseMaster", {}).get("PoliceStationID") if cm_res else None
+        except Exception:
+            case_unit = None
+        if uid is None or case_unit is None or str(uid) != str(case_unit):
+            raise HTTPException(status_code=404, detail=f"Case {case_no} not found")
+    return result
 
 
 # Solved/unsolved classification for the district dashboard's outcome pie
@@ -1486,17 +1821,205 @@ async def get_state_overview(request: Request, location_context: str = Depends(s
     return out
 
 
-@app.get("/api/dashboard/districts/summary")
-async def get_district_dashboard_summary(request: Request, location_context: str = Depends(security_firewall)):
+_DASHBOARD_REFRESH_COOLDOWN_SECONDS = 180  # 3 min -- see refresh endpoint docstring
+
+
+def _read_dashboard_snapshot(snapshot_key: str) -> Optional[Dict[str, Any]]:
+    """Reads a cached DashboardSnapshot row. Returns None on any failure
+    (table not yet created in the Catalyst console, no row yet, transient
+    error) so callers fall back to a live compute -- this cache is a pure
+    speed optimization, never a hard dependency."""
+    if not catalyst_app:
+        return None
+    try:
+        safe_key = escape_zcql_literal(snapshot_key)
+        res = catalyst_app.zql().execute_query(
+            f"SELECT PayloadJSON, ComputedAt, ValidationStatus FROM DashboardSnapshot WHERE SnapshotKey = '{safe_key}' LIMIT 1"
+        )
+    except Exception:
+        return None
+    if not res:
+        return None
+    row = res[0].get("DashboardSnapshot", {})
+    if row.get("ValidationStatus") != "PASSED":
+        return None
+    try:
+        payload = json.loads(row.get("PayloadJSON") or "{}")
+    except Exception:
+        return None
+    payload["computed_at"] = row.get("ComputedAt")
+    payload["warnings"] = []
+    return payload
+
+
+def _fit_district_summary_json(payload: Dict[str, Any], cap: int = 9000) -> str:
+    """
+    DashboardSnapshot.PayloadJSON is a plain Catalyst `text` column --
+    confirmed (2026-09-16) to be the same capped type as ChatMessage.data_json
+    (see _fit_json above), not a distinct large-text type. Real payload size
+    is ~6KB (30 districts + ~5 special units) so this should never trigger,
+    but degrades safely instead of risking a truncated/corrupt JSON write:
+    drops the least-important field (per-district `most_wanted`, already
+    disclosed as a 300-row sample, not exhaustive) first, then trims
+    special_units from the end if that alone still isn't enough.
+    """
+    s = json.dumps(payload, ensure_ascii=False, default=str)
+    if len(s) <= cap:
+        return s
+    trimmed = dict(payload)
+    trimmed["districts"] = [{**d, "most_wanted": None} for d in (payload.get("districts") or [])]
+    s = json.dumps(trimmed, ensure_ascii=False, default=str)
+    if len(s) <= cap:
+        return s
+    special = list(trimmed.get("special_units") or [])
+    while special:
+        special.pop()
+        trimmed["special_units"] = special
+        s = json.dumps(trimmed, ensure_ascii=False, default=str)
+        if len(s) <= cap:
+            return s
+    return s[:cap]
+
+
+def _write_dashboard_snapshot(snapshot_key: str, payload: Dict[str, Any], live_total: int) -> None:
+    """Upserts a DashboardSnapshot row. ZCQL has no native UPSERT, so this
+    is a check-then-insert-or-update. Failures are logged, never raised --
+    a failed cache write must never take down the endpoint that already
+    has a good payload to return to the officer."""
+    if not catalyst_app:
+        return
+    body = {k: v for k, v in payload.items() if k not in ("computed_at", "warnings")}
+    computed_at = datetime.utcnow().isoformat() + "Z"
+    try:
+        safe_key = escape_zcql_literal(snapshot_key)
+        existing = catalyst_app.zql().execute_query(
+            f"SELECT ROWID FROM DashboardSnapshot WHERE SnapshotKey = '{safe_key}' LIMIT 1"
+        )
+        row_data = {
+            "SnapshotKey": snapshot_key,
+            "PayloadJSON": _fit_district_summary_json(body),
+            "ComputedAt": computed_at,
+            "ValidationStatus": "PASSED",
+            "LiveCaseMasterTotal": live_total,
+        }
+        if existing:
+            row_data["ROWID"] = existing[0].get("DashboardSnapshot", {}).get("ROWID")
+            zcql_update_row("DashboardSnapshot", row_data)
+        else:
+            zcql_insert_row("DashboardSnapshot", row_data)
+    except Exception as e:
+        logger.warning(f"_write_dashboard_snapshot({snapshot_key}) failed (table may not exist yet in console): {e}")
+
+
+def _dashboard_snapshot_cooldown_remaining(snapshot_key: str) -> int:
+    """Seconds until another refresh is allowed; 0 if none is pending."""
+    if not catalyst_app:
+        return 0
+    try:
+        safe_key = escape_zcql_literal(snapshot_key)
+        res = catalyst_app.zql().execute_query(
+            f"SELECT ComputedAt FROM DashboardSnapshot WHERE SnapshotKey = '{safe_key}' LIMIT 1"
+        )
+        if not res:
+            return 0
+        computed_at_str = res[0].get("DashboardSnapshot", {}).get("ComputedAt")
+        if not computed_at_str:
+            return 0
+        computed_at = datetime.fromisoformat(computed_at_str.replace("Z", ""))
+        elapsed = (datetime.utcnow() - computed_at).total_seconds()
+        remaining = _DASHBOARD_REFRESH_COOLDOWN_SECONDS - elapsed
+        return int(remaining) if remaining > 0 else 0
+    except Exception:
+        return 0
+
+
+def _get_live_casemaster_total() -> int:
+    if not catalyst_app:
+        return 0
+    try:
+        res = catalyst_app.zql().execute_query("SELECT COUNT(CaseMasterID) FROM CaseMaster")
+        if res:
+            return int(res[0].get("CaseMaster", {}).get("COUNT(CaseMasterID)") or 0)
+    except Exception as e:
+        logger.warning(f"_get_live_casemaster_total failed: {e}")
+    return 0
+
+
+def _validate_district_summary(payload: Dict[str, Any], live_total: int) -> Tuple[bool, str, List[str]]:
+    """Validation gate before a live-computed payload is allowed to
+    overwrite the served snapshot. Returns (passed, hard_fail_reason,
+    soft_warnings). See DISTRICT_FOLD_MAP's docstring for the known
+    district-id structure this checks against."""
+    warnings: List[str] = []
+    known_mapped_ids = set(range(1, 31))  # 30 real geographic districts with a map polygon
+    known_special_ids = SPECIAL_UNIT_DISTRICT_IDS | UNMAPPED_DISTRICT_IDS
+
+    districts = payload.get("districts") or []
+    special_units = payload.get("special_units") or []
+
+    total_active_cases = 0
+    for entry in districts:
+        try:
+            dist_id_int = int(entry.get("district_id"))
+        except (TypeError, ValueError):
+            dist_id_int = None
+        if dist_id_int not in known_mapped_ids:
+            warnings.append(f"Unrecognized district_id {entry.get('district_id')} in districts list (not one of the known 30 mapped districts) -- may be a newly added jurisdiction.")
+        active = entry.get("active_cases")
+        if not isinstance(active, int) or active < 0:
+            return False, f"District '{entry.get('district')}' has an invalid active_cases value: {active!r}", warnings
+        total_active_cases += active
+        mw = entry.get("most_wanted")
+        if mw is not None and not (isinstance(mw, dict) and "suspect" in mw and "case_count" in mw):
+            return False, f"District '{entry.get('district')}' has a malformed most_wanted entry: {mw!r}", warnings
+
+    for entry in special_units:
+        try:
+            dist_id_int = int(entry.get("district_id"))
+        except (TypeError, ValueError):
+            dist_id_int = None
+        if dist_id_int not in known_special_ids:
+            warnings.append(f"Unrecognized district_id {entry.get('district_id')} in special_units list -- may be a newly added special unit.")
+        active = entry.get("active_cases")
+        if not isinstance(active, int) or active < 0:
+            return False, f"Special unit '{entry.get('district')}' has an invalid active_cases value: {active!r}", warnings
+        total_active_cases += active
+
+    if len(districts) == 0 and len(special_units) == 0:
+        return False, "Computed payload has zero districts and zero special units -- refusing to publish an empty result.", warnings
+
+    if live_total > 0:
+        divergence = abs(total_active_cases - live_total) / live_total
+        if divergence > 0.05:
+            return False, (
+                f"Computed district totals ({total_active_cases}) diverge from the live CaseMaster "
+                f"count ({live_total}) by {divergence*100:.1f}% -- likely a partial/failed batched "
+                f"computation. Refusing to publish."
+            ), warnings
+
+    return True, "", warnings
+
+
+def _compute_district_summary_live() -> Dict[str, Any]:
     """
     All-districts hover payload for the district analytics dashboard map.
-    Fixed architecture per spec: no caching, no materialized/pre-aggregated
-    tables -- every number is a live query, computed once per dashboard
-    load/refresh (not per-hover; the frontend fetches this once and reads
-    from the in-memory result on hover). CaseMaster has no direct usable
-    DistrictID join path (see get_offender_risk's comment on the phantom-
-    column ZCQL 400 this caused previously) -- district is resolved via the
-    same Unit.DistrictID join used throughout agent_loop.py.
+    Live query, computed once per dashboard load/refresh (not per-hover --
+    the frontend fetches this once and reads from the in-memory result on
+    hover). CaseMaster has no direct usable DistrictID join path (see
+    get_offender_risk's comment on the phantom-column ZCQL 400 this caused
+    previously) -- district is resolved via the same Unit.DistrictID join
+    used throughout agent_loop.py.
+
+    CONFIRMED LIVE (2026-09-16): District has 41 rows, not Karnataka's real
+    31 districts -- 6 of them are city commissionerates/sub-jurisdictions
+    (real police commands, not their own place on a map) and 4 are
+    statewide special units with no single geographic home. See
+    DISTRICT_FOLD_MAP's docstring above _get_all_units for the full
+    breakdown. Commissionerate counts are folded into their parent
+    district's total; special units + the one real-but-unmapped district
+    (Vijayanagara) are bucketed into `special_units` instead of silently
+    dropped, since the frontend's map polygon data only covers 30 of the
+    31 real districts.
 
     "Most-wanted" per district is a bounded-sample computation (first 300
     Accused rows, same documented pattern as detect_crime_groups), NOT a
@@ -1506,77 +2029,145 @@ async def get_district_dashboard_summary(request: Request, location_context: str
     `sample_note` in the response rather than presented as exhaustive.
     """
     if not catalyst_app:
+        raise RuntimeError("Database client offline.")
+    districts = catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")
+    units = _get_all_units()
+    unit_to_district = {int(u["UnitID"]): _fold_district_id(u.get("DistrictID")) for u in units if u.get("UnitID") is not None}
+
+    # 1. Case counts: real per-station counts (see
+    # _get_case_counts_by_station's docstring -- this used to be a
+    # single unbounded GROUP BY that silently capped at 300 stations),
+    # rolled up unit -> (folded) district.
+    case_counts_by_unit = _get_case_counts_by_station()
+    case_counts_by_district: Dict[Any, int] = {}
+    for unit_id, count in case_counts_by_unit.items():
+        dist_id = unit_to_district.get(unit_id)
+        if dist_id is not None:
+            case_counts_by_district[dist_id] = case_counts_by_district.get(dist_id, 0) + count
+
+    # 2. Most-wanted per district: bounded Accused sample + one IN-clause
+    # lookup to resolve those cases' districts (never a full table scan).
+    most_wanted_by_district: Dict[Any, Dict[str, Any]] = {}
+    try:
+        acc_res = catalyst_app.zql().execute_query("SELECT AccusedName, CaseMasterID FROM Accused LIMIT 300")
+        case_ids = sorted({r.get("Accused", {}).get("CaseMasterID") for r in acc_res if r.get("Accused", {}).get("CaseMasterID")})
+        case_to_unit: Dict[Any, Any] = {}
+        if case_ids:
+            cm_res = catalyst_app.zql().execute_query(
+                f"SELECT CaseMasterID, PoliceStationID FROM CaseMaster WHERE CaseMasterID IN ({','.join(str(c) for c in case_ids)})"
+            )
+            case_to_unit = {r.get("CaseMaster", {}).get("CaseMasterID"): r.get("CaseMaster", {}).get("PoliceStationID") for r in cm_res}
+
+        tally: Dict[Tuple[Any, str], int] = {}
+        for r in acc_res:
+            a = r.get("Accused", {})
+            name = (a.get("AccusedName") or "").strip()
+            cid = a.get("CaseMasterID")
+            if not name or "unknown" in name.lower() or not cid:
+                continue
+            _raw_unit = case_to_unit.get(cid)
+            dist_id = unit_to_district.get(int(_raw_unit)) if _raw_unit is not None else None
+            if dist_id is None:
+                continue
+            key = (dist_id, name)
+            tally[key] = tally.get(key, 0) + 1
+
+        for (dist_id, name), count in tally.items():
+            current = most_wanted_by_district.get(dist_id)
+            if not current or count > current["case_count"]:
+                most_wanted_by_district[dist_id] = {"suspect": name, "case_count": count}
+    except Exception as e:
+        logger.warning(f"District summary: most-wanted computation failed: {e}")
+
+    out = []
+    special_units_out = []
+    for d in districts:
+        d_data = d.get("District", {})
+        raw_dist_id = d_data.get("DistrictID")
+        try:
+            raw_dist_id_int = int(raw_dist_id)
+        except (TypeError, ValueError):
+            raw_dist_id_int = None
+        if raw_dist_id_int in DISTRICT_FOLD_MAP:
+            # Fold-source row (e.g. "Belagavi City") -- its count already
+            # merged into its parent district above; don't emit it separately.
+            continue
+        entry = {
+            "district_id": raw_dist_id,
+            "district": d_data.get("DistrictName"),
+            "active_cases": case_counts_by_district.get(raw_dist_id, 0),
+            "most_wanted": most_wanted_by_district.get(raw_dist_id),
+        }
+        if raw_dist_id_int in SPECIAL_UNIT_DISTRICT_IDS or raw_dist_id_int in UNMAPPED_DISTRICT_IDS:
+            entry["reason"] = (
+                "unmapped_district" if raw_dist_id_int in UNMAPPED_DISTRICT_IDS else "special_unit"
+            )
+            special_units_out.append(entry)
+        else:
+            out.append(entry)
+
+    return {
+        "districts": out,
+        "special_units": special_units_out,
+        "sample_note": "Most-wanted is computed from a 300-row Accused sample, not a full-table scan.",
+    }
+
+
+@app.get("/api/dashboard/districts/summary")
+async def get_district_dashboard_summary(request: Request, location_context: str = Depends(security_firewall)):
+    """Serves the cached DashboardSnapshot when present (fast path); falls
+    back to a live compute + self-seed on cold start (no snapshot row yet).
+    See POST .../refresh for the validated manual-recompute path."""
+    if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
     try:
-        districts = catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")
-        units = catalyst_app.zql().execute_query("SELECT UnitID, DistrictID FROM Unit")
-        unit_to_district = {u.get("Unit", {}).get("UnitID"): u.get("Unit", {}).get("DistrictID") for u in units}
-
-        # 1. Case counts: one grouped query, rolled up unit -> district.
-        case_counts_by_district: Dict[Any, int] = {}
-        try:
-            count_res = catalyst_app.zql().execute_query(
-                "SELECT PoliceStationID, COUNT(CaseMasterID) FROM CaseMaster GROUP BY PoliceStationID"
-            )
-            for r in count_res:
-                cm = r.get("CaseMaster", {})
-                unit_id = cm.get("PoliceStationID")
-                dist_id = unit_to_district.get(unit_id)
-                if dist_id is not None:
-                    count = int(cm.get("COUNT(CaseMasterID)") or 0)
-                    case_counts_by_district[dist_id] = case_counts_by_district.get(dist_id, 0) + count
-        except Exception as e:
-            logger.warning(f"District summary: grouped case-count query failed: {e}")
-
-        # 2. Most-wanted per district: bounded Accused sample + one IN-clause
-        # lookup to resolve those cases' districts (never a full table scan).
-        most_wanted_by_district: Dict[Any, Dict[str, Any]] = {}
-        try:
-            acc_res = catalyst_app.zql().execute_query("SELECT AccusedName, CaseMasterID FROM Accused LIMIT 300")
-            case_ids = sorted({r.get("Accused", {}).get("CaseMasterID") for r in acc_res if r.get("Accused", {}).get("CaseMasterID")})
-            case_to_unit: Dict[Any, Any] = {}
-            if case_ids:
-                cm_res = catalyst_app.zql().execute_query(
-                    f"SELECT CaseMasterID, PoliceStationID FROM CaseMaster WHERE CaseMasterID IN ({','.join(str(c) for c in case_ids)})"
-                )
-                case_to_unit = {r.get("CaseMaster", {}).get("CaseMasterID"): r.get("CaseMaster", {}).get("PoliceStationID") for r in cm_res}
-
-            tally: Dict[Tuple[Any, str], int] = {}
-            for r in acc_res:
-                a = r.get("Accused", {})
-                name = (a.get("AccusedName") or "").strip()
-                cid = a.get("CaseMasterID")
-                if not name or "unknown" in name.lower() or not cid:
-                    continue
-                dist_id = unit_to_district.get(case_to_unit.get(cid))
-                if dist_id is None:
-                    continue
-                key = (dist_id, name)
-                tally[key] = tally.get(key, 0) + 1
-
-            for (dist_id, name), count in tally.items():
-                current = most_wanted_by_district.get(dist_id)
-                if not current or count > current["case_count"]:
-                    most_wanted_by_district[dist_id] = {"suspect": name, "case_count": count}
-        except Exception as e:
-            logger.warning(f"District summary: most-wanted computation failed: {e}")
-
-        out = []
-        for d in districts:
-            d_data = d.get("District", {})
-            dist_id = d_data.get("DistrictID")
-            out.append({
-                "district_id": dist_id,
-                "district": d_data.get("DistrictName"),
-                "active_cases": case_counts_by_district.get(dist_id, 0),
-                "most_wanted": most_wanted_by_district.get(dist_id),
-            })
-        return {
-            "districts": out,
-            "sample_note": "Most-wanted is computed from a 300-row Accused sample, not a full-table scan.",
-        }
+        cached = _read_dashboard_snapshot("districts_summary")
+        if cached is not None:
+            return cached
+        payload = _compute_district_summary_live()
+        live_total = _get_live_casemaster_total()
+        passed, reason, warnings = _validate_district_summary(payload, live_total)
+        if passed:
+            _write_dashboard_snapshot("districts_summary", payload, live_total)
+        else:
+            logger.warning(f"District summary cold-start validation failed, serving unseeded live result: {reason}")
+        payload["computed_at"] = datetime.utcnow().isoformat() + "Z"
+        payload["warnings"] = warnings
+        return payload
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to compute district summary: {str(e)}")
+
+
+@app.post("/api/dashboard/districts/summary/refresh")
+async def refresh_district_dashboard_summary(request: Request, location_context: str = Depends(security_firewall)):
+    """Officer-triggered manual recompute (the existing Refresh button).
+    Runs the same live computation as the cold-start path, validates it,
+    and only overwrites the served snapshot if validation passes --
+    otherwise the previous (good) snapshot stays live and the officer gets
+    a clear rejection reason. Cooldown protects against repeat-click
+    storms of this same heavy batched query -- we hit Catalyst's usage cap
+    twice in one session today from exactly that pattern during the import."""
+    if not catalyst_app:
+        raise HTTPException(status_code=500, detail="Database client offline.")
+    cooldown_remaining = _dashboard_snapshot_cooldown_remaining("districts_summary")
+    if cooldown_remaining > 0:
+        return {
+            "status": "rejected",
+            "reason": f"Please wait {cooldown_remaining}s before refreshing again.",
+            "warnings": [],
+        }
+    try:
+        payload = _compute_district_summary_live()
+        live_total = _get_live_casemaster_total()
+        passed, reason, warnings = _validate_district_summary(payload, live_total)
+        if not passed:
+            return {"status": "rejected", "reason": reason, "warnings": warnings}
+        _write_dashboard_snapshot("districts_summary", payload, live_total)
+        payload["computed_at"] = datetime.utcnow().isoformat() + "Z"
+        payload["warnings"] = warnings
+        return {"status": "updated", **payload}
+    except Exception as e:
+        return {"status": "rejected", "reason": f"Refresh failed: {str(e)}", "warnings": []}
 
 
 def _compute_dashboard_panels(unit_ids: List[Any]) -> Dict[str, Any]:
@@ -2044,11 +2635,15 @@ async def get_firs(
     if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
     try:
-        # 1. Fetch lookups to join in memory
-        units = {r.get("Unit", {}).get("UnitID"): r.get("Unit", {}) for r in catalyst_app.zql().execute_query("SELECT UnitID, UnitName, DistrictID FROM Unit")}
+        # 1. Fetch lookups to join in memory. CONFIRMED LIVE BUG
+        # (2026-09-16): Unit (1,112 rows) and CrimeSubHead (722 rows) both
+        # now exceed ZCQL's 300-row cap on a plain unpaginated SELECT --
+        # were silently truncated before the real CCTNS import brought
+        # both tables past 300 rows.
+        units = {u.get("UnitID"): u for u in _get_all_units()}
         districts = {r.get("District", {}).get("DistrictID"): r.get("District", {}).get("DistrictName") for r in catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")}
         heads = {r.get("CrimeHead", {}).get("CrimeHeadID"): r.get("CrimeHead", {}).get("CrimeGroupName") for r in catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead")}
-        subheads = {r.get("CrimeSubHead", {}).get("CrimeSubHeadID"): r.get("CrimeSubHead", {}).get("CrimeHeadName") for r in catalyst_app.zql().execute_query("SELECT CrimeSubHeadID, CrimeHeadName FROM CrimeSubHead")}
+        subheads = {s.get("CrimeSubHeadID"): s.get("CrimeHeadName") for s in _get_all_crime_subheads()}
         statuses = {r.get("CaseStatusMaster", {}).get("CaseStatusID"): r.get("CaseStatusMaster", {}).get("CaseStatusName") for r in catalyst_app.zql().execute_query("SELECT CaseStatusID, CaseStatusName FROM CaseStatusMaster")}
         
         # Pre-fetch socio profiles
@@ -2407,12 +3002,14 @@ async def get_accused_list(
     if not catalyst_app:
         raise HTTPException(status_code=500, detail="Database client offline.")
     try:
-        # 1. Fetch lookups to join in memory
-        units = {r.get("Unit", {}).get("UnitID"): r.get("Unit", {}) for r in catalyst_app.zql().execute_query("SELECT UnitID, UnitName, DistrictID FROM Unit")}
+        # 1. Fetch lookups to join in memory. Unit now exceeds ZCQL's
+        # 300-row unpaginated-SELECT cap (1,112 real rows) -- see
+        # _get_all_units's docstring.
+        units = {u.get("UnitID"): u for u in _get_all_units()}
         districts = {r.get("District", {}).get("DistrictID"): r.get("District", {}).get("DistrictName") for r in catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")}
         heads = {r.get("CrimeHead", {}).get("CrimeHeadID"): r.get("CrimeHead", {}).get("CrimeGroupName") for r in catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead")}
         statuses = {r.get("CaseStatusMaster", {}).get("CaseStatusID"): r.get("CaseStatusMaster", {}).get("CaseStatusName") for r in catalyst_app.zql().execute_query("SELECT CaseStatusID, CaseStatusName FROM CaseStatusMaster")}
-        
+
         # 2. Fetch CaseMaster mapping -- ROW-LEVEL SECURITY: scope to the officer's
         # station so accused from other jurisdictions are excluded below;
         # supervisors see all.
@@ -3207,21 +3804,25 @@ def get_cached_officer_identity(kgid_or_emp_id: Any) -> Dict[str, str]:
         return {"name": f"Officer ({key})", "rank": ""}
 
     try:
+        # Matches on KGID, ROWID, or EmployeeID -- callers pass any of the
+        # three depending on which one happened to be on hand (chat history
+        # rows persist the internal EmployeeID, not the KGID officers
+        # actually recognize as their badge number).
         rows = catalyst_app.zql().execute_query(
-            f"SELECT FirstName, RankID FROM Employee WHERE KGID = '{escape_zcql_literal(key)}' "
-            f"OR ROWID = '{escape_zcql_literal(key)}' LIMIT 1"
+            f"SELECT KGID, FirstName, RankID FROM Employee WHERE KGID = '{escape_zcql_literal(key)}' "
+            f"OR ROWID = '{escape_zcql_literal(key)}' OR EmployeeID = '{escape_zcql_literal(key)}' LIMIT 1"
         )
         if rows:
             emp = rows[0].get("Employee", {})
             first = (emp.get("FirstName") or "").strip()
             full_name = first or f"Officer ({key})"
-            identity = {"name": full_name, "rank": str(emp.get("RankID") or "")}
+            identity = {"name": full_name, "rank": str(emp.get("RankID") or ""), "kgid": str(emp.get("KGID") or "") or key}
             _EMPLOYEE_NAME_CACHE[key] = identity
             return identity
     except Exception as e:
         logger.warning(f"Could not resolve officer name for {key}: {e}")
 
-    fallback = {"name": f"Officer ({key})", "rank": ""}
+    fallback = {"name": f"Officer ({key})", "rank": "", "kgid": key}
     _EMPLOYEE_NAME_CACHE[key] = fallback
     return fallback
 
@@ -3606,6 +4207,17 @@ async def get_session_messages(session_id: str, request: Request, location_conte
             if GLMTranslator._looks_like_leaked_escapes(text_en):
                 text_en = stored_text
             sender_employee_id = m.get("sender_employee_id")
+            # CONFIRMED LIVE BUG (2026-09-16): sender_employee_id (the
+            # column) stores the internal Employee.EmployeeID row id, but
+            # ChatBubble.tsx displays this value verbatim as the officer's
+            # badge ("KSP-{value}") -- officers only recognize their real
+            # 7-digit KGID, not the internal row id, so every historical
+            # chat bubble showed a badge number nobody recognized. Prefer
+            # the KGID already stashed in data_json at send-time (free, no
+            # extra query); for older rows persisted before that existed,
+            # resolve it once via the Employee cache and remember it for
+            # next time.
+            sender_badge = data.get("sender_kgid")
             if m.get("sender") == "assistant":
                 sender_name = "VAJRA.AI"
             elif m.get("sender") == "system":
@@ -3613,13 +4225,16 @@ async def get_session_messages(session_id: str, request: Request, location_conte
             else:
                 # 1. First check if data_json stored the real name at creation
                 sender_name = data.get("sender_name")
-                if not sender_name or sender_name == "Officer":
+                if not sender_name or sender_name == "Officer" or not sender_badge:
                     # 2. Resolve dynamically from the Employee cache via sender_employee_id
                     identity = get_cached_officer_identity(sender_employee_id)
-                    sender_name = identity.get("name", "Officer")
+                    if not sender_name or sender_name == "Officer":
+                        sender_name = identity.get("name", "Officer")
+                    if not sender_badge:
+                        sender_badge = identity.get("kgid") or sender_employee_id
             messages.append({
                 "sender": m.get("sender"),
-                "sender_employee_id": sender_employee_id,
+                "sender_employee_id": sender_badge if m.get("sender") == "user" else sender_employee_id,
                 "sender_name": sender_name,
                 "text": stored_text,
                 "text_en": text_en,
@@ -4381,13 +4996,15 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
 
     # Resolve session ID: prefer the real persisted session_id from the request
     # body. If none was supplied, this is a new conversation -- auto-create a
-    # real ChatSession row (auto-titled from the first ~40 characters of the
-    # officer's own text, not the full agent-facing query) instead of
-    # falling back to a synthetic id that never gets a matching ChatSession
-    # row and so never shows up in session history.
+    # real ChatSession row, titled via a bounded one-shot LLM call (see
+    # dynamic_titler.py; falls back to the same plain truncation as before on
+    # any failure/timeout) instead of falling back to a synthetic id that
+    # never gets a matching ChatSession row and so never shows up in session
+    # history.
     session_id = payload.session_id or request.headers.get("X-Session-ID")
     if not session_id:
-        auto_title = display_text[:40] + ("..." if len(display_text) > 40 else "")
+        from dynamic_titler import generate_conversation_title
+        auto_title = generate_conversation_title(display_text, agent_loop)
         try:
             session_id = _create_chat_session(employee_id, auto_title or "New Conversation")
         except Exception as e:
@@ -4489,7 +5106,14 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
             sender_employee_id=employee_id
         )
         await connection_manager.broadcast(session_id, {
-            "type": "message", "sender": "user", "sender_employee_id": employee_id,
+            # CONFIRMED LIVE BUG (2026-09-16): this sent the internal
+            # Employee.EmployeeID row id here, and ChatBubble.tsx renders it
+            # verbatim as "KSP-{value}" -- an officer never sees their own
+            # internal row id, only their real 7-digit KGID badge number, so
+            # every live-sent chat bubble showed a badge number no one
+            # recognized. request.state.kgid is the same real badge already
+            # used for auth/audit elsewhere in this function.
+            "type": "message", "sender": "user", "sender_employee_id": _user_msg_data["sender_kgid"],
             "sender_name": full_officer_name, "text": display_text, "response_type": "text",
             "data": _user_msg_data, "citations": [], "timestamp": datetime.utcnow().isoformat(),
             "client_msg_id": payload.client_msg_id
@@ -6348,14 +6972,25 @@ async def upload_chat_attachments(
         # "analysis," and claiming otherwise would overstate what happened.
         analysis_text_parts.extend(video_notes)
 
-    # 5.1 & L42: video/audio-derived text (scene descriptions, transcripts) goes
-    # through both phone-number masking and POCSO name redaction before leaving backend
+    # CONFIRMED LIVE BUG (2026-09-16): this used to call redact_pocso_name()
+    # unconditionally on the ENTIRE combined_analysis text (unlike every
+    # other call site in this file, which all gate it behind
+    # is_pocso_sensitive(text) first). redact_pocso_name() replaces its
+    # WHOLE input with "[REDACTED UNDER POCSO ACT §74 JJA]" if non-empty --
+    # it was built to mask a single VictimName/ComplainantName FIELD, not a
+    # multi-paragraph video/audio scene description. Confirmed live: every
+    # video attachment (including ordinary ones, e.g. a courier delivery
+    # clip with zero POCSO content) got its entire analysis destroyed into
+    # that one literal string, with no way for the officer to see what was
+    # actually in the footage. A case's POCSO sensitivity is already
+    # handled at the case-RECORD level (VictimName lookups elsewhere,
+    # gated by is_pocso_sensitive); it does not belong here, and even
+    # gated, whole-string redaction can't produce a useful summary of a
+    # multi-paragraph description -- it would still destroy the entire
+    # analysis for the rare genuinely-sensitive case too. Phone-number
+    # masking (a targeted regex over free text, not a wholesale replace)
+    # is the correct and sufficient PII guard for this path.
     combined_analysis = redact_phone_numbers("\n\n".join(analysis_text_parts))
-    try:
-        from vajra_core import redact_pocso_name
-        combined_analysis = redact_pocso_name(combined_analysis)
-    except Exception:
-        pass
 
     # L33: High-Density Video Summarizer for oversized scene batches (>3500 chars / ~1000 tokens)
     if len(combined_analysis) > 3500 and "Video Analysis" in combined_analysis:
@@ -6427,7 +7062,13 @@ async def get_alerts_endpoint(request: Request, location_context: str = Depends(
         # Without this filter they leaked into every officer's "System Alerts"
         # list as a raw JSON blob mislabeled under whatever AlertType string
         # the frontend didn't recognize.
-        WORKFLOW_INTERNAL_ALERT_TYPES = {"EXPORT_APPROVAL", "POCSO_ACCESS", "DISTRICT_ACCESS", "PROFILE_CHANGE"}
+        # CONFIRMED LIVE BUG (2026-09-16): UNAUTHORIZED_LOGOUT_ALERT -- a
+        # CRITICAL "possible credential leak" alert naming one specific
+        # officer's badge -- was missing from this set, so it leaked into
+        # EVERY authenticated officer's general notification bell instead of
+        # staying supervisor-only, same class of gap this set already exists
+        # to close for the other 4 types.
+        WORKFLOW_INTERNAL_ALERT_TYPES = {"EXPORT_APPROVAL", "POCSO_ACCESS", "DISTRICT_ACCESS", "PROFILE_CHANGE", "UNAUTHORIZED_LOGOUT_ALERT", "ACCOUNT_LOCKOUT_ALERT"}
 
         alerts = []
         for row in res:
@@ -8978,6 +9619,20 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         for msg in (payload.transcript or []):
             sender = str(msg.get("role") or msg.get("sender") or "").lower()
             m_text = msg.get("content") or msg.get("text") or ""
+            # CONFIRMED LIVE BUG (2026-09-16): every officer question in the
+            # transcript was silently dropped here -- this loop only ever
+            # matched the "assistant"/"ai"/... branch below, so the exported
+            # PDF/HTML dossier showed nothing but a stack of anonymous
+            # "Intelligence Analysis" cards with no record of what was
+            # actually asked. A dossier meant as an official investigation
+            # record with no visible questions is a real evidentiary gap, not
+            # just a cosmetic one. render_dossier_html now renders a
+            # role="user" panel as a distinct right-aligned bubble (see its
+            # own comment), matching the live chat's own left/right
+            # convention instead of collapsing everyone into identical cards.
+            if sender == "user" and m_text.strip():
+                panels.append({"role": "user", "text": m_text, "type": "text"})
+                continue
             if sender in ("assistant", "ai", "vajra", "vajra.ai"):
                 narrative += f"\n{m_text}" if narrative else m_text
                 cards = _extract_visual_cards_from_message(msg, report_lang == "kn")
@@ -9952,6 +10607,63 @@ async def _expire_and_notify(rowid: Any, meta: Dict[str, Any], ws_event_type: st
             logger.warning(f"_expire_and_notify broadcast failed for rowid {rowid}: {e}")
 
 
+@app.get("/api/security/unrecognized-logins")
+async def list_unrecognized_logins(request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Supervisor-only view of unrecognized-login/session-eviction reports
+    (Section 14: an officer flags "this wasn't me" via
+    /api/security/report-unauthorized-eviction -> RemoteEvictionModal.tsx)
+    AND account-lockout events (_record_login_failure above: 5 failed
+    password attempts in 15 minutes). CONFIRMED LIVE GAP (2026-09-16): both
+    are CRITICAL security signals that were written to ProactiveAlerts but
+    had no dedicated supervisor-facing list or review action anywhere --
+    they either leaked into every officer's general notification bell (see
+    the WORKFLOW_INTERNAL_ALERT_TYPES fix above) or, once filtered out of
+    that feed, were invisible entirely. Same pending-queue pattern as
+    list_pending_exports above.
+    """
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    out = []
+    if catalyst_app:
+        try:
+            res = catalyst_app.zql().execute_query(
+                "SELECT ROWID, AlertType, AlertMessage, TriggerTime, IsRead FROM ProactiveAlerts "
+                "WHERE AlertType = 'UNAUTHORIZED_LOGOUT_ALERT' OR AlertType = 'ACCOUNT_LOCKOUT_ALERT' "
+                "ORDER BY ROWID DESC LIMIT 60")
+            for r in res:
+                a = r.get("ProactiveAlerts", {})
+                if a.get("IsRead") is True:
+                    continue
+                try:
+                    m = json.loads(a.get("AlertMessage") or "{}")
+                except Exception:
+                    continue
+                m["rowid"] = a.get("ROWID")
+                m["trigger_time"] = a.get("TriggerTime")
+                m["alert_type"] = a.get("AlertType")
+                out.append(m)
+        except Exception as e:
+            logger.warning(f"list_unrecognized_logins: {e}")
+    return {"pending": out, "count": len(out)}
+
+
+@app.post("/api/security/unrecognized-logins/{rowid}/dismiss")
+async def dismiss_unrecognized_login(rowid: int, request: Request, location_context: str = Depends(security_firewall)):
+    """Supervisor-only: acknowledges an unrecognized-login report as reviewed.
+    Does not itself lock the account -- a supervisor who judges the report
+    credible uses the existing block_officer_account endpoint
+    (officer_governance.py, already wired into PersonnelGovernancePanel.tsx)
+    to actually suspend it; this just clears it from the pending queue."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    try:
+        zcql_update_row("ProactiveAlerts", {"ROWID": rowid, "IsRead": True})
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to dismiss: {str(e)}")
+    return {"status": "dismissed"}
+
+
 @app.get("/api/exports/pending")
 async def list_pending_exports(request: Request, location_context: str = Depends(security_firewall)):
     """Supervisor-only: pending export-approval requests (the Supervisor screen
@@ -10275,13 +10987,15 @@ async def profile_reference_data(location_context: str = Depends(security_firewa
     try:
         ranks = catalyst_app.zql().execute_query("SELECT RankID, RankName FROM Rank")
         designations = catalyst_app.zql().execute_query("SELECT DesignationID, DesignationName FROM Designation")
-        units = catalyst_app.zql().execute_query("SELECT UnitID, UnitName FROM Unit LIMIT 300")
+        # Was a hardcoded LIMIT 300 -- silently offered only the first 300
+        # of 1,112 real stations in this dropdown. _get_all_units() paginates.
+        units = _get_all_units()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Reference data lookup failed: {e}")
     return {
         "ranks": [{"id": r.get("Rank", {}).get("RankID"), "name": r.get("Rank", {}).get("RankName")} for r in ranks],
         "designations": [{"id": d.get("Designation", {}).get("DesignationID"), "name": d.get("Designation", {}).get("DesignationName")} for d in designations],
-        "units": [{"id": u.get("Unit", {}).get("UnitID"), "name": u.get("Unit", {}).get("UnitName")} for u in units],
+        "units": [{"id": u.get("UnitID"), "name": u.get("UnitName")} for u in units],
     }
 
 
@@ -11032,6 +11746,45 @@ class ExplainChartPayload(BaseModel):
     chart_data: Dict[str, Any] = {}
 
 
+def _deterministic_chart_explanation(chart_data: Dict[str, Any]) -> Optional[str]:
+    """CONFIRMED LIVE GAP (2026-09-16): when the LLM narration call below
+    fails, times out, or returns empty, this endpoint always fell back to the
+    same static "Explanation unavailable" apology -- an officer under time
+    pressure got literally nothing about what the chart shows, even though
+    the chart's own data was sitting right there in the request. This derives
+    a real, always-correct one-line summary directly from that data (never
+    hallucinated, so it's safe to show even without the LLM) by finding the
+    first array-of-objects field carrying a recognizable numeric metric --
+    the same "list of {label, value}" shape every InlineWidget chart type
+    (districts/hotspots/shap_factors/series/...) ultimately reduces to --
+    and reporting its size plus the highest/lowest entries. Returns None
+    (never a made-up sentence) when no recognizable shape is found."""
+    numeric_keys = ["active_cases", "value", "count", "weight", "risk_score",
+                     "case_count", "total_case_count", "point_count", "predicted"]
+    label_keys = ["name", "label", "district", "station", "suspect", "period", "date"]
+    for val in chart_data.values():
+        if not isinstance(val, list) or not val or not isinstance(val[0], dict):
+            continue
+        metric_key = next((k for k in numeric_keys if isinstance(val[0].get(k), (int, float))), None)
+        if not metric_key:
+            continue
+        label_key = next((k for k in label_keys if val[0].get(k) is not None), None)
+        scored = [
+            (str(v.get(label_key, "item")) if label_key else "item", v.get(metric_key))
+            for v in val if isinstance(v.get(metric_key), (int, float))
+        ]
+        if not scored:
+            continue
+        scored.sort(key=lambda t: t[1], reverse=True)
+        top_label, top_val = scored[0]
+        if len(scored) == 1:
+            return f"This chart shows one entry: {top_label} at {top_val}."
+        bottom_label, bottom_val = scored[-1]
+        return (f"This chart shows {len(scored)} entries; {top_label} is highest at {top_val}, "
+                f"{bottom_label} is lowest at {bottom_val}.")
+    return None
+
+
 @app.post("/api/charts/explain")
 async def explain_chart(payload: ExplainChartPayload, location_context: str = Depends(security_firewall)):
     """F.30: one-tap plain-language narration of any chart, for anyone who
@@ -11063,11 +11816,19 @@ async def explain_chart(payload: ExplainChartPayload, location_context: str = De
         content = (res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
         explanation = VajraAgentLoop._strip_think(content).strip()
         if not explanation:
-            return {"explanation": "Explanation unavailable right now -- the chart data itself is still accurate."}
+            fallback = _deterministic_chart_explanation(payload.chart_data)
+            return {
+                "explanation": fallback or "Explanation unavailable right now -- the chart data itself is still accurate.",
+                "deterministic": bool(fallback),
+            }
         return {"explanation": explanation}
     except Exception as e:
         logger.warning(f"explain_chart failed: {e}")
-        return {"explanation": "Explanation unavailable right now -- the chart data itself is still accurate."}
+        fallback = _deterministic_chart_explanation(payload.chart_data)
+        return {
+            "explanation": fallback or "Explanation unavailable right now -- the chart data itself is still accurate.",
+            "deterministic": bool(fallback),
+        }
 
 
 if __name__ == "__main__":

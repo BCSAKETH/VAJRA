@@ -733,15 +733,6 @@ export const AIChatScreen: React.FC = () => {
     });
   }, [variantMeta]);
 
-  // Handlers wired below to ChatBubble's Edit/Retry actions -- both simply
-  // resend through the normal handleSend pipeline (same attachment/session/
-  // pending-poll handling as any turn), just tagged with which existing
-  // message they're a new version of.
-  const handleEditMessage = useCallback((msgId: string, newText: string) => {
-    handleSend(newText, [], { editOfMsgId: msgId });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   // WhatsApp-style message pin -- optimistic local flip, then persists
   // server-side via the existing msg_id-in-data_json convention. Reverts on
   // failure so the UI never lies about what's actually saved.
@@ -1039,6 +1030,31 @@ export const AIChatScreen: React.FC = () => {
       }
     }
   }, [isThinking, isUploadingAttachments, lang, addToast, setIsAuthenticated, chatMode, appendMessageForTurn, pollForPendingReply, markPending, clearPending, answerMode]);
+
+  // Handler wired to ChatBubble's Edit action -- resends through the normal
+  // handleSend pipeline (same attachment/session/pending-poll handling as any
+  // turn), tagged with which existing message it's a new version of.
+  // CONFIRMED LIVE BUG (2026-09-16): this used to call handleSend(newText,
+  // [], { editOfMsgId: msgId }) with an empty attachments array and no
+  // existingAttachments/cachedAttachmentAnalysis -- unlike handleRetryVariant
+  // below (and the two other edit-entry-point call sites further down this
+  // file), which both correctly carry attachment metadata through. Editing a
+  // user message that had a video/image attached silently dropped it: the
+  // edited turn re-sent as text-only, and the attachment vanished from that
+  // version of the conversation. msgId here IS the user message being edited
+  // (not an assistant reply needing a backward lookup for its paired
+  // question, as in handleRetryVariant), so its own attachments/
+  // attachmentAnalysis are used directly.
+  const handleEditMessage = useCallback((msgId: string, newText: string) => {
+    const targetMsg = chatMessages.find((m) => m.id === msgId || m.msgId === msgId);
+    const existingAttachments = targetMsg?.attachments || [];
+    const cachedAnalysis = (targetMsg as any)?.attachmentAnalysis || undefined;
+    handleSend(newText, [], {
+      editOfMsgId: msgId,
+      existingAttachments,
+      cachedAttachmentAnalysis: cachedAnalysis,
+    });
+  }, [chatMessages, handleSend]);
 
   // Component 1 (Section 9): Preserve attachments and cached analysis on retry
   const handleRetryVariant = useCallback((msgId: string, originalQuestionText: string) => {
