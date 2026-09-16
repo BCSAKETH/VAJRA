@@ -118,6 +118,14 @@ export const Tactical3DMap: React.FC<Tactical3DMapProps> = ({
     canvas.addEventListener("webglcontextlost", handleContextLost, false);
     canvas.addEventListener("webglcontextrestored", handleContextRestored, false);
 
+    // OpenFreeMap's "dark"/"liberty" styles reference a couple of sprite
+    // icons (circle-11, wood-pattern) this style's own sprite sheet doesn't
+    // actually ship -- MapLibre logs a console warning and renders the
+    // layer without that icon, which is harmless (nothing in this map uses
+    // those icons) but was spamming the console on every tile load. A
+    // no-op resolver tells MapLibre those IDs are expected to be missing
+    // instead of treating each one as a fresh error to report.
+    map.setMissingStyleImageResolver(() => {});
     map.on("load", () => setIsMapLoaded(true));
     map.on("pitch", () => setCurrentPitch(Math.round(map.getPitch())));
     map.on("rotate", () => setCurrentBearing(Math.round(map.getBearing())));
@@ -197,6 +205,17 @@ export const Tactical3DMap: React.FC<Tactical3DMapProps> = ({
       if (!bounds.isEmpty()) {
         map.fitBounds(bounds, { padding: 60, maxZoom: 13, duration: 800 });
       }
+    } else {
+      // CONFIRMED LIVE BUG (2026-09-16): switching to a district with zero
+      // geocoded stations left the camera wherever a PREVIOUS district's
+      // station click had flown it to (e.g. still zoomed into a Bengaluru
+      // street after switching to Hassan) -- nothing ever told the camera
+      // to move, so the officer saw an unrelated city's streets under a
+      // "HASSAN" badge with no pins, which reads as broken rather than as
+      // "no geocoded data for this district" (the real, honest state).
+      // Reset to the statewide overview so the empty-state banner the
+      // caller renders is shown over a sensible, unconfusing view.
+      map.flyTo({ center: [76.6, 14.5], zoom: 6.5, pitch: 0, bearing: 0, duration: 800 });
     }
   }, [stations, selectedUnitId, isMapLoaded, onSelectStation]);
 

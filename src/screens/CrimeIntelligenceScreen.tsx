@@ -28,6 +28,13 @@ export const CrimeIntelligenceScreen: React.FC = () => {
   const [selectedDistrict, setSelectedDistrict] = useState<string>("");
   const [stations, setStations] = useState<TacticalStation[]>([]);
   const [isLoadingStations, setIsLoadingStations] = useState(false);
+  // Real diagnostics from get_district_stations (district matched? real
+  // Unit count? real geocoded CaseMaster row count?) -- surfaced to the
+  // officer instead of a bare "no stations" so a genuine data gap reads
+  // differently from what would otherwise look like a broken feature.
+  const [stationsDebug, setStationsDebug] = useState<{
+    district_matched?: boolean; unit_count?: number; geocoded_case_rows?: number;
+  } | null>(null);
   const [selectedStation, setSelectedStation] = useState<TacticalStation | null>(null);
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
   const [forecast, setForecast] = useState<StationForecastResult | null>(null);
@@ -59,8 +66,11 @@ export const CrimeIntelligenceScreen: React.FC = () => {
       signal: controller.signal,
     })
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => setStations(Array.isArray(d?.stations) ? d.stations : []))
-      .catch((e) => { if (e?.name !== "AbortError") setStations([]); })
+      .then((d) => {
+        setStations(Array.isArray(d?.stations) ? d.stations : []);
+        setStationsDebug(d?.debug || null);
+      })
+      .catch((e) => { if (e?.name !== "AbortError") { setStations([]); setStationsDebug(null); } })
       .finally(() => setIsLoadingStations(false));
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -152,9 +162,17 @@ export const CrimeIntelligenceScreen: React.FC = () => {
                     district" apart from "this is broken". */}
                 {stations.length === 0 && (
                   <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 px-3 py-2 rounded-lg bg-stone-950/90 border border-amber-500/30 text-[11px] text-amber-300/90 font-mono shadow-xl max-w-md text-center">
-                    {lang === "en"
-                      ? `No geocoded stations found for ${selectedDistrict || "this district"} -- its cases on record may not have recorded coordinates yet.`
-                      : `${selectedDistrict || "ಈ ಜಿಲ್ಲೆ"}ಗೆ ಯಾವುದೇ ಠಾಣೆ ನಿರ್ದೇಶಾಂಕ ಡೇಟಾ ಕಂಡುಬಂದಿಲ್ಲ.`}
+                    {!stationsDebug?.district_matched
+                      ? (lang === "en"
+                          ? `"${selectedDistrict}" didn't match any real district record.`
+                          : `"${selectedDistrict}" ಯಾವುದೇ ನೈಜ ಜಿಲ್ಲಾ ದಾಖಲೆಗೆ ಹೊಂದಿಕೆಯಾಗಲಿಲ್ಲ.`)
+                      : !stationsDebug?.unit_count
+                      ? (lang === "en"
+                          ? `${selectedDistrict} has no police stations on record.`
+                          : `${selectedDistrict}ಗೆ ಯಾವುದೇ ಠಾಣೆ ದಾಖಲೆ ಇಲ್ಲ.`)
+                      : (lang === "en"
+                          ? `${selectedDistrict}'s ${stationsDebug.unit_count} stations have ${stationsDebug.geocoded_case_rows ?? 0} geocoded cases between them -- none yet at any single station.`
+                          : `${selectedDistrict}ನ ${stationsDebug.unit_count} ಠಾಣೆಗಳಿಗೆ ${stationsDebug.geocoded_case_rows ?? 0} ನಿರ್ದೇಶಾಂಕ ಪ್ರಕರಣಗಳು ಮಾತ್ರ.`)}
                   </div>
                 )}
                 <Tactical3DMap

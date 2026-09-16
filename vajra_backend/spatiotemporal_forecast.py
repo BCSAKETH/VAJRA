@@ -61,7 +61,7 @@ def _week_day(date_str: Optional[str]) -> Optional[int]:
         return None
 
 
-def get_district_stations(district: str, catalyst_app: Any) -> List[Dict[str, Any]]:
+def get_district_stations(district: str, catalyst_app: Any) -> Dict[str, Any]:
     """
     Real stations for a district, each with a real centroid derived from its
     own recent geocoded cases (not a hardcoded coordinate dict). Stations
@@ -79,15 +79,26 @@ def get_district_stations(district: str, catalyst_app: Any) -> List[Dict[str, An
     query fetches every geocoded CaseMaster row across ALL of this
     district's stations at once (PoliceStationID IN (...)), grouped into
     per-station centroids in Python -- one round-trip total, not N.
+
+    Returns {"stations": [...], "debug": {...}} -- confirmed live that even
+    after the fix above, a real district (Hassan) still showed zero
+    stations with no way to tell WHY (district name not matching, zero
+    Unit rows, or zero geocoded CaseMaster rows are three very different
+    problems). `debug` makes that visible instead of another silent empty
+    list, both server-side (logged) and to the caller.
     """
+    debug: Dict[str, Any] = {"district_matched": False, "unit_count": 0, "geocoded_case_rows": 0}
     if not catalyst_app or not district:
-        return []
+        return {"stations": [], "debug": debug}
     try:
         d_res = catalyst_app.zql().execute_query(
             f"SELECT DistrictID FROM District WHERE DistrictName LIKE '*{district}*' LIMIT 1")
         if not d_res:
-            return []
+            logger.warning(f"get_district_stations: no District row matched name {district!r}")
+            return {"stations": [], "debug": debug}
         dist_id = d_res[0].get("District", {}).get("DistrictID")
+        debug["district_matched"] = True
+        debug["district_id"] = dist_id
         units = catalyst_app.zql().execute_query(
             f"SELECT UnitID, UnitName FROM Unit WHERE DistrictID = {dist_id} LIMIT 60")
         unit_names: Dict[int, str] = {}
@@ -96,8 +107,10 @@ def get_district_stations(district: str, catalyst_app: Any) -> List[Dict[str, An
             unit_id, unit_name = ud.get("UnitID"), ud.get("UnitName")
             if unit_id and unit_name:
                 unit_names[int(unit_id)] = unit_name
+        debug["unit_count"] = len(unit_names)
         if not unit_names:
-            return []
+            logger.warning(f"get_district_stations: District {district!r} (id {dist_id}) has zero Unit rows")
+            return {"stations": [], "debug": debug}
 
         unit_ids_sql = ",".join(str(i) for i in unit_names.keys())
         # One query across every station in the district, keyset-paginated
@@ -134,6 +147,9 @@ def get_district_stations(district: str, catalyst_app: Any) -> List[Dict[str, An
                 break
             last_rowid = max_rowid
 
+        debug["geocoded_case_rows"] = sum(len(v) for v in coords_by_unit.values())
+        debug["units_with_geocoded_cases"] = len(coords_by_unit)
+
         stations = []
         for unit_id, unit_name in unit_names.items():
             coords = coords_by_unit.get(unit_id)
@@ -145,10 +161,17 @@ def get_district_stations(district: str, catalyst_app: Any) -> List[Dict[str, An
                 "unit_id": unit_id, "name": unit_name, "district": district,
                 "lat": round(lat, 6), "lng": round(lng, 6), "sample_size": len(coords),
             })
-        return stations
+        if not stations:
+            logger.warning(
+                f"get_district_stations: {district!r} (id {dist_id}) has {debug['unit_count']} stations but "
+                f"0 of them have any geocoded CaseMaster row ({debug['geocoded_case_rows']} total geocoded "
+                f"rows found across all {debug['unit_count']} stations combined)."
+            )
+        return {"stations": stations, "debug": debug}
     except Exception as e:
         logger.warning(f"get_district_stations failed for {district!r}: {e}")
-        return []
+        debug["error"] = str(e)[:200]
+        return {"stations": [], "debug": debug}
 
 
 def get_station_forecast(unit_id: int, day_of_week: Optional[int], catalyst_app: Any) -> Dict[str, Any]:

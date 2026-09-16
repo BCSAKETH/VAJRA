@@ -989,8 +989,12 @@ async def geospatial_district_stations(district: str = "", location_context: str
     from spatiotemporal_forecast import get_district_stations
     if not district:
         raise HTTPException(status_code=400, detail="district is required.")
-    stations = await run_in_threadpool(get_district_stations, district, catalyst_app)
-    return {"district": district, "stations": stations}
+    result = await run_in_threadpool(get_district_stations, district, catalyst_app)
+    # Real diagnostics (district matched? real Unit count? real geocoded
+    # CaseMaster row count?) surfaced to the caller -- see get_district_
+    # stations' own docstring for why "zero stations" alone wasn't enough
+    # to tell a genuine data gap apart from a real bug.
+    return {"district": district, "stations": result.get("stations", []), "debug": result.get("debug", {})}
 
 
 @app.get("/api/geospatial/station-forecast")
