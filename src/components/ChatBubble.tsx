@@ -7,6 +7,19 @@ import { InlineWidget } from "./InlineWidget";
 import { API_BASE } from "../config";
 import { ReasonCollectionModal } from "./ReasonCollectionModal";
 
+// KSP Response Tailor (Finals-part 3.md Section 48) -- mirrors
+// vajra_backend/ksp_response_tailor.py's STYLE_LABELS. A small, honest badge
+// showing which persona/format this answer was tailored to; absent entirely
+// on older messages or when classification failed (message.responseStyle
+// unset), never a placeholder.
+const RESPONSE_STYLE_LABELS: Record<string, { en: string; kn: string }> = {
+  EXECUTIVE_DISPATCH: { en: "Executive Dispatch", kn: "ಕಾರ್ಯನಿರ್ವಾಹಕ ಸಂಕ್ಷಿಪ್ತ" },
+  CCTNS_FORENSIC_LEDGER: { en: "Forensic Ledger", kn: "ವಿಧಿವಿಜ್ಞಾನ ದಾಖಲೆ" },
+  BNSS_STATUTORY_AUDIT: { en: "Statutory Audit", kn: "ಶಾಸನಬದ್ಧ ಪರಿಶೀಲನೆ" },
+  TACTICAL_FIELD_SOP: { en: "Tactical Field SOP", kn: "ಕಾರ್ಯಾಚರಣಾ ಎಸ್‌ಒಪಿ" },
+  CRIME_SYNDICATE_DOSSIER: { en: "Syndicate Dossier", kn: "ಸಿಂಡಿಕೇಟ್ ದೋಶಿಯರ್" },
+};
+
 interface ChatBubbleProps {
   message: ChatMessage;
   lang: "en" | "kn";
@@ -1288,6 +1301,21 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
         <span className={isAI ? "text-[#C79A4E] font-bold" : "text-stone-300 font-bold"}>
           {resolveSenderLabel()}
         </span>
+        {isAI && message.responseStyle && RESPONSE_STYLE_LABELS[message.responseStyle] && (
+          <>
+            <span className="text-stone-600">•</span>
+            <span
+              className="text-[8.5px] normal-case tracking-normal font-bold px-1.5 py-0.5 rounded bg-stone-800 text-stone-400"
+              title={
+                lang === "en"
+                  ? `Formatted for: ${RESPONSE_STYLE_LABELS[message.responseStyle].en}`
+                  : `ಫಾರ್ಮ್ಯಾಟ್: ${RESPONSE_STYLE_LABELS[message.responseStyle].kn}`
+              }
+            >
+              {lang === "en" ? RESPONSE_STYLE_LABELS[message.responseStyle].en : RESPONSE_STYLE_LABELS[message.responseStyle].kn}
+            </span>
+          </>
+        )}
         <span className="text-stone-600">•</span>
         <span className="text-stone-500 font-normal">{message.timestamp}</span>
       </span>

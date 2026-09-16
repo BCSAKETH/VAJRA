@@ -4191,6 +4191,11 @@ async def get_session_messages(session_id: str, request: Request, location_conte
             # without instant language-toggle) instead of showing blank.
             text_en = data.pop("_text_en", None) or stored_text
             text_kn = data.pop("_text_kn", None) or stored_text
+            # Same pop-into-top-level convention as text_en/text_kn above --
+            # see the live broadcast path in the chat endpoint for why this
+            # lives in `data` under an underscore-prefixed key.
+            response_style = data.pop("_response_style", None)
+            response_style_confidence = data.pop("_response_style_confidence", None)
             # Defensive boundary check -- confirmed live that Zia's fast-
             # translate API can occasionally return the literal JSON-escaped
             # SPELLING of Kannada text ('ಎಲ...' as plain ASCII
@@ -4240,6 +4245,8 @@ async def get_session_messages(session_id: str, request: Request, location_conte
                 "text_en": text_en,
                 "text_kn": text_kn,
                 "response_type": m.get("response_type"),
+                "response_style": response_style,
+                "response_style_confidence": response_style_confidence,
                 "data": data,
                 "citations": citations,
                 "timestamp": m.get("sent_at")
@@ -4801,6 +4808,12 @@ async def _run_ai_turn_and_persist(
     # Underscore-prefixed keys avoid colliding with real widget/visualization
     # data fields already living in this same dict.
     persisted_data = {**(result["data"] or {}), "_text_en": text_en, "_text_kn": text_kn, **(variant_data or {})}
+    # KSP Response Tailor (Finals-part 3.md Section 48) -- same underscore-
+    # prefixed convention as _text_en/_text_kn/_provenance above, so
+    # ChatBubble.tsx can show which persona/format the answer was tailored to.
+    if result.get("response_style"):
+        persisted_data["_response_style"] = result["response_style"]
+        persisted_data["_response_style_confidence"] = result.get("response_style_confidence")
 
     # Court-admissible provenance (§65B Indian Evidence Act): a verifiable SHA-256
     # integrity hash over the grounded answer + its citations, plus the cited
@@ -4829,6 +4842,8 @@ async def _run_ai_turn_and_persist(
         "type": "message", "sender": "assistant", "sender_employee_id": None,
         "sender_name": "VAJRA.AI", "text": text, "text_en": text_en, "text_kn": text_kn,
         "response_type": result["response_type"],
+        "response_style": persisted_data.get("_response_style"),
+        "response_style_confidence": persisted_data.get("_response_style_confidence"),
         "data": persisted_data, "citations": result["citations"], "timestamp": datetime.utcnow().isoformat(),
         # Without these, an "AI unavailable" turn delivered via WebSocket
         # (every message from the 2nd one onward in a session) rendered as an

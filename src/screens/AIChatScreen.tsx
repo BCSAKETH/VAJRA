@@ -60,6 +60,8 @@ const mapSessionMessages = (sessionId: string, messages: any[]): ChatMessage[] =
     attachmentAnalysis: m.data?.attachment_analysis,
     senderName: m.sender_name,
     senderEmployeeId: m.sender_employee_id,
+    responseStyle: m.response_style,
+    responseStyleConfidence: m.response_style_confidence,
     // Conversation branching (edit/retry/variants) -- packed into data_json
     // server-side, no new columns. msgId is this message's own stable id;
     // variantGroup/versionIndex let the UI group alternate versions of the
@@ -529,6 +531,8 @@ export const AIChatScreen: React.FC = () => {
                     citations: payload.citations,
                     senderName: payload.sender_name,
                     senderEmployeeId: payload.sender_employee_id,
+                    responseStyle: payload.response_style,
+                    responseStyleConfidence: payload.response_style_confidence,
                     isSimulated: payload.is_simulated,
                     simulatedReason: payload.simulated_reason,
                   };

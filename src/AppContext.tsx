@@ -72,6 +72,11 @@ export interface ChatMessage {
   // Cowork sender attribution -- who actually typed this in a shared session.
   senderName?: string;
   senderEmployeeId?: number | string | null;
+  // KSP Response Tailor (Finals-part 3.md Section 48): which persona/format
+  // the answer was tailored to (e.g. "TACTICAL_FIELD_SOP") -- assistant
+  // messages only.
+  responseStyle?: string | null;
+  responseStyleConfidence?: number | null;
   // Conversation branching (edit a past question / retry an answer): this
   // message's own stable id, plus the shared group id and 1-based version
   // number if it's one of several alternate versions of the same turn.

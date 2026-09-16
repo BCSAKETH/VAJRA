@@ -96,7 +96,8 @@ class CatalystLLM:
         tools: Optional[List[Dict[str, Any]]] = None,
         use_agent_system_prompt: bool = True,
         max_tokens: int = 2500,
-        tool_exemplars: Optional[List[Dict[str, Any]]] = None
+        tool_exemplars: Optional[List[Dict[str, Any]]] = None,
+        style_directive: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Sends chat payload to Catalyst LLM Serving.
@@ -270,7 +271,15 @@ class CatalystLLM:
                 "always stays plain and serious; the finding carries the weight, not the delivery. "
                 "Respond with JSON containing only a 'text_response' field with your answer."
             )
-        
+
+        # KSP Response Tailor (Finals-part 3.md Section 48): an additive
+        # per-persona formatting refinement on top of the VOICE directive
+        # above, never a replacement for it -- see ksp_response_tailor.py's
+        # own docstring for why this is a real, small classifier rather than
+        # a second prose-rewriting layer.
+        if style_directive:
+            system_prompt += "\n\n" + style_directive
+
         # Inject system prompt into messages if not already present
         if use_agent_system_prompt:
             if messages and messages[0].get("role") == "system":

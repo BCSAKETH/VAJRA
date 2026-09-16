@@ -3080,6 +3080,23 @@ class VajraAgentLoop(CognitiveBrainMixin):
         result = self._run_agent_loop_inner(
             query, session_id, employee_id, user_unit_id, officer_name, answer_mode, officer_badge, progress_cb)
         result = self._grounding_safety_net(result, employee_id, session_id)
+        # KSP Response Tailor (Finals-part 3.md Section 48): guarantee the
+        # persona label is present on the result regardless of which of
+        # _run_agent_loop_inner's many internal early-return fast paths
+        # actually produced it (only the main iterative-loop path threads
+        # the classifier's directive into the LLM call itself; this classifies
+        # again here -- sub-millisecond, so a second pass is cheap -- purely
+        # to attach the label consistently for the frontend badge).
+        try:
+            from ksp_response_tailor import get_ksp_response_tailor
+            _officer_query = re.sub(r'^\s*(?:\[Context:[^\]]*\]\s*)+', '', query, flags=re.DOTALL)
+            _style, _style_conf, _ = get_ksp_response_tailor().predict_style(_officer_query)
+            if isinstance(result, dict) and "response_style" not in result:
+                result = dict(result)
+                result["response_style"] = _style.value
+                result["response_style_confidence"] = _style_conf
+        except Exception as e:
+            logger.warning(f"KSPResponseTailor badge attach failed (non-fatal): {e}")
         try:
             zqueries = get_zql_log()
             if zqueries:
@@ -3134,6 +3151,19 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # [Context: ...] blocks before those parsers see the text; the full
         # `query` (with headers) still goes to the LLM history unchanged.
         officer_query = re.sub(r'^\s*(?:\[Context:[^\]]*\]\s*)+', '', query, flags=re.DOTALL)
+
+        # KSP Response Tailor (Finals-part 3.md Section 48): classify once on
+        # the officer's own clean text (not the injected context headers) and
+        # thread the resulting directive into the main answer-generation call
+        # below. The persona LABEL for the frontend badge is attached
+        # separately in the run_agent_loop wrapper (guarantees it's present
+        # regardless of which internal fast-path produced the answer).
+        try:
+            from ksp_response_tailor import get_ksp_response_tailor
+            _, _, _style_directive = get_ksp_response_tailor().predict_style(officer_query)
+        except Exception as e:
+            logger.warning(f"KSPResponseTailor classification failed (non-fatal): {e}")
+            _style_directive = None
 
         # Kannada (non-Latin) queries never match the English keyword router or the
         # Latin-only entity/district/crime parsers, so they fell through to GLM --
@@ -3852,7 +3882,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     history,
                     tools_for_call,
                     max_tokens=3500,
-                    tool_exemplars=gold_exemplars
+                    tool_exemplars=gold_exemplars,
+                    style_directive=_style_directive,
                 )
 
             if llm_res.get("error"):
