@@ -889,13 +889,45 @@ async def report_unauthorized_eviction_endpoint(payload: ReportUnauthorizedReque
         client_ip
     )
 
+    # Finals-part 3.md Section 97: the full-screen supervisor takeover modal
+    # shows the victim officer's real particulars (name/station/rank)
+    # alongside the rogue terminal's telemetry -- resolved once here and
+    # stashed in the alert so the Security tab/takeover modal never needs a
+    # second round-trip (and still degrades honestly to just the badge if
+    # this lookup fails, never a fabricated name).
+    officer_name, officer_unit, officer_rank = None, None, None
+    try:
+        if catalyst_app:
+            emp_res = catalyst_app.zql().execute_query(
+                f"SELECT FirstName, UnitID, RankID FROM Employee WHERE KGID = '{escape_zcql_literal(badge)}' LIMIT 1")
+            if emp_res:
+                emp = emp_res[0].get("Employee", {})
+                officer_name = emp.get("FirstName")
+                unit_id = emp.get("UnitID")
+                if unit_id:
+                    u_res = catalyst_app.zql().execute_query(f"SELECT UnitName FROM Unit WHERE UnitID = {unit_id} LIMIT 1")
+                    if u_res:
+                        officer_unit = u_res[0].get("Unit", {}).get("UnitName")
+                rank_id = emp.get("RankID")
+                if rank_id:
+                    r_res = catalyst_app.zql().execute_query(f"SELECT RankName FROM Rank WHERE RankID = {rank_id} LIMIT 1")
+                    if r_res:
+                        officer_rank = r_res[0].get("Rank", {}).get("RankName")
+    except Exception as e:
+        logger.warning(f"report_unauthorized_eviction: officer particulars lookup failed: {e}")
+
     # 2. Priority supervisor notification in ProactiveAlerts
     if catalyst_app:
         try:
             alert_payload = {
                 "requester_badge": badge,
+                "officer_name": officer_name,
+                "officer_unit": officer_unit,
+                "officer_rank": officer_rank,
                 "incident_id": incident_id,
                 "reported_ip": client_ip,
+                "reported_device": request.headers.get("user-agent", "")[:200],
+                "officer_statement": (payload.note or "").strip()[:500] or None,
                 "reported_at": datetime.utcnow().isoformat() + "Z",
                 "message": f"Officer KSP-{badge} flagged an unrecognised remote session termination from IP {client_ip}. Potential credential leak."
             }
@@ -10688,20 +10720,43 @@ async def list_unrecognized_logins(request: Request, location_context: str = Dep
     return {"pending": out, "count": len(out)}
 
 
+class SecurityIncidentTriagePayload(BaseModel):
+    # Finals-part 3.md Section 97's 3 triage actions. "locked" is recorded
+    # here for the audit trail AFTER the frontend has already called the
+    # existing block_officer_account endpoint -- this endpoint itself never
+    # locks an account, only officer_governance.py's dedicated one does,
+    # so there is exactly one place that ever flips Employee access off.
+    action: str = "reviewed"  # "reviewed" | "locked" | "escalated" | "authorized_handover"
+    justification: Optional[str] = None
+
+
 @app.post("/api/security/unrecognized-logins/{rowid}/dismiss")
-async def dismiss_unrecognized_login(rowid: int, request: Request, location_context: str = Depends(security_firewall)):
-    """Supervisor-only: acknowledges an unrecognized-login report as reviewed.
-    Does not itself lock the account -- a supervisor who judges the report
-    credible uses the existing block_officer_account endpoint
-    (officer_governance.py, already wired into PersonnelGovernancePanel.tsx)
-    to actually suspend it; this just clears it from the pending queue."""
+async def dismiss_unrecognized_login(rowid: int, request: Request, payload: SecurityIncidentTriagePayload = Body(default=SecurityIncidentTriagePayload()), location_context: str = Depends(security_firewall)):
+    """Supervisor-only: triages an unrecognized-login report (Finals-part
+    3.md Section 97's 3 supervisor actions -- lock/escalate/dismiss-as-
+    authorized). Does not itself lock the account -- the frontend calls the
+    existing block_officer_account endpoint (officer_governance.py) first
+    for a "locked" triage, then this endpoint clears the pending queue and
+    records what was actually decided, tamper-evidently, in AuditLog."""
     if getattr(request.state, "role_tier", "officer") != "supervisor":
         raise HTTPException(status_code=403, detail="Supervisor access only.")
+    action = payload.action if payload.action in ("reviewed", "locked", "escalated", "authorized_handover") else "reviewed"
+    if action == "authorized_handover" and len((payload.justification or "").strip()) < 10:
+        raise HTTPException(status_code=400, detail="Dismissing as an authorized handover requires a justification of at least 10 characters.")
     try:
         zcql_update_row("ProactiveAlerts", {"ROWID": rowid, "IsRead": True})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to dismiss: {str(e)}")
-    return {"status": "dismissed"}
+    try:
+        from session_manager import record_auth_audit_log
+        supervisor_badge = str(getattr(request.state, "kgid", "") or "")
+        detail = f"Security incident (ProactiveAlerts row {rowid}) triaged as '{action}' by supervisor KSP-{supervisor_badge}."
+        if payload.justification:
+            detail += f" Justification: {payload.justification.strip()[:400]}"
+        record_auth_audit_log(supervisor_badge, "SECURITY_INCIDENT_TRIAGED", detail, "")
+    except Exception as e:
+        logger.warning(f"Security incident triage audit log failed: {e}")
+    return {"status": "dismissed", "action": action}
 
 
 @app.get("/api/exports/pending")

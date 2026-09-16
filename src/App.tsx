@@ -8,6 +8,7 @@ import { FocusLossCurtain } from "./components/FocusLossCurtain";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ChangePasswordModal } from "./components/ChangePasswordModal";
 import { RemoteEvictionModal } from "./components/RemoteEvictionModal";
+import { UnrecognizedLoginWarningModal } from "./components/UnrecognizedLoginWarningModal";
 
 // Code-split every screen except Login/AIChat (the two every officer hits on
 // every session) so the initial bundle doesn't pay upfront for chunks a
@@ -185,6 +186,11 @@ export default function App() {
             watermark half stays mounted per-screen (WatermarkOverlay.tsx),
             as it already was. */}
         <FocusLossCurtain />
+        {/* Section 97: single global mount, same self-gating pattern as
+            SessionTimeoutGuard above -- no-ops entirely unless the signed-in
+            officer is a supervisor, so it's safe to mount unconditionally
+            here rather than duplicating it per-screen. */}
+        <UnrecognizedLoginWarningModal />
         <AppContent />
       </AppProvider>
     </ErrorBoundary>
