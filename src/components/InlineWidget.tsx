@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, lazy, Suspense } from "react";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { useApp } from "../AppContext";
@@ -6,6 +6,18 @@ import { API_BASE } from "../config";
 import { Maximize2, ShieldAlert, ShieldCheck, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart, Newspaper, ExternalLink, Radio, ChevronDown, ChevronRight, Code2, Copy, Check, Sparkles, Download } from "lucide-react";
 import { ExpandedOverlay } from "./ExpandedOverlay";
 import { ErrorBoundary } from "./ErrorBoundary";
+import type { TacticalStation } from "./Tactical3DMap";
+
+// CONFIRMED LIVE BUG (2026-09-16, Finals-part 3.md Section 44): the [3D]
+// toggle on this exact card used to fake a 3D look with a CSS
+// `rotateX(42deg)` transform on the flat 2D Leaflet map -- no real WebGL, no
+// building extrusions. Tactical3DMap (MapLibre GL JS + OpenFreeMap vector
+// tiles) is the real engine; lazy-loaded so maplibre-gl (a real, sizeable
+// WebGL library) only downloads for an officer who actually clicks [3D],
+// same code-splitting reasoning as DistrictDashboardScreen's Tactical tab.
+const Tactical3DMap = lazy(() =>
+  import("./Tactical3DMap").then((m) => ({ default: m.Tactical3DMap }))
+);
 
 // Fit the inline map to the ACTUAL hotspot coordinates every render, and force
 // a resize once the chat bubble has laid out (Leaflet renders grey/half-drawn
@@ -320,7 +332,10 @@ interface InlineWidgetProps {
 }
 
 const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpand, onFollowUpQuery }) => {
-  const { lang, addToast } = useApp();
+  const { lang, addToast, theme } = useApp();
+  // Section 44: which hotspot pin the officer clicked in Tactical 3D mode --
+  // opens the briefing card (incident count, dominant crime, precinct).
+  const [selectedHotspotIdx, setSelectedHotspotIdx] = useState<number | null>(null);
   // F.30: "Explain This Chart" -- hooks declared unconditionally, before the
   // early `return null` below, per the Rules of Hooks (this component has
   // no other useState calls to piggyback the ordering on).
@@ -786,17 +801,64 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                 </div>
               )}
               <div
-                className="rounded-lg overflow-hidden border border-stone-800 h-[280px] relative z-0 transition-all duration-700 ease-out"
-                style={{ perspective: isMap3D ? "900px" : "none", background: "#161412" }}
+                className="rounded-lg overflow-hidden border border-stone-800 h-[280px] relative z-0"
+                style={{ background: "#161412" }}
               >
-                <div
-                  className="w-full h-full transition-transform duration-700 ease-out"
-                  style={{
-                    transform: isMap3D ? "rotateX(42deg) scale(1.06)" : "rotateX(0deg) scale(1)",
-                    transformOrigin: "center 75%",
-                    height: "100%",
-                  }}
-                >
+                {isMap3D ? (() => {
+                  // Section 44: real WebGL 3D (MapLibre + OpenFreeMap building
+                  // extrusions) replaces the old CSS rotateX(42deg) fake tilt.
+                  // Same real hotspot coordinates, just rendered as tactical
+                  // pins instead of flat Leaflet circles -- color reuses
+                  // Tactical3DMap's existing tier palette as an intensity
+                  // proxy (more incidents = more "elevated"), not a new
+                  // fabricated risk signal.
+                  const counts = hotspots.map((h) => h.point_count || 0);
+                  const maxC = Math.max(1, ...counts);
+                  const tacticalStations: TacticalStation[] = hotspots.map((h, idx) => {
+                    const intensity = h.point_count ? h.point_count / maxC : 0.35;
+                    return {
+                      unit_id: idx,
+                      name: h.dominant_station || h.label || (lang === "en" ? "Hotspot" : "ಹಾಟ್‌ಸ್ಪಾಟ್"),
+                      lat: h.lat,
+                      lng: h.lng,
+                      tier: intensity > 0.66 ? "elevated" : intensity > 0.33 ? "typical" : "quiet",
+                    };
+                  });
+                  const selectedHotspot = selectedHotspotIdx != null ? hotspots[selectedHotspotIdx] : null;
+                  return (
+                    <div className="relative w-full h-full">
+                      <Suspense fallback={
+                        <div className="w-full h-full flex items-center justify-center">
+                          <div className="w-6 h-6 border-2 border-stone-800 border-t-[#C79A4E] rounded-full animate-spin" />
+                        </div>
+                      }>
+                        <Tactical3DMap
+                          stations={tacticalStations}
+                          selectedUnitId={selectedHotspotIdx}
+                          onSelectStation={(s) => setSelectedHotspotIdx(typeof s.unit_id === "number" ? s.unit_id : parseInt(String(s.unit_id), 10))}
+                          isDark={theme !== "light"}
+                        />
+                      </Suspense>
+                      {selectedHotspot && (
+                        <div className="absolute top-2 left-2 z-30 bg-stone-950/95 border border-[#C79A4E]/40 rounded-lg px-3 py-2 shadow-xl text-[10.5px] font-mono max-w-[220px]">
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <span className="font-bold text-[#C79A4E]">
+                              {selectedHotspot.point_count ?? "?"} {lang === "en" ? "incidents" : "ಘಟನೆಗಳು"}
+                            </span>
+                            <button onClick={() => setSelectedHotspotIdx(null)} className="text-stone-500 hover:text-stone-300 cursor-pointer leading-none">×</button>
+                          </div>
+                          {selectedHotspot.dominant_crime && (
+                            <div className="text-stone-400">{lang === "en" ? "Type" : "ಬಗೆ"}: <span className="text-stone-200">{selectedHotspot.dominant_crime}</span></div>
+                          )}
+                          {selectedHotspot.dominant_station && (
+                            <div className="text-stone-400">{lang === "en" ? "Precinct" : "ಠಾಣೆ"}: <span className="text-stone-200">{selectedHotspot.dominant_station}</span></div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })() : (
+                <div className="w-full h-full" style={{ height: "100%" }}>
                 <MapContainer
                   key={`${hotspots[0]?.lat}-${hotspots[0]?.lng}-${mapBasemap}`}
                   center={[hotspots[0].lat, hotspots[0].lng]}
@@ -832,20 +894,6 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                       const halo = c ? Math.min(18, 7 + c * 0.5) : 8;
                       return (
                         <React.Fragment key={idx}>
-                          {/* 3D Volumetric Depth Ring */}
-                          {isMap3D && (
-                            <CircleMarker
-                              center={[marker.lat, marker.lng]}
-                              radius={halo + 6}
-                              pathOptions={{
-                                color: isSat ? "#FFFFFF" : color,
-                                weight: 1,
-                                fillColor: isSat ? "#FFFFFF" : color,
-                                fillOpacity: 0.15,
-                                opacity: 0.4,
-                              }}
-                            />
-                          )}
                           <CircleMarker center={[marker.lat, marker.lng]} radius={halo}
                             pathOptions={{ color, weight: 1, fillColor: color, fillOpacity: 0.1, opacity: 0.35 }} />
                           <CircleMarker center={[marker.lat, marker.lng]} radius={4}
@@ -856,13 +904,7 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                               fillOpacity: 1,
                             }}>
                             <Popup>
-                              <div
-                                className="text-xs font-sans text-stone-900 space-y-1 min-w-[150px] max-w-[220px]"
-                                style={{
-                                  transform: isMap3D ? "rotateX(-42deg)" : "none",
-                                  transformOrigin: "bottom center",
-                                }}
-                              >
+                              <div className="text-xs font-sans text-stone-900 space-y-1 min-w-[150px] max-w-[220px]">
                                 {marker.point_count ? (
                                   <>
                                     <span className="font-bold block">{marker.point_count} {lang === "en" ? "incidents" : "ಘಟನೆಗಳು"}</span>
@@ -898,13 +940,13 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                     });
                   })()}
                 </MapContainer>
-                </div>
-
                 {/* Satellite HUD Overlay */}
                 {mapBasemap === "satellite" && (
                   <div className="absolute bottom-2 left-2 z-[400] bg-stone-950/85 backdrop-blur-md px-2 py-0.5 rounded border border-stone-800 text-[8.5px] font-mono text-stone-400 pointer-events-none">
                     🛰️ ESRI World Imagery • Sub-Meter Aerial
                   </div>
+                )}
+                </div>
                 )}
               </div>
             </div>

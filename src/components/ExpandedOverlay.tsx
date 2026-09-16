@@ -1,4 +1,12 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, lazy, Suspense } from "react";
+import type { TacticalStation } from "./Tactical3DMap";
+
+// Section 44: same real WebGL 3D engine as InlineWidget.tsx's [3D] toggle,
+// lazy-loaded so maplibre-gl only downloads once an officer actually opens
+// full-screen Tactical 3D mode.
+const Tactical3DMap = lazy(() =>
+  import("./Tactical3DMap").then((m) => ({ default: m.Tactical3DMap }))
+);
 import { useApp } from "../AppContext";
 import { X, MapPin, Network, ShieldAlert, TrendingUp, Activity, AlertTriangle, Clock, Fingerprint, Users, Download, Repeat, Link2, PieChart as PieChartIcon, BarChart3, AreaChart as AreaChartIcon, LineChart as LineChartIcon, ShieldCheck, Scale, CheckCircle2, Sparkles } from "lucide-react";
 import { OffenderTimelineStrip } from "./OffenderTimelineStrip";
@@ -307,7 +315,7 @@ interface ExpandedOverlayProps {
 }
 
 export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType, data: rawData, onClose, inline = false, onFollowUpQuery, networkNewSinceTimestamp }) => {
-  const { lang, officerName, badgeNumber } = useApp();
+  const { lang, officerName, badgeNumber, theme } = useApp();
   const contentRef = useRef<HTMLDivElement>(null);
   // Confirmed live feedback: several charts (case_distribution, trend,
   // forecast) were each hardcoded to exactly one presentation with no way
@@ -357,6 +365,9 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
   // Basemap & 3D Layer mode for maps (defaults to high-visibility "street" view)
   const [mapBasemap, setMapBasemap] = useState<BasemapMode>("street");
   const [isMap3D, setIsMap3D] = useState<boolean>(false);
+  // Section 44: which hotspot pin the officer clicked in full-screen Tactical
+  // 3D mode -- opens the briefing card.
+  const [selectedHotspotIdx, setSelectedHotspotIdx] = useState<number | null>(null);
 
   // ESC key dismiss
   useEffect(() => {
@@ -665,17 +676,60 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                 </div>
 
                 <div
-                  className="flex-1 rounded-xl overflow-hidden border border-stone-800 min-h-[350px] relative z-0 transition-all duration-700 ease-out"
-                  style={{ perspective: isMap3D ? "900px" : "none", background: "#161412" }}
+                  className="flex-1 rounded-xl overflow-hidden border border-stone-800 min-h-[350px] relative z-0"
+                  style={{ background: "#161412" }}
                 >
-                  <div
-                    className="w-full h-full transition-transform duration-700 ease-out"
-                    style={{
-                      transform: isMap3D ? "rotateX(42deg) scale(1.06)" : "rotateX(0deg) scale(1)",
-                      transformOrigin: "center 75%",
-                      height: "100%",
-                    }}
-                  >
+                  {isMap3D ? (() => {
+                    // Section 44: full-screen handover into the same real
+                    // WebGL 3D engine as the inline [3D] toggle -- replaces
+                    // the old CSS rotateX(42deg) fake tilt here too.
+                    const counts = hotspots.map((h) => {
+                      const m = h.label?.match(/\((\d+)\s*incidents?\)/i);
+                      return m ? parseInt(m[1], 10) : 0;
+                    });
+                    const maxC = Math.max(1, ...counts);
+                    const tacticalStations: TacticalStation[] = hotspots.map((h, idx) => {
+                      const intensity = counts[idx] ? counts[idx] / maxC : 0.35;
+                      return {
+                        unit_id: idx,
+                        name: h.label || (lang === "en" ? "Hotspot" : "ಹಾಟ್‌ಸ್ಪಾಟ್"),
+                        lat: h.lat,
+                        lng: h.lng,
+                        tier: intensity > 0.66 ? "elevated" : intensity > 0.33 ? "typical" : "quiet",
+                      };
+                    });
+                    const selectedHotspot = selectedHotspotIdx != null ? hotspots[selectedHotspotIdx] : null;
+                    const selectedCount = selectedHotspotIdx != null ? counts[selectedHotspotIdx] : null;
+                    return (
+                      <div className="relative w-full h-full">
+                        <Suspense fallback={
+                          <div className="w-full h-full flex items-center justify-center">
+                            <div className="w-8 h-8 border-2 border-stone-800 border-t-[#C79A4E] rounded-full animate-spin" />
+                          </div>
+                        }>
+                          <Tactical3DMap
+                            stations={tacticalStations}
+                            selectedUnitId={selectedHotspotIdx}
+                            onSelectStation={(s) => setSelectedHotspotIdx(typeof s.unit_id === "number" ? s.unit_id : parseInt(String(s.unit_id), 10))}
+                            isDark={theme !== "light"}
+                          />
+                        </Suspense>
+                        {selectedHotspot && (
+                          <div className="absolute top-3 left-3 z-30 bg-stone-950/95 border border-[#C79A4E]/40 rounded-lg px-3.5 py-2.5 shadow-xl text-xs font-mono max-w-[260px]">
+                            <div className="flex items-center justify-between gap-2 mb-1">
+                              <span className="font-bold text-[#C79A4E]">
+                                {selectedCount || "?"} {lang === "en" ? "incidents" : "ಘಟನೆಗಳು"}
+                              </span>
+                              <button onClick={() => setSelectedHotspotIdx(null)} className="text-stone-500 hover:text-stone-300 cursor-pointer leading-none">×</button>
+                            </div>
+                            <div className="text-stone-400">{selectedHotspot.label}</div>
+                            <div className="text-stone-600">{selectedHotspot.lat.toFixed(5)}, {selectedHotspot.lng.toFixed(5)}</div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })() : (
+                  <div className="w-full h-full" style={{ height: "100%" }}>
                     <MapContainer
                       key={`${hotspots[0]?.lat}-${hotspots[0]?.lng}-${mapBasemap}`}
                       center={hotspots[0] ? [hotspots[0].lat, hotspots[0].lng] : [12.9716, 77.5946]}
@@ -709,20 +763,6 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                           const color = intensity > 0.66 ? "#E24B4A" : intensity > 0.33 ? "#E4C590" : "#C79A4E";
                           return (
                             <React.Fragment key={idx}>
-                              {/* 3D Depth ring */}
-                              {isMap3D && (
-                                <CircleMarker
-                                  center={[marker.lat, marker.lng]}
-                                  radius={radius + 6}
-                                  pathOptions={{
-                                    color: isSat ? "#FFFFFF" : color,
-                                    weight: 1,
-                                    fillColor: isSat ? "#FFFFFF" : color,
-                                    fillOpacity: 0.15,
-                                    opacity: 0.4,
-                                  }}
-                                />
-                              )}
                               <CircleMarker
                                 center={[marker.lat, marker.lng]}
                                 radius={radius}
@@ -734,13 +774,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                                 }}
                               >
                                 <Popup>
-                                  <div
-                                    className="text-xs font-sans text-stone-900"
-                                    style={{
-                                      transform: isMap3D ? "rotateX(-42deg)" : "none",
-                                      transformOrigin: "bottom center",
-                                    }}
-                                  >
+                                  <div className="text-xs font-sans text-stone-900">
                                     <span className="font-bold block">{marker.label}</span>
                                     Location: {marker.lat.toFixed(5)}, {marker.lng.toFixed(5)}
                                   </div>
@@ -752,6 +786,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                       })()}
                     </MapContainer>
                   </div>
+                  )}
                 </div>
               </div>
             );
