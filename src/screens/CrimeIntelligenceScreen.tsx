@@ -137,19 +137,34 @@ export const CrimeIntelligenceScreen: React.FC = () => {
 
       <div className="flex-1 min-h-0 grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-3">
         <div className="flex flex-col gap-3 min-h-0">
-          <div className="flex-1 min-h-[320px]">
+          <div className="flex-1 min-h-[320px] relative">
             {isLoadingStations ? (
               <div className="w-full h-full flex items-center justify-center rounded-xl border border-stone-800 bg-stone-900/40">
                 <div className="w-8 h-8 border-2 border-stone-800 border-t-[#C79A4E] rounded-full animate-spin" />
               </div>
             ) : (
-              <Tactical3DMap
-                stations={mapStations}
-                selectedUnitId={selectedStation?.unit_id ?? null}
-                onSelectStation={handleSelectStation}
-                isDark={theme !== "light"}
-                district={selectedDistrict}
-              />
+              <>
+                {/* Honest empty-state: a district with real stations but
+                    none of them having geocoded (lat/lng) cases on file is
+                    a real, disclosed data gap, not a silent, unexplained
+                    blank map -- an officer seeing an empty statewide view
+                    with zero feedback has no way to tell "no data for this
+                    district" apart from "this is broken". */}
+                {stations.length === 0 && (
+                  <div className="absolute top-3 left-1/2 -translate-x-1/2 z-30 px-3 py-2 rounded-lg bg-stone-950/90 border border-amber-500/30 text-[11px] text-amber-300/90 font-mono shadow-xl max-w-md text-center">
+                    {lang === "en"
+                      ? `No geocoded stations found for ${selectedDistrict || "this district"} -- its cases on record may not have recorded coordinates yet.`
+                      : `${selectedDistrict || "ಈ ಜಿಲ್ಲೆ"}ಗೆ ಯಾವುದೇ ಠಾಣೆ ನಿರ್ದೇಶಾಂಕ ಡೇಟಾ ಕಂಡುಬಂದಿಲ್ಲ.`}
+                  </div>
+                )}
+                <Tactical3DMap
+                  stations={mapStations}
+                  selectedUnitId={selectedStation?.unit_id ?? null}
+                  onSelectStation={handleSelectStation}
+                  isDark={theme !== "light"}
+                  district={selectedDistrict}
+                />
+              </>
             )}
           </div>
           <ForecastTimeSlider selectedDay={selectedDay} onChangeDay={setSelectedDay} lang={lang} />

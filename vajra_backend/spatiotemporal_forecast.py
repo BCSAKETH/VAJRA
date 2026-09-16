@@ -43,7 +43,7 @@ Karnataka's 1000+ real stations on the map).
 """
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("spatiotemporal_forecast")
 
@@ -68,6 +68,17 @@ def get_district_stations(district: str, catalyst_app: Any) -> List[Dict[str, An
     with zero geocoded cases in the sample are omitted rather than placed at
     a fabricated [0,0]/district-centroid fallback that would misrepresent
     their real location.
+
+    CONFIRMED LIVE BUG (2026-09-16): the first version of this function ran
+    ONE ZCQL query PER station (up to 60 sequential round-trips for a single
+    district) -- for any district with many stations this risked exceeding
+    AppSail's own request-kill window, silently failing and leaving the map
+    looking like it "isn't working" with zero markers and no error shown.
+    Rewritten to the same single-grouped-query pattern already proven
+    elsewhere in this codebase (main.py's list_district_stations): ONE
+    query fetches every geocoded CaseMaster row across ALL of this
+    district's stations at once (PoliceStationID IN (...)), grouped into
+    per-station centroids in Python -- one round-trip total, not N.
     """
     if not catalyst_app or not district:
         return []
@@ -79,18 +90,53 @@ def get_district_stations(district: str, catalyst_app: Any) -> List[Dict[str, An
         dist_id = d_res[0].get("District", {}).get("DistrictID")
         units = catalyst_app.zql().execute_query(
             f"SELECT UnitID, UnitName FROM Unit WHERE DistrictID = {dist_id} LIMIT 60")
-        stations = []
+        unit_names: Dict[int, str] = {}
         for u in units:
             ud = u.get("Unit", {})
-            unit_id = ud.get("UnitID")
-            unit_name = ud.get("UnitName")
-            if not unit_id or not unit_name:
-                continue
-            rows = catalyst_app.zql().execute_query(
-                f"SELECT Latitude, Longitude, CrimeMajorHeadID FROM CaseMaster "
-                f"WHERE PoliceStationID = {unit_id} AND Latitude IS NOT NULL AND Longitude IS NOT NULL LIMIT 300")
-            coords = [(float(r.get("CaseMaster", {}).get("Latitude")), float(r.get("CaseMaster", {}).get("Longitude")))
-                      for r in rows if r.get("CaseMaster", {}).get("Latitude") is not None]
+            unit_id, unit_name = ud.get("UnitID"), ud.get("UnitName")
+            if unit_id and unit_name:
+                unit_names[int(unit_id)] = unit_name
+        if not unit_names:
+            return []
+
+        unit_ids_sql = ",".join(str(i) for i in unit_names.keys())
+        # One query across every station in the district, keyset-paginated
+        # (same ROWID-keyset pattern already proven in this codebase for
+        # exactly this "ZCQL caps every query at 300 rows" constraint) so a
+        # busier district's stations aren't starved by whichever 300 rows
+        # happen to sort first.
+        coords_by_unit: Dict[int, List[Tuple[float, float]]] = {}
+        last_rowid = None
+        for _ in range(40):  # 40 * 300 = 12,000 rows -- generous ceiling for one district
+            where = f"PoliceStationID IN ({unit_ids_sql}) AND Latitude IS NOT NULL AND Longitude IS NOT NULL"
+            if last_rowid is not None:
+                where += f" AND ROWID > {last_rowid}"
+            page = catalyst_app.zql().execute_query(
+                f"SELECT ROWID, PoliceStationID, Latitude, Longitude FROM CaseMaster "
+                f"WHERE {where} ORDER BY ROWID ASC LIMIT 300")
+            if not page:
+                break
+            max_rowid = last_rowid
+            for r in page:
+                cm = r.get("CaseMaster", {})
+                rid = cm.get("ROWID")
+                if rid is None:
+                    continue
+                rid = int(rid)
+                if max_rowid is None or rid > max_rowid:
+                    max_rowid = rid
+                ps_id = cm.get("PoliceStationID")
+                lat, lng = cm.get("Latitude"), cm.get("Longitude")
+                if ps_id is None or lat is None or lng is None:
+                    continue
+                coords_by_unit.setdefault(int(ps_id), []).append((float(lat), float(lng)))
+            if max_rowid == last_rowid or len(page) < 300:
+                break
+            last_rowid = max_rowid
+
+        stations = []
+        for unit_id, unit_name in unit_names.items():
+            coords = coords_by_unit.get(unit_id)
             if not coords:
                 continue
             lat = sum(c[0] for c in coords) / len(coords)
