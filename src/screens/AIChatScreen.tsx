@@ -2104,11 +2104,22 @@ export const AIChatScreen: React.FC = () => {
           role="region"
           aria-label={lang === "en" ? "VAJRA AI Copilot Prompt Composer" : "VAJRA AI ಪ್ರಾಂಪ್ಟ್ ಕಂಪೋಸರ್"}
         >
-          <div className="relative">
-            <div className="pointer-events-none absolute inset-x-0 -top-8 h-8 bg-gradient-to-t from-[var(--color-background-dark)] to-transparent" />
+          {/* Section 168 (Finals-part 5.md Module 5): the previous 8px
+              solid-to-transparent gradient sat directly above a fully
+              transparent padded wrapper, so the fade's opaque bottom edge
+              met bare transparency in a single pixel row -- a visible hard
+              seam across the screen width wherever message content
+              scrolled behind it. Extending the gradient's reach down
+              through the composer's own backdrop (via a shared backdrop-
+              blur + a soft low-opacity tint on the wrapper itself) removes
+              that discontinuity and reads as one continuous glass surface
+              instead of a fade meeting a cliff. */}
+          <div className="relative backdrop-blur-md">
+            <div className="pointer-events-none absolute inset-x-0 -top-16 h-16 bg-gradient-to-t from-[var(--color-background-dark)] to-transparent" />
+            <div className="pointer-events-none absolute inset-0 bg-[var(--color-background-dark)]/30" />
             <div
               ref={composerRef}
-              className="pointer-events-auto p-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))]"
+              className="relative pointer-events-auto p-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))]"
             >
               {composerContent}
             </div>

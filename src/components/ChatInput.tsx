@@ -2,7 +2,6 @@ import React, { useState, useRef, useEffect } from "react";
 import { Mic, MicOff, Send, Paperclip, X, FileText, Image as ImageIcon, ChevronDown, Video, Users } from "lucide-react";
 import { API_BASE } from "../config";
 import { VajraVakMascot } from "./VajraVakMascot";
-import { PersonaSelectorBadge } from "./PersonaSelectorBadge";
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 3;
@@ -530,14 +529,6 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
             <span className="text-[10px] text-[#C79A4E] font-mono">
               {lang === "en" ? "Shared session" : "ಹಂಚಿಕೊಂಡ ಸೆಷನ್"}
             </span>
-          )}
-          {onPersonaOverrideChange && (
-            <PersonaSelectorBadge
-              lang={lang}
-              value={personaOverride ?? null}
-              onChange={onPersonaOverrideChange}
-              emergencyActive={personaEmergencyActive}
-            />
           )}
         </div>
 

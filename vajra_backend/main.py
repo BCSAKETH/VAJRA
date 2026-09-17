@@ -1191,7 +1191,20 @@ def _fold_district_id(raw_district_id: Any) -> Any:
     return folded if folded is not None else raw_district_id
 
 
-def _get_all_units() -> List[Dict[str, Any]]:
+# Sub-3s Query Acceleration master cache (Finals-part 5.md Blueprint 3):
+# the full Unit table (1,112 rows, 4 paginated ZCQL round trips) barely
+# changes minute to minute, yet used to be re-fetched from scratch on
+# every single call site that needed a unit/district lookup. TTL-bounded
+# in-process cache, one lock shared across the small set of tables this
+# covers.
+_MASTER_CACHE_LOCK = _threading.Lock()
+_MASTER_CACHE: Dict[str, Dict[str, Any]] = {
+    "units": {"data": None, "expires_at": 0.0},
+}
+_CACHE_TTL_SECONDS = 3600
+
+
+def _get_all_units_paginated() -> List[Dict[str, Any]]:
     """
     Full, paginated Unit table (UnitID/UnitName/DistrictID). Same
     CONFIRMED LIVE BUG as _get_case_counts_by_station below: a plain
@@ -1229,6 +1242,22 @@ def _get_all_units() -> List[Dict[str, Any]]:
             break
         last_rowid = max_rowid
     return out
+
+
+def get_all_units_cached() -> List[Dict[str, Any]]:
+    now = time.time()
+    with _MASTER_CACHE_LOCK:
+        entry = _MASTER_CACHE["units"]
+        if entry["data"] is not None and now < entry["expires_at"]:
+            return entry["data"]
+    fresh = _get_all_units_paginated()
+    with _MASTER_CACHE_LOCK:
+        _MASTER_CACHE["units"] = {"data": fresh, "expires_at": now + _CACHE_TTL_SECONDS}
+    return fresh
+
+
+def _get_all_units() -> List[Dict[str, Any]]:
+    return get_all_units_cached()
 
 
 def _get_all_crime_subheads() -> List[Dict[str, Any]]:

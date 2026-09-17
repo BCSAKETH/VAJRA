@@ -70,6 +70,61 @@ def get_real_districts() -> List[str]:
     return _real_districts_cache or ["Bengaluru Urban", "Bengaluru Rural", "Mysuru", "Belagavi"]
 
 
+# Sub-3s Query Acceleration (Finals-part 5.md Blueprint 1): a handful of
+# single-intent, single-district analytical phrasings ("top crimes in
+# Mysuru", "crime trends in Belagavi") are common enough, and unambiguous
+# enough, to skip BOTH the ~15-20s deterministic-classifier scan and the
+# LLM tool-selection round trip entirely -- match them here and feed the
+# result straight into `forced_decision` (the same fast-route slot
+# `_classify_intent` already fills; see _run_agent_loop_inner). Deliberately
+# narrow: any conjunction ("and", "compare", "vs") bails out to the normal
+# pipeline rather than risk truncating a real multi-part question.
+_FAST_PATH_PATTERNS = [
+    (re.compile(r"^(?:show\s+)?top\s+(?:crimes?|offences?|cases?)\s+(?:in|for|at)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "get_case_types_distribution"),
+    (re.compile(r"^(?:show\s+)?(?:crime\s+)?distribution\s+(?:in|for|at)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "get_case_types_distribution"),
+    (re.compile(r"^(?:show\s+)?(?:crime\s+)?trends?\s+(?:in|for|at)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "get_crime_trends"),
+    (re.compile(r"^(?:show\s+)?(?:crime\s+)?hotspots?\s+(?:in|for|at)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "query_hotspots"),
+]
+
+
+def check_fast_path_intent(query: str, real_districts: List[str]) -> Optional[Dict[str, Any]]:
+    cleaned = re.sub(r"[?!.,]+$", "", (query or "").strip())
+    if not cleaned or re.search(r"\b(and|compare|vs|versus|while|between|also)\b", cleaned, re.IGNORECASE):
+        return None
+    for pattern, tool_name in _FAST_PATH_PATTERNS:
+        match = pattern.match(cleaned)
+        if match:
+            raw_dist = match.group("district").strip()
+            resolved = next((d for d in real_districts if raw_dist.lower() in d.lower() or d.lower() in raw_dist.lower()), None)
+            if resolved:
+                return {"tool": tool_name, "parameters": {"district": resolved}}
+    return None
+
+
+# Offline BNS/BNSS/BSA statutory lookup (Finals-part 5.md Blueprint 9,
+# Database-First Inversion Section 155-157): "what is section 187 BNSS"
+# used to fall through to OSINT web search for a fact that's fixed, public
+# statute text -- answerable instantly with zero network calls. Small,
+# deliberately conservative starter set (not a full bare-act index).
+_STATUTORY_CODES = {
+    ("bnss", "187"): "Section 187 BNSS (Bharatiya Nagarik Suraksha Sanhita) -- Procedure when investigation cannot be completed in 24 hours: the police officer must forward the accused to a Magistrate, who may authorise detention in custody for a term not exceeding 15 days in the whole.",
+    ("bns", "173"): "Section 173 BNS (Bharatiya Nyaya Sanhita) -- covers punishment for absconding to avoid service of summons or other proceeding.",
+    ("bsa", "63"): "Section 63 BSA (Bharatiya Sakshya Adhiniyam) -- admissibility of electronic/digital records as evidence, requiring a certificate (commonly a SHA-256 hash) authenticating the record for it to be used in court.",
+}
+
+
+def lookup_statutory_legal_code(query: str) -> Optional[str]:
+    q = (query or "").lower()
+    m = re.search(r"\b(?:section|sec\.?|§)\s*(\d+)\b", q)
+    if not m:
+        return None
+    section_no = m.group(1)
+    for act in ("bnss", "bns", "bsa"):
+        if act in q and (act, section_no) in _STATUTORY_CODES:
+            return _STATUTORY_CODES[(act, section_no)]
+    return None
+
+
 # Kanglish (Kannada spoken/typed in Latin letters, e.g. "yaake station illa"
 # instead of English or Kannada script) matches NEITHER the English keyword
 # router NOR _route_kannada (which only fires on Kannada Unicode) -- it falls
@@ -1981,7 +2036,9 @@ class VajraAgentLoop(CognitiveBrainMixin):
         "query_financial_links": ["financial", "money trail", "transaction", "bank account", "payment"],
         "detect_financial_ring": ["money laundering", "hawala", "mule account", "financial ring",
                                   "money network", "laundering", "money ring"],
-        "query_hotspots": ["hotspot", "cluster map", "crime map", "dbscan", "where are crimes", "concentration"],
+        "query_hotspots": ["hotspot", "hotspots", "cluster map", "crime map", "dbscan", "where are crimes",
+                          "concentration", "map", "clusters", "density", "spatial",
+                          "where do crimes happen", "geographic", "coordinates", "perimeter"],
         "generate_custom_chart": ["plot", "graph", "chart", "pie chart", "bar chart", "radar", "box plot",
                                   "visualize", "visualise", "draw a", "make a chart"],
         "cluster_crime_patterns": ["serial offender", "serial pattern", "similar mo cases", "similar modus operandi",
@@ -2037,34 +2094,45 @@ class VajraAgentLoop(CognitiveBrainMixin):
         "get_priority_concerns": ["concerned", "concern", "worried", "worry", "most concerning", "priority", "priorities",
                                   "getting worse", "worsening", "watch out", "biggest threat", "top risks", "alarming",
                                   "patterns should i", "what should i focus", "focus on"],
-        "get_crime_trends": ["trend", "over time", "increasing", "decreasing", "seasonal", "rising", "falling", "growth"],
+        "get_crime_trends": ["trend", "trends", "over time", "increasing", "decreasing", "seasonal", "rising", "falling",
+                             "growth", "monthly", "year over year", "incident trajectory"],
         "generate_full_report": ["full report", "complete report on suspect", "full profile",
                                  "everything about suspect", "deep dive on suspect", "dossier on suspect"],
         "get_case_types_distribution": ["pie chart", "case types", "types of cases", "distribution of cases",
-                                        "cases by type", "crime categories", "breakdown"],
+                                        "cases by type", "crime categories", "breakdown", "top crimes", "top crime",
+                                        "most common crimes", "highest crimes", "common offences", "crime ranking",
+                                        "prevalent crimes", "crime classification", "major crimes"],
         "generate_case_dossier": ["full dossier", "case dossier", "full report on case", "complete report on case",
                                   "full case file", "complete case file", "full investigation"],
         "plan_patrol_deployment": ["beat plan", "patrol deployment", "deploy patrol", "where should i send",
                                    "where to send patrol", "where to deploy", "where to focus", "patrol plan"],
         "generate_crime_overview": ["crime overview", "overview of district", "district overview",
                                     "situation in", "picture of crime"],
+        # Database-First Inversion (Finals-part 5.md Section 155-157): purged
+        # every conversational stopword and statutory term that matched
+        # nearly any officer query ("search", "what is", "who is", "tell me
+        # about", "law", "section", "bns", "bnss", "act", "cybercrime",
+        # "fraud", "modus operandi" etc.) -- those crowded out query_case/
+        # get_offender_risk in _relevant_tools' lexical scoring, defaulting
+        # almost every real query to OSINT instead of the 1.695M-row CCTNS
+        # registry. Only genuinely, unambiguously EXTERNAL-web phrasing
+        # remains.
         "web_search": [
-            "search", "web", "internet", "google", "news", "online", "find out", "who is",
-            "what is", "where is", "tell me about", "college", "school", "university", "institute",
-            "company", "organization", "ngo", "trust", "hospital", "bank", "branch", "pincode",
-            "pin code", "scam", "fraud", "cybercrime", "phishing", "telegram", "apk", "courier",
-            "customs", "fedex", "mule", "crypto", "bitcoin", "upi", "url", "website", "domain",
-            "portal", "law", "article", "section", "bns", "bnss", "it act", "act", "judgement",
-            "guidelines", "advisory", "modus operandi", "threat", "osint", "tkrec", "tkrcet",
-            "bmsce", "rvce", "msrit", "pesu"
+            "search the web", "web search", "search internet", "search online",
+            "look up online", "google", "on the internet", "news search", "latest news on",
+            "press release", "public report", "website", "url", "domain", "open-source intelligence",
+            "osint lead", "wikipedia", "public records online", "read this link"
         ],
     }
     # Compact generalist set for genuinely ambiguous queries that hint at no
-    # specific tool -- includes web_search so external queries can always search.
+    # specific tool. web_search dropped from the default set (Database-First
+    # Inversion) -- an ambiguous query defaults to internal case search, not
+    # external web intelligence.
     _DEFAULT_TOOLS = ["query_case", "find_similar_cases", "query_graph_network", "get_offender_risk",
-                      "query_hotspots", "get_crime_trends", "get_demographic_correlation", "web_search"]
-    # Always-available safety nets so any query has both case search and web intelligence available.
-    _ALWAYS_TOOLS = {"web_search", "find_similar_cases"}
+                      "query_hotspots", "get_crime_trends", "get_demographic_correlation"]
+    # Always-available safety nets: CCTNS case search is now the guaranteed
+    # default authority (Database-First Inversion), not web_search.
+    _ALWAYS_TOOLS = {"query_case", "find_similar_cases"}
 
     def _relevant_tools(self, query: str) -> List[Dict[str, Any]]:
         """
@@ -2072,7 +2140,12 @@ class VajraAgentLoop(CognitiveBrainMixin):
         all 25, so the GLM tool-selection prompt is small and fast. Scoring is
         blunt on purpose (keyword hits + tool-name-word hits); when nothing
         scores, fall back to a compact generalist set -- never the full 25.
-        Guarantees web_search is always present so external queries can be searched.
+
+        Database-First Inversion (Finals-part 5.md Section 155-157): web_search
+        is no longer force-injected into every candidate list regardless of
+        score -- it's only kept when the query itself carries explicit,
+        affirmative external-web intent. CCTNS case search (query_case) is
+        the guaranteed default via _ALWAYS_TOOLS instead.
         """
         q = (query or "").lower()
         scores: Dict[str, int] = {}
@@ -2087,13 +2160,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
         else:
             ranked = sorted(scores, key=lambda n: scores[n], reverse=True)[:6]
             keep = set(ranked) | self._ALWAYS_TOOLS
+        # Explicit guard: web_search only survives if the query has real
+        # affirmative external-web intent -- never force-injected by default.
+        has_web_intent = any(k in q for k in ("web", "internet", "google", "online news", "website", "url", "osint"))
+        if not has_web_intent:
+            keep.discard("web_search")
         filtered = [t for t in self.TOOLS if t["name"] in keep]
-        # Safety net: Ensure web_search is ALWAYS provided in the schema list to GLM
-        if not any(t["name"] == "web_search" for t in filtered):
-            ws_tool = next((t for t in self.TOOLS if t["name"] == "web_search"), None)
-            if ws_tool:
-                filtered.append(ws_tool)
-        logger.info(f"Tool pre-filter: {len(filtered)}/{len(self.TOOLS)} tools sent to GLM -> {[t['name'] for t in filtered]}")
+        logger.info(f"Database-first tool pre-filter: {len(filtered)}/{len(self.TOOLS)} tools sent to GLM -> {[t['name'] for t in filtered]}")
         return filtered
 
     def _sample_case_outcome_rates(self, unit_ids: List[int], sample_cap: int = 200) -> Dict[str, Any]:
@@ -3649,10 +3722,11 @@ class VajraAgentLoop(CognitiveBrainMixin):
             elif entities.get("district") and entities.get("district_fresh"):
                 _dossier_fixed_fallback = {"tool": "generate_crime_overview", "parameters": {"district": entities["district"]}}
             elif len(routing_query.strip()) > 3:
-                # If no internal CCTNS case/suspect/district was recognized in Full Dossier mode,
-                # fall back to web_search so OSINT and external entity intelligence always
-                # succeeds even if the compiler encounters transient LLM issues.
-                _dossier_fixed_fallback = {"tool": "web_search", "parameters": {"query": routing_query}}
+                # Database-First Inversion: if no internal CCTNS case/suspect/
+                # district was recognized in Full Dossier mode, search the
+                # CCTNS Case Registry itself rather than defaulting to OSINT --
+                # the officer never explicitly asked for the web here.
+                _dossier_fixed_fallback = {"tool": "query_case", "parameters": {"query": routing_query}}
 
         # ELABORATION follow-up: a vague "in detail" / "more" / "elaborate"
         # should EXPAND THE PREVIOUS ANSWER conversationally -- explain what was
@@ -3836,6 +3910,27 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # Dossier mode fall back to the fixed composite (_dossier_fixed_
         # fallback, set above) -- a safety net for when the Brain can't run
         # at all, never the default path that bypasses it.
+        # Sub-3s Query Acceleration fast path (Finals-part 5.md Blueprint 1):
+        # checked before the heavier A2 classifier below -- a handful of
+        # single-intent "top crimes in X" / "trends in X" / "hotspots in X"
+        # phrasings resolve straight to a tool call with zero LLM cost.
+        if forced_decision is None and answer_mode != "dossier":
+            forced_decision = check_fast_path_intent(routing_query, get_real_districts())
+
+        # Offline statutory lookup (Blueprint 9): "what is section 187 BNSS"
+        # answers instantly from the local dictionary instead of falling
+        # through to OSINT web search for fixed, public statute text.
+        if forced_decision is None:
+            _statute_answer = lookup_statutory_legal_code(routing_query)
+            if _statute_answer:
+                history.append({"role": "assistant", "content": _statute_answer})
+                context["messages"] = history
+                session_memory.update_session_context(session_id, context)
+                return {"text": _statute_answer, "response_type": "text", "data": {},
+                        "citations": [{"type": "Statutory Reference", "id": "",
+                                       "details": "Answered from the offline BNS/BNSS/BSA statutory dictionary — no model call."}],
+                        "is_simulated": False, "simulated_reason": ""}
+
         # A2 FAST-ROUTE / DETERMINISTIC CLASSIFICATION:
         # When the officer's command maps deterministically to a tool or multi-tool
         # ("network of X", "risk for X", "hotspots", "money laundering trail for X",
@@ -4020,8 +4115,17 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         fallback_decision = self._keyword_route_tool(routing_query)
                         fallback_label = "Keyword Match"
                     if fallback_decision is None and len(routing_query.strip()) > 3:
-                        fallback_decision = {"tool": "web_search", "parameters": {"query": routing_query}}
-                        fallback_label = "OSINT Web Safety Net"
+                        _q_low_fallback = routing_query.lower()
+                        # Database-First Inversion (Finals-part 5.md Section 155-157):
+                        # the ultimate catch-all is the internal CCTNS Case Registry,
+                        # not external web search -- OSINT only fires here if the
+                        # officer's own words explicitly asked for it.
+                        if any(ws in _q_low_fallback for ws in ("search the web", "web search", "search internet", "google", "online news", "website", "url")):
+                            fallback_decision = {"tool": "web_search", "parameters": {"query": routing_query}}
+                            fallback_label = "Explicit OSINT Web Fallback"
+                        else:
+                            fallback_decision = {"tool": "query_case", "parameters": {"query": routing_query}}
+                            fallback_label = "CCTNS Datastore Safety Net"
                 if fallback_decision is not None:
                     logger.warning(f"Tool-selection fallback used ({fallback_label}, iteration {current_iteration}): {fallback_decision}")
                     citations.append({
