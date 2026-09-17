@@ -8479,6 +8479,329 @@ async def run_osint_radar(request: Request, location_context: str = Depends(secu
     return result
 
 
+# --- Proactive Alerts: AppSail-native replica (same fix pattern as
+# _run_osint_radar_sweep above) -------------------------------------------
+# CONFIRMED LIVE (2026-09-17 cross-check): the standalone Catalyst Job
+# function at functions/proactive_alerts/index.py is the ONLY function ever
+# actually deployed to this project, but its own console record is marked
+# is_deployed=false -- so /api/alerts (main.py, reads ProactiveAlerts) has
+# been serving from a table nothing has refreshed. The Catalyst CLI's
+# "functions: deploy skipped" bug (seen on every deploy this session, a
+# `path` argument bug in the CLI itself, unrelated to this project's code)
+# means it can't simply be redeployed either. Faithful port of that
+# function's exact logic (spatial spike, repeat offender, §3.4 district/
+# officer trend z-score anomalies) into an on-demand, supervisor-triggered
+# AppSail endpoint -- same honest scoping as OSINT radar above: a real
+# always-on cron via Catalyst's Job Scheduling is a separate, larger piece
+# of work (needs a Job Pool target + console schedule), not attempted here.
+def _run_proactive_alerts_sweep() -> Dict[str, Any]:
+    """Synchronous -- always called via run_in_threadpool."""
+    if not catalyst_app:
+        return {"error": "Datastore unavailable."}
+
+    def _fetch_all(select_clause: str, table: str, where_clause: str = "", max_pages: int = 250) -> List[Dict[str, Any]]:
+        sel = select_clause
+        if "ROWID" not in [t.strip().upper() for t in select_clause.split(",")]:
+            sel = "ROWID, " + select_clause
+        rows: List[Dict[str, Any]] = []
+        last = None
+        seen: set = set()
+        for _ in range(max_pages):
+            conds = []
+            if where_clause:
+                conds.append(f"({where_clause})")
+            if last is not None:
+                conds.append(f"ROWID > {last}")
+            where_sql = (" WHERE " + " AND ".join(conds)) if conds else ""
+            q = f"SELECT {sel} FROM {table}{where_sql} ORDER BY ROWID ASC LIMIT 300"
+            try:
+                page = catalyst_app.zql().execute_query(q)
+            except Exception as e:
+                logger.warning(f"Proactive alerts sweep: {table} pagination stopped early: {e}")
+                break
+            if not page:
+                break
+            max_rowid = last
+            for r in page:
+                rid = r.get(table, {}).get("ROWID")
+                if rid is None:
+                    continue
+                rid = int(rid)
+                if rid in seen:
+                    continue
+                seen.add(rid)
+                rows.append(r)
+                if max_rowid is None or rid > max_rowid:
+                    max_rowid = rid
+            if max_rowid == last or len(page) < 300:
+                break
+            last = max_rowid
+        return rows
+
+    def _week_key(date_str):
+        if not date_str:
+            return None
+        try:
+            d = datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
+            y, w, _ = d.isocalendar()
+            return (y, w)
+        except Exception:
+            return None
+
+    def _zscore_latest_vs_baseline(week_counts):
+        weeks = sorted(week_counts.keys())
+        if len(weeks) < 5:
+            return None
+        latest_week = weeks[-1]
+        baseline_weeks = weeks[-9:-1] if len(weeks) >= 9 else weeks[:-1]
+        baseline = [week_counts[w] for w in baseline_weeks]
+        latest = week_counts[latest_week]
+        n = len(baseline)
+        mean = sum(baseline) / n
+        variance = sum((x - mean) ** 2 for x in baseline) / n
+        stdev = variance ** 0.5 or 1.0
+        z = (latest - mean) / stdev
+        return z, latest, round(mean, 1)
+
+    def _get_last_known_counts(alert_type: str, count_regex: str, key_field: str):
+        rows = _fetch_all(f"{key_field}, AlertMessage, TriggerTime", "ProactiveAlerts", where_clause=f"AlertType = '{alert_type}'")
+        history_exists = len(rows) > 0
+        last_counts, last_times = {}, {}
+        for r in rows:
+            row = r.get("ProactiveAlerts", {})
+            raw_key = row.get(key_field)
+            msg = row.get("AlertMessage", "")
+            trigger_time = row.get("TriggerTime", "")
+            if raw_key is None:
+                continue
+            key = int(raw_key)
+            if key in last_times and trigger_time <= last_times[key]:
+                continue
+            m = re.search(count_regex, msg)
+            if m:
+                last_counts[key] = int(m.group(1))
+                last_times[key] = trigger_time
+        return last_counts, history_exists
+
+    def _get_last_known_offender_counts():
+        rows = _fetch_all("AlertMessage, TriggerTime", "ProactiveAlerts", where_clause="AlertType = 'REPEAT_OFFENDER'")
+        history_exists = len(rows) > 0
+        last_counts, last_times = {}, {}
+        for r in rows:
+            row = r.get("ProactiveAlerts", {})
+            msg = row.get("AlertMessage", "")
+            trigger_time = row.get("TriggerTime", "")
+            m = re.search(r"Suspect '(.+?)' detected in (\d+) separate cases", msg)
+            if not m:
+                continue
+            name = m.group(1)
+            if name in last_times and trigger_time <= last_times[name]:
+                continue
+            last_counts[name] = int(m.group(2))
+            last_times[name] = trigger_time
+        return last_counts, history_exists
+
+    def _insert_alerts(alerts: List[Dict[str, Any]]) -> int:
+        inserted = 0
+        for alert in alerts:
+            insert_q = (
+                f"INSERT INTO ProactiveAlerts (AlertType, DistrictID, AlertMessage, TriggerTime, Severity, IsRead) "
+                f"VALUES ('{alert['AlertType']}', {alert['DistrictID']}, "
+                f"'{alert['AlertMessage'].replace(chr(39), chr(39)+chr(39))}', '{alert['TriggerTime']}', "
+                f"'{alert['Severity']}', false)"
+            )
+            try:
+                catalyst_app.zql().execute_query(insert_q)
+                inserted += 1
+            except Exception as e:
+                logger.warning(f"Proactive alerts sweep: insert failed: {e}")
+        return inserted
+
+    try:
+        cases_list = _fetch_all("CaseMasterID, PoliceStationID, CrimeRegisteredDate", "CaseMaster")
+        case_to_ps = {
+            int(c["CaseMaster"]["CaseMasterID"]): int(c["CaseMaster"]["PoliceStationID"])
+            for c in cases_list
+            if c.get("CaseMaster", {}).get("CaseMasterID") and c.get("CaseMaster", {}).get("PoliceStationID")
+        }
+
+        units_list = catalyst_app.zql().execute_query("SELECT UnitID, DistrictID FROM Unit")
+        unit_to_dist = {int(u["Unit"]["UnitID"]): int(u["Unit"]["DistrictID"]) for u in units_list if u.get("Unit", {}).get("UnitID") and u.get("Unit", {}).get("DistrictID")}
+
+        dist_list = catalyst_app.zql().execute_query("SELECT DistrictID, DistrictName FROM District")
+        dist_names = {int(d["District"]["DistrictID"]): d["District"]["DistrictName"] for d in dist_list if d.get("District", {}).get("DistrictID")}
+
+        dist_counts: Dict[int, int] = {}
+        for c in cases_list:
+            ps_id = c.get("CaseMaster", {}).get("PoliceStationID")
+            if ps_id and int(ps_id) in unit_to_dist:
+                d_id = unit_to_dist[int(ps_id)]
+                dist_counts[d_id] = dist_counts.get(d_id, 0) + 1
+
+        last_spatial_counts, spatial_history_exists = _get_last_known_counts("SPATIAL_SPIKE", r"logged (\d+) incidents", "DistrictID")
+
+        spatial_baselines, spatial_spikes = [], []
+        for d_id, count in dist_counts.items():
+            if count <= 250:
+                continue
+            d_name = dist_names.get(d_id, f"District {d_id}")
+            prior = last_spatial_counts.get(d_id)
+            base = {"AlertType": "SPATIAL_SPIKE", "DistrictID": d_id, "TriggerTime": datetime.now().isoformat(), "IsRead": False, "_sort_key": count}
+            if prior is None and not spatial_history_exists:
+                spatial_baselines.append({**base, "AlertMessage": f"Baseline: {d_name} has logged {count} incidents on record (first check, not yet a spike).", "Severity": "Info"})
+            elif prior is None:
+                spatial_spikes.append({**base, "AlertMessage": f"Volume Spike Warning: {d_name} has logged {count} incidents, newly crossing the alert threshold for the first time since monitoring began.", "Severity": "Critical"})
+            elif count > prior:
+                delta = count - prior
+                spatial_spikes.append({**base, "AlertMessage": f"Volume Spike Warning: {d_name} has logged {count} incidents, up {delta} since the last check ({prior}), exceeding normal threshold limits.", "Severity": "Critical"})
+
+        acc_list = _fetch_all("AccusedName, CaseMasterID", "Accused")
+        acc_counts: Dict[str, int] = {}
+        acc_last_district: Dict[str, int] = {}
+        for a in acc_list:
+            name = a.get("Accused", {}).get("AccusedName")
+            case_id = a.get("Accused", {}).get("CaseMasterID")
+            if name and name.strip() and "unknown" not in name.lower():
+                acc_counts[name] = acc_counts.get(name, 0) + 1
+                ps_id = case_to_ps.get(int(case_id)) if case_id else None
+                if ps_id and ps_id in unit_to_dist:
+                    acc_last_district[name] = unit_to_dist[ps_id]
+
+        last_offender_counts, offender_history_exists = _get_last_known_offender_counts()
+
+        offender_baselines, offender_spikes = [], []
+        for name, count in acc_counts.items():
+            if count <= 1:
+                continue
+            prior = last_offender_counts.get(name)
+            d_id = acc_last_district.get(name, 1)
+            base = {"AlertType": "REPEAT_OFFENDER", "DistrictID": d_id, "TriggerTime": datetime.now().isoformat(), "IsRead": False, "_sort_key": count}
+            if prior is None and not offender_history_exists:
+                offender_baselines.append({**base, "AlertMessage": f"Baseline: Suspect '{name}' detected in {count} separate cases (first check, not yet flagged as new activity).", "Severity": "Info"})
+            elif prior is None:
+                offender_spikes.append({**base, "AlertMessage": f"Repeat Offender Alert: Suspect '{name}' detected in {count} separate cases for the first time since monitoring began.", "Severity": "Critical" if count > 3 else "Warning"})
+            elif count > prior:
+                offender_spikes.append({**base, "AlertMessage": f"Repeat Offender Alert: Suspect '{name}' detected in {count} separate cases (up from {prior}).", "Severity": "Critical" if count > 3 else "Warning"})
+
+        dist_week_counts: Dict[int, Dict[Any, int]] = {}
+        for c in cases_list:
+            cm = c.get("CaseMaster", {})
+            ps_id = cm.get("PoliceStationID")
+            wk = _week_key(cm.get("CrimeRegisteredDate"))
+            if not ps_id or not wk or int(ps_id) not in unit_to_dist:
+                continue
+            d_id = unit_to_dist[int(ps_id)]
+            dist_week_counts.setdefault(d_id, {}).setdefault(wk, 0)
+            dist_week_counts[d_id][wk] += 1
+
+        district_trend_alerts = []
+        for d_id, wk_counts in dist_week_counts.items():
+            result = _zscore_latest_vs_baseline(wk_counts)
+            if not result:
+                continue
+            z, latest, mean = result
+            if abs(z) < 2:
+                continue
+            d_name = dist_names.get(d_id, f"District {d_id}")
+            direction = "above" if z > 0 else "below"
+            district_trend_alerts.append({
+                "AlertType": "DISTRICT_TREND_ANOMALY", "DistrictID": d_id,
+                "TriggerTime": datetime.now().isoformat(), "IsRead": False, "_sort_key": abs(z),
+                "AlertMessage": (
+                    f"Supervisor Radar: {d_name} logged {latest} cases this week, statistically {direction} its "
+                    f"own {mean}-case trailing weekly average (z={round(z, 1)}) -- a genuine deviation from this "
+                    f"district's normal pattern, not just a busy week."
+                ),
+                "Severity": "Critical" if abs(z) >= 3 else "Warning",
+            })
+
+        officer_trend_alerts = []
+        try:
+            arrests_list = _fetch_all("IOID, ArrestSurrenderDate, PoliceStationID", "ArrestSurrender")
+            io_week_counts: Dict[int, Dict[Any, int]] = {}
+            io_last_district: Dict[int, int] = {}
+            for a in arrests_list:
+                ar = a.get("ArrestSurrender", {})
+                io_id = ar.get("IOID")
+                wk = _week_key(ar.get("ArrestSurrenderDate"))
+                if not io_id or not wk:
+                    continue
+                io_id = int(io_id)
+                io_week_counts.setdefault(io_id, {}).setdefault(wk, 0)
+                io_week_counts[io_id][wk] += 1
+                ps_id = ar.get("PoliceStationID")
+                if ps_id and int(ps_id) in unit_to_dist:
+                    io_last_district[io_id] = unit_to_dist[int(ps_id)]
+
+            io_ids_to_name: Dict[int, str] = {}
+            if io_week_counts:
+                emp_rows = _fetch_all("EmployeeID, FirstName", "Employee")
+                for e in emp_rows:
+                    emp = e.get("Employee", {})
+                    eid = emp.get("EmployeeID")
+                    if eid:
+                        io_ids_to_name[int(eid)] = emp.get("FirstName") or f"IO #{eid}"
+
+            for io_id, wk_counts in io_week_counts.items():
+                result = _zscore_latest_vs_baseline(wk_counts)
+                if not result:
+                    continue
+                z, latest, mean = result
+                if abs(z) < 2:
+                    continue
+                io_name = io_ids_to_name.get(io_id, f"IO #{io_id}")
+                d_id = io_last_district.get(io_id, 1)
+                direction = "above" if z > 0 else "below"
+                officer_trend_alerts.append({
+                    "AlertType": "OFFICER_WORKLOAD_ANOMALY", "DistrictID": d_id,
+                    "TriggerTime": datetime.now().isoformat(), "IsRead": False, "_sort_key": abs(z),
+                    "AlertMessage": (
+                        f"Supervisor Radar: {io_name} logged {latest} arrests/surrenders this week, statistically "
+                        f"{direction} their own {mean}-case trailing weekly average (z={round(z, 1)}) -- worth a "
+                        f"quiet check-in, not necessarily a problem."
+                    ),
+                    "Severity": "Warning",
+                })
+        except Exception as e:
+            logger.warning(f"Proactive alerts sweep: officer workload anomaly section skipped (non-fatal): {e}")
+
+        spatial_spikes.sort(key=lambda a: a["_sort_key"], reverse=True)
+        offender_spikes.sort(key=lambda a: a["_sort_key"], reverse=True)
+        district_trend_alerts.sort(key=lambda a: a["_sort_key"], reverse=True)
+        officer_trend_alerts.sort(key=lambda a: a["_sort_key"], reverse=True)
+        alerts_to_insert = (
+            spatial_baselines + spatial_spikes[:20] + offender_baselines + offender_spikes[:20]
+            + district_trend_alerts[:15] + officer_trend_alerts[:15]
+        )
+        inserted = _insert_alerts(alerts_to_insert)
+        return {
+            "inserted": inserted,
+            "spatial_baseline": len(spatial_baselines), "spatial_spike": len(spatial_spikes[:20]),
+            "offender_baseline": len(offender_baselines), "offender_spike": len(offender_spikes[:20]),
+            "district_trend_anomaly": len(district_trend_alerts[:15]),
+            "officer_workload_anomaly": len(officer_trend_alerts[:15]),
+            "computed_at_utc": datetime.utcnow().isoformat(),
+        }
+    except Exception as e:
+        logger.error(f"Proactive alerts sweep failed: {e}")
+        return {"error": str(e)[:300]}
+
+
+@app.post("/api/admin/proactive-alerts/run")
+async def run_proactive_alerts(request: Request, location_context: str = Depends(security_firewall)):
+    """Supervisor-only, on-demand trigger for the proactive alerts sweep
+    (spatial spike / repeat offender / district & officer trend anomaly
+    detection) -- see _run_proactive_alerts_sweep's docstring for why this
+    on-demand AppSail-native path exists instead of the standalone Catalyst
+    Job function (which is undeployed and can't be redeployed right now).
+    Synchronous work runs in a threadpool since a full CaseMaster/Accused/
+    ArrestSurrender pull can run past a few seconds."""
+    if getattr(request.state, "role_tier", "officer") != "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisor access only.")
+    result = await run_in_threadpool(_run_proactive_alerts_sweep)
+    return result
+
+
 class TranslateRequest(BaseModel):
     text: str
     source_lang: str = "en"
