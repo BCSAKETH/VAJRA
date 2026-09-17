@@ -388,7 +388,7 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
   };
 
   return (
-    <div className="w-full flex flex-col gap-2 glass-panel border border-stone-800 rounded-2xl p-3 shadow-xl">
+    <div className="w-full flex flex-col gap-2 glass-panel composer-elevation border border-stone-800 rounded-2xl p-3 transition-shadow duration-200 focus-within:border-[#C79A4E]/60">
       {/* File input (hidden) */}
       <input
         type="file"

@@ -127,6 +127,24 @@ html.light .glass-panel {
   border: 1px solid rgba(33, 31, 29, 0.08);
 }
 
+/* Floating "Ask VAJRA" composer capsule (Section 125): a deeper backdrop
+   blur + ambient elevation than the shared .glass-panel treatment used
+   everywhere else (sidebar, modals, cards) -- layered ON TOP of
+   .glass-panel (which still supplies the tinted background/border), only
+   overriding blur amount and adding the box-shadow. box-shadow is a
+   literal rgba(0,0,0,x) and does NOT participate in the stone-* variable
+   inversion above, so html.light needs its own much softer shadow --
+   otherwise a dark shadow renders as a murky grey halo over the light
+   background (Section 101 chromatic invariance / former shadow-xl bug). */
+.composer-elevation {
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: 0 20px 60px -15px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.04);
+}
+html.light .composer-elevation {
+  box-shadow: 0 12px 32px -8px rgba(33, 31, 29, 0.12), 0 0 0 1px rgba(33, 31, 29, 0.05);
+}
+
 .glass-card {
   background: rgba(36, 34, 32, 0.55);
   backdrop-filter: blur(8px);

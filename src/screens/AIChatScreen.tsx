@@ -333,6 +333,31 @@ export const AIChatScreen: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  // Section 125: the docked composer floats as an absolutely-positioned
+  // overlay above the thread instead of a shrink-0 flex sibling, so the
+  // thread needs its own dynamic bottom padding (composer height + margin)
+  // to keep the last message from being hidden underneath the floating
+  // card. Measured live via ResizeObserver since the card's height changes
+  // with attachments, voice-recording status, and textarea auto-grow.
+  // A callback ref (not useRef+useEffect) because the docked composer node
+  // itself mounts/unmounts as isEmptyChat flips -- an effect with an empty
+  // dep array would only ever see whatever was mounted on first render and
+  // never reattach once the docked composer actually appears.
+  const composerResizeObserverRef = useRef<ResizeObserver | null>(null);
+  const [composerHeight, setComposerHeight] = useState(140);
+  const composerRef = useCallback((el: HTMLDivElement | null) => {
+    composerResizeObserverRef.current?.disconnect();
+    composerResizeObserverRef.current = null;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const height = Math.ceil(entry.contentRect.height);
+        setComposerHeight((prev) => (Math.abs(prev - height) < 4 ? prev : height));
+      }
+    });
+    ro.observe(el);
+    composerResizeObserverRef.current = ro;
+  }, []);
   // client_msg_ids this tab has already rendered directly from its own HTTP
   // /api/chat response (both "<id>" for the user bubble and "<id>-ai" for
   // the assistant reply) -- the same turn also arrives over the WebSocket
@@ -1759,8 +1784,14 @@ export const AIChatScreen: React.FC = () => {
         </div>
       )}
 
-      {/* Messages Thread Container */}
-      <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 space-y-6">
+      {/* Messages Thread Container. Bottom padding grows dynamically with the
+          floating composer's real measured height (Section 125) so the last
+          message is never hidden underneath it -- a static pb-* can't track
+          a card whose height changes with attachments/recording/auto-grow. */}
+      <div
+        className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 space-y-6"
+        style={!isEmptyChat ? { paddingBottom: `${composerHeight + 40}px` } : undefined}
+      >
         <div className={`${messageWidthCls} mx-auto space-y-6 w-full transition-all duration-200`}>
         {loadingSessionId ? (
           <div className="space-y-6 animate-fade-in" aria-live="polite" aria-busy="true">
@@ -1917,19 +1948,35 @@ export const AIChatScreen: React.FC = () => {
         </div>
       </div>
 
-      {/* Input controls & suggestions footer -- Claude/ChatGPT-style: no
-          hard divider line between the thread and the composer. A soft
-          top fade instead (the thread appears to dissolve under it), and
-          the composer card itself (ChatInput's own glass-panel border)
-          is the only visible boundary, not an outer strip. Only rendered
-          docked-to-the-bottom here once the thread has real messages --
-          for the empty state, composerContent instead renders centered
-          alongside the greeting (above), never both/duplicated at once. */}
+      {/* Floating "Ask VAJRA" composer capsule (Section 125): an absolute
+          overlay above the thread, not a shrink-0 flex sibling, so message
+          bubbles glide freely behind it during scroll instead of stopping
+          at a rigid edge-to-edge footer bar. Outer wrapper is
+          pointer-events-none so clicks on thread content in the margins to
+          the left/right/underneath the card pass straight through;
+          pointer-events-auto is restored on the card itself. Only rendered
+          docked-to-the-bottom here once the thread has real messages -- for
+          the empty state, composerContent instead renders centered
+          alongside the greeting (above), never both/duplicated at once.
+          The `#161412` hardcoded dissolve gradient is gone -- it hardcoded
+          the DARK theme's background hex, so in light mode it rendered as
+          a dirty black smudge over the (light) message thread. Using
+          var(--color-background-dark) tracks whichever theme is active,
+          since that token is itself redefined under html.light. */}
       {!isEmptyChat && (
-        <div className="relative shrink-0">
-          <div className="pointer-events-none absolute inset-x-0 -top-6 h-6 bg-gradient-to-t from-[#161412] to-transparent" />
-          <div className="p-4 pt-2">
-            {composerContent}
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-0 z-30 print:hidden"
+          role="region"
+          aria-label={lang === "en" ? "VAJRA AI Copilot Prompt Composer" : "VAJRA AI ಪ್ರಾಂಪ್ಟ್ ಕಂಪೋಸರ್"}
+        >
+          <div className="relative">
+            <div className="pointer-events-none absolute inset-x-0 -top-8 h-8 bg-gradient-to-t from-[var(--color-background-dark)] to-transparent" />
+            <div
+              ref={composerRef}
+              className="pointer-events-auto p-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))]"
+            >
+              {composerContent}
+            </div>
           </div>
         </div>
       )}
