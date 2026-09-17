@@ -3178,6 +3178,24 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 result["response_style_confidence"] = _style_conf
         except Exception as e:
             logger.warning(f"KSPResponseTailor badge attach failed (non-fatal): {e}")
+        # PNLG Engine 2 (Finals-part 3.md Section 48): applied here, once,
+        # regardless of which internal fast-path produced the answer -- same
+        # reasoning as the response_style attach above. Only touches
+        # result["text"] (the officer-facing answer); every other field
+        # (data, citations, response_type) is untouched. See
+        # ksp_pnlg_engine.py's own docstring for what this genuinely is
+        # (a real, deterministic template post-processor) and isn't (no
+        # neural rewriting).
+        try:
+            if isinstance(result, dict) and result.get("text"):
+                from ksp_pnlg_engine import apply_pnlg_voice
+                _style_for_pnlg = result.get("response_style", "CCTNS_FORENSIC_LEDGER")
+                result = dict(result)
+                result["text"] = apply_pnlg_voice(
+                    result["text"], _style_for_pnlg, session_id, officer_badge, query, "en"
+                )
+        except Exception as e:
+            logger.warning(f"PNLG voice engine failed (non-fatal, text left unmodified): {e}")
         try:
             zqueries = get_zql_log()
             if zqueries:

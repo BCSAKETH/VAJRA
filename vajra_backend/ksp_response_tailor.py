@@ -17,13 +17,19 @@ fabricating sophistication that doesn't exist, the same discipline already
 applied throughout this codebase (e.g. spatiotemporal_forecast.py explicitly
 rejecting the source doc's fabricated hour-of-day granularity).
 
-This module classifies; it does NOT rewrite the model's prose itself (no
-separate template-substitution "PNLG" rewrite layer here) -- the classified
-persona's directive text is appended to the existing, already-tuned VOICE/
-formatting system prompt in catalyst_llm.py, so the SAME model that already
-writes well-formatted, non-robotic answers additionally adapts length/
-structure to the persona, rather than a second layer risking mangling
-already-good output.
+This module classifies; it does NOT rewrite the model's prose itself -- the
+classified persona's directive text is appended to the existing, already-
+tuned VOICE/formatting system prompt in catalyst_llm.py, so the SAME model
+that already writes well-formatted, non-robotic answers additionally adapts
+length/structure to the persona.
+
+A separate, genuinely real Engine 2 (ksp_pnlg_engine.py) exists on top of
+this: a deterministic, seeded template-substitution post-processor that
+strips residual robotic openers and injects an authentic KSP-voice lead-in
+phrase, invariant-guarded so it can never drop a UI widget bracket token.
+See that module's own docstring for why it's honestly described as a real
+template system, not a neural rewriter, despite the plan doc's own fancier
+"neuro-symbolic Template Lexicon Matrix" branding.
 """
 
 import logging
