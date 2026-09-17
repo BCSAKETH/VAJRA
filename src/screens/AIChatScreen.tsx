@@ -1673,6 +1673,7 @@ export const AIChatScreen: React.FC = () => {
         chatMode={chatMode}
         onToggleCowork={handleToggleCowork}
         hasParticipants={hasParticipants}
+        pendingTaskCount={homeDigest?.pending_tasks}
       />
     </div>
   );

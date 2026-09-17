@@ -6533,6 +6533,14 @@ async def search_sessions(q: str, request: Request, location_context: str = Depe
     return results
 
 
+# ---- Section 145-148: Vajra-Vak mascot ------------------------------------
+
+@app.get("/api/mascot/quip")
+async def mascot_quip(lang: str = "en", location_context: str = Depends(security_firewall)):
+    from mascot_engine import get_contextual_quip
+    return {"quip": get_contextual_quip(lang)}
+
+
 # ---- §9.10 Context-aware greeting: officer digest --------------------------
 
 @app.get("/api/officer/digest")

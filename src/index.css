@@ -257,6 +257,19 @@ html.light .glass-card {
   100% { transform: scale(1.6); opacity: 0; border-width: 0.5px; }
 }
 
+/* Vajra-Vak mascot (Section 145-148): idle wing sway + chest-core glow
+   pulse, referenced via Tailwind's animate-[wingsway_...]/[coreglow_...]
+   arbitrary-value syntax in VajraVakMascot.tsx. */
+@keyframes wingsway {
+  0%, 100% { transform: rotate(0deg); }
+  50% { transform: rotate(-4deg); }
+}
+
+@keyframes coreglow {
+  0%, 100% { opacity: 0.75; }
+  50% { opacity: 1; }
+}
+
 /* Custom Scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

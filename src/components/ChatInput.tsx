@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import { Mic, MicOff, Send, Paperclip, X, FileText, Image as ImageIcon, ChevronDown, Video, Users } from "lucide-react";
 import { API_BASE } from "../config";
+import { VajraVakMascot } from "./VajraVakMascot";
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 3;
@@ -45,6 +46,10 @@ interface ChatInputProps {
   chatMode?: "chat" | "cowork";
   onToggleCowork?: (mode: "chat" | "cowork") => void;
   hasParticipants?: boolean;
+  // Real pending-task count from /api/officer/digest (Section 129) --
+  // drives Vajra-Vak's golden chest badge + hop-and-catch animation
+  // (Section 145). Undefined simply means no badge, never a fabricated 0.
+  pendingTaskCount?: number;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = React.memo(({
@@ -59,6 +64,7 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
   chatMode,
   onToggleCowork,
   hasParticipants,
+  pendingTaskCount,
 }) => {
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [inputVal, setInputVal] = useState("");
@@ -388,7 +394,13 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
   };
 
   return (
-    <div className="w-full flex flex-col gap-2 glass-panel composer-elevation border border-stone-800 rounded-2xl p-3 transition-shadow duration-200 focus-within:border-[#C79A4E]/60">
+    <div className="relative w-full flex flex-col gap-2 glass-panel composer-elevation border border-stone-800 rounded-2xl p-3 transition-shadow duration-200 focus-within:border-[#C79A4E]/60">
+      {/* Section 145-148: Vajra-Vak perches on the floating capsule's top
+          rim -- anchored to THIS card (not the page), so it rides up with
+          the card as the textarea auto-grows (L836's own invariant). */}
+      <div className="absolute -top-11 right-8 z-40 pointer-events-auto">
+        <VajraVakMascot lang={lang} currentInput={inputVal} isThinking={isThinking} taskBadgeCount={pendingTaskCount} />
+      </div>
       {/* File input (hidden) */}
       <input
         type="file"
