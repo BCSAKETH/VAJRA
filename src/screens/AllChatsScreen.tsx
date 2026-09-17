@@ -59,58 +59,66 @@ export const AllChatsScreen: React.FC = () => {
     return sessions.filter((s) => (s.title || "").toLowerCase().includes(term));
   }, [sessions, searchTerm]);
 
+  // Section 65 (Claude parity): the previous layout was full-width
+  // (2560px-wide stretched boxes with large empty voids) -- CONFIRMED LIVE
+  // GAP against the user's own reference screenshot of Claude's "Chats and
+  // tasks" page, which is a centered document, not an edge-to-edge one.
+  // max-w-4xl mx-auto everywhere below is the actual fix; nothing about the
+  // data/logic above this line changed.
   return (
-    <div className="h-full flex flex-col p-6 space-y-5 bg-stone-950/20 overflow-y-auto">
-      <div className="flex items-start justify-between gap-4 border-b border-stone-850 pb-4 shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-[#C79A4E]/10 border border-[#C79A4E]/25 flex items-center justify-center text-[#C79A4E] shrink-0">
-            <MessageSquare className="w-5 h-5" />
-          </div>
-          <div>
-            <h1 className="text-lg font-black text-stone-100">
-              {lang === "en" ? "All Conversations" : "ಎಲ್ಲಾ ಸಂಭಾಷಣೆಗಳು"}
-            </h1>
-            <p className="text-xs text-stone-500">
-              {lang === "en" ? "Every chat, searchable and filterable in one place." : "ಪ್ರತಿ ಚಾಟ್, ಒಂದೇ ಸ್ಥಳದಲ್ಲಿ ಹುಡುಕಬಹುದಾದ ಮತ್ತು ಫಿಲ್ಟರ್ ಮಾಡಬಹುದಾದ."}
-            </p>
+    <div className="h-full overflow-y-auto bg-stone-950/20">
+      <div className="max-w-4xl mx-auto flex flex-col p-6 space-y-5">
+        <div className="flex items-start justify-between gap-4 border-b border-stone-850 pb-4 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-[#C79A4E]/10 border border-[#C79A4E]/25 flex items-center justify-center text-[#C79A4E] shrink-0">
+              <MessageSquare className="w-5 h-5" />
+            </div>
+            <div>
+              <h1 className="text-lg font-black text-stone-100">
+                {lang === "en" ? "All Conversations" : "ಎಲ್ಲಾ ಸಂಭಾಷಣೆಗಳು"}
+              </h1>
+              <p className="text-xs text-stone-500">
+                {lang === "en" ? "Every chat, searchable and filterable in one place." : "ಪ್ರತಿ ಚಾಟ್, ಒಂದೇ ಸ್ಥಳದಲ್ಲಿ ಹುಡುಕಬಹುದಾದ ಮತ್ತು ಫಿಲ್ಟರ್ ಮಾಡಬಹುದಾದ."}
+              </p>
+            </div>
           </div>
         </div>
-      </div>
 
-      <div className="relative max-w-md shrink-0">
-        <Search className="w-3.5 h-3.5 text-stone-600 absolute left-3 top-1/2 -translate-y-1/2" />
-        <input
-          type="text"
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          placeholder={lang === "en" ? "Search conversations..." : "ಸಂಭಾಷಣೆಗಳನ್ನು ಹುಡುಕಿ..."}
-          className="w-full bg-stone-950/60 border border-stone-800 focus:border-[#C79A4E]/50 rounded-lg py-2 pl-9 pr-3 text-xs text-stone-200 focus:outline-none transition-all"
-        />
-      </div>
-
-      <div className="flex-1 min-h-0">
-        {isLoading ? (
-          <div className="text-xs text-stone-600 text-center py-10 font-mono">{t.loadingLabel}</div>
-        ) : filteredSessions.length === 0 ? (
-          <div className="text-center py-16 text-stone-550 text-sm">
-            {searchTerm.trim()
-              ? (lang === "en" ? "No conversations match your search." : "ನಿಮ್ಮ ಹುಡುಕಾಟಕ್ಕೆ ಯಾವುದೇ ಸಂಭಾಷಣೆಗಳು ಹೊಂದಿಕೆಯಾಗುವುದಿಲ್ಲ.")
-              : (lang === "en" ? "No conversations yet." : "ಇನ್ನೂ ಯಾವುದೇ ಸಂಭಾಷಣೆಗಳಿಲ್ಲ.")}
-          </div>
-        ) : (
-          <GroupedSessionList
-            kind="chats"
-            items={filteredSessions}
-            meta={meta}
-            groups={groups}
-            activeSessionId={activeChatSessionId}
-            onSelectSession={handleSelectSession}
-            isExpanded={true}
-            onMutated={bumpRefresh}
-            investigationsForPicker={investigations}
-            variant="page"
+        <div className="relative shrink-0">
+          <Search className="w-3.5 h-3.5 text-stone-600 absolute left-3 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder={lang === "en" ? "Search conversations..." : "ಸಂಭಾಷಣೆಗಳನ್ನು ಹುಡುಕಿ..."}
+            className="w-full bg-stone-950/60 border border-stone-800 focus:border-[#C79A4E]/50 rounded-lg py-2 pl-9 pr-3 text-xs text-stone-200 focus:outline-none transition-all"
           />
-        )}
+        </div>
+
+        <div className="flex-1 min-h-0">
+          {isLoading ? (
+            <div className="text-xs text-stone-600 text-center py-10 font-mono">{t.loadingLabel}</div>
+          ) : filteredSessions.length === 0 ? (
+            <div className="text-center py-16 text-stone-550 text-sm">
+              {searchTerm.trim()
+                ? (lang === "en" ? "No conversations match your search." : "ನಿಮ್ಮ ಹುಡುಕಾಟಕ್ಕೆ ಯಾವುದೇ ಸಂಭಾಷಣೆಗಳು ಹೊಂದಿಕೆಯಾಗುವುದಿಲ್ಲ.")
+                : (lang === "en" ? "No conversations yet." : "ಇನ್ನೂ ಯಾವುದೇ ಸಂಭಾಷಣೆಗಳಿಲ್ಲ.")}
+            </div>
+          ) : (
+            <GroupedSessionList
+              kind="chats"
+              items={filteredSessions}
+              meta={meta}
+              groups={groups}
+              activeSessionId={activeChatSessionId}
+              onSelectSession={handleSelectSession}
+              isExpanded={true}
+              onMutated={bumpRefresh}
+              investigationsForPicker={investigations}
+              variant="page"
+            />
+          )}
+        </div>
       </div>
     </div>
   );
