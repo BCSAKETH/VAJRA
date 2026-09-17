@@ -32,7 +32,7 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
-from vajra_core import get_cached_access_token
+from vajra_core import get_quickml_access_token
 
 logger = logging.getLogger("catalyst_speech")
 
@@ -358,7 +358,7 @@ def _call_zia_tts(
     if cached:
         logger.debug(f"TTS cache HIT ({lang}, {persona}, {params['speed']}, {len(cleaned)} chars)")
         return cached, "audio/wav", 200, ""
-    token = get_cached_access_token()
+    token = get_quickml_access_token()
     if not token:
         logger.warning("TTS skipped: no Catalyst access token.")
         return None
@@ -579,7 +579,7 @@ def transcribe_audio(audio_bytes: bytes, filename: str, content_type: str, lang:
     if not audio_bytes:
         return None
     lang = lang if lang in _SUPPORTED else "en"
-    token = get_cached_access_token()
+    token = get_quickml_access_token()
     if not token:
         logger.warning("STT skipped: no Catalyst access token.")
         return None

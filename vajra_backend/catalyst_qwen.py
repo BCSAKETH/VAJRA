@@ -5,7 +5,7 @@ import base64
 import logging
 import requests
 from typing import List, Dict, Any, Optional
-from vajra_core import get_cached_access_token
+from vajra_core import get_quickml_access_token
 
 logger = logging.getLogger("catalyst_qwen")
 
@@ -52,6 +52,55 @@ class CatalystQwen:
     def is_configured(self) -> bool:
         return bool(self.endpoint_url)
 
+    def _call(self, prompt: str, images_b64: List[str]) -> Optional[str]:
+        """
+        Shared request path for every method below. CONFIRMED LIVE
+        (2026-09-17) against the recreated endpoint's real contract: true
+        multipart/form-data (NOT a JSON body -- a JSON body 500s with
+        INTERNAL_SERVER_ERROR), with "images" as a JSON-encoded array
+        STRING (not a real multipart array/file part -- a repeated "images"
+        field 400s with JSON_PARSE_ERROR) and "prompt" as a plain text
+        field. Also requires the "Environment" header GLM's endpoint needs
+        (see catalyst_llm.py). Only these two fields are accepted --
+        temperature/top_k/top_p/max_tokens are no longer per-request; they're
+        fixed by this endpoint's bound Saved Configuration in the console.
+        Returns the raw response text, or None on any failure (never a
+        fabricated analysis).
+        """
+        if not self.is_configured():
+            return None
+        token = get_quickml_access_token()
+        if not token:
+            return None
+        headers = {
+            "Authorization": f"Zoho-oauthtoken {token}",
+            "Environment": os.getenv("CATALYST_ENVIRONMENT", "Development"),
+            "CATALYST-ORG": self.org_id
+        }
+        if self.endpoint_key:
+            headers["x-quickml-endpoint-key"] = self.endpoint_key
+        # requests sets the correct multipart boundary automatically when
+        # given `files=` -- do NOT set Content-Type manually here, it must
+        # include that boundary parameter or the server can't parse it.
+        files = [
+            ("images", (None, json.dumps(images_b64))),
+            ("prompt", (None, prompt)),
+        ]
+        try:
+            # 90s, matching catalyst_llm.py's own per-attempt ceiling (same
+            # request, same reasoning) -- this is the fallback used both for
+            # tool-selection (when GLM is down) and translation (the last of
+            # three tiers, after Zia and GLM), so a tight timeout here
+            # cascades a single slow-but-working call into a full failure.
+            res = requests.post(self.endpoint_url, headers=headers, files=files, timeout=90)
+            if res.status_code == 200:
+                data = res.json()
+                return (data.get("response") or "").strip()
+            logger.warning(f"Qwen call failed: {res.status_code} - {res.text[:300]}")
+        except Exception as e:
+            logger.error(f"Error calling Qwen endpoint: {e}")
+        return None
+
     def analyze(self, image_bytes_list: List[bytes], instruction: Optional[str] = None) -> Dict[str, Any]:
         """
         Sends up to 3 images to the Qwen VL endpoint with a single focused
@@ -66,61 +115,15 @@ class CatalystQwen:
                 "text": "Attachment analysis is not available -- the Qwen vision service has not been deployed/configured yet."
             }
 
-        token = get_cached_access_token()
-        if not token:
-            return {"available": False, "text": "Attachment analysis failed: authentication token missing."}
-
         images_b64 = [base64.b64encode(b).decode("utf-8") for b in image_bytes_list[:3]]
-
-        # Matches GLM's confirmed-real header shape exactly (no extra
-        # X-Catalyst-Environment/environment headers -- those are what broke
-        # GLM's requests before). CATALYST-ORG is required, not optional.
-        headers = {
-            "Authorization": f"Zoho-oauthtoken {token}",
-            "Content-Type": "application/json",
-            "CATALYST-ORG": self.org_id
-        }
-        if self.endpoint_key:
-            headers["X-QUICKML-ENDPOINT-KEY"] = self.endpoint_key
-
         prompt = instruction or (
             "Extract and describe all investigatively relevant content from this evidence "
             "attachment: any text (OCR), identifiable objects, people, and context. Be concise "
             "and factual -- this is for a police case file, not a general description."
         )
-
-        # Matches the real console-provided API sample exactly: flat "prompt"
-        # + "images" array, not an OpenAI-style "messages" array like GLM.
-        payload = {
-            "prompt": prompt,
-            "model": self.model_name,
-            "images": images_b64,
-            "system_prompt": "Be concise and factual.",
-            "top_k": 50,
-            "top_p": 0.9,
-            "temperature": 0.1,
-            "max_tokens": 800
-        }
-
-        try:
-            # Raised from 30s to 300s, matching catalyst_llm.py's own ceiling
-            # (same request, same reasoning). This is the fallback used both
-            # for tool-selection (when GLM is down) and translation (the
-            # last of three tiers, after Zia and GLM) -- a tight timeout here
-            # meant Qwen itself could get cut off on exactly the kind of
-            # slow-but-working turn GLM's own budget was raised to tolerate,
-            # cascading a single slow response into a full "[Translation
-            # temporarily unavailable]"/no-tool-selected failure instead of a
-            # real, if delayed, answer.
-            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
-            if res.status_code == 200:
-                data = res.json()
-                text = data.get("response") or ""
-                return {"available": True, "text": text}
-            logger.warning(f"Qwen vision call failed: {res.status_code} - {res.text[:300]}")
-        except Exception as e:
-            logger.error(f"Error calling Qwen vision endpoint: {e}")
-
+        text = self._call(prompt, images_b64)
+        if text:
+            return {"available": True, "text": text}
         return {"available": False, "text": "Attachment analysis failed -- the Qwen vision service returned an error."}
 
     _LANG_NAMES = {"en": "English", "kn": "Kannada"}
@@ -141,9 +144,6 @@ class CatalystQwen:
         """
         if not self.is_configured():
             return {"available": False, "text": text}
-        token = get_cached_access_token()
-        if not token:
-            return {"available": False, "text": text}
 
         src_name = self._LANG_NAMES.get(source_lang, source_lang)
         tgt_name = self._LANG_NAMES.get(target_lang, target_lang)
@@ -152,46 +152,9 @@ class CatalystQwen:
             f"{src_name} text to {tgt_name}. Output ONLY the translation, no explanation, "
             f"preserving all numbers exactly:\n\n{text}"
         )
-
-        headers = {
-            "Authorization": f"Zoho-oauthtoken {token}",
-            "Content-Type": "application/json",
-            "CATALYST-ORG": self.org_id
-        }
-        if self.endpoint_key:
-            headers["X-QUICKML-ENDPOINT-KEY"] = self.endpoint_key
-
-        payload = {
-            "prompt": prompt,
-            "model": self.model_name,
-            "images": [_BLANK_PNG_B64],
-            "system_prompt": "You are a precise translator. Output only the translated text, ignoring any attached image.",
-            "top_k": 50,
-            "top_p": 0.9,
-            "temperature": 0.1,
-            "max_tokens": max(500, len(text) * 2)
-        }
-
-        try:
-            # Raised from 30s to 300s, matching catalyst_llm.py's own ceiling
-            # (same request, same reasoning). This is the fallback used both
-            # for tool-selection (when GLM is down) and translation (the
-            # last of three tiers, after Zia and GLM) -- a tight timeout here
-            # meant Qwen itself could get cut off on exactly the kind of
-            # slow-but-working turn GLM's own budget was raised to tolerate,
-            # cascading a single slow response into a full "[Translation
-            # temporarily unavailable]"/no-tool-selected failure instead of a
-            # real, if delayed, answer.
-            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
-            if res.status_code == 200:
-                data = res.json()
-                translated = (data.get("response") or "").strip()
-                if translated:
-                    return {"available": True, "text": translated}
-            logger.warning(f"Qwen translate call failed: {res.status_code} - {res.text[:300]}")
-        except Exception as e:
-            logger.error(f"Error calling Qwen translate endpoint: {e}")
-
+        translated = self._call(prompt, [_BLANK_PNG_B64])
+        if translated:
+            return {"available": True, "text": translated}
         return {"available": False, "text": text}
 
     def plan(self, system_prompt: str, user_content: str, max_tokens: int = 3500) -> Optional[str]:
@@ -211,38 +174,11 @@ class CatalystQwen:
         """
         if not self.is_configured():
             return None
-        token = get_cached_access_token()
-        if not token:
-            return None
-        headers = {
-            "Authorization": f"Zoho-oauthtoken {token}",
-            "Content-Type": "application/json",
-            "CATALYST-ORG": self.org_id
-        }
-        if self.endpoint_key:
-            headers["X-QUICKML-ENDPOINT-KEY"] = self.endpoint_key
-        prompt = f"{system_prompt}\n\nOfficer's request: {user_content}"
-        payload = {
-            "prompt": prompt,
-            "model": self.model_name,
-            "images": [_BLANK_PNG_B64],
-            "system_prompt": "Output only a single valid JSON object, nothing else -- no prose, no markdown.",
-            "top_k": 50,
-            "top_p": 0.9,
-            "temperature": 0.1,
-            "max_tokens": max_tokens
-        }
-        try:
-            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
-            if res.status_code == 200:
-                data = res.json()
-                text = (data.get("response") or "").strip()
-                if text:
-                    return text
-            logger.warning(f"Qwen planning fallback failed: {res.status_code} - {res.text[:300]}")
-        except Exception as e:
-            logger.error(f"Error calling Qwen planning endpoint: {e}")
-        return None
+        prompt = (
+            f"{system_prompt}\n\nOutput only a single valid JSON object, nothing else -- no "
+            f"prose, no markdown.\n\nOfficer's request: {user_content}"
+        )
+        return self._call(prompt, [_BLANK_PNG_B64])
 
     def decide_tool(
         self,
@@ -285,9 +221,6 @@ class CatalystQwen:
         """
         if not self.is_configured():
             return None
-        token = get_cached_access_token()
-        if not token:
-            return None
 
         tool_lines = "\n".join(
             f"- {t['name']}: {t.get('description', '')}. Parameters: {json.dumps(t.get('parameters', {}))}" for t in tools
@@ -321,48 +254,16 @@ class CatalystQwen:
             f"Officer's query: {query}"
         )
 
-        headers = {
-            "Authorization": f"Zoho-oauthtoken {token}",
-            "Content-Type": "application/json",
-            "CATALYST-ORG": self.org_id
-        }
-        if self.endpoint_key:
-            headers["X-QUICKML-ENDPOINT-KEY"] = self.endpoint_key
-
-        payload = {
-            "prompt": prompt,
-            "model": self.model_name,
-            "images": [_BLANK_PNG_B64],
-            "system_prompt": "Output only a single valid JSON object, nothing else.",
-            "top_k": 50,
-            "top_p": 0.9,
-            "temperature": 0.1,
-            "max_tokens": 400
-        }
-
-        try:
-            # Raised from 30s to 300s, matching catalyst_llm.py's own ceiling
-            # (same request, same reasoning). This is the fallback used both
-            # for tool-selection (when GLM is down) and translation (the
-            # last of three tiers, after Zia and GLM) -- a tight timeout here
-            # meant Qwen itself could get cut off on exactly the kind of
-            # slow-but-working turn GLM's own budget was raised to tolerate,
-            # cascading a single slow response into a full "[Translation
-            # temporarily unavailable]"/no-tool-selected failure instead of a
-            # real, if delayed, answer.
-            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
-            if res.status_code == 200:
-                data = res.json()
-                raw = (data.get("response") or "").strip()
-                match = re.search(r"\{.*\}", raw, re.DOTALL)
-                if match:
+        raw = self._call(prompt, [_BLANK_PNG_B64])
+        if raw:
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            if match:
+                try:
                     parsed = json.loads(match.group(0))
                     if "tool" in parsed or "text_response" in parsed:
                         return parsed
-                logger.warning(f"Qwen tool-decision response wasn't usable JSON: {raw[:300]!r}")
-            else:
-                logger.warning(f"Qwen tool-decision call failed: {res.status_code} - {res.text[:300]}")
-        except Exception as e:
-            logger.error(f"Error calling Qwen tool-decision endpoint: {e}")
+                except json.JSONDecodeError:
+                    pass
+            logger.warning(f"Qwen tool-decision response wasn't usable JSON: {raw[:300]!r}")
 
         return None

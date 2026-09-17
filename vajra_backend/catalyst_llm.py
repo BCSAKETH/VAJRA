@@ -4,7 +4,7 @@ import time
 import logging
 import requests
 from typing import Dict, Any, List, Optional
-from vajra_core import get_cached_access_token
+from vajra_core import get_quickml_access_token
 
 logger = logging.getLogger("catalyst_llm")
 
@@ -110,23 +110,28 @@ class CatalystLLM:
         otherwise get prepended in front of it, confusing the model about
         which JSON shape to actually produce.
         """
-        token = get_cached_access_token()
+        token = get_quickml_access_token()
         if not token:
-            logger.error("Failed to retrieve cached access token for Catalyst LLM.")
+            logger.error("Failed to retrieve QuickML-scoped access token for Catalyst LLM.")
             return {"error": "Authentication token missing."}
 
-        # Matches the real console-provided API sample exactly (Model Details ->
-        # API Details) -- previously included extra X-Catalyst-Environment /
-        # environment headers not in that sample, which is likely why every
-        # request got a confusing zoho-inputstream parse error rather than a
-        # clean response. CATALYST-ORG is required per the sample, not optional.
+        # CONFIRMED LIVE (2026-09-17): the OLD "chat"-style endpoint this was
+        # written against was gone (0 endpoints in the console -- deleted or
+        # expired), so it had to be recreated via Console -> QuickML -> LLM
+        # Serving -> Create Endpoint. The recreated endpoint speaks a
+        # genuinely different, flat "generate" contract (see below), not the
+        # OpenAI-style messages/choices shape this file originally assumed.
+        # Real headers confirmed via the endpoint's own "Connection Details"
+        # panel: Environment is REQUIRED (not in the old sample), and the
+        # endpoint key header is lowercase "x-quickml-endpoint-key".
         headers = {
             "Authorization": f"Zoho-oauthtoken {token}",
             "Content-Type": "application/json",
+            "Environment": os.getenv("CATALYST_ENVIRONMENT", "Development"),
             "CATALYST-ORG": self.org_id
         }
         if self.endpoint_key:
-            headers["X-QUICKML-ENDPOINT-KEY"] = self.endpoint_key
+            headers["x-quickml-endpoint-key"] = self.endpoint_key
 
         # Format system prompt to force structured tool execution if model doesn't support native tool calls.
         #
@@ -290,33 +295,23 @@ class CatalystLLM:
         else:
             formatted_messages = messages
 
-        # Build payload -- matches the real console API sample exactly:
-        # temperature/max_tokens/stream are top-level fields, not nested under
-        # a "parameters" object (the nested shape was never valid and was
-        # part of why every request failed). "model" is required and was
-        # missing entirely before.
-        #
-        # Native "tools" is intentionally NOT sent: the TOOLS registry in
-        # agent_loop.py is a flat {"name","description","parameters"} list,
-        # not the {"type":"function","function":{...}} shape this endpoint's
-        # native tool-calling expects, and the response parser in
-        # run_agent_loop only understands the structured-JSON-in-content
-        # format from the system prompt above, not native tool_calls --
-        # sending a mismatched tools array risks the model responding in a
-        # shape nothing here can parse.
-        # max_tokens raised from 1000: this is a "thinking" model that writes
-        # extensive step-by-step reasoning before its actual JSON answer
-        # (confirmed live) -- 1000 tokens was cutting that reasoning off
-        # mid-thought before it ever reached the JSON, causing a genuine
-        # json.loads() failure ("I encountered an error processing your
-        # query") on turns with longer reasoning traces.
-        payload = {
-            "model": self.model_name,
-            "messages": formatted_messages,
-            "temperature": 0.1,
-            "max_tokens": max_tokens,
-            "stream": False
-        }
+        # Build payload -- CONFIRMED LIVE (2026-09-17) against the recreated
+        # endpoint's real "generate" contract: it accepts ONLY a flat
+        # {"prompt": "<string>"} body, not an OpenAI-style "messages" array
+        # (that was the old, now-deleted endpoint's contract). Flatten the
+        # full message history into one role-tagged prompt string, ending
+        # with "Assistant:" as the continuation cue. temperature/max_tokens
+        # are NOT sendable per-request any more -- they're fixed by the
+        # endpoint's bound Saved Configuration in the console (temperature 1,
+        # max_tokens 4096, thinking enabled), so the `max_tokens` parameter
+        # here no longer changes the wire request; kept for interface
+        # compatibility with every existing caller.
+        prompt_parts = []
+        for m in formatted_messages:
+            role = (m.get("role") or "user").capitalize()
+            prompt_parts.append(f"{role}: {m.get('content', '')}")
+        prompt_parts.append("Assistant:")
+        payload = {"prompt": "\n\n".join(prompt_parts)}
 
         # Skip the retry-with-backoff budget entirely if a recent call already
         # confirmed the endpoint down -- avoids every chat turn during a real
@@ -369,35 +364,46 @@ class CatalystLLM:
                     if res.status_code == 200:
                         data = res.json()
                         logger.info("Catalyst LLM Serving returned 200 OK.")
-                        # Real shape confirmed live: {"response": "...",
-                        # "tool_calls": [...], "usage": {...}}, not the
-                        # OpenAI-style {"choices": [...]} the rest of this
-                        # codebase (run_agent_loop) is written against.
+                        # Real shape CONFIRMED LIVE (2026-09-17) against the
+                        # recreated endpoint: {"data": [{"data": "<think>...
+                        # </think>actual answer"}], "usage": {...}, "model":
+                        # ..., "finish_reason": "stop"} -- not the old
+                        # {"response": ...} shape this file was written
+                        # against (that was the prior, now-deleted endpoint).
                         # Normalize here so nothing downstream needs to know
                         # about this endpoint's actual wire format.
-                        if "choices" not in data and "response" in data:
-                            _resp = data["response"] or ""
-                            # This deployed GLM has a baked-in guardrail that
-                            # fires a CANNED refusal ("I can't help with requests
-                            # to expose protected instructions" / "I can't provide
-                            # protected internal details. Please rephrase") when it
-                            # mis-reads dense official-document text (e.g. an
-                            # uploaded FIR/form with "OFFICIAL", "protected",
-                            # "verification" language) as an instruction-injection
-                            # attempt. That refusal is a 200 OK, so without this it
-                            # would be shown to the officer verbatim instead of an
-                            # answer. Treat it as a soft failure so the caller's
-                            # fallback ladder (Qwen, which has no such guardrail --
-                            # see catalyst_qwen) produces a real analysis instead.
-                            if _is_guardrail_refusal(_resp):
-                                logger.warning("GLM returned its canned guardrail refusal; treating as failure so Qwen fallback runs.")
-                                return {"error": "llm_guardrail_refusal"}
-                            return {
-                                "choices": [{
-                                    "message": {"role": "assistant", "content": _resp}
-                                }]
-                            }
-                        return data.get("data", data)
+                        try:
+                            _resp = ((data.get("data") or [{}])[0] or {}).get("data") or ""
+                        except (IndexError, AttributeError, TypeError):
+                            _resp = ""
+                        # This is a "thinking" model: it always wraps its
+                        # reasoning in <think>...</think> before the real
+                        # answer (confirmed live, same pattern translate()
+                        # already relies on below). Strip it here so every
+                        # caller (JSON tool-decision parsing, synthesis text)
+                        # only ever sees the committed final answer.
+                        if "</think>" in _resp:
+                            _resp = _resp.split("</think>", 1)[-1].strip()
+                        # This deployed GLM has a baked-in guardrail that
+                        # fires a CANNED refusal ("I can't help with requests
+                        # to expose protected instructions" / "I can't provide
+                        # protected internal details. Please rephrase") when it
+                        # mis-reads dense official-document text (e.g. an
+                        # uploaded FIR/form with "OFFICIAL", "protected",
+                        # "verification" language) as an instruction-injection
+                        # attempt. That refusal is a 200 OK, so without this it
+                        # would be shown to the officer verbatim instead of an
+                        # answer. Treat it as a soft failure so the caller's
+                        # fallback ladder (Qwen, which has no such guardrail --
+                        # see catalyst_qwen) produces a real analysis instead.
+                        if _is_guardrail_refusal(_resp):
+                            logger.warning("GLM returned its canned guardrail refusal; treating as failure so Qwen fallback runs.")
+                            return {"error": "llm_guardrail_refusal"}
+                        return {
+                            "choices": [{
+                                "message": {"role": "assistant", "content": _resp}
+                            }]
+                        }
 
                     if res.status_code in (401, 404):
                         # Misconfiguration, not a transient failure -- retrying
@@ -525,7 +531,7 @@ class CatalystLLM:
         layered in front of the existing translate(), not a replacement for
         its correctness guarantees.
         """
-        token = get_cached_access_token()
+        token = get_quickml_access_token()
         if not token:
             return {"available": False, "text": text}
         domain = "in" if self.region == "IN" else "com"
