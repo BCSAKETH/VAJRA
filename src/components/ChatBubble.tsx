@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ChatMessage, useApp, TranscriptTextSize, TtsSettings, TtsSpeed } from "../AppContext";
 import { translations } from "../i18n";
-import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ShieldAlert, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2, Info, Pin, PinOff } from "lucide-react";
+import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ShieldAlert, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2, Info, Pin, PinOff, ScanLine } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 import { API_BASE } from "../config";
 import { ReasonCollectionModal } from "./ReasonCollectionModal";
@@ -531,6 +531,10 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   const [viewingPages, setViewingPages] = useState<string[] | null>(null);
   const [viewingPageIdx, setViewingPageIdx] = useState(0);
   const [loadingAttachmentId, setLoadingAttachmentId] = useState<string | null>(null);
+  // Section 141: Zia image-moderation flagged this attachment as sensitive
+  // (POCSO/gore) -- blurred behind a click-to-reveal overlay by default,
+  // per-attachment-index so revealing one doesn't reveal the others.
+  const [revealedShielded, setRevealedShielded] = useState<Set<number>>(new Set());
   // Real inline previews for every attachment type -- confirmed live
   // complaint: attachments only ever showed as a filename chip requiring a
   // click to see anything, unlike how a normal chat app shows the actual
@@ -1402,19 +1406,42 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                 // Real inline thumbnail: image, or a PDF's own first-page
                 // raster (stratus_id already points at page 1's real JPEG).
                 if ((isImage || isPdf) && previewUrl) {
+                  const isShielded = !!a.pocso_shielded && !revealedShielded.has(i);
                   return (
                     <button
                       key={i}
-                      onClick={() => a.stratus_id ? handleViewAttachment(a.stratus_id, a.page_stratus_ids) : setViewingImageUrl(previewUrl)}
+                      onClick={() =>
+                        isShielded
+                          ? setRevealedShielded((prev) => new Set(prev).add(i))
+                          : a.stratus_id ? handleViewAttachment(a.stratus_id, a.page_stratus_ids) : setViewingImageUrl(previewUrl)
+                      }
                       className="relative rounded-lg overflow-hidden border border-stone-800 hover:border-[#C79A4E]/40 transition-colors cursor-pointer group"
                     >
-                      <img src={previewUrl} alt={a.file_name} className="h-32 w-auto max-w-[180px] object-cover" />
-                      <div className="absolute inset-0 bg-stone-950/0 group-hover:bg-stone-950/30 transition-colors flex items-center justify-center">
-                        <Eye className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
-                      </div>
-                      {isPdf && (
+                      <img
+                        src={previewUrl}
+                        alt={a.file_name}
+                        className={`h-32 w-auto max-w-[180px] object-cover ${isShielded ? "blur-xl scale-110" : ""}`}
+                      />
+                      {isShielded ? (
+                        <div className="absolute inset-0 bg-stone-950/70 flex flex-col items-center justify-center gap-1 px-2 text-center">
+                          <ShieldAlert className="w-5 h-5 text-amber-400" />
+                          <span className="text-[9.5px] font-mono font-bold text-amber-300 leading-tight">
+                            {lang === "en" ? "Sensitive content — click to reveal" : "ಸಂವೇದನಾಶೀಲ ವಿಷಯ — ಬಹಿರಂಗಗೊಳಿಸಲು ಕ್ಲಿಕ್ ಮಾಡಿ"}
+                          </span>
+                        </div>
+                      ) : (
+                        <div className="absolute inset-0 bg-stone-950/0 group-hover:bg-stone-950/30 transition-colors flex items-center justify-center">
+                          <Eye className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </div>
+                      )}
+                      {isPdf && !isShielded && (
                         <span className="absolute bottom-1 right-1 px-1.5 py-0.5 rounded bg-stone-950/80 text-[9px] font-mono text-[#C79A4E] flex items-center gap-1">
                           <FileText className="w-2.5 h-2.5" /> {a.page_count > 1 ? `${a.page_count}p` : "PDF"}
+                        </span>
+                      )}
+                      {a.barcode_value && !isShielded && (
+                        <span className="absolute top-1 left-1 px-1.5 py-0.5 rounded bg-stone-950/80 text-[9px] font-mono text-[#5DCAA5] flex items-center gap-1 max-w-[160px] truncate">
+                          <ScanLine className="w-2.5 h-2.5 shrink-0" /> {a.barcode_value}
                         </span>
                       )}
                     </button>

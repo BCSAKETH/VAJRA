@@ -6921,9 +6921,19 @@ async def upload_chat_attachments(
     from catalyst_stratus import store_attachment
     from catalyst_speech import transcribe_audio
     from av_analysis import extract_video_frames, chunk_audio, get_media_duration, format_timestamp, dedupe_consecutive_transcripts
+    import catalyst_zia
 
     _deep_video_used = False
     _deep_audio_used = False
+    # Section 141-144: OCR/moderation/barcode are each a real network call
+    # to Zia -- bounded to the first 2 image-bearing attachments (same
+    # "only the first deep item" pattern already used for video/audio
+    # above) so a 3-attachment message can't blow AppSail's ~30s ceiling.
+    _zia_images_processed = 0
+    _MAX_ZIA_IMAGES = 2
+    # Face comparison only makes sense across two actual photos (not PDF
+    # pages) -- collected as they're seen below, compared once at the end.
+    face_compare_candidates: List[bytes] = []
 
     if len(files) > MAX_ATTACHMENTS_PER_MESSAGE:
         raise HTTPException(
@@ -6935,7 +6945,41 @@ async def upload_chat_attachments(
     processed_images: List[bytes] = []
     audio_transcripts: List[str] = []
     video_notes: List[str] = []
+    zia_notes: List[str] = []
     attachment_refs: List[Dict[str, Any]] = []
+
+    def _run_zia_on_image(image_bytes: bytes, filename: str) -> Dict[str, Any]:
+        """OCR + moderation + barcode for one image, bounded to the first
+        _MAX_ZIA_IMAGES attachments. Runs the 3 independent Zia calls
+        concurrently (same ThreadPoolExecutor pattern this endpoint already
+        uses for Qwen video-frame batches) so the wall-clock cost is one
+        call's latency, not three stacked."""
+        nonlocal _zia_images_processed
+        if _zia_images_processed >= _MAX_ZIA_IMAGES:
+            return {}
+        _zia_images_processed += 1
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=3) as ex:
+            ocr_f = ex.submit(catalyst_zia.run_ocr, image_bytes)
+            mod_f = ex.submit(catalyst_zia.check_image_moderation, image_bytes)
+            bar_f = ex.submit(catalyst_zia.scan_barcode, image_bytes)
+            ocr_res, mod_res, bar_res = ocr_f.result(), mod_f.result(), bar_f.result()
+
+        result: Dict[str, Any] = {"pocso_shielded": bool(mod_res.get("is_sensitive"))}
+        if ocr_res.get("text"):
+            zia_notes.append(f"[Document OCR -- {filename}]: {ocr_res['text']}")
+        if mod_res.get("is_sensitive"):
+            zia_notes.append(
+                f"[Image Safety -- {filename}]: flagged as sensitive content "
+                f"({', '.join(mod_res.get('categories') or []) or 'graphic imagery'}) -- shielded behind click-to-reveal."
+            )
+        if bar_res.get("status") == "success" and bar_res.get("code_value"):
+            result["barcode_value"] = bar_res["code_value"]
+            result["barcode_format"] = bar_res.get("format")
+            zia_notes.append(
+                f"[Evidence Barcode -- {filename}]: {bar_res['code_value']} ({bar_res.get('format') or 'unknown format'})"
+            )
+        return result
 
     for f in files:
         content = await f.read()
@@ -6965,6 +7009,7 @@ async def upload_chat_attachments(
 
         page_count = 1
         page_stratus_ids: List[str] = []
+        zia_result: Dict[str, Any] = {}
         if f.content_type == "application/pdf":
             try:
                 page_bytes_list = _rasterize_pdf(content)
@@ -6973,6 +7018,11 @@ async def upload_chat_attachments(
             page_count = len(page_bytes_list)
             downscaled_pages = [_downscale_image(p) for p in page_bytes_list]
             processed_images.extend(downscaled_pages)   # per-page, for Qwen analysis
+            # Section 141: bilingual OCR + safety scan on page 1 only (a
+            # multi-page charge-sheet's first page is the FIR cover page --
+            # the highest-value page for OCR, and the bound that keeps this
+            # endpoint inside AppSail's request ceiling).
+            zia_result = _run_zia_on_image(downscaled_pages[0], f.filename or "document.pdf")
             # REAL per-page pagination (confirmed live complaint: the old
             # single stitched all-pages-in-one-tall-image preview gave no way
             # to actually page through a document -- everything was one long
@@ -7108,6 +7158,13 @@ async def upload_chat_attachments(
             processed_images.append(downscaled)
             stratus_key = store_attachment(downscaled, "jpg", "image/jpeg")
             page_stratus_ids = [stratus_key]
+            # Section 141/145: real crime-scene/CCTV photo -- OCR (e.g. a
+            # photographed document or vehicle plate), safety moderation,
+            # and barcode scan, plus a candidate for pairwise face
+            # comparison below (PDF pages never are -- a scanned document
+            # page comparing "faces" against a photo makes no sense).
+            zia_result = _run_zia_on_image(downscaled, f.filename or "image")
+            face_compare_candidates.append(downscaled)
 
         file_sha256 = hashlib.sha256(content).hexdigest()
         attachment_refs.append({
@@ -7117,6 +7174,7 @@ async def upload_chat_attachments(
             "page_count": page_count,
             "page_stratus_ids": page_stratus_ids,
             "sha256": file_sha256,
+            **zia_result,
         })
         try:
             emp_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId") or 4003385
@@ -7143,6 +7201,18 @@ async def upload_chat_attachments(
         # Never counted toward analysis_available -- storing a file isn't
         # "analysis," and claiming otherwise would overstate what happened.
         analysis_text_parts.extend(video_notes)
+    if len(face_compare_candidates) >= 2:
+        # Section 141/145: exactly the first two real photos in this
+        # message -- an investigative lead only (explicitly caveated in
+        # the note text itself), never presented as biometric ID.
+        face_result = catalyst_zia.compare_faces(face_compare_candidates[0], face_compare_candidates[1])
+        if face_result.get("status") == "success" and face_result.get("match_confidence") is not None:
+            zia_notes.append(
+                f"[Face Comparison]: {face_result['match_confidence']}% similarity between the two uploaded "
+                f"photos -- investigative lead only, not a biometric identification or courtroom-grade match."
+            )
+    if zia_notes:
+        analysis_text_parts.extend(zia_notes)
 
     # CONFIRMED LIVE BUG (2026-09-16): this used to call redact_pocso_name()
     # unconditionally on the ENTIRE combined_analysis text (unlike every

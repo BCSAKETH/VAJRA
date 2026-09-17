@@ -873,7 +873,7 @@ export const AIChatScreen: React.FC = () => {
     let pendingKey = sendSessionId ?? "__new__";
 
     let queryForAgent = textToSend;
-    let uploadedAttachmentRefs: { file_name: string; type: string; page_count: number; stratus_id?: string; data_uri?: string; page_stratus_ids?: string[]; sha256?: string }[] = [];
+    let uploadedAttachmentRefs: NonNullable<ChatMessage["attachments"]> = [];
     let currentAttachmentAnalysis: string | undefined = variantOptions?.cachedAttachmentAnalysis;
 
     if (variantOptions?.existingAttachments && variantOptions.existingAttachments.length > 0) {
