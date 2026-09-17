@@ -4,7 +4,7 @@ import { API_BASE } from "../config";
 import { TwoPersonApprovalModal } from "../components/TwoPersonApprovalModal";
 import { PersonnelGovernancePanel } from "../components/PersonnelGovernancePanel";
 import { SupervisorApprovalReviewModal } from "../components/SupervisorApprovalReviewModal";
-import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2, Bell, BellOff, Hourglass } from "lucide-react";
+import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2, Bell, BellOff, Hourglass, ChevronDown, ChevronRight } from "lucide-react";
 
 // Supervisor Dashboard redesign: one shared, ALWAYS-EXPANDED section header,
 // reused by every panel (Approvals/History/Ledger/Consistency Flags/Audit
@@ -140,6 +140,19 @@ export const SupervisorDashboardScreen: React.FC = () => {
   // Feedback Review Board state (model-improvement oversight surface)
   const [feedback, setFeedback] = useState<FeedbackRecord[]>([]);
   const [isLoadingFeedback, setIsLoadingFeedback] = useState(true);
+  // Section 89.2: CONFIRMED LIVE GAP -- every card used to show the full
+  // response_summary (line-clamp-2) unconditionally alongside the query, so
+  // a multi-sentence system apology dominated the card face and buried the
+  // one thing a supervisor actually scans for first: what was the officer
+  // trying to do. Default-collapsed, click-to-expand per card.
+  const [expandedFeedbackIdx, setExpandedFeedbackIdx] = useState<Set<number>>(new Set());
+  const toggleFeedbackExpanded = (i: number) => {
+    setExpandedFeedbackIdx((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i); else next.add(i);
+      return next;
+    });
+  };
 
   // Officer Access Oversight state
   const [officers, setOfficers] = useState<AccessOversightOfficer[]>([]);
@@ -1777,17 +1790,28 @@ export const SupervisorDashboardScreen: React.FC = () => {
               .sort((a, b) => (a.rating === "down" ? 0 : 1) - (b.rating === "down" ? 0 : 1))
               .map((fb, i) => {
                 const isDown = fb.rating === "down";
+                const isExpanded = expandedFeedbackIdx.has(i);
+                // Fallback title when query_text is empty (e.g. feedback on
+                // an intermediate tool trace with no direct officer
+                // question) -- never leaves the headline blank.
+                const title = (fb.query_text || "").trim() || (lang === "en" ? "Officer Investigation Query" : "ಅಧಿಕಾರಿ ತನಿಖಾ ಪ್ರಶ್ನೆ");
                 return (
                   <div
                     key={i}
-                    className={`p-3 rounded-lg border space-y-2 text-xs ${
+                    className={`rounded-lg border text-xs overflow-hidden ${
                       isDown
                         ? "bg-rose-500/[0.07] border-rose-500/25"
                         : "bg-emerald-500/[0.05] border-emerald-500/20"
                     }`}
                   >
-                    <div className="flex justify-between items-start gap-2">
-                      <p className="text-stone-200 font-sans leading-relaxed font-medium">{fb.query_text}</p>
+                    <button
+                      onClick={() => toggleFeedbackExpanded(i)}
+                      className="w-full flex justify-between items-start gap-2 p-3 text-left cursor-pointer"
+                    >
+                      <span className="flex items-start gap-1.5 min-w-0">
+                        {isExpanded ? <ChevronDown className="w-3.5 h-3.5 text-stone-500 shrink-0 mt-0.5" /> : <ChevronRight className="w-3.5 h-3.5 text-stone-500 shrink-0 mt-0.5" />}
+                        <span className="text-stone-200 font-sans leading-relaxed font-medium">{title}</span>
+                      </span>
                       <span
                         className={`shrink-0 inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded font-mono uppercase border ${
                           isDown
@@ -1798,19 +1822,30 @@ export const SupervisorDashboardScreen: React.FC = () => {
                         {isDown ? <ThumbsDown className="w-3 h-3" /> : <ThumbsUp className="w-3 h-3" />}
                         {isDown ? (lang === "en" ? "Down" : "ಕಳಪೆ") : (lang === "en" ? "Up" : "ಉತ್ತಮ")}
                       </span>
-                    </div>
-                    <p className="text-stone-450 font-sans leading-relaxed line-clamp-2">{fb.response_summary}</p>
+                    </button>
 
-                    {fb.correction && (
-                      <div className="bg-[#C79A4E]/[0.08] border border-[#C79A4E]/25 rounded p-2 space-y-1">
-                        <div className="text-[9px] text-[#C79A4E] uppercase font-mono tracking-wider font-black">
-                          {lang === "en" ? "Officer correction" : "ಅಧಿಕಾರಿ ತಿದ್ದುಪಡಿ"}
+                    {isExpanded && (
+                      <div className="px-3 pb-3 space-y-2 border-t border-stone-800/60 pt-2.5">
+                        <div className="bg-stone-900/70 border border-stone-800 rounded-xl p-3 shadow-inner">
+                          <div className="text-[9px] text-[#C79A4E] uppercase font-mono tracking-wider font-black mb-1.5 flex items-center gap-1">
+                            <ShieldCheck className="w-3 h-3" />
+                            {lang === "en" ? "VAJRA Copilot Response" : "VAJRA ಪ್ರತಿಕ್ರಿಯೆ"}
+                          </div>
+                          <p className="text-stone-300 font-sans leading-relaxed whitespace-pre-wrap">{fb.response_summary}</p>
                         </div>
-                        <p className="text-stone-300 font-sans leading-relaxed">{fb.correction}</p>
+
+                        {fb.correction && (
+                          <div className="bg-[#C79A4E]/[0.08] border border-[#C79A4E]/25 rounded p-2 space-y-1">
+                            <div className="text-[9px] text-[#C79A4E] uppercase font-mono tracking-wider font-black">
+                              {lang === "en" ? "Officer correction" : "ಅಧಿಕಾರಿ ತಿದ್ದುಪಡಿ"}
+                            </div>
+                            <p className="text-stone-300 font-sans leading-relaxed">{fb.correction}</p>
+                          </div>
+                        )}
                       </div>
                     )}
 
-                    <div className="flex justify-between items-center text-[9.5px] font-mono text-stone-550 uppercase tracking-wide pt-0.5">
+                    <div className="flex justify-between items-center text-[9.5px] font-mono text-stone-550 uppercase tracking-wide px-3 pb-2 pt-0.5">
                       <span>{fb.kgid}</span>
                       <span>{fb.created_at}</span>
                     </div>
