@@ -1379,7 +1379,20 @@ export const DistrictDashboardScreen: React.FC = () => {
                     </div>
                   )}
 
-                  {/* Crime types pie */}
+                  {/* CONFIRMED LIVE BUG (2026-09-17, Finals-part 3.md Section
+                      85): this was a raw Pie+Legend over ALL CrimeMajorHeadID
+                      categories -- verified against the live database at 119
+                      distinct categories (worse than the plan doc's own 80-
+                      category example), heavily long-tailed. A 119-slice pie
+                      mathematically collapses (a 5-case slice out of 13k+ is
+                      a fraction of a degree, thinner than its own 1px
+                      stroke) and a 119-item flex-wrap legend blows out any
+                      fixed-height container. Replaced with a ranked top-10
+                      bar list -- the SAME proven pattern this screen's own
+                      statewide "Crime Mix" card already uses (line ~1011
+                      above), just scoped to this district's detail data,
+                      with an honest "+N more" disclosure for the long tail
+                      instead of silently dropping it. */}
                   <div className="glass-card p-4 border border-stone-850 space-y-2">
                     <div className="flex items-center justify-between">
                       <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono">
@@ -1389,24 +1402,35 @@ export const DistrictDashboardScreen: React.FC = () => {
                         {crimeTypeTotal.toLocaleString()} {lang === "en" ? "total" : "ಒಟ್ಟು"}
                       </span>
                     </div>
-                    <div className="h-56">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <PieChart>
-                          <Pie data={detail.crime_type_distribution} dataKey="value" nameKey="name" innerRadius={38} outerRadius={68} paddingAngle={2}>
-                            {detail.crime_type_distribution.map((_, i) => (
-                              <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} stroke="#161412" strokeWidth={1} />
-                            ))}
-                          </Pie>
-                          <Tooltip contentStyle={{ background: "#211f1d", border: "1px solid #37332e", fontSize: 10, borderRadius: 8 }} />
-                          <Legend
-                            verticalAlign="bottom"
-                            iconType="circle"
-                            iconSize={7}
-                            wrapperStyle={{ fontSize: 9, color: "#A8A49C", paddingTop: 6 }}
-                          />
-                        </PieChart>
-                      </ResponsiveContainer>
-                    </div>
+                    {(() => {
+                      const sorted = [...detail.crime_type_distribution].sort((a, b) => b.value - a.value);
+                      const top = sorted.slice(0, 10);
+                      const rest = sorted.length - top.length;
+                      const mx = Math.max(...top.map((c) => c.value), 1);
+                      return (
+                        <div className="space-y-1.5">
+                          {top.map((c, i) => (
+                            <div key={i} className="flex items-center gap-2">
+                              <span className="text-[9px] font-mono text-stone-600 w-5 shrink-0">#{i + 1}</span>
+                              <span className="text-[10px] text-stone-400 w-28 truncate" title={c.name}>{c.name}</span>
+                              <div className="flex-1 h-3 bg-stone-900/60 rounded overflow-hidden">
+                                <div className="h-full rounded" style={{ width: `${Math.max(6, (c.value / mx) * 100)}%`, background: PIE_COLORS[i % PIE_COLORS.length], opacity: 0.75 }} />
+                              </div>
+                              <span className="text-[9px] font-mono text-stone-500 w-16 text-right tabular-nums">
+                                {c.value.toLocaleString()} ({crimeTypeTotal ? ((c.value / crimeTypeTotal) * 100).toFixed(1) : "0.0"}%)
+                              </span>
+                            </div>
+                          ))}
+                          {rest > 0 && (
+                            <p className="text-[9px] font-mono text-stone-600 pt-1">
+                              {lang === "en"
+                                ? `Showing top ${top.length} of ${sorted.length} crime categories · ${rest} more in the long tail.`
+                                : `${sorted.length} ವರ್ಗಗಳಲ್ಲಿ ಟಾಪ್ ${top.length} ತೋರಿಸಲಾಗುತ್ತಿದೆ · ${rest} ಇನ್ನಷ್ಟು.`}
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Solved vs unsolved pie + police presence */}
