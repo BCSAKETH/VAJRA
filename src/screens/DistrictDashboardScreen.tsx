@@ -21,7 +21,7 @@ import {
   Area,
   CartesianGrid,
 } from "recharts";
-import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2, Rows2, FolderOpen, ArrowLeft, Box } from "lucide-react";
+import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2, Rows2, FolderOpen, ArrowLeft, Box, Link2, Unlink } from "lucide-react";
 import { DistrictSpatialAnalystPanel } from "../components/DistrictSpatialAnalystPanel";
 import { DistrictDemographicPanel } from "../components/DistrictDemographicPanel";
 import { ComparisonDeltaHUD } from "../components/ComparisonDeltaHUD";
@@ -178,12 +178,34 @@ export const DistrictDashboardScreen: React.FC = () => {
   // F.17: Side-by-Side District/Time Comparison -- compareMode toggles a
   // second Spatial Analyst panel; compareDistrict picks which district it
   // shows (defaults to any other real district once the summary list
-  // loads). sharedViewport is lifted here so BOTH panels read/write the
-  // exact same pan/zoom state (Loophole L1: two maps at different
-  // viewports would make the comparison meaningless).
+  // loads).
+  //
+  // Decoupled Dual-Map Viewport Lifecycle (Finals-part 3.md Section 23-27):
+  // CONFIRMED LIVE GAP -- both panels were hard-wired to one shared
+  // viewport unconditionally, exactly the bug the doc's own "Forensic
+  // Diagnosis of Viewport Duplication" section (23) described, not its fix.
+  // Two independent panels showing two DIFFERENT districts side by side
+  // makes far more sense panned/zoomed independently by default (Belagavi
+  // and Kalaburagi are nowhere near each other on the map) -- linking is
+  // now an explicit opt-in via syncViewports, for the specific case an
+  // officer genuinely wants to inspect the exact same geographic area
+  // across two districts/time windows (Loophole L1's original concern,
+  // now solved by making it optional instead of forced).
   const [compareMode, setCompareMode] = useState(false);
   const [compareDistrict, setCompareDistrict] = useState<string>("");
-  const [sharedViewport, setSharedViewport] = useState<{ center: [number, number]; zoom: number }>({ center: [14.5, 75.7], zoom: 7 });
+  const [syncViewports, setSyncViewports] = useState(false);
+  const [primaryViewport, setPrimaryViewport] = useState<{ center: [number, number]; zoom: number }>({ center: [14.5, 75.7], zoom: 7 });
+  const [secondaryViewport, setSecondaryViewport] = useState<{ center: [number, number]; zoom: number }>({ center: [14.5, 75.7], zoom: 7 });
+  // When linked, moving either panel updates both; when independent, each
+  // setter only ever touches its own panel's state.
+  const handlePrimaryViewportChange = (vp: { center: [number, number]; zoom: number }) => {
+    setPrimaryViewport(vp);
+    if (syncViewports) setSecondaryViewport(vp);
+  };
+  const handleSecondaryViewportChange = (vp: { center: [number, number]; zoom: number }) => {
+    setSecondaryViewport(vp);
+    if (syncViewports) setPrimaryViewport(vp);
+  };
   // Finals-part 3.md §25 (L225): real per-panel incident/cluster counts
   // reported by each DistrictSpatialAnalystPanel via onStatsChange, fed
   // into ComparisonDeltaHUD above the two maps.
@@ -835,6 +857,23 @@ export const DistrictDashboardScreen: React.FC = () => {
                     <Rows2 className="w-3 h-3" />
                   </button>
                 </div>
+                {/* Section 23-27: explicit opt-in viewport link -- independent
+                    by default, so panning/zooming Belagavi doesn't drag
+                    Kalaburagi's map along with it. */}
+                <button
+                  onClick={() => {
+                    const next = !syncViewports;
+                    setSyncViewports(next);
+                    if (next) setSecondaryViewport(primaryViewport);
+                  }}
+                  title={lang === "en" ? "Link viewports (pan/zoom together)" : "ವೀಕ್ಷಣೆಗಳನ್ನು ಲಿಂಕ್ ಮಾಡಿ"}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[10px] font-mono font-bold uppercase tracking-wide transition-colors cursor-pointer border ${
+                    syncViewports ? "bg-[#C79A4E]/15 border-[#C79A4E]/40 text-[#C79A4E]" : "bg-stone-900 border-stone-800 text-stone-500 hover:text-stone-300"
+                  }`}
+                >
+                  {syncViewports ? <Link2 className="w-3 h-3" /> : <Unlink className="w-3 h-3" />}
+                  {syncViewports ? (lang === "en" ? "Linked" : "ಲಿಂಕ್ ಮಾಡಲಾಗಿದೆ") : (lang === "en" ? "Independent" : "ಸ್ವತಂತ್ರ")}
+                </button>
                 <select
                   value={compareDistrict}
                   onChange={(e) => setCompareDistrict(e.target.value)}
@@ -876,8 +915,8 @@ export const DistrictDashboardScreen: React.FC = () => {
                   </p>
                   <DistrictSpatialAnalystPanel
                     district={selectedId && districtDetailCache ? districtDetailCache.district : ""}
-                    sharedViewport={sharedViewport}
-                    onViewportChange={setSharedViewport}
+                    sharedViewport={primaryViewport}
+                    onViewportChange={handlePrimaryViewportChange}
                     onStatsChange={setPrimaryStats}
                   />
                 </div>
@@ -900,8 +939,8 @@ export const DistrictDashboardScreen: React.FC = () => {
                     <DistrictSpatialAnalystPanel
                       key={compareDistrict}
                       district={compareDistrict}
-                      sharedViewport={sharedViewport}
-                      onViewportChange={setSharedViewport}
+                      sharedViewport={secondaryViewport}
+                      onViewportChange={handleSecondaryViewportChange}
                       onStatsChange={setSecondaryStats}
                     />
                   )}

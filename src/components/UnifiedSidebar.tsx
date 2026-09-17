@@ -61,6 +61,34 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
   const [refreshKey, setRefreshKey] = useState(0);
   const bumpRefresh = () => setRefreshKey((k) => k + 1);
 
+  // Dynamic Visible Slicing (Finals-part 3.md Section 65, CONFIRMED LIVE
+  // GAP closed): the ungrouped chat list used to render everything and rely
+  // on plain CSS scroll -- this measures the sidebar's REAL available
+  // height and computes how many rows actually fit, instead of a fixed
+  // magic number or an unbounded scrolling DOM list. ~34px/row is this
+  // panel's own compact row height (11px text, py-2 padding, space-y-1 gap
+  // between rows -- confirmed against GroupedSessionList's sidebar-variant
+  // row markup).
+  const _SIDEBAR_ROW_PX = 34;
+  const sidebarScrollRef = useRef<HTMLDivElement>(null);
+  const [visibleChatCount, setVisibleChatCount] = useState(10);
+  const [hiddenChatCount, setHiddenChatCount] = useState(0);
+  useEffect(() => {
+    const el = sidebarScrollRef.current;
+    if (!el) return;
+    const compute = () => {
+      // Reserve ~90px for the "View all conversations" link + any Group
+      // section headers above the Ungrouped list, so the slice undercounts
+      // slightly rather than overflowing the visible viewport.
+      const usable = Math.max(0, el.clientHeight - 90);
+      setVisibleChatCount(Math.max(3, Math.floor(usable / _SIDEBAR_ROW_PX)));
+    };
+    compute();
+    const ro = new ResizeObserver(compute);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   // §9.9 cross-investigation search
   const [searchTerm, setSearchTerm] = useState("");
   const [searchResults, setSearchResults] = useState<{ session_id: string; title: string; snippet: string }[] | null>(null);
@@ -253,7 +281,7 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
           all (moved to the dedicated page, see the nav item above); only
           Groups + "Ungrouped" chat history shows in the sidebar now,
           matching Claude's own left rail. */}
-      <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-3">
+      <div ref={sidebarScrollRef} className="flex-1 min-h-0 overflow-y-auto p-2 space-y-3">
         {isLoading ? (
           <div className="text-[10px] text-stone-600 text-center py-4 font-mono">{t.loadingLabel}</div>
         ) : (
@@ -269,6 +297,8 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
               onMutated={bumpRefresh}
               investigationsForPicker={investigations}
               headerLabel={lang === "en" ? "Chats" : "ಚಾಟ್‌ಗಳು"}
+              maxVisible={visibleChatCount}
+              onOverflowChange={setHiddenChatCount}
             />
             {sessions.length > 0 && (
               <button
@@ -276,7 +306,13 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
                 className="w-full flex items-center gap-2 px-2 py-2 mt-1 rounded-lg text-[11px] text-stone-500 hover:bg-stone-800/40 hover:text-stone-300 transition-colors cursor-pointer"
               >
                 <LayoutList className="w-3.5 h-3.5 shrink-0" />
-                {isExpanded && <span className="truncate">{lang === "en" ? "View all conversations" : "ಎಲ್ಲಾ ಸಂಭಾಷಣೆಗಳನ್ನು ವೀಕ್ಷಿಸಿ"}</span>}
+                {isExpanded && (
+                  <span className="truncate">
+                    {hiddenChatCount > 0
+                      ? (lang === "en" ? `View all conversations (+${hiddenChatCount} more)` : `ಎಲ್ಲಾ ಸಂಭಾಷಣೆಗಳನ್ನು ವೀಕ್ಷಿಸಿ (+${hiddenChatCount})`)
+                      : (lang === "en" ? "View all conversations" : "ಎಲ್ಲಾ ಸಂಭಾಷಣೆಗಳನ್ನು ವೀಕ್ಷಿಸಿ")}
+                  </span>
+                )}
               </button>
             )}
           </div>

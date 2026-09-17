@@ -72,6 +72,17 @@ interface GroupedSessionListProps {
   // row: label on the left, Filter button on the right, same as the "Select"
   // controls already occupy that slot on the All Chats page.
   headerLabel?: string;
+  // Dynamic Visible Slicing (Finals-part 3.md Section 65, CONFIRMED LIVE
+  // GAP closed): the sidebar's ungrouped chat list used to render every
+  // item and rely on plain CSS overflow-scroll -- correct, but not what the
+  // doc asked for: a window-adaptive count computed from the sidebar's
+  // actual available height (UnifiedSidebar measures this via
+  // ResizeObserver and passes it down), so the visible slice grows/shrinks
+  // with the real viewport instead of scrolling an unbounded DOM list.
+  // Only the "page" variant (AllChatsScreen) omits this -- that page IS the
+  // full list, nothing should ever be sliced there.
+  maxVisible?: number;
+  onOverflowChange?: (hiddenCount: number) => void;
 }
 
 const authHeaders = () => ({ Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` });
@@ -114,6 +125,7 @@ function loadFilterState(kind: string): FilterSortState {
 const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
   kind, items, meta, groups, activeSessionId, onSelectSession, loadingSessionId,
   isExpanded, onMutated, investigationsForPicker, variant = "sidebar", headerLabel,
+  maxVisible, onOverflowChange,
 }) => {
   const { lang, addToast, requestNewChat } = useApp();
   const [filter, setFilter] = useState<FilterSortState>(() => loadFilterState(kind));
@@ -296,6 +308,17 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
     }
     return { buckets, ungrouped };
   }, [sortedUnpinned, meta, groupsById, filter.groupBy]);
+
+  // Dynamic Visible Slicing (Section 65) -- see maxVisible's own doc comment
+  // on the props interface above.
+  const visibleUngrouped = useMemo(
+    () => (typeof maxVisible === "number" ? grouped.ungrouped.slice(0, maxVisible) : grouped.ungrouped),
+    [grouped.ungrouped, maxVisible]
+  );
+  const hiddenUngroupedCount = Math.max(0, grouped.ungrouped.length - visibleUngrouped.length);
+  useEffect(() => {
+    onOverflowChange?.(hiddenUngroupedCount);
+  }, [hiddenUngroupedCount, onOverflowChange]);
 
   const visibleGroupIds = useMemo(() => {
     const ids = Array.from(groupsById.keys());
@@ -992,7 +1015,7 @@ const GroupedSessionListComponent: React.FC<GroupedSessionListProps> = ({
                   isDragOverUngrouped ? "bg-stone-800/40 border border-dashed border-stone-600/50 p-1" : ""
                 }`}
               >
-                {grouped.ungrouped.map(renderRow)}
+                {visibleUngrouped.map(renderRow)}
               </div>
             )}
           </div>

@@ -269,6 +269,20 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
   // F.14: when a specific month is scrubbed to, show that month's own
   // clustered points; "All" (selectedMonth === null) shows the combined view.
   const displayPoints = selectedMonth && hotspotsByMonth[selectedMonth] ? hotspotsByMonth[selectedMonth] : points;
+  // Loophole L220 fix (Finals-part 3.md Section 23-27): CONFIRMED LIVE BUG --
+  // MapContainer was fully unmounted (swapped for a plain <p> message)
+  // whenever a filter combination returned zero points, losing Leaflet's
+  // entire internal camera/zoom state; if a later filter change brought
+  // points back, the map remounted from scratch instead of restoring where
+  // the officer had it. Track the last real center so an empty-filter
+  // moment keeps the map mounted (camera preserved) instead of tearing it
+  // down -- no fabricated per-district centroid database needed, just
+  // "don't forget where we already were."
+  const lastKnownCenterRef = React.useRef<[number, number]>([14.5, 75.7]);
+  if (displayPoints.length > 0) {
+    lastKnownCenterRef.current = [displayPoints[0].lat, displayPoints[0].lng];
+  }
+  const mapCenter: [number, number] = sharedViewport?.center || lastKnownCenterRef.current;
   const monthLabel = (m: string) => {
     const [y, mo] = m.split("-");
     return new Date(Number(y), Number(mo) - 1, 1).toLocaleString("en-US", { month: "short", year: "numeric" });
@@ -437,15 +451,20 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
           </div>
         ) : isLoading ? (
           <div className="absolute inset-0 flex items-center justify-center bg-stone-950/40 text-stone-400 text-xs font-mono z-10">Loading spatial engine...</div>
-        ) : displayPoints.length === 0 ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-stone-950/40 text-center p-4 z-10">
-            <MapPin className="w-5 h-5 text-stone-600" />
-            <p className="text-stone-400 text-xs font-mono font-bold">No hotspots match these filters.</p>
-          </div>
         ) : (
+          <>
+          {/* L220 fix: an empty-filter result now overlays this notice ON TOP
+              of the still-mounted map (camera preserved) instead of
+              unmounting MapContainer entirely. */}
+          {displayPoints.length === 0 && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-stone-950/40 text-center p-4 z-10 pointer-events-none">
+              <MapPin className="w-5 h-5 text-stone-600" />
+              <p className="text-stone-400 text-xs font-mono font-bold">No hotspots match these filters.</p>
+            </div>
+          )}
           <MapContainer
             key={`${district}-${basemapMode}`}
-            center={[displayPoints[0].lat, displayPoints[0].lng]}
+            center={mapCenter}
             zoom={11}
             style={{ height: "100%", width: "100%", background: "#161412" }}
             // Finals-part 3.md L222: in Compare mode (sharedViewport
@@ -583,6 +602,7 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
               );
             })}
           </MapContainer>
+          </>
         )}
         </div>
 
