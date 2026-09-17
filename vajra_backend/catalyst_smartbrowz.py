@@ -601,6 +601,20 @@ def render_dossier_html(
             """
             continue
 
+        if p_role == "system":
+            # Large-Transcript PDF Resilience (Section 28-31): a plain,
+            # unnumbered notice banner -- e.g. the "N earlier turns omitted"
+            # truncation disclosure -- not an analysis section, so it
+            # doesn't consume a "Section N" slot.
+            formatted_body = _clean_and_format_text(p_text)
+            sections_html += f"""
+            <div class="notice-banner" style="margin: 12px 0; padding: 10px 14px; border: 1px dashed #C79A4E;
+                border-radius: 6px; background: rgba(199,154,78,0.08); color: #8a6d3b; font-size: 12px; font-style: italic;">
+                {formatted_body}
+            </div>
+            """
+            continue
+
         section_counter += 1
         p_title = panel.get("title_kn" if is_kn else "title_en") or panel.get("title_en") or f"Section {section_counter}"
         p_type = panel.get("type", "text").lower()
@@ -1190,7 +1204,7 @@ def render_dossier_html(
 # service, so both get rebuilt here as direct requests calls using the
 # dedicated SmartBrowz-only token (CATALYST_SMARTBROWZ_REFRESH_TOKEN,
 # scoped to ZohoCatalyst.pdfshot.execute + ZohoCatalyst.dataverse.execute).
-def _smartbrowz_convert(payload: Dict[str, Any], _debug: dict = None) -> Optional[bytes]:
+def _smartbrowz_convert(payload: Dict[str, Any], _debug: dict = None, timeout: int = 60) -> Optional[bytes]:
     if _debug is None:
         _debug = {}
     from vajra_core import get_smartbrowz_access_token
@@ -1206,13 +1220,15 @@ def _smartbrowz_convert(payload: Dict[str, Any], _debug: dict = None) -> Optiona
     headers = {"CATALYST-ORG": org_id, "Authorization": f"Zoho-oauthtoken {token}", "Content-Type": "application/json"}
     try:
         import requests as _requests
-        # 60s client-side timeout: rendering a live, ad-heavy search results
-        # page in headless Chromium (images, trackers, JS) genuinely takes
-        # longer than the naive 30s first tried (confirmed live: hit a
-        # read-timeout at exactly 30s). This runs inside a background agent
-        # turn already budgeted for 3-140s, not the sync HTTP request path,
-        # so there's real headroom for this.
-        res = _requests.post(url, headers=headers, json=payload, timeout=60)
+        # `timeout` defaults to 60s (the original fixed value, still correct
+        # for a normal-sized page/dossier). Large-Transcript PDF Resilience
+        # (Finals-part 3.md Section 28-31): callers rendering a genuinely
+        # long dossier HTML doc now pass a larger, size-scaled timeout --
+        # headless Chromium rendering time scales with document size, and
+        # the old fixed 60s meant a long transcript's SmartBrowz attempt
+        # reliably timed out and silently fell back to the plainer FPDF
+        # engine every time, never disclosed to the officer as a size issue.
+        res = _requests.post(url, headers=headers, json=payload, timeout=timeout)
         _debug["convert_status"] = res.status_code
         if res.status_code == 200:
             return res.content
@@ -1224,10 +1240,12 @@ def _smartbrowz_convert(payload: Dict[str, Any], _debug: dict = None) -> Optiona
     return None
 
 
-def convert_html_to_pdf_smartbrowz(html_content: str) -> Optional[bytes]:
+def convert_html_to_pdf_smartbrowz(html_content: str, timeout: int = 60) -> Optional[bytes]:
     """
     Calls Zoho Catalyst SmartBrowz to convert HTML into a high-fidelity PDF.
-    Returns raw PDF bytes on success, or None on failure.
+    Returns raw PDF bytes on success, or None on failure. `timeout` (Section
+    28-31 resilience): callers with a large dossier should scale this up --
+    see _smartbrowz_convert's docstring.
     """
     result = _smartbrowz_convert({
         "output_options": {"output_type": "pdf"},
@@ -1237,7 +1255,7 @@ def convert_html_to_pdf_smartbrowz(html_content: str) -> Optional[bytes]:
             "print_background": True,
             "margin": {"top": 10, "bottom": 10, "left": 10, "right": 10}
         }
-    })
+    }, timeout=timeout)
     if result and result[:4] == b"%PDF":
         logger.info("SmartBrowz PDF conversion succeeded.")
         return result

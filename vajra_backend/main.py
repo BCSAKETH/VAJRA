@@ -9961,14 +9961,50 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         from catalyst_smartbrowz import render_dossier_html, convert_html_to_pdf_smartbrowz
         officer_name = getattr(request.state, "user_profile", {}).get("FirstName") or "Officer"
         
+        # Large-Transcript PDF Export Resilience (Finals-part 3.md Section
+        # 28-31): CONFIRMED LIVE GAP -- only a narrow crash fix (safe_slice)
+        # had shipped; the full transcript was still processed unbounded,
+        # with raw base64 attachment data embedded straight into the HTML
+        # sent to SmartBrowz, and a fixed 60s timeout regardless of size.
+        # A very long investigation (100+ turns, several attachments) could
+        # build a multi-MB HTML payload that reliably timed out, silently
+        # degrading to the plainer FPDF fallback every time with no
+        # disclosure that size was the reason.
+        _RAW_TRANSCRIPT = payload.transcript or []
+        _MAX_EXPORT_TURNS = 100
+        _omitted_count = max(0, len(_RAW_TRANSCRIPT) - _MAX_EXPORT_TURNS)
+        # Keep the MOST RECENT turns -- the officer/supervisor reading an
+        # export cares about the investigation's current state, not its
+        # earliest exploratory messages.
+        _export_transcript = _RAW_TRANSCRIPT[-_MAX_EXPORT_TURNS:] if _omitted_count else _RAW_TRANSCRIPT
+        # Base64 data URIs (pasted images, generated chart SVGs-as-base64)
+        # bloat the HTML payload sent to SmartBrowz without adding anything
+        # a rendered PDF needs from raw source text -- the visual card
+        # extraction below (_extract_visual_cards_from_message) already
+        # renders charts/images as real embedded elements separately; this
+        # only strips inline base64 that would otherwise sit in the RAW
+        # message text.
+        _DATA_URI_RE = re.compile(r"data:[a-zA-Z0-9/+.-]+;base64,[A-Za-z0-9+/=]{200,}")
+
+        def _strip_base64(text: str) -> str:
+            return _DATA_URI_RE.sub("[embedded image omitted from export text]", text or "")
+
         # Parse panels and citations from transcript
         panels = []
         citations = []
         narrative = ""
         case_no = None
-        for msg in (payload.transcript or []):
+        if _omitted_count:
+            panels.append({
+                "role": "system", "type": "text",
+                "text": (
+                    f"[Transcript truncated for export: {_omitted_count} earlier turn(s) omitted. "
+                    f"Showing the most recent {_MAX_EXPORT_TURNS} turns of {len(_RAW_TRANSCRIPT)} total.]"
+                ),
+            })
+        for msg in _export_transcript:
             sender = str(msg.get("role") or msg.get("sender") or "").lower()
-            m_text = msg.get("content") or msg.get("text") or ""
+            m_text = _strip_base64(msg.get("content") or msg.get("text") or "")
             # CONFIRMED LIVE BUG (2026-09-16): every officer question in the
             # transcript was silently dropped here -- this loop only ever
             # matched the "assistant"/"ai"/... branch below, so the exported
@@ -10068,7 +10104,17 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
             lang=report_lang,
             audit_hash=sb_audit_hash,
         )
-        sb_pdf_bytes = convert_html_to_pdf_smartbrowz(html_doc)
+        # Adaptive timeout (Section 28-31): headless-Chromium render time
+        # scales with document size, not a fixed constant -- the old flat
+        # 60s reliably timed out on a genuinely long dossier and silently
+        # fell back to the plainer FPDF engine every time. Scaled off the
+        # actual HTML byte size (not turn count, since attachments/cards
+        # vary the real payload weight turn-for-turn), floor 60s (unchanged
+        # behavior for a normal-sized export), ceiling 180s (AppSail's own
+        # request ceiling has real headroom above this for a background-
+        # feeling export call).
+        _sb_timeout = max(60, min(180, 60 + len(html_doc) // 20000))
+        sb_pdf_bytes = convert_html_to_pdf_smartbrowz(html_doc, timeout=_sb_timeout)
         if sb_pdf_bytes and len(sb_pdf_bytes) > 500:
             logger.info(f"PDF exported successfully via Catalyst SmartBrowz ({len(sb_pdf_bytes)} bytes, lang={report_lang})")
             try:
