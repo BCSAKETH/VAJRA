@@ -406,12 +406,21 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
     const displayName = cfg ? (lang === "en" ? cfg.en : cfg.kn) : (f?.name || "Factor");
     const desc = cfg ? (lang === "en" ? cfg.descEn : cfg.descKn) : "";
     const numVal = parseFloat(f?.value ?? 0);
+    // Section 61: conviction_impact_pct is the properly-allocated whole-
+    // integer percentage (each feature's share of the real risk-score-vs-
+    // peer-average delta, via Largest Remainder rounding -- see
+    // get_offender_risk in agent_loop.py). Only present when a real peer
+    // baseline was resolvable; falls back to the raw SHAP value display
+    // (existing behavior) when absent, e.g. no peer group found.
+    const hasImpactPct = typeof f?.conviction_impact_pct === "number";
     return {
       rawName: f?.name || "",
       name: displayName,
-      value: isNaN(numVal) ? 0 : numVal,
+      value: hasImpactPct ? f.conviction_impact_pct / 100 : (isNaN(numVal) ? 0 : numVal),
+      impactPct: hasImpactPct ? f.conviction_impact_pct : null,
       contribution: f?.contribution || (numVal >= 0 ? "positive" : "negative"),
       desc,
+      whyThisScore: f?.why_this_score || "",
     };
   });
 
@@ -1097,13 +1106,20 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                                       {isPos ? `+${pctEffect}%` : `-${pctEffect}%`}
                                     </span>
                                   </div>
-                                  <div className="flex justify-between items-center text-[10px] text-stone-500">
-                                    <span>{lang === "en" ? "SHAP Log-Odds Weight:" : "ಮಾದರಿ ತೂಕ (SHAP):"}</span>
-                                    <span className="font-mono">{item.value > 0 ? `+${item.value.toFixed(2)}` : item.value.toFixed(2)}</span>
-                                  </div>
                                   {item.desc && (
                                     <div className="pt-1 border-t border-stone-800 text-[10px] text-stone-400 font-sans leading-relaxed">
+                                      <span className="font-bold text-stone-500 uppercase tracking-wide text-[9px] block mb-0.5">
+                                        {lang === "en" ? "What this is" : "ಇದೇನೆಂದರೆ"}
+                                      </span>
                                       {item.desc}
+                                    </div>
+                                  )}
+                                  {item.whyThisScore && (
+                                    <div className="pt-1 border-t border-stone-800 text-[10px] text-stone-400 font-sans leading-relaxed">
+                                      <span className="font-bold text-stone-500 uppercase tracking-wide text-[9px] block mb-0.5">
+                                        {lang === "en" ? `Why this score (${isPos ? "+" : "-"}${pctEffect}%)` : `ಈ ಸ್ಕೋರ್ ಏಕೆ (${isPos ? "+" : "-"}${pctEffect}%)`}
+                                      </span>
+                                      {item.whyThisScore}
                                     </div>
                                   )}
                                 </div>

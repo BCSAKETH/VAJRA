@@ -183,6 +183,34 @@ def _infer_requested_layers(query: str) -> List[str]:
     return layers or ["co_accused"]
 
 
+def _build_shap_why_text(feature_name: str, accused_count: Any, victim_count: Any,
+                          district_name: str, crime_group_name: str, fir_year: Any) -> str:
+    """One grounded sentence citing THIS case's own real value for the
+    feature, where one exists. Cyclic/temporal features get an honest
+    disclosure instead of a fabricated case-specific claim -- there is no
+    real fact like "Peenya PS has a 78% chargesheet rate" computed anywhere
+    in this codebase, so this never invents one just to fill the doc's own
+    illustrative example."""
+    try:
+        if feature_name == "Number of co-accused":
+            return f"This case records {accused_count} accused person(s) on file."
+        if feature_name == "Number of victims":
+            return f"This case records {victim_count} victim(s) on file."
+        if feature_name == "Victim-to-accused ratio":
+            return f"{victim_count} victim(s) against {accused_count} accused on this case."
+        if feature_name == "District":
+            return f"Case registered in {district_name or 'an unresolved district'}."
+        if feature_name in ("Police station",):
+            return "Station-level history for this case's filing station."
+        if feature_name in ("Crime category", "Case type"):
+            return f"Case is classified under {crime_group_name or 'this crime category'}."
+        if feature_name == "Year of offence":
+            return f"Case registered in {fir_year}."
+    except Exception:
+        pass
+    return "A temporal/cyclic pattern in the offence date the model was trained on -- no single case-specific fact to cite beyond the date itself."
+
+
 class VajraAgentLoop(CognitiveBrainMixin):
     """
     Intelligent Agent Loop with Tool Registry, multi-turn session memory resolution,
@@ -6320,6 +6348,41 @@ class VajraAgentLoop(CognitiveBrainMixin):
             # (same crime type, this district; broadens statewide if <10 real
             # peer cases), scored with the SAME trained model, never a guess.
             peer_avg = self._compute_peer_average_risk(crime_group_name, district_name)
+
+            # Enhanced SHAP Cockpit (Finals-part 3.md Section 61): converts
+            # raw SHAP log-odds into whole-integer conviction-impact
+            # percentage points, allocated by each feature's SHARE of the
+            # total risk delta (not a naive value*100 rescale, which could
+            # read as "+234%" for a raw SHAP value outside [-1,1] and has no
+            # guaranteed relationship to the actual reported risk score).
+            # Baseline is the REAL peer-average risk computed just above
+            # (never a fabricated "statewide average"); if no peer group was
+            # resolvable, conviction_impact_pct is simply omitted -- the
+            # existing raw `value` field still renders via the old fallback.
+            if shap_factors and peer_avg.get("available"):
+                delta_pct = round(risk_score * 100, 1) - peer_avg["peer_avg_risk"]
+                _shap_total_abs = sum(abs(f["value"]) for f in shap_factors) or 1.0
+                _raw_shares = [(abs(f["value"]) / _shap_total_abs) * abs(delta_pct) for f in shap_factors]
+                _floors = [int(r) for r in _raw_shares]
+                _target = round(abs(delta_pct))
+                _remainder = _target - sum(_floors)
+                # Largest Remainder (Hare-Niemeyer) method: whichever factors'
+                # fractional parts were cut off the most get the leftover
+                # whole point(s) -- guarantees sum(|C_i|) == round(|delta_pct|)
+                # exactly, never an off-by-one from naive per-term rounding.
+                _order = sorted(range(len(_raw_shares)), key=lambda i: _raw_shares[i] - _floors[i], reverse=True)
+                for i in range(max(0, _remainder)):
+                    _floors[_order[i % len(_order)]] += 1
+                for f, pts in zip(shap_factors, _floors):
+                    f["conviction_impact_pct"] = pts if f["value"] >= 0 else -pts
+                    # NOTE: "what this feature is" already has a richer,
+                    # bilingual, curated version in the frontend's own
+                    # POLICE_EVIDENTIARY_FACTORS (ExpandedOverlay.tsx) --
+                    # deliberately not duplicated here, only the
+                    # case-specific "why" (a real fact this backend alone
+                    # has access to) is added.
+                    f["why_this_score"] = _build_shap_why_text(
+                        f["name"], accused_count, victim_count, district_name, crime_group_name, fir_year)
 
             data = {
                 "suspect": suspect,
