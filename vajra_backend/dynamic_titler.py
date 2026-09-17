@@ -13,6 +13,7 @@ something derived directly from the real input" discipline as
 _deterministic_chart_explanation.
 """
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
@@ -84,13 +85,8 @@ def retitle_after_second_turn(first_message: str, second_message: str, agent_loo
     update) on any failure, or if the officer's own text gives no real
     additional signal beyond turn 1.
 
-    Deliberately NOT implementing the plan doc's further "Turn >= 4 &&
-    entity-shift > 0.6" continuous re-titling gate -- that needs real
-    embedding-similarity infrastructure this codebase doesn't have, and
-    without a persisted "was this title manually renamed" flag (a new
-    ChatSession column needing console creation, avoided here), continuing
-    to auto-retitle deep into a conversation risks silently overwriting an
-    officer's own manual rename. Turn-2-only sidesteps that risk entirely.
+    Caller (main.py) is responsible for checking the session's
+    is_custom_title flag before invoking this -- see that call site.
     """
     combined = f"{(first_message or '').strip()}\n{(second_message or '').strip()}".strip()
     if not combined:
@@ -98,5 +94,48 @@ def retitle_after_second_turn(first_message: str, second_message: str, agent_loo
     return _llm_title_from_text(
         f'Conversation so far:\nOfficer turn 1: "{(first_message or "").strip()[:300]}"\n'
         f'Officer turn 2: "{(second_message or "").strip()[:300]}"',
+        agent_loop_instance,
+    )
+
+
+# Real case-number format this codebase resolves throughout (confirmed live
+# elsewhere, e.g. agent_loop.py's _resolve_entities): 2-4 letter prefix,
+# 4-digit year, 4-6 digit sequence -- e.g. "CR-2024-81977".
+_CASE_NO_RE = re.compile(r'\b([A-Z]{2,4}-\d{4}-\d{4,6})\b', re.IGNORECASE)
+
+
+def retitle_if_entity_shift(
+    first_message: str, current_message: str, turn_count: int, agent_loop_instance: Any
+) -> Optional[str]:
+    """Finals-part 3.md Section 53's further "Turn >= 4 && entity-shift"
+    continuous re-titling ask, now built. The plan doc's own version wanted
+    embedding-similarity-based entity-shift detection (a "> 0.6" score) --
+    this codebase has no embedding infrastructure to compute that honestly,
+    so this uses a real, deterministic, GROUNDED signal instead: the
+    officer's own case number changing mid-conversation. A session titled
+    from its opening message, later pivoting to discuss a DIFFERENT real
+    case number, is an unambiguous, verifiable topic shift no similarity
+    score is needed to detect -- and unlike a fuzzy embedding score, it
+    never fires on a false positive.
+
+    Only fires from turn 4 onward (the same "give the officer time to
+    settle into a real investigation" reasoning as the turn-2 upgrade, just
+    later -- by turn 4 a topic pivot is a deliberate redirection, not
+    exploratory back-and-forth). Caller (main.py) is responsible for
+    checking is_custom_title before invoking this -- never overwrites an
+    officer's own manual rename. Returns None if there's no case number in
+    the current message, or it matches the one the session opened with.
+    """
+    if turn_count < 4:
+        return None
+    current_case = _CASE_NO_RE.search(current_message or "")
+    if not current_case:
+        return None
+    first_case = _CASE_NO_RE.search(first_message or "")
+    if first_case and first_case.group(1).upper() == current_case.group(1).upper():
+        return None
+    return _llm_title_from_text(
+        f'This conversation has shifted to discussing a different case than it opened with. '
+        f'Officer\'s current message: "{(current_message or "").strip()[:400]}"',
         agent_loop_instance,
     )

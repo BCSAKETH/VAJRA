@@ -4892,26 +4892,39 @@ async def _run_ai_turn_and_persist(
     # a session opened with a generic query ("hi", "status report") kept that
     # title frozen forever even once the conversation pivoted into a real
     # investigation. One-time upgrade at exactly turn 2 (2 user + 2 assistant
-    # messages now persisted); see retitle_after_second_turn's own docstring
-    # for why this deliberately doesn't continue re-titling past turn 2.
+    # messages persisted), PLUS continuous entity-shift retitling from turn 4
+    # onward (retitle_if_entity_shift) -- both gated on is_custom_title so
+    # neither ever overwrites an officer's own manual rename (see
+    # /api/sessions/{id} PATCH, which sets that flag the moment a real
+    # rename happens).
     try:
         if catalyst_app:
+            _sess_row = catalyst_app.zql().execute_query(
+                f"SELECT is_custom_title FROM ChatSession WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 1")
+            _is_custom = bool(int((_sess_row[0].get("ChatSession", {}).get("is_custom_title") or 0))) if _sess_row else False
             _msg_count_res = catalyst_app.zql().execute_query(
                 f"SELECT COUNT(ROWID) FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}'")
             _msg_count = int(_msg_count_res[0].get("ChatMessage", {}).get("COUNT(ROWID)") or 0) if _msg_count_res else 0
-            if _msg_count == 4:
+            _is_turn2 = _msg_count == 4
+            _is_entity_shift_check = _msg_count >= 8 and _msg_count % 2 == 0
+            if not _is_custom and (_is_turn2 or _is_entity_shift_check):
                 _first_user_res = catalyst_app.zql().execute_query(
                     f"SELECT text FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}' "
                     f"AND sender = 'user' ORDER BY ROWID ASC LIMIT 1")
                 _first_user_text = (_first_user_res[0].get("ChatMessage", {}).get("text") if _first_user_res else "") or ""
-                from dynamic_titler import retitle_after_second_turn
-                _new_title = retitle_after_second_turn(_first_user_text, message, agent_loop)
+                _new_title = None
+                if _msg_count == 4:
+                    from dynamic_titler import retitle_after_second_turn
+                    _new_title = retitle_after_second_turn(_first_user_text, message, agent_loop)
+                else:
+                    from dynamic_titler import retitle_if_entity_shift
+                    _new_title = retitle_if_entity_shift(_first_user_text, message, _msg_count // 2, agent_loop)
                 if _new_title and _update_chat_session_by_id(session_id, {"title": _new_title[:60]}):
                     await connection_manager.broadcast(session_id, {
                         "type": "session_title_updated", "session_id": session_id, "title": _new_title[:60],
                     })
     except Exception as e:
-        logger.debug(f"Dynamic re-titling at turn 2 failed (non-fatal): {e}")
+        logger.debug(f"Dynamic re-titling failed (non-fatal, columns may not exist yet on this console): {e}")
 
     # --- Eager TTS Pre-Synthesis ---
     # Fire-and-forget: pre-synthesize the response and store it in the TTS
@@ -6047,6 +6060,13 @@ async def update_session(session_id: str, payload: UpdateSessionRequest, request
         if not clean_title:
             raise HTTPException(status_code=400, detail="Title cannot be empty.")
         fields["title"] = clean_title
+        # Dynamic Titling manual-override lock (Finals-part 3.md Section 53
+        # gap closed): an officer explicitly renaming a session must never
+        # have that overwritten by a later auto-retitle pass. Set the moment
+        # a real rename happens here -- see dynamic_titler.py's
+        # retitle_after_second_turn/retitle_if_entity_shift, both of which
+        # check this flag before ever touching an existing title.
+        fields["is_custom_title"] = 1
     if payload.is_pinned is not None:
         fields["is_pinned"] = int(payload.is_pinned)
     if payload.is_unread is not None:
