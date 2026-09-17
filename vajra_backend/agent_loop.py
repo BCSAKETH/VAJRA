@@ -273,6 +273,24 @@ class VajraAgentLoop(CognitiveBrainMixin):
             }
         },
         {
+            "name": "get_case_intelligence_dossier",
+            "description": (
+                "Deep forensic intelligence briefing for one case: full accused roster (name, age, gender, "
+                "phone, vehicle, arrest status), cross-case co-offending connections to OTHER cases, syndicate/"
+                "organized-crime network affiliation, and Section 111 BNS eligibility. Use this for questions "
+                "about who's involved in a case, their criminal network, associates, or syndicate ties -- NOT "
+                "just the case's legal sections (use get_case_sections for that) or a printable report "
+                "(use generate_case_dossier for that)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "case_no": {"type": "string", "description": "The exact Case Number or CrimeNo of the case (e.g. 'CR-2024-81977')"}
+                },
+                "required": ["case_no"]
+            }
+        },
+        {
             "name": "suggest_sections",
             "description": "Recommend legal sections (IPC/BNS) and find precedents for a new crime description.",
             "parameters": {
@@ -1950,6 +1968,9 @@ class VajraAgentLoop(CognitiveBrainMixin):
                                     "district comparison", "district radar", "compare districts"],
         "query_case": ["case", "cr-", "fir", "case number", "case no", "about case", "details of case"],
         "get_case_sections": ["section", "ipc", "bns", "legal provision", "charges", "act", "which section"],
+        "get_case_intelligence_dossier": ["accused in", "accused roster", "who are the accused", "syndicate ties",
+                                           "criminal network for", "connections for case", "co-offenders in",
+                                           "case intelligence", "forensic intelligence", "section 111"],
         "suggest_sections": ["what section", "which section", "sections can be applied", "applicable section",
                              "suggest section", "section for", "sections for", "sections apply"],
         "query_graph_network": ["network", "syndicate", "co-accused", "connection", "connected to", "linked",
@@ -4984,6 +5005,44 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 data = {"case_no": case_no, "case_id": case_id, "sections": sections}
                 text_result = f"Recorded BNS/IPC sections for Case {case_no}: {', '.join(sections) if sections else 'None'}"
                 citations.append({"type": "Act Section Association Registry", "id": case_no, "details": "Legal sections lookup"})
+
+        # Section 40/42 (Finals-part 3.md): deep case forensic intelligence --
+        # the same real data case_intelligence.py already computes for the
+        # Case Registry's UI panel (DistrictFIRPanel.tsx), now reachable from
+        # chat too (CONFIRMED LIVE GAP fixed: this tool never existed before,
+        # so "who are the accused in CR-2024-..." / "syndicate ties for this
+        # case" always fell through to web_search or a generic answer).
+        elif tool_name == "get_case_intelligence_dossier":
+            case_no = params.get("case_no", "")
+            import case_intelligence
+            result = case_intelligence.get_case_intelligence(case_no, self)
+            if result.get("error"):
+                text_result = f"Could not retrieve case intelligence for {case_no or '(none given)'}: {result['error']}"
+                data = {"case_no": case_no}
+            else:
+                data = result
+                roster_lines = "\n".join(
+                    f"- {a['name']} ({a['age'] or '?'}, {a['gender']}) -- {a['status']}"
+                    + (f", phone {a['phone']}" if a.get("phone") else "")
+                    for a in result.get("accused_roster", [])
+                ) or "No accused on record."
+                syn = result.get("syndicate", {})
+                syn_line = (
+                    f"Part of a {syn.get('cluster_size')}-member syndicate cluster "
+                    f"(threat {syn.get('threat_score_pct')}%, {'hub' if syn.get('is_hub') else 'member'})."
+                    if syn.get("is_syndicate_member") else "No syndicate affiliation detected."
+                )
+                conn_count = len(result.get("connections", []))
+                text_result = (
+                    f"Case Intelligence for {case_no} ({result.get('unit_name')}, {result.get('district_name')}):\n\n"
+                    f"Accused ({result.get('accused_count')}):\n{roster_lines}\n\n"
+                    f"Cross-case connections: {conn_count} linked record(s).\n"
+                    f"{syn_line}\n"
+                    f"Section 111 BNS (organized crime) heuristic: "
+                    f"{'ELIGIBLE' if result.get('section_111_bns_eligible') else 'not indicated'} "
+                    f"(disclosed heuristic, not a legal determination)."
+                )
+                citations.append({"type": "Case Forensic Intelligence Engine", "id": case_no, "details": "Accused roster, cross-case connections, syndicate detection"})
 
         # 4. suggest_sections
         elif tool_name == "suggest_sections":

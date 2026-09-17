@@ -5261,71 +5261,26 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
         except Exception as ex:
             logger.warning(f"Fast-path lookup failed, falling back to standard AI turn: {ex}")
 
-    # 2. DUAL-TIER DISPATCH: Attempt Job Scheduling Instant Job -> Fallback to In-Process Async Worker
-    #
-    # HONEST STATUS (checked live via the Catalyst project API, Part C item
-    # #6): this submit_job call targets target_type="FUNCTION",
-    # target_name="ai_turn_worker" -- but NO SUCH FUNCTION HAS EVER BEEN
-    # DEPLOYED to this project (List_All_Functions returns exactly one
-    # function, "proactive_alerts", which is itself marked is_deployed=false).
-    # This was never a permissions/ADMIN-scope problem -- the target simply
-    # doesn't exist, so this call has failed and silently fallen through to
-    # the in-process async worker below for 100% of every single request
-    # this app has ever served. That fallback IS the real, reliable,
-    # currently-serving production path, not a second-tier degradation.
-    #
-    # A real fix exists but was deliberately NOT built today (explicit
-    # scope call): Catalyst's job_scheduling also supports target_type=
-    # "AppSail" (dispatching a job as an HTTP call back into THIS already-
-    # deployed AppSail app, e.g. a new internal /internal/ai-turn-worker
-    # route) -- unlike a Function, that needs no new serverless deployment
-    # (which isn't currently possible anyway: the Catalyst CLI has been
-    # broken all session, and this project's MCP tooling can create/update
-    # a Job Pool but has no function-create tool). That path was scoped as
-    # a real but nontrivial follow-up (new authenticated internal route +
-    # untested job-dispatch round-trip), not attempted under today's time
-    # pressure while a working fallback already serves every request.
-    #
-    # DONE today: created the missing Job Pool (id 50212000000456012, type
-    # AppSail, capacity 5) as harmless, real groundwork for that future work
-    # -- confirmed via List_All_Jobpools that none existed before.
-    dispatched_via_job = False
-    try:
-        if hasattr(catalyst_app, "job_scheduling"):
-            job_service = catalyst_app.job_scheduling()
-            job = job_service.submit_job(
-                job_name=f"ai_turn_{session_id[:12]}_{int(time.time())}",
-                target_type="FUNCTION",
-                target_name="ai_turn_worker",
-                job_params={
-                    "session_id": session_id,
-                    "message": message,
-                    "employee_id": employee_id,
-                    "answer_mode": (payload.answer_mode or "standard"),
-                    "lang": lang
-                },
-                job_config={
-                    "number_of_retries": 1,
-                    "retry_interval": 5
-                }
-            )
-            logger.info(f"Dispatched AI turn to Catalyst Job Scheduling: {job.job_id}")
-            dispatched_via_job = True
-    except Exception as job_err:
-        # Expected on every call today (see note above) -- the "ai_turn_worker"
-        # Function target doesn't exist. Logged at debug, not warning: this is
-        # the normal, anticipated path, not a transient error worth alarming on.
-        logger.debug(f"Job scheduling target unprovisioned, using in-process async worker (expected -- see comment above): {job_err}")
-
-    if not dispatched_via_job:
-        _ai_task = asyncio.create_task(_run_ai_turn_and_persist(
-            session_id, message, lang, employee_id, unit_id, payload.client_msg_id,
-            officer_name=first_name, officer_badge=request.state.kgid,
-            answer_mode=(payload.answer_mode or "standard"),
-            variant_data=_assistant_variant_data
-        ))
-        _BACKGROUND_AI_TASKS.add(_ai_task)  # strong ref so it isn't GC'd mid-run
-        _ai_task.add_done_callback(lambda t: _ai_turn_done(t, session_id))
+    # In-process async worker. CONFIRMED LIVE (cross-checked 2026-09-17): this
+    # used to first attempt a Catalyst Job Scheduling submit_job() targeting
+    # a Function ("ai_turn_worker") that was never deployed to this project
+    # -- that call failed on 100% of every request ever served, silently
+    # falling through to this exact same in-process path anyway, after
+    # paying for a real wasted network round-trip on every single chat turn.
+    # Removed entirely: this IS and always was the real, reliable, currently-
+    # serving production path, so going straight to it is a pure latency win
+    # with zero behavior change. A real async-dispatch version (Catalyst
+    # job_scheduling's target_type="AppSail", calling back into this same
+    # app) remains a legitimate future scale-out path if concurrent officer
+    # load ever needs it, but isn't the fix for any single turn's own speed.
+    _ai_task = asyncio.create_task(_run_ai_turn_and_persist(
+        session_id, message, lang, employee_id, unit_id, payload.client_msg_id,
+        officer_name=first_name, officer_badge=request.state.kgid,
+        answer_mode=(payload.answer_mode or "standard"),
+        variant_data=_assistant_variant_data
+    ))
+    _BACKGROUND_AI_TASKS.add(_ai_task)  # strong ref so it isn't GC'd mid-run
+    _ai_task.add_done_callback(lambda t: _ai_turn_done(t, session_id))
 
     return {
         "text": "",
