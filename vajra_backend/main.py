@@ -2079,6 +2079,13 @@ def _validate_district_summary(payload: Dict[str, Any], live_total: int) -> Tupl
     if len(districts) == 0 and len(special_units) == 0:
         return False, "Computed payload has zero districts and zero special units -- refusing to publish an empty result.", warnings
 
+    # Orphaned cases (no resolvable district) are real, accounted-for cases --
+    # count them toward the live-total reconciliation below so they don't
+    # register as unexplained divergence.
+    orphaned_cases = payload.get("orphaned_cases") or 0
+    if isinstance(orphaned_cases, int) and orphaned_cases > 0:
+        total_active_cases += orphaned_cases
+
     if live_total > 0:
         divergence = abs(total_active_cases - live_total) / live_total
         if divergence > 0.05:
@@ -2131,10 +2138,20 @@ def _compute_district_summary_live() -> Dict[str, Any]:
     # rolled up unit -> (folded) district.
     case_counts_by_unit = _get_case_counts_by_station()
     case_counts_by_district: Dict[Any, int] = {}
+    # Section 109/112: a case whose station has no resolvable DistrictID
+    # (either the PoliceStationID isn't in the Unit table at all, or the
+    # Unit row itself has a blank DistrictID) previously vanished from every
+    # district AND every special-unit total with no trace -- same class of
+    # silent-drop bug the commissionerate fold already fixed for known
+    # jurisdictions. Tallied and disclosed instead (never fabricated as 0
+    # districts' worth of "missing" cases; this is the real count).
+    orphaned_case_count = 0
     for unit_id, count in case_counts_by_unit.items():
         dist_id = unit_to_district.get(unit_id)
         if dist_id is not None:
             case_counts_by_district[dist_id] = case_counts_by_district.get(dist_id, 0) + count
+        else:
+            orphaned_case_count += count
 
     # 2. Most-wanted per district: bounded Accused sample + one IN-clause
     # lookup to resolve those cases' districts (never a full table scan).
@@ -2200,6 +2217,7 @@ def _compute_district_summary_live() -> Dict[str, Any]:
     return {
         "districts": out,
         "special_units": special_units_out,
+        "orphaned_cases": orphaned_case_count,
         "sample_note": "Most-wanted is computed from a 300-row Accused sample, not a full-table scan.",
     }
 

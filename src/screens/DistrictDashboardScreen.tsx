@@ -160,6 +160,7 @@ export const DistrictDashboardScreen: React.FC = () => {
   const { lang, addToast } = useApp();
   const [rows, setRows] = useState<DistrictSummaryRow[]>([]);
   const [specialUnits, setSpecialUnits] = useState<SpecialUnitRow[]>([]);
+  const [orphanedCases, setOrphanedCases] = useState(0);
   const [summaryComputedAt, setSummaryComputedAt] = useState<string | null>(null);
   const [isLoadingSummary, setIsLoadingSummary] = useState(true);
   const [isRefreshingSummary, setIsRefreshingSummary] = useState(false);
@@ -493,6 +494,7 @@ export const DistrictDashboardScreen: React.FC = () => {
       const data = await res.json();
       setRows(data.districts || []);
       setSpecialUnits(data.special_units || []);
+      setOrphanedCases(typeof data.orphaned_cases === "number" ? data.orphaned_cases : 0);
       setSummaryComputedAt(data.computed_at || null);
     } catch (err: any) {
       console.error(err);
@@ -727,6 +729,17 @@ export const DistrictDashboardScreen: React.FC = () => {
   const totalActiveCases = useMemo(() => rows.reduce((sum, r) => sum + r.active_cases, 0), [rows]);
   const flaggedSuspectCount = useMemo(() => rows.filter((r) => r.most_wanted).length, [rows]);
   const topDistrict = rows.length ? [...rows].sort((a, b) => b.active_cases - a.active_cases)[0] : null;
+  // Section 109/112: `rows` alone is only the 30 districts with a map
+  // polygon -- Vijayanagara (real district, created 2021, no polygon yet)
+  // is deliberately bucketed into specialUnits (reason: "unmapped_district")
+  // rather than dropped, so the true monitored-district count still needs
+  // to add it back in. This is the real, data-derived 31 -- not a
+  // hardcoded literal that would silently go stale if a jurisdiction
+  // ever changes.
+  const realDistrictCount = useMemo(
+    () => rows.length + specialUnits.filter((u) => u.reason === "unmapped_district").length,
+    [rows, specialUnits]
+  );
 
   const crimeTypeTotal = detail ? detail.crime_type_distribution.reduce((s, d) => s + d.value, 0) : 0;
   const caseOutcomeTotal = detail ? detail.case_outcomes.reduce((s, d) => s + d.value, 0) : 0;
@@ -1028,8 +1041,9 @@ export const DistrictDashboardScreen: React.FC = () => {
             />
             <StatCard
               icon={Layers}
-              value={isLoadingSummary ? "—" : rows.length}
-              label={lang === "en" ? "Districts Tracked" : "ಟ್ರ್ಯಾಕ್ ಮಾಡಿದ ಜಿಲ್ಲೆಗಳು"}
+              value={isLoadingSummary ? "—" : realDistrictCount}
+              sub={orphanedCases > 0 ? `${orphanedCases} ${lang === "en" ? "orphaned cases" : "ಅನಾಥ ಪ್ರಕರಣಗಳು"}` : undefined}
+              label={lang === "en" ? "Districts Monitored" : "ಮೇಲ್ವಿಚಾರಣೆ ಮಾಡಿದ ಜಿಲ್ಲೆಗಳು"}
             />
             <StatCard
               icon={Flame}
