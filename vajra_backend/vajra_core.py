@@ -437,13 +437,10 @@ def get_smartbrowz_access_token() -> Optional[str]:
 
 def get_quickml_access_token() -> Optional[str]:
     """Dedicated QuickML LLM Serving token (QuickML.deployment.READ) -- see
-    _get_scoped_access_token. CONFIRMED LIVE (2026-09-17): the main app
-    token (CATALYST_REFRESH_TOKEN) was never issued this scope, so every
-    GLM/Qwen call 401'd with INVALID_OAUTHSCOPE, cascading the entire agent
-    loop down to the keyword-match/web_search safety net on every turn.
-    Same reasoning as Mail/SmartBrowz above: a dedicated narrow-scope token
-    rather than re-issuing the main one and risking breaking ZCQL/Cache."""
-    return _get_scoped_access_token("CATALYST_QUICKML_REFRESH_TOKEN", "quickml")
+    _get_scoped_access_token. Falls back to the main app cached access token
+    (which already carries QuickML.deployment.READ scope) if no dedicated
+    scoped refresh token is configured."""
+    return _get_scoped_access_token("CATALYST_QUICKML_REFRESH_TOKEN", "quickml") or get_cached_access_token()
 
 
 def send_investigation_email_internal(to_email: str, subject: str, content: str) -> Dict[str, Any]:

@@ -28,7 +28,7 @@ if not (CLIENT_ID and CLIENT_SECRET and REFRESH_TOKEN):
         "environment -- get_oauth_token() will fail until they're configured in the "
         "Catalyst Console (Functions > ai_turn_worker > Environment Variables)."
     )
-LLM_ENDPOINT = os.getenv("CATALYST_LLM_ENDPOINT", f"https://api.catalyst.zoho.in/quickml/v1/project/{PROJECT_ID}/glm/chat")
+LLM_ENDPOINT = os.getenv("CATALYST_LLM_ENDPOINT", f"https://console.catalyst.zoho.in/quickml/v1/project/{PROJECT_ID}/genai/endpoints/glm-flash-47/generate")
 
 ZCQL_URL = f"https://api.catalyst.zoho.in/baas/v1/project/{PROJECT_ID}/query"
 TOKEN_URL = "https://accounts.zoho.in/oauth/v2/token"
