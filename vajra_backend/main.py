@@ -1262,19 +1262,26 @@ def _get_all_crime_subheads() -> List[Dict[str, Any]]:
     return out
 
 
-def _scalar_case_count(where_clause: str, retries: int = 3) -> Optional[int]:
+def _scalar_case_count(where_clause: str, retries: int = 5) -> Optional[int]:
     """Plain, non-GROUP-BY COUNT() -- confirmed live (2026-09-16, twice)
     to be reliably unbounded regardless of how many rows match, unlike
     GROUP BY (see _get_case_counts_by_station). This is the ground truth
     every batch below is checked against. Retries on transient failure
-    (network blip, momentary rate limit) instead of a single attempt --
-    the actual root cause of the 137,497-case undercount this same
-    session traced back to was very likely exactly this: one batch's
-    single-attempt query failing transiently and being silently logged-
-    and-skipped rather than retried, not a deterministic GROUP BY bug
-    (a full self-verifying re-run afterward converged with zero
-    mismatches). Returns None only after all retries are exhausted --
-    caller must treat that as "can't verify," not "zero"."""
+    (network blip, momentary rate limit) instead of a single attempt.
+
+    CONFIRMED LIVE (2026-09-17, re-traced): the 137,497-case undercount
+    this same function's docstring already diagnosed was NOT actually
+    fixed by the original 3-attempt/0.5-1.5s backoff -- re-ran the exact
+    same live cross-check today and reproduced the identical divergence.
+    Root cause confirmed this time: genuine Catalyst API throttling under
+    sustained back-to-back ZCQL calls (independently reproduced hitting
+    the SAME throttle on the OAuth token endpoint while diagnosing this),
+    which a sub-2-second retry budget doesn't reliably outlast. Raised to
+    5 attempts with a longer, real exponential backoff (up to ~8s on the
+    last attempt) -- still bounded (worst case ~15s for one batch, only
+    paid on the batches that actually hit throttling, not every batch).
+    Returns None only after all retries are exhausted -- caller must
+    treat that as "can't verify," not "zero"."""
     if not catalyst_app:
         return None
     last_err = None
@@ -1286,7 +1293,7 @@ def _scalar_case_count(where_clause: str, retries: int = 3) -> Optional[int]:
         except Exception as e:
             last_err = e
         if attempt < retries - 1:
-            time.sleep(0.5 * (attempt + 1))
+            time.sleep(min(8.0, 0.75 * (2 ** attempt)))
     logger.warning(f"_scalar_case_count failed after {retries} attempts for {where_clause[:80]}: {last_err}")
     return None
 
@@ -1383,6 +1390,12 @@ def _get_case_counts_by_station() -> Dict[Any, int]:
     for i in range(0, len(unit_ids), batch_size):
         batch = unit_ids[i:i + batch_size]
         _fetch_verified_batch_counts(batch, counts)
+        # Small pacing gap between outer batches -- cheap (max ~1.2s total
+        # across 5 batches at 1,112 stations) insurance against the same
+        # sustained-throttling pattern _scalar_case_count's backoff above
+        # was hardened for, so back-to-back batches don't compound it.
+        if i + batch_size < len(unit_ids):
+            time.sleep(0.3)
     return counts
 
 
