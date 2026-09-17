@@ -336,6 +336,35 @@ ALL_VALID_ALERT_TYPES = {
 # this function, is exactly the gap this whitelist cannot close on its own --
 # if you're adding a new ProactiveAlerts insert, call this, not
 # zcql_insert_row directly.
+# Desktop Push Notification Formatter (Finals-part 5.md Blueprint/Module 4):
+# every PUSH_NOTIFY_ALERT_TYPES insert used to get the same generic
+# "VAJRA: <Type Title Case>" title and raw AlertMessage body regardless of
+# type -- fine as a fallback, but a POCSO access request and a district-
+# transfer request read identically in the OS notification tray with no way
+# to tell urgency apart at a glance. Per-type title/url mapping, falling
+# back to the old generic shape for any alert type not listed here.
+_PUSH_TITLE_BY_TYPE = {
+    "EXPORT_APPROVAL": "VAJRA: Export Approval Requested",
+    "POCSO_ACCESS": "VAJRA: POCSO Access Request",
+    "DISTRICT_ACCESS": "VAJRA: District Access Request",
+    "PROFILE_CHANGE": "VAJRA: Profile Change Pending Review",
+    "SERIAL_PATTERN_AUTO_MATCH": "VAJRA: Serial Pattern Match Detected",
+}
+_PUSH_URL_BY_TYPE = {
+    "SERIAL_PATTERN_AUTO_MATCH": "/supervisor",
+}
+
+
+def format_push_notification_payload(alert_type: str, raw_payload: Dict[str, Any]) -> Dict[str, str]:
+    """Returns {"title", "body", "url"} for a desktop push notification.
+    Never raises -- an unrecognized alert_type or missing fields fall back
+    to the original generic formatting rather than dropping the push."""
+    title = _PUSH_TITLE_BY_TYPE.get(alert_type, f"VAJRA: {(alert_type or '').replace('_', ' ').title()}")
+    body = str(raw_payload.get("AlertMessage") or "New alert requires your attention.")
+    url = _PUSH_URL_BY_TYPE.get(alert_type, "/supervisor")
+    return {"title": title, "body": body, "url": url}
+
+
 def insert_proactive_alert(row: Dict[str, Any]) -> bool:
     """Validates row["AlertType"] against ALL_VALID_ALERT_TYPES before writing
     to ProactiveAlerts. Returns False (and logs, doesn't insert) if the type
@@ -356,11 +385,12 @@ def insert_proactive_alert(row: Dict[str, Any]) -> bool:
     # so a supervisor-relevant type pushes to every registered supervisor.
     if alert_type in PUSH_NOTIFY_ALERT_TYPES:
         try:
+            _payload = format_push_notification_payload(alert_type, row)
             send_push_to_kgids(
                 SUPERVISOR_KGIDS,
-                title=f"VAJRA: {alert_type.replace('_', ' ').title()}",
-                body=str(row.get("AlertMessage") or "New alert requires your attention."),
-                url="/supervisor",
+                title=_payload["title"],
+                body=_payload["body"],
+                url=_payload["url"],
             )
         except Exception as e:
             logging.getLogger("vajra_core").warning(f"push dispatch failed for {alert_type}: {e}")
