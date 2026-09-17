@@ -87,6 +87,11 @@ export interface ChatMessage {
   // messages only.
   responseStyle?: string | null;
   responseStyleConfidence?: number | null;
+  // Section 113-116: true only when TACTICAL_FIELD_SOP was auto-detected
+  // from a real emergency keyword in the query (never for an officer's own
+  // manual PersonaSelectorBadge.tsx selection) -- drives the red HUD state.
+  personaEmergency?: boolean;
+  personaManual?: boolean;
   // Conversation branching (edit a past question / retry an answer): this
   // message's own stable id, plus the shared group id and 1-based version
   // number if it's one of several alternate versions of the same turn.

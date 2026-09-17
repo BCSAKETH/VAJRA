@@ -134,6 +134,18 @@ _HEURISTIC_KEYWORDS: List[Tuple[KSPResponseStyle, List[str]]] = [
 ]
 
 
+def is_emergency_trigger(query: str) -> bool:
+    """Real emergency-keyword detection, exposed separately from
+    predict_style so a caller can distinguish "auto-detected active
+    emergency" from "officer manually selected Tactical Field SOP" --
+    both report the same style/confidence from predict_style, but only
+    the former should light up PersonaSelectorBadge.tsx's red HUD state."""
+    if not query:
+        return False
+    q_lower = query.lower()
+    return any(trigger in q_lower for trigger in _EMERGENCY_TRIGGERS)
+
+
 class KSPResponseTailor:
     """Sub-millisecond persona probe. Falls back to a plain keyword
     heuristic (never a hard failure) if scikit-learn is unavailable."""
@@ -160,8 +172,23 @@ class KSPResponseTailor:
             logger.warning(f"KSPResponseTailor: sklearn unavailable, using heuristic-only fallback: {e}")
             self.is_trained = False
 
-    def predict_style(self, query: str) -> Tuple[KSPResponseStyle, float, str]:
-        """Returns (style, confidence, prompt_directive)."""
+    def predict_style(self, query: str, manual_override: Optional[str] = None) -> Tuple[KSPResponseStyle, float, str]:
+        """Returns (style, confidence, prompt_directive).
+
+        Section 113-116: an officer-selected persona (PersonaSelectorBadge.tsx,
+        threaded through as ChatRequest.persona_override) takes priority over
+        auto-classification -- confidence is reported as 1.0 since it's an
+        explicit choice, not a guess. An unrecognized override string is
+        ignored (falls through to normal classification) rather than raising,
+        since a stale/tampered client value must never break a chat turn.
+        """
+        if manual_override:
+            try:
+                style = KSPResponseStyle(manual_override)
+                return style, 1.0, STYLE_PROMPT_DIRECTIVES[style]
+            except ValueError:
+                logger.warning(f"KSPResponseTailor: unrecognized persona_override {manual_override!r}, classifying normally")
+
         if not query or not query.strip():
             return KSPResponseStyle.CCTNS_FORENSIC_LEDGER, 0.0, STYLE_PROMPT_DIRECTIVES[KSPResponseStyle.CCTNS_FORENSIC_LEDGER]
 

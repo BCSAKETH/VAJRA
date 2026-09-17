@@ -3563,6 +3563,11 @@ class ChatRequest(BaseModel):
     # forces the multi-panel composite for the query's case/suspect). Set by
     # the composer's Standard/Full Dossier selector.
     answer_mode: Optional[str] = "standard"
+    # Section 113-116: officer-selected KSP persona (PersonaSelectorBadge.tsx)
+    # -- one of ksp_response_tailor.KSPResponseStyle's values, or None/absent
+    # for the default auto-classified behavior. Validated server-side
+    # (predict_style ignores an unrecognized value rather than trusting it).
+    persona_override: Optional[str] = None
     # Client-generated nonce echoed back in this turn's WebSocket broadcasts
     # (both the user message and the assistant reply). The sending tab
     # already renders both directly from this endpoint's own HTTP response --
@@ -4305,6 +4310,8 @@ async def get_session_messages(session_id: str, request: Request, location_conte
             # lives in `data` under an underscore-prefixed key.
             response_style = data.pop("_response_style", None)
             response_style_confidence = data.pop("_response_style_confidence", None)
+            persona_manual = data.pop("_persona_manual", False)
+            persona_emergency = data.pop("_persona_emergency", False)
             # Defensive boundary check -- confirmed live that Zia's fast-
             # translate API can occasionally return the literal JSON-escaped
             # SPELLING of Kannada text ('ಎಲ...' as plain ASCII
@@ -4356,6 +4363,8 @@ async def get_session_messages(session_id: str, request: Request, location_conte
                 "response_type": m.get("response_type"),
                 "response_style": response_style,
                 "response_style_confidence": response_style_confidence,
+                "persona_manual": persona_manual,
+                "persona_emergency": persona_emergency,
                 "data": data,
                 "citations": citations,
                 "timestamp": m.get("sent_at")
@@ -4673,6 +4682,7 @@ async def _run_ai_turn_and_persist(
     officer_badge: Optional[str] = None,
     answer_mode: str = "standard",
     variant_data: Optional[Dict[str, Any]] = None,
+    persona_override: Optional[str] = None,
 ):
     """
     Runs the full GLM turn (case-context injection, translation, the agent
@@ -4826,7 +4836,8 @@ async def _run_ai_turn_and_persist(
         officer_name=officer_name,
         answer_mode=answer_mode,
         officer_badge=officer_badge,
-        progress_cb=lambda msg: progress_tracker.emit(session_id, msg)
+        progress_cb=lambda msg: progress_tracker.emit(session_id, msg),
+        persona_override=persona_override,
     )
 
     # Generate BOTH language versions of the answer, always -- not just the
@@ -4923,6 +4934,8 @@ async def _run_ai_turn_and_persist(
     if result.get("response_style"):
         persisted_data["_response_style"] = result["response_style"]
         persisted_data["_response_style_confidence"] = result.get("response_style_confidence")
+        persisted_data["_persona_manual"] = result.get("persona_manual", False)
+        persisted_data["_persona_emergency"] = result.get("persona_emergency", False)
 
     # Court-admissible provenance (§65B Indian Evidence Act): a verifiable SHA-256
     # integrity hash over the grounded answer + its citations, plus the cited
@@ -4953,6 +4966,8 @@ async def _run_ai_turn_and_persist(
         "response_type": result["response_type"],
         "response_style": persisted_data.get("_response_style"),
         "response_style_confidence": persisted_data.get("_response_style_confidence"),
+        "persona_emergency": persisted_data.get("_persona_emergency", False),
+        "persona_manual": persisted_data.get("_persona_manual", False),
         "data": persisted_data, "citations": result["citations"], "timestamp": datetime.utcnow().isoformat(),
         # Without these, an "AI unavailable" turn delivered via WebSocket
         # (every message from the 2nd one onward in a session) rendered as an
@@ -5367,7 +5382,8 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
         session_id, message, lang, employee_id, unit_id, payload.client_msg_id,
         officer_name=first_name, officer_badge=request.state.kgid,
         answer_mode=(payload.answer_mode or "standard"),
-        variant_data=_assistant_variant_data
+        variant_data=_assistant_variant_data,
+        persona_override=payload.persona_override,
     ))
     _BACKGROUND_AI_TASKS.add(_ai_task)  # strong ref so it isn't GC'd mid-run
     _ai_task.add_done_callback(lambda t: _ai_turn_done(t, session_id))

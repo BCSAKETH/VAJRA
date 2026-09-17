@@ -64,6 +64,8 @@ const mapSessionMessages = (sessionId: string, messages: any[]): ChatMessage[] =
     senderEmployeeId: m.sender_employee_id,
     responseStyle: m.response_style,
     responseStyleConfidence: m.response_style_confidence,
+    personaEmergency: m.persona_emergency,
+    personaManual: m.persona_manual,
     // Conversation branching (edit/retry/variants) -- packed into data_json
     // server-side, no new columns. msgId is this message's own stable id;
     // variantGroup/versionIndex let the UI group alternate versions of the
@@ -321,6 +323,15 @@ export const AIChatScreen: React.FC = () => {
     return saved === "dossier" ? "dossier" : "standard";
   });
   useEffect(() => { localStorage.setItem("vajra_answer_mode", answerMode); }, [answerMode]);
+  // Section 113-116: officer-selected KSP persona override (PersonaSelectorBadge.tsx
+  // in ChatInput.tsx), one of KSPResponseStyle's values or null for the
+  // default auto-classified-per-query behavior. Persisted the same way
+  // answerMode is -- a shift-long choice, not a per-message one.
+  const [personaOverride, setPersonaOverride] = useState<string | null>(() => localStorage.getItem("vajra_persona_override") || null);
+  useEffect(() => {
+    if (personaOverride) localStorage.setItem("vajra_persona_override", personaOverride);
+    else localStorage.removeItem("vajra_persona_override");
+  }, [personaOverride]);
   const [showInvitePanel, setShowInvitePanel] = useState(false);
   const [inviteBadge, setInviteBadge] = useState("");
   const [inviteRole, setInviteRole] = useState<"viewer" | "collaborator">("collaborator");
@@ -597,6 +608,8 @@ export const AIChatScreen: React.FC = () => {
                     senderEmployeeId: payload.sender_employee_id,
                     responseStyle: payload.response_style,
                     responseStyleConfidence: payload.response_style_confidence,
+                    personaEmergency: payload.persona_emergency,
+                    personaManual: payload.persona_manual,
                     isSimulated: payload.is_simulated,
                     simulatedReason: payload.simulated_reason,
                   };
@@ -981,6 +994,7 @@ export const AIChatScreen: React.FC = () => {
           // Standard vs Full Dossier -- chosen in the composer selector,
           // unless this one turn forces a specific mode (Section 69).
           answer_mode: variantOptions?.answerModeOverride || answerMode,
+          persona_override: personaOverride || undefined,
           edit_of_msg_id: variantOptions?.editOfMsgId,
           retry_of_msg_id: variantOptions?.retryOfMsgId,
         }),
@@ -1674,6 +1688,9 @@ export const AIChatScreen: React.FC = () => {
         onToggleCowork={handleToggleCowork}
         hasParticipants={hasParticipants}
         pendingTaskCount={homeDigest?.pending_tasks}
+        personaOverride={personaOverride}
+        onPersonaOverrideChange={setPersonaOverride}
+        personaEmergencyActive={chatMessages[chatMessages.length - 1]?.personaEmergency === true}
       />
     </div>
   );

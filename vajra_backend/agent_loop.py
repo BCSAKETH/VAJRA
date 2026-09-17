@@ -3142,7 +3142,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
         return current_query
 
-    def run_agent_loop(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None, answer_mode: str = "standard", officer_badge: Optional[str] = None, progress_cb: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    def run_agent_loop(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None, answer_mode: str = "standard", officer_badge: Optional[str] = None, progress_cb: Optional[Callable[[str], None]] = None, persona_override: Optional[str] = None) -> Dict[str, Any]:
         """
         Public entry point. Thin wrapper around _run_agent_loop_inner (the
         real logic, unchanged) that pipes every result through
@@ -3160,23 +3160,28 @@ class VajraAgentLoop(CognitiveBrainMixin):
         """
         start_zql_log()
         result = self._run_agent_loop_inner(
-            query, session_id, employee_id, user_unit_id, officer_name, answer_mode, officer_badge, progress_cb)
+            query, session_id, employee_id, user_unit_id, officer_name, answer_mode, officer_badge, progress_cb, persona_override)
         result = self._grounding_safety_net(result, employee_id, session_id)
-        # KSP Response Tailor (Finals-part 3.md Section 48): guarantee the
-        # persona label is present on the result regardless of which of
+        # KSP Response Tailor (Finals-part 3.md Section 48/113-116): guarantee
+        # the persona label is present on the result regardless of which of
         # _run_agent_loop_inner's many internal early-return fast paths
         # actually produced it (only the main iterative-loop path threads
         # the classifier's directive into the LLM call itself; this classifies
         # again here -- sub-millisecond, so a second pass is cheap -- purely
         # to attach the label consistently for the frontend badge).
         try:
-            from ksp_response_tailor import get_ksp_response_tailor
+            from ksp_response_tailor import get_ksp_response_tailor, is_emergency_trigger
             _officer_query = re.sub(r'^\s*(?:\[Context:[^\]]*\]\s*)+', '', query, flags=re.DOTALL)
-            _style, _style_conf, _ = get_ksp_response_tailor().predict_style(_officer_query)
+            _style, _style_conf, _ = get_ksp_response_tailor().predict_style(_officer_query, manual_override=persona_override)
             if isinstance(result, dict) and "response_style" not in result:
                 result = dict(result)
                 result["response_style"] = _style.value
                 result["response_style_confidence"] = _style_conf
+                result["persona_manual"] = bool(persona_override)
+                # Dynamic emergency HUD badge (PersonaSelectorBadge.tsx): only
+                # lights up for a REAL auto-detected trigger phrase, never for
+                # an officer's own manual Tactical Field SOP selection.
+                result["persona_emergency"] = (not persona_override) and is_emergency_trigger(_officer_query)
         except Exception as e:
             logger.warning(f"KSPResponseTailor badge attach failed (non-fatal): {e}")
         # PNLG Engine 2 (Finals-part 3.md Section 48): applied here, once,
@@ -3214,7 +3219,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             pass
         return result
 
-    def _run_agent_loop_inner(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None, answer_mode: str = "standard", officer_badge: Optional[str] = None, progress_cb: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    def _run_agent_loop_inner(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None, answer_mode: str = "standard", officer_badge: Optional[str] = None, progress_cb: Optional[Callable[[str], None]] = None, persona_override: Optional[str] = None) -> Dict[str, Any]:
         """
         Primary execution entry point. Decides what tools to run in sequence using LLM function calling.
 
@@ -3260,7 +3265,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # regardless of which internal fast-path produced the answer).
         try:
             from ksp_response_tailor import get_ksp_response_tailor
-            _, _, _style_directive = get_ksp_response_tailor().predict_style(officer_query)
+            _, _, _style_directive = get_ksp_response_tailor().predict_style(officer_query, manual_override=persona_override)
         except Exception as e:
             logger.warning(f"KSPResponseTailor classification failed (non-fatal): {e}")
             _style_directive = None

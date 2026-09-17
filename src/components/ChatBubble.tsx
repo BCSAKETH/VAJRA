@@ -1340,14 +1340,18 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
           <>
             <span className="text-stone-600">•</span>
             <span
-              className="text-[8.5px] normal-case tracking-normal font-bold px-1.5 py-0.5 rounded bg-stone-800 text-stone-400"
+              className={`text-[8.5px] normal-case tracking-normal font-bold px-1.5 py-0.5 rounded ${
+                message.personaEmergency
+                  ? "bg-rose-500/20 text-rose-300 animate-pulse"
+                  : "bg-stone-800 text-stone-400"
+              }`}
               title={
                 lang === "en"
-                  ? `Formatted for: ${RESPONSE_STYLE_LABELS[message.responseStyle].en}`
-                  : `ಫಾರ್ಮ್ಯಾಟ್: ${RESPONSE_STYLE_LABELS[message.responseStyle].kn}`
+                  ? `${message.personaEmergency ? "Auto-detected emergency — " : ""}Formatted for: ${RESPONSE_STYLE_LABELS[message.responseStyle].en}`
+                  : `${message.personaEmergency ? "ಸ್ವಯಂ ಪತ್ತೆಯಾದ ತುರ್ತು — " : ""}ಫಾರ್ಮ್ಯಾಟ್: ${RESPONSE_STYLE_LABELS[message.responseStyle].kn}`
               }
             >
-              {lang === "en" ? RESPONSE_STYLE_LABELS[message.responseStyle].en : RESPONSE_STYLE_LABELS[message.responseStyle].kn}
+              {message.personaEmergency ? "⚠ " : ""}{lang === "en" ? RESPONSE_STYLE_LABELS[message.responseStyle].en : RESPONSE_STYLE_LABELS[message.responseStyle].kn}
             </span>
           </>
         )}

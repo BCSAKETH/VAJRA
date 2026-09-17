@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { Mic, MicOff, Send, Paperclip, X, FileText, Image as ImageIcon, ChevronDown, Video, Users } from "lucide-react";
 import { API_BASE } from "../config";
 import { VajraVakMascot } from "./VajraVakMascot";
+import { PersonaSelectorBadge } from "./PersonaSelectorBadge";
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 3;
@@ -50,6 +51,14 @@ interface ChatInputProps {
   // drives Vajra-Vak's golden chest badge + hop-and-catch animation
   // (Section 145). Undefined simply means no badge, never a fabricated 0.
   pendingTaskCount?: number;
+  // Section 113-116: officer-pinned KSP persona override, undefined/null
+  // meaning the default per-query auto-classification.
+  personaOverride?: string | null;
+  onPersonaOverrideChange?: (persona: string | null) => void;
+  // True only when the most recent assistant turn auto-detected a real
+  // emergency trigger phrase (never for a manual override) -- lights the
+  // badge up red instead of its normal muted style.
+  personaEmergencyActive?: boolean;
 }
 
 export const ChatInput: React.FC<ChatInputProps> = React.memo(({
@@ -65,6 +74,9 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
   onToggleCowork,
   hasParticipants,
   pendingTaskCount,
+  personaOverride,
+  onPersonaOverrideChange,
+  personaEmergencyActive,
 }) => {
   const [modeMenuOpen, setModeMenuOpen] = useState(false);
   const [inputVal, setInputVal] = useState("");
@@ -518,6 +530,14 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
             <span className="text-[10px] text-[#C79A4E] font-mono">
               {lang === "en" ? "Shared session" : "ಹಂಚಿಕೊಂಡ ಸೆಷನ್"}
             </span>
+          )}
+          {onPersonaOverrideChange && (
+            <PersonaSelectorBadge
+              lang={lang}
+              value={personaOverride ?? null}
+              onChange={onPersonaOverrideChange}
+              emergencyActive={personaEmergencyActive}
+            />
           )}
         </div>
 
