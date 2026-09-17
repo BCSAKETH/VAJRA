@@ -1,5 +1,6 @@
-import React, { useState } from "react";
+import React, { useCallback, useState } from "react";
 import { ChevronDown, Check } from "lucide-react";
+import { useClickOutside } from "../lib/useClickOutside";
 
 // Mirrors vajra_backend/ksp_response_tailor.py's KSPResponseStyle enum +
 // STYLE_LABELS verbatim -- these 5 values are what the backend actually
@@ -31,9 +32,13 @@ interface PersonaSelectorBadgeProps {
 export const PersonaSelectorBadge: React.FC<PersonaSelectorBadgeProps> = ({ lang, value, onChange, emergencyActive }) => {
   const [open, setOpen] = useState(false);
   const active = PERSONAS.find((p) => p.value === value);
+  // Shared click-outside + Escape-to-close hook (src/lib/useClickOutside.ts)
+  // -- every dropdown in this app uses this one listener so the fix can't
+  // be half-applied per component.
+  const panelRef = useClickOutside<HTMLDivElement>(open, useCallback(() => setOpen(false), []));
 
   return (
-    <div className="relative">
+    <div className="relative" ref={panelRef}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -56,31 +61,28 @@ export const PersonaSelectorBadge: React.FC<PersonaSelectorBadgeProps> = ({ lang
         <ChevronDown className="w-3 h-3 shrink-0" />
       </button>
       {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute bottom-full mb-2 left-0 z-50 w-60 bg-stone-900 border border-stone-800 rounded-xl shadow-2xl py-1.5">
+        <div className="absolute bottom-full mb-2 left-0 z-50 w-60 bg-stone-900 border border-stone-800 rounded-xl shadow-2xl py-1.5">
+          <button
+            type="button"
+            onClick={() => { onChange(null); setOpen(false); }}
+            className={`w-full text-left px-3 py-2 hover:bg-stone-800 cursor-pointer flex items-center gap-2 ${!value ? "bg-stone-850/60" : ""}`}
+          >
+            <span className={`w-3.5 ${!value ? "text-[#C79A4E]" : "text-transparent"}`}><Check className="w-3.5 h-3.5" /></span>
+            <span className="text-[12px] font-bold text-stone-200">{lang === "en" ? "Auto (per-query)" : "ಸ್ವಯಂ (ಪ್ರತಿ ಪ್ರಶ್ನೆ)"}</span>
+          </button>
+          <div className="border-t border-stone-800 my-1" />
+          {PERSONAS.map((p) => (
             <button
+              key={p.value}
               type="button"
-              onClick={() => { onChange(null); setOpen(false); }}
-              className={`w-full text-left px-3 py-2 hover:bg-stone-800 cursor-pointer flex items-center gap-2 ${!value ? "bg-stone-850/60" : ""}`}
+              onClick={() => { onChange(p.value); setOpen(false); }}
+              className={`w-full text-left px-3 py-2 hover:bg-stone-800 cursor-pointer flex items-center gap-2 ${value === p.value ? "bg-stone-850/60" : ""}`}
             >
-              <span className={`w-3.5 ${!value ? "text-[#C79A4E]" : "text-transparent"}`}><Check className="w-3.5 h-3.5" /></span>
-              <span className="text-[12px] font-bold text-stone-200">{lang === "en" ? "Auto (per-query)" : "ಸ್ವಯಂ (ಪ್ರತಿ ಪ್ರಶ್ನೆ)"}</span>
+              <span className={`w-3.5 ${value === p.value ? "text-[#C79A4E]" : "text-transparent"}`}><Check className="w-3.5 h-3.5" /></span>
+              <span className="text-[12px] font-bold text-stone-200">{lang === "en" ? p.en : p.kn}</span>
             </button>
-            <div className="border-t border-stone-800 my-1" />
-            {PERSONAS.map((p) => (
-              <button
-                key={p.value}
-                type="button"
-                onClick={() => { onChange(p.value); setOpen(false); }}
-                className={`w-full text-left px-3 py-2 hover:bg-stone-800 cursor-pointer flex items-center gap-2 ${value === p.value ? "bg-stone-850/60" : ""}`}
-              >
-                <span className={`w-3.5 ${value === p.value ? "text-[#C79A4E]" : "text-transparent"}`}><Check className="w-3.5 h-3.5" /></span>
-                <span className="text-[12px] font-bold text-stone-200">{lang === "en" ? p.en : p.kn}</span>
-              </button>
-            ))}
-          </div>
-        </>
+          ))}
+        </div>
       )}
     </div>
   );

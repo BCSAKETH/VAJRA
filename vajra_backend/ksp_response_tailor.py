@@ -193,7 +193,10 @@ class KSPResponseTailor:
             return KSPResponseStyle.CCTNS_FORENSIC_LEDGER, 0.0, STYLE_PROMPT_DIRECTIVES[KSPResponseStyle.CCTNS_FORENSIC_LEDGER]
 
         q_lower = query.lower()
-        if any(trigger in q_lower for trigger in _EMERGENCY_TRIGGERS):
+        # Single source of truth for the trigger-keyword match (also used
+        # standalone by agent_loop.py's persona_emergency flag) -- avoids
+        # two independently-maintained copies of the same matching rule.
+        if is_emergency_trigger(query):
             return KSPResponseStyle.TACTICAL_FIELD_SOP, 1.0, STYLE_PROMPT_DIRECTIVES[KSPResponseStyle.TACTICAL_FIELD_SOP]
 
         if self.is_trained and self.vectorizer is not None and self.classifier is not None:

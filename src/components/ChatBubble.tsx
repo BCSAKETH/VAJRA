@@ -1347,11 +1347,11 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
               }`}
               title={
                 lang === "en"
-                  ? `${message.personaEmergency ? "Auto-detected emergency — " : ""}Formatted for: ${RESPONSE_STYLE_LABELS[message.responseStyle].en}`
-                  : `${message.personaEmergency ? "ಸ್ವಯಂ ಪತ್ತೆಯಾದ ತುರ್ತು — " : ""}ಫಾರ್ಮ್ಯಾಟ್: ${RESPONSE_STYLE_LABELS[message.responseStyle].kn}`
+                  ? `${message.personaEmergency ? "Auto-detected emergency — " : message.personaManual ? "Manually pinned — " : ""}Formatted for: ${RESPONSE_STYLE_LABELS[message.responseStyle].en}`
+                  : `${message.personaEmergency ? "ಸ್ವಯಂ ಪತ್ತೆಯಾದ ತುರ್ತು — " : message.personaManual ? "ಹಸ್ತಚಾಲಿತವಾಗಿ ಆಯ್ಕೆ — " : ""}ಫಾರ್ಮ್ಯಾಟ್: ${RESPONSE_STYLE_LABELS[message.responseStyle].kn}`
               }
             >
-              {message.personaEmergency ? "⚠ " : ""}{lang === "en" ? RESPONSE_STYLE_LABELS[message.responseStyle].en : RESPONSE_STYLE_LABELS[message.responseStyle].kn}
+              {message.personaEmergency ? "⚠ " : message.personaManual ? "📌 " : ""}{lang === "en" ? RESPONSE_STYLE_LABELS[message.responseStyle].en : RESPONSE_STYLE_LABELS[message.responseStyle].kn}
             </span>
           </>
         )}
@@ -1414,11 +1414,16 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                   return (
                     <button
                       key={i}
-                      onClick={() =>
-                        isShielded
-                          ? setRevealedShielded((prev) => new Set(prev).add(i))
-                          : a.stratus_id ? handleViewAttachment(a.stratus_id, a.page_stratus_ids) : setViewingImageUrl(previewUrl)
-                      }
+                      onClick={() => {
+                        // Section 141: a shielded thumbnail's first click both
+                        // reveals AND opens the full viewer in one action --
+                        // an officer under time pressure reviewing a flagged
+                        // image shouldn't need a second, unexplained click
+                        // just to see what "reveal" actually unblurred.
+                        if (isShielded) setRevealedShielded((prev) => new Set(prev).add(i));
+                        if (a.stratus_id) handleViewAttachment(a.stratus_id, a.page_stratus_ids);
+                        else setViewingImageUrl(previewUrl);
+                      }}
                       className="relative rounded-lg overflow-hidden border border-stone-800 hover:border-[#C79A4E]/40 transition-colors cursor-pointer group"
                     >
                       <img

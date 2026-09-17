@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { X, Search, Building2, Check, ArrowDownAZ, ArrowDown10 } from "lucide-react";
 
 interface StationRow {
@@ -17,10 +17,15 @@ interface PoliceStationSelectorModalProps {
   onClose: () => void;
 }
 
+const FOCUSABLE_SELECTOR = 'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])';
+
 // Section 121: replaces the inline pill-cloud (unusable in dense
 // commissionerates with 100+ stations -- it pushed every analytics card
 // hundreds of pixels below the fold) with a searchable modal picker,
-// following the app's own SettingsModal shell pattern.
+// following the app's own SettingsModal shell pattern -- including its
+// Escape-to-close + focus-trap keydown handling (SettingsModal.tsx), which
+// this modal is only ever mounted while "open" (the parent conditionally
+// renders it), so the effect below runs once on mount, no isOpen gate.
 export const PoliceStationSelectorModal: React.FC<PoliceStationSelectorModalProps> = ({
   lang,
   districtName,
@@ -32,6 +37,51 @@ export const PoliceStationSelectorModal: React.FC<PoliceStationSelectorModalProp
 }) => {
   const [query, setQuery] = useState("");
   const [sortMode, setSortMode] = useState<"busiest" | "alpha">("busiest");
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const getFocusable = (): HTMLElement[] => {
+      const dialog = dialogRef.current;
+      if (!dialog) return [];
+      const nodeList: NodeListOf<HTMLElement> = dialog.querySelectorAll(FOCUSABLE_SELECTOR);
+      return Array.prototype.slice.call(nodeList).filter((el: HTMLElement) => !el.hasAttribute("disabled") && el.offsetParent !== null);
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        e.preventDefault();
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const focusable = getFocusable();
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", handleKeyDown, true);
+    const raf = requestAnimationFrame(() => {
+      const focusable = getFocusable();
+      if (focusable.length) focusable[0].focus();
+    });
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.removeEventListener("keydown", handleKeyDown, true);
+      cancelAnimationFrame(raf);
+    };
+  }, [onClose]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -45,6 +95,7 @@ export const PoliceStationSelectorModal: React.FC<PoliceStationSelectorModalProp
   return (
     <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-md flex items-center justify-center p-4" onClick={onClose}>
       <div
+        ref={dialogRef}
         className="relative z-[105] w-full max-w-3xl max-h-[85vh] bg-stone-900 border border-stone-800 rounded-2xl p-6 shadow-2xl flex flex-col gap-4"
         onClick={(e) => e.stopPropagation()}
       >

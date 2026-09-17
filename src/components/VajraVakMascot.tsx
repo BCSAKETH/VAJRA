@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE } from "../config";
-import { MascotState, canInterrupt } from "../types/mascot";
+import { MascotState } from "../types/mascot";
 
 interface VajraVakMascotProps {
   lang: "en" | "kn";
@@ -48,29 +48,30 @@ function usePrefersReducedMotion(): boolean {
 
 export const VajraVakMascot: React.FC<VajraVakMascotProps> = ({ lang, currentInput, isThinking, taskBadgeCount }) => {
   const reducedMotion = usePrefersReducedMotion();
-  const [state, setState] = useState<MascotState>("PERCHED_IDLE");
+  // `state` is a pure function of isThinking/currentInput -- computed
+  // directly rather than held in its own useState synced by effects. An
+  // earlier version routed every transition through the full 16-state
+  // canInterrupt() gate (built for the complete animation_state_machine.json
+  // spec), but this perched-on-the-composer mascot only ever reaches 3 of
+  // those 16 states, and THINKING's own interruptibleBy list (["ALERT",
+  // "ERROR", "RESULT_READY"]) doesn't include PERCHED_IDLE/USER_FOCUS --
+  // nothing here ever dispatches those events, so canInterrupt("THINKING",
+  // "PERCHED_IDLE") always returned false and the mascot got stuck in
+  // THINKING (wing-sway/crawl idle animations permanently disabled) after
+  // the very first query. Full state-machine gating stays available in
+  // types/mascot.ts for when ALERT/SUCCESS/ERROR/etc. are actually wired
+  // to real events.
+  const state: MascotState = isThinking
+    ? "THINKING"
+    : (currentInput || "").trim().length > 0
+    ? "USER_FOCUS"
+    : "PERCHED_IDLE";
   const [isBlinking, setIsBlinking] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isHopping, setIsHopping] = useState(false);
   const [crawling, setCrawling] = useState(false);
   const [quip, setQuip] = useState<string | null>(null);
   const prevTaskCount = useRef<number | undefined>(taskBadgeCount);
-
-  const enter = (next: MascotState) => setState((cur) => (canInterrupt(cur, next) ? next : cur));
-
-  // React to real app signals -- never a state this component invented on
-  // its own. QUERY_SUBMITTED is intentionally skipped in favor of jumping
-  // straight to THINKING: this mascot stays perched on the composer rather
-  // than actually flying off-screen, so the "acknowledge_then_takeoff"
-  // transitional clip has nothing physical to animate here.
-  useEffect(() => {
-    enter(isThinking ? "THINKING" : "PERCHED_IDLE");
-  }, [isThinking]);
-
-  useEffect(() => {
-    if (!isThinking && (currentInput || "").trim().length > 0) enter("USER_FOCUS");
-    else if (!isThinking) enter("PERCHED_IDLE");
-  }, [currentInput, isThinking]);
 
   // Blink loop -- randomized 2.5-6s interval, skipped entirely under
   // reduced motion (a static face, never a half-finished blink frame stuck

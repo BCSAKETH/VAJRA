@@ -332,6 +332,13 @@ export const AIChatScreen: React.FC = () => {
     if (personaOverride) localStorage.setItem("vajra_persona_override", personaOverride);
     else localStorage.removeItem("vajra_persona_override");
   }, [personaOverride]);
+  // Section 113-116: drives the composer's red "Emergency SOP" HUD badge.
+  // Deliberately NOT derived from chatMessages[chatMessages.length-1] (a
+  // stale historical flag from a loaded-from-history session would
+  // misrepresent a days-old auto-detected trigger as a live one) --
+  // explicitly set true only when a turn JUST completed live in this tab,
+  // and cleared on every new send / session switch.
+  const [liveEmergencyActive, setLiveEmergencyActive] = useState(false);
   const [showInvitePanel, setShowInvitePanel] = useState(false);
   const [inviteBadge, setInviteBadge] = useState("");
   const [inviteRole, setInviteRole] = useState<"viewer" | "collaborator">("collaborator");
@@ -615,7 +622,10 @@ export const AIChatScreen: React.FC = () => {
                   };
                   return [...prev, newMsg];
                 });
-                if (payload.sender === "assistant") clearPending(activeSessionId ?? "__new__");
+                if (payload.sender === "assistant") {
+                  clearPending(activeSessionId ?? "__new__");
+                  setLiveEmergencyActive(payload.persona_emergency === true);
+                }
                 // Cowork live-push fix: the sidebar's chat list only refetches
                 // on an explicit action today -- a partner's message arriving
                 // live here should also move this session to the top /
@@ -698,6 +708,7 @@ export const AIChatScreen: React.FC = () => {
           sessionMessagesCacheRef.current.set(turnSessionId, loaded);
           if (activeSessionIdRef.current === turnSessionId) {
             setChatMessages(loaded);
+            setLiveEmergencyActive(loaded[loaded.length - 1]?.personaEmergency === true);
           }
           return;
         }
@@ -735,6 +746,7 @@ export const AIChatScreen: React.FC = () => {
           sessionMessagesCacheRef.current.set(turnSessionId, loaded);
           if (activeSessionIdRef.current === turnSessionId) {
             setChatMessages(loaded);
+            setLiveEmergencyActive(loaded[loaded.length - 1]?.personaEmergency === true);
           }
           return;
         }
@@ -872,6 +884,7 @@ export const AIChatScreen: React.FC = () => {
   ) => {
     if (isThinking || isUploadingAttachments) return;
     if (!textToSend.trim() && filesToSend.length === 0) return;
+    setLiveEmergencyActive(false);
 
     // The conversation this turn belongs to, fixed at send-time -- used
     // below to route the eventual reply correctly even if the officer
@@ -1182,6 +1195,7 @@ export const AIChatScreen: React.FC = () => {
     setActiveSessionId(null);
     setChatMode("chat");
     setHasParticipants(false);
+    setLiveEmergencyActive(false);
     fetchSuggestionSeeds();
   };
 
@@ -1368,6 +1382,10 @@ export const AIChatScreen: React.FC = () => {
 
     const requestId = ++selectSessionRequestRef.current;
     setLoadingSessionId(sessionId);
+    // A loaded-from-history session's last reply may have been an
+    // auto-detected emergency days/weeks ago -- never show that as a live
+    // HUD state just because the officer opened this thread now.
+    setLiveEmergencyActive(false);
     try {
       const response = await fetch(`${API_BASE}/api/sessions/${sessionId}/messages`, {
         headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
@@ -1643,15 +1661,21 @@ export const AIChatScreen: React.FC = () => {
     assigned_district: string | null;
   }
   const [homeDigest, setHomeDigest] = useState<HomeDigest | null>(null);
+  // Distinct from "still loading" (homeDigest === null, digestFailed ===
+  // false): a failed fetch must never render as a confirmed "0 Open
+  // Investigations" / "0 Pending Tasks", and must never silently collapse
+  // Zone 3 to look like "0 approvals pending" when the truth is "unknown."
+  const [digestFailed, setDigestFailed] = useState(false);
   useEffect(() => {
     if (!isEmptyChat) return;
     let cancelled = false;
+    setDigestFailed(false);
     fetch(`${API_BASE}/api/officer/digest`, {
       headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
     })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (!cancelled && d) setHomeDigest(d); })
-      .catch(() => { /* silent -- pills/cards just show their loading state */ });
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => { if (!cancelled) setHomeDigest(d); })
+      .catch(() => { if (!cancelled) setDigestFailed(true); });
     return () => { cancelled = true; };
   }, [isEmptyChat]);
   const isSupervisor = roleTier === "supervisor";
@@ -1690,7 +1714,7 @@ export const AIChatScreen: React.FC = () => {
         pendingTaskCount={homeDigest?.pending_tasks}
         personaOverride={personaOverride}
         onPersonaOverrideChange={setPersonaOverride}
-        personaEmergencyActive={chatMessages[chatMessages.length - 1]?.personaEmergency === true}
+        personaEmergencyActive={liveEmergencyActive}
       />
     </div>
   );
@@ -1883,8 +1907,8 @@ export const AIChatScreen: React.FC = () => {
                 className="flex items-center gap-2 px-3 py-1 rounded-full bg-stone-900/80 border border-stone-800 hover:border-[#C79A4E]/40 text-stone-400 hover:text-stone-200 text-xs font-mono transition-all cursor-pointer shadow-sm"
               >
                 <FolderOpen className="w-3.5 h-3.5 text-[#C79A4E]" />
-                <span>
-                  {homeDigest?.open_investigations ?? 0}{" "}
+                <span title={digestFailed ? (lang === "en" ? "Could not load -- try refreshing" : "ಲೋಡ್ ಆಗಲಿಲ್ಲ") : undefined}>
+                  {homeDigest ? homeDigest.open_investigations : "—"}{" "}
                   {lang === "en" ? "Open Investigations" : "ಸಕ್ರಿಯ ತನಿಖೆಗಳು"}
                 </span>
                 <ChevronRight className="w-3 h-3 text-stone-500" />
@@ -1895,8 +1919,8 @@ export const AIChatScreen: React.FC = () => {
                 className="flex items-center gap-2 px-3 py-1 rounded-full bg-stone-900/80 border border-stone-800 hover:border-[#C79A4E]/40 text-stone-400 hover:text-stone-200 text-xs font-mono transition-all cursor-pointer shadow-sm"
               >
                 <Timer className="w-3.5 h-3.5 text-[#C79A4E]" />
-                <span>
-                  {homeDigest?.pending_tasks ?? 0}{" "}
+                <span title={digestFailed ? (lang === "en" ? "Could not load -- try refreshing" : "ಲೋಡ್ ಆಗಲಿಲ್ಲ") : undefined}>
+                  {homeDigest ? homeDigest.pending_tasks : "—"}{" "}
                   {lang === "en" ? "Pending Tasks" : "ಬಾಕಿ ಕಾರ್ಯಗಳು"}
                 </span>
                 <ChevronRight className="w-3 h-3 text-stone-500" />
@@ -1906,9 +1930,19 @@ export const AIChatScreen: React.FC = () => {
             {/* ZONE 3: Dynamic self-collapsing dual tactical lanes (Section
                 133). Approvals is only ever mounted for a supervisor with a
                 real pending count > 0 -- for everyone else, OSINT expands
-                front-and-center instead of leaving a half-empty grid. */}
-            {(() => {
-              const hasPendingApprovals = isSupervisor && (homeDigest?.pending_approvals ?? 0) > 0;
+                front-and-center instead of leaving a half-empty grid.
+                Gated on real digest data (never on a failed fetch): a
+                fetch failure must never silently read as "0 approvals
+                pending" and collapse the lane a supervisor may actually
+                need. */}
+            {digestFailed ? (
+              <div className="w-full max-w-2xl mx-auto text-center text-[11px] text-stone-500 font-mono py-3">
+                {lang === "en"
+                  ? "Tactical signals unavailable right now -- try refreshing."
+                  : "ಈಗ ಲಭ್ಯವಿಲ್ಲ -- ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ."}
+              </div>
+            ) : !homeDigest ? null : (() => {
+              const hasPendingApprovals = isSupervisor && homeDigest.pending_approvals > 0;
               return (
                 <div
                   className={
@@ -1920,12 +1954,12 @@ export const AIChatScreen: React.FC = () => {
                   <OSINTCard
                     lang={lang}
                     isSupervisor={isSupervisor}
-                    districtName={homeDigest?.assigned_district ?? null}
+                    districtName={homeDigest.assigned_district}
                   />
                   {hasPendingApprovals && (
                     <ApprovalsCard
                       lang={lang}
-                      pendingCount={homeDigest!.pending_approvals}
+                      pendingCount={homeDigest.pending_approvals}
                       onOpenApprovalsDesk={() => setCurrentScreen("supervisor")}
                     />
                   )}

@@ -124,33 +124,54 @@ def handler(context, basic_io):
             citations.append({"type": "CCTNS FIR Record", "id": fir, "status": "verified"})
 
     # 2. Call GLM-4 QuickML model for reasoning
+    #
+    # CONTRACT NOTE (matches catalyst_llm.py's own real, live-confirmed
+    # contract for this same recreated "generate" endpoint -- see that
+    # file's CatalystLLM.chat() docstring/comments): the old OpenAI-style
+    # {"messages": [...]} body / {"choices": [{"message": {"content": ...}}]}
+    # response shape belonged to the PRIOR, now-deleted endpoint. The new
+    # endpoint takes a flat {"prompt": "<string>"} body and returns
+    # {"data": [{"data": "<think>...</think>actual answer"}], ...}. This
+    # function is still confirmed NOT wired to live traffic (see the
+    # module docstring above), so this was previously a silently dead
+    # contract mismatch rather than a live bug -- fixed now so it doesn't
+    # become one the moment this worker is actually dispatched. Auth is
+    # also still unresolved for this specific gap: get_oauth_token() above
+    # uses the main app's refresh token, which (per vajra_core.py's
+    # get_quickml_access_token) may not carry the QuickML.deployment.READ
+    # scope this endpoint requires -- that's a separate fix, not addressed
+    # here, since this function has no scoped-token path of its own yet.
+    system_prompt = (
+        "You are VAJRA, the AI Crime Intelligence Copilot for Karnataka State Police (KSP). "
+        "Provide highly structured, professional criminological analysis with specific statutory provisions (BNS, IT Act). "
+        "Grounded Database Facts:\n" + "\n".join(grounded_context)
+    )
     prompt_payload = {
-        "messages": [
-            {
-                "role": "system",
-                "content": (
-                    "You are VAJRA, the AI Crime Intelligence Copilot for Karnataka State Police (KSP). "
-                    "Provide highly structured, professional criminological analysis with specific statutory provisions (BNS, IT Act). "
-                    "Grounded Database Facts:\n" + "\n".join(grounded_context)
-                )
-            },
-            {"role": "user", "content": message}
-        ],
-        "temperature": 0.3,
-        "max_tokens": 1024
+        "prompt": f"System: {system_prompt}\n\nUser: {message}\n\nAssistant:"
     }
-    
+    glm_headers = {
+        "Authorization": f"Zoho-oauthtoken {token}",
+        "Content-Type": "application/json",
+        "Environment": os.getenv("CATALYST_ENVIRONMENT", "Development"),
+        "CATALYST-ORG": os.getenv("CATALYST_ORG_ID", PROJECT_ID),
+    }
+    endpoint_key = os.getenv("CATALYST_LLM_ENDPOINT_KEY", "")
+    if endpoint_key:
+        glm_headers["x-quickml-endpoint-key"] = endpoint_key
+
     response_text = ""
     try:
-        glm_res = requests.post(
-            LLM_ENDPOINT,
-            headers={"Authorization": f"Zoho-oauthtoken {token}", "Content-Type": "application/json"},
-            json=prompt_payload,
-            timeout=120
-        )
+        glm_res = requests.post(LLM_ENDPOINT, headers=glm_headers, json=prompt_payload, timeout=120)
         if glm_res.status_code == 200:
             resp_data = glm_res.json()
-            response_text = resp_data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            try:
+                response_text = ((resp_data.get("data") or [{}])[0] or {}).get("data") or ""
+            except (IndexError, AttributeError, TypeError):
+                response_text = ""
+            if "</think>" in response_text:
+                response_text = response_text.split("</think>", 1)[-1].strip()
+        else:
+            logger.warning(f"GLM call returned {glm_res.status_code}: {glm_res.text[:200]}")
     except Exception as ex:
         logger.warning(f"GLM call failed: {ex}")
 

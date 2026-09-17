@@ -3177,7 +3177,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 result = dict(result)
                 result["response_style"] = _style.value
                 result["response_style_confidence"] = _style_conf
-                result["persona_manual"] = bool(persona_override)
+                # True only if the override was actually a recognized style
+                # (predict_style silently falls through to auto-classification
+                # on an unrecognized value -- persona_manual must reflect what
+                # actually happened, not just whether an override was sent,
+                # or a stale/tampered client value would mislabel an
+                # auto-classified answer as the officer's own manual pick).
+                result["persona_manual"] = bool(persona_override) and _style.value == persona_override
                 # Dynamic emergency HUD badge (PersonaSelectorBadge.tsx): only
                 # lights up for a REAL auto-detected trigger phrase, never for
                 # an officer's own manual Tactical Field SOP selection.

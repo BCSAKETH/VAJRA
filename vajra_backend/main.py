@@ -6571,33 +6571,64 @@ async def officer_digest(request: Request, location_context: str = Depends(secur
     # this one digest call (already fetched by the home screen for the
     # telemetry pills) avoids a second round-trip and avoids the frontend
     # ever having to guess/hardcode a district.
-    assigned_district = None
-    home_district_id = getattr(request.state, "home_district_id", None)
-    if home_district_id:
+    #
+    # This district-name lookup is independent of the open-investigations
+    # count below -- run both ZCQL round-trips concurrently (same
+    # ThreadPoolExecutor pattern this file already uses for the parallel
+    # Zia calls in upload_chat_attachments) instead of paying their latency
+    # serially on every home-screen load.
+    def _lookup_assigned_district() -> Optional[str]:
+        home_district_id = getattr(request.state, "home_district_id", None)
+        if not home_district_id:
+            return None
         try:
             d_res = catalyst_app.zql().execute_query(
                 f"SELECT DistrictName FROM District WHERE DistrictID = {int(home_district_id)} LIMIT 1"
             )
-            assigned_district = d_res[0].get("District", {}).get("DistrictName") if d_res else None
+            return d_res[0].get("District", {}).get("DistrictName") if d_res else None
         except Exception as e:
             logger.warning(f"officer_digest: district name lookup failed: {e}")
+            return None
+
+    def _count_open_investigations() -> int:
+        try:
+            count_res = catalyst_app.zql().execute_query(
+                f"SELECT COUNT(ROWID) FROM ChatSession WHERE employee_id = {employee_id} "
+                f"AND description IS NOT NULL AND description != '' AND (status = 'active' OR status IS NULL)"
+            )
+            return int(count_res[0].get("ChatSession", {}).get("COUNT(ROWID)") or 0) if count_res else 0
+        except Exception as e:
+            # Loophole L3 corollary: never let this endpoint's failure show up
+            # as a broken greeting -- it always returns a safe default instead.
+            logger.warning(f"officer_digest: open-investigations count failed (status column may not exist yet): {e}")
+            return 0
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        district_f = ex.submit(_lookup_assigned_district)
+        count_f = ex.submit(_count_open_investigations)
+        assigned_district = district_f.result()
+        open_count = count_f.result()
 
     open_session_ids: List[str] = []
-    try:
-        open_res = catalyst_app.zql().execute_query(
-            f"SELECT session_id FROM ChatSession WHERE employee_id = {employee_id} "
-            f"AND description IS NOT NULL AND description != '' AND (status = 'active' OR status IS NULL) LIMIT 200"
-        )
-        open_session_ids = [
-            sid for r in (open_res or [])
-            if (sid := r.get("ChatSession", {}).get("session_id"))
-        ]
-        open_count = len(open_session_ids)
-    except Exception as e:
-        # Loophole L3 corollary: never let this endpoint's failure show up as
-        # a broken greeting -- it always returns a safe default instead.
-        logger.warning(f"officer_digest: open-investigations count failed (status column may not exist yet): {e}")
-        open_count = 0
+    # Section 129 Zone 2 "Pending Tasks" pill needs the actual session ids,
+    # not just a count -- capped at 200 for the IN-clause lookup below
+    # (a bound on the task query's fan-out, NOT the real open_count above,
+    # which was silently capped here in an earlier pass -- confirmed live
+    # regression: an officer with 200+ open investigations saw a wrong,
+    # too-low "Open Investigations" pill).
+    if open_count > 0:
+        try:
+            id_res = catalyst_app.zql().execute_query(
+                f"SELECT session_id FROM ChatSession WHERE employee_id = {employee_id} "
+                f"AND description IS NOT NULL AND description != '' AND (status = 'active' OR status IS NULL) LIMIT 200"
+            )
+            open_session_ids = [
+                sid for r in (id_res or [])
+                if (sid := r.get("ChatSession", {}).get("session_id"))
+            ]
+        except Exception as e:
+            logger.warning(f"officer_digest: open-session id lookup failed: {e}")
 
     # Section 129 Zone 2 "Pending Tasks" pill: a REAL sum of open
     # (status='pending') InvestigationTask rows across this officer's own
@@ -6991,7 +7022,27 @@ async def upload_chat_attachments(
 
         result: Dict[str, Any] = {"pocso_shielded": bool(mod_res.get("is_sensitive"))}
         if ocr_res.get("text"):
-            zia_notes.append(f"[Document OCR -- {filename}]: {ocr_res['text']}")
+            # Section 141/POCSO: unlike a Qwen-generated scene DESCRIPTION,
+            # OCR is a verbatim transcription of the original document --
+            # if the document's own text mentions a POCSO/juvenile-victim
+            # matter, it's materially more likely to carry the victim's
+            # actual printed name than a generated summary would. Whole-
+            # string redact_pocso_name() is deliberately NOT used here
+            # (see the CONFIRMED LIVE BUG note below on combined_analysis --
+            # that same blunt "replace the entire multi-field text with one
+            # literal" mistake would destroy a legitimately non-sensitive
+            # FIR's OCR for a false-positive keyword hit); instead the raw
+            # text is withheld from the general analysis blob entirely,
+            # same shielding philosophy as pocso_shielded already applies
+            # to the image itself.
+            if is_pocso_sensitive(ocr_res["text"]):
+                zia_notes.append(
+                    f"[Document OCR -- {filename}]: Contains POCSO/juvenile-victim-sensitive content "
+                    f"(Section 74 JJA) -- full extracted text withheld from this analysis; review the "
+                    f"original document directly."
+                )
+            else:
+                zia_notes.append(f"[Document OCR -- {filename}]: {ocr_res['text']}")
         if mod_res.get("is_sensitive"):
             zia_notes.append(
                 f"[Image Safety -- {filename}]: flagged as sensitive content "

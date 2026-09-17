@@ -63,9 +63,11 @@ export const MASCOT_STATE_MACHINE: Record<MascotState, MascotStateDef> = {
   WAKE: { clip: "wake_up", next: "PERCHED_IDLE" },
 };
 
-// The real event->state map from the same JSON's `events` block -- used
-// verbatim by the caller (see useMascotStateMachine below) to know which
-// state to enter for a given real app event.
+// The real event->state map from the same JSON's `events` block. Reference
+// data for when ALERT/SUCCESS/ERROR/NAVIGATION/SLEEP/WAKE etc. get wired to
+// real app events -- VajraVakMascot.tsx today only ever reaches PERCHED_IDLE/
+// USER_FOCUS/THINKING (computed directly from isThinking/currentInput, no
+// event dispatch), so this map has no caller yet.
 export const MASCOT_EVENT_STATE: Record<string, MascotState> = {
   app_loaded: "STARTUP",
   chat_opened: "USER_FOCUS",
@@ -82,18 +84,12 @@ export const MASCOT_EVENT_STATE: Record<string, MascotState> = {
   user_returned: "WAKE",
 };
 
-// Can `nextState` interrupt whatever is currently playing? Mirrors the
-// JSON's own `priorityRules` in code: a state with no listed
-// interruptibleBy set (e.g. ALERT_HOLD, SUCCESS, ERROR, transitional
-// states) can still always be entered by an explicit event -- the guard
-// only exists to stop a LOWER-priority event from cutting off
-// PERCHED_IDLE/THINKING outside their declared interrupt list.
-export function canInterrupt(current: MascotState, next: MascotState): boolean {
-  if (current === next) return false;
-  const currentDef = MASCOT_STATE_MACHINE[current];
-  // ALERT/ALERT_HOLD (priority 100) are never pre-empted by anything except
-  // another ALERT -- "USER_FOCUS never interrupts ALERT".
-  if ((current === "ALERT" || current === "ALERT_HOLD") && next !== "ALERT") return false;
-  if (!currentDef.interruptibleBy) return true; // transitional states always yield to their own `next`
-  return currentDef.interruptibleBy.includes(next);
-}
+// NOTE: an earlier canInterrupt(current, next) gate lived here, mirroring
+// the JSON's priorityRules. It's deliberately removed, not just unused:
+// THINKING's own interruptibleBy list (["ALERT", "ERROR", "RESULT_READY"])
+// does not include PERCHED_IDLE or USER_FOCUS, and nothing in this app
+// dispatches those three events -- so gating every transition through it
+// left the mascot permanently stuck in THINKING (idle animations disabled)
+// after the first query. Re-add real interrupt gating only alongside
+// actually wiring ALERT/SUCCESS/ERROR/RESULT_READY to real events, not
+// applied uniformly to the 3 states that ARE reachable today.

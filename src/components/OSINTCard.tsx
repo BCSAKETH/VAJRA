@@ -27,21 +27,31 @@ interface OSINTCardProps {
   districtName: string | null;
 }
 
-// Mirrors GroupedSessionList.tsx's own formatRelativeTime -- kept local
-// (not extracted to a shared util) since neither existing copy is exported
-// either; this is the same small, established pattern, not a new one.
-function formatRelativeTime(raw: string): string {
+// Ported from GroupedSessionList.tsx's own formatRelativeTime (kept local,
+// not extracted to a shared util, since neither existing copy is exported
+// either -- same small, established pattern, not a new one). A first pass
+// here dropped the lang param (always English, even under the Kannada UI),
+// the Z-less-timestamp coercion, and the week/month/year buckets -- this is
+// the real, complete port.
+function formatRelativeTime(raw: string, lang: "en" | "kn"): string {
   if (!raw) return "";
-  const t = new Date(raw).getTime();
+  const hasTz = /Z$|[+-]\d{2}:?\d{2}$/.test(raw);
+  const t = new Date(hasTz ? raw : `${raw}Z`).getTime();
   if (Number.isNaN(t)) return raw;
   const diffSec = Math.round((Date.now() - t) / 1000);
-  if (diffSec < 60) return "just now";
+  if (diffSec < 60) return lang === "en" ? "just now" : "ಈಗಷ್ಟೇ";
   const mins = Math.round(diffSec / 60);
-  if (mins < 60) return `${mins}m ago`;
+  if (mins < 60) return lang === "en" ? `${mins}m ago` : `${mins} ನಿ ಹಿಂದೆ`;
   const hours = Math.round(mins / 60);
-  if (hours < 24) return `${hours}h ago`;
+  if (hours < 24) return lang === "en" ? `${hours}h ago` : `${hours} ಗಂ ಹಿಂದೆ`;
   const days = Math.round(hours / 24);
-  return `${days}d ago`;
+  if (days < 7) return lang === "en" ? `${days}d ago` : `${days} ದಿನ ಹಿಂದೆ`;
+  const weeks = Math.round(days / 7);
+  if (weeks < 5) return lang === "en" ? `${weeks}w ago` : `${weeks} ವಾರ ಹಿಂದೆ`;
+  const months = Math.round(days / 30);
+  if (months < 12) return lang === "en" ? `${months}mo ago` : `${months} ತಿಂಗಳ ಹಿಂದೆ`;
+  const years = Math.round(days / 365);
+  return lang === "en" ? `${years}y ago` : `${years} ವರ್ಷ ಹಿಂದೆ`;
 }
 
 export const OSINTCard: React.FC<OSINTCardProps> = ({ lang, isSupervisor, districtName }) => {
@@ -106,7 +116,7 @@ export const OSINTCard: React.FC<OSINTCardProps> = ({ lang, isSupervisor, distri
                 <div className="flex items-center gap-1.5 text-[10px] text-stone-500 font-mono">
                   <span className="text-[#C79A4E] font-semibold truncate">{s.source || "Web"}</span>
                   <span>•</span>
-                  <span className="shrink-0">{formatRelativeTime(s.published)}</span>
+                  <span className="shrink-0">{formatRelativeTime(s.published, lang)}</span>
                 </div>
                 <p className="text-xs text-stone-300 font-medium truncate">
                   {s.title}
