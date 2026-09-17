@@ -438,9 +438,17 @@ export const AIChatScreen: React.FC = () => {
   // (defaults to false, i.e. "treat as a regular chat" -- the safer default
   // for a screen that must never crash).
   const [isActiveInvestigation, setIsActiveInvestigation] = useState(false);
+  // Section 69: the linked case number for the active investigation, if
+  // any -- "Generate Full Dossier" needs this to name a FRESH, in-message
+  // case reference (the backend's dossier fast-path deliberately requires
+  // the case number to be present in THIS turn's own text, not inherited
+  // from stale session memory -- see agent_loop.py's answer_mode=="dossier"
+  // handling).
+  const [activeInvestigationCaseNo, setActiveInvestigationCaseNo] = useState<string | null>(null);
   useEffect(() => {
     if (!activeSessionId) {
       setIsActiveInvestigation(false);
+      setActiveInvestigationCaseNo(null);
       return;
     }
     let cancelled = false;
@@ -448,10 +456,13 @@ export const AIChatScreen: React.FC = () => {
       headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
     })
       .then((r) => (r.ok ? r.json() : []))
-      .then((list: { session_id: string }[]) => {
-        if (!cancelled) setIsActiveInvestigation(list.some((i) => i.session_id === activeSessionId));
+      .then((list: { session_id: string; case_no?: string | null }[]) => {
+        if (cancelled) return;
+        const match = list.find((i) => i.session_id === activeSessionId);
+        setIsActiveInvestigation(!!match);
+        setActiveInvestigationCaseNo(match?.case_no || null);
       })
-      .catch(() => { if (!cancelled) setIsActiveInvestigation(false); });
+      .catch(() => { if (!cancelled) { setIsActiveInvestigation(false); setActiveInvestigationCaseNo(null); } });
     return () => { cancelled = true; };
   }, [activeSessionId]);
 
@@ -809,6 +820,12 @@ export const AIChatScreen: React.FC = () => {
       retryOfMsgId?: string;
       existingAttachments?: any[];
       cachedAttachmentAnalysis?: string;
+      // Section 69: forces this ONE turn's answer_mode regardless of the
+      // officer's own standard/dossier toggle -- setAnswerMode() is async
+      // state, so a "toggle then immediately send" pattern would race the
+      // actual request. "Generate Full Dossier" uses this instead of
+      // touching the toggle at all.
+      answerModeOverride?: "standard" | "dossier";
     }
   ) => {
     if (isThinking || isUploadingAttachments) return;
@@ -932,8 +949,9 @@ export const AIChatScreen: React.FC = () => {
           // just never actually populated from here.
           attachments: uploadedAttachmentRefs.length > 0 ? uploadedAttachmentRefs : undefined,
           attachment_analysis: currentAttachmentAnalysis,
-          // Standard vs Full Dossier -- chosen in the composer selector.
-          answer_mode: answerMode,
+          // Standard vs Full Dossier -- chosen in the composer selector,
+          // unless this one turn forces a specific mode (Section 69).
+          answer_mode: variantOptions?.answerModeOverride || answerMode,
           edit_of_msg_id: variantOptions?.editOfMsgId,
           retry_of_msg_id: variantOptions?.retryOfMsgId,
         }),
@@ -1218,16 +1236,57 @@ export const AIChatScreen: React.FC = () => {
     }
   };
 
-  // "Generate Full Dossier" reuses the EXISTING PDF export pipeline
-  // (handleExportPDF) rather than a second, parallel dossier-generation
-  // path -- buildTranscript already maps only already-persisted
-  // chatMessages data (never re-runs a tool), which is exactly Loophole
-  // L2's requirement ("a closed investigation's dossier is a frozen
-  // snapshot of already-persisted data, no live tool re-execution") --
-  // the existing export mechanism already satisfies this as-is.
+  // CONFIRMED LIVE BUG (2026-09-17, Finals-part 3.md Section 69): this used
+  // to call handleExportPDF() directly -- IDENTICAL to the plain "Export
+  // PDF" button right next to it, so "Generate Full Dossier" never produced
+  // anything different from a flat chat-transcript dump. The real synthesis
+  // engine already exists (generate_case_dossier in agent_loop.py --
+  // concurrent case-facts/risk+SHAP/network/timeline/sections/summary/
+  // similar-cases panels plus a cross-signal assessment, all real data, no
+  // second engine needed) and is already reachable via answer_mode=
+  // "dossier"; it just wasn't being triggered by this menu action. This now
+  // actually asks for one, in-thread, the same way an officer explicitly
+  // typing "generate a full dossier" would -- once it lands, the EXISTING
+  // PDF export pipeline already renders a dossier-mode message's rich
+  // panels as real embedded charts (_extract_visual_cards_from_message in
+  // main.py), not flat text, so a subsequent Export PDF captures the real
+  // dossier. A dedicated full-screen interactive viewer (Tier 1 from the
+  // plan doc) is NOT built here -- the dossier still renders as a normal
+  // chat message, just a genuinely comprehensive one instead of an export
+  // no different from the transcript.
   const handleGenerateDossier = () => {
     setShowManageMenu(false);
-    handleExportPDF();
+    if (isThinking) return;
+    // The backend's dossier fast-path only fires for a case number FRESH in
+    // THIS message (deliberate anti-stale-context guard) -- a vague "for
+    // this case" with no number falls through to a web search instead,
+    // silently producing the wrong thing. Fail honestly instead: no linked
+    // case number means there's nothing real to synthesize a case dossier
+    // from yet.
+    if (!activeInvestigationCaseNo) {
+      addToast(
+        lang === "en" ? "No Case Linked" : "ಯಾವುದೇ ಪ್ರಕರಣ ಜೋಡಿಸಿಲ್ಲ",
+        lang === "en"
+          ? "Link a case number to this investigation first (Manage > Add Case) before generating a full dossier."
+          : "ಪೂರ್ಣ ದೋಶಿಯರ್ ರಚಿಸುವ ಮೊದಲು ಈ ತನಿಖೆಗೆ ಪ್ರಕರಣ ಸಂಖ್ಯೆಯನ್ನು ಜೋಡಿಸಿ.",
+        "Warning"
+      );
+      return;
+    }
+    addToast(
+      lang === "en" ? "Generating Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್ ರಚಿಸಲಾಗುತ್ತಿದೆ",
+      lang === "en"
+        ? "Synthesizing case facts, risk, network, timeline and sections into one comprehensive briefing..."
+        : "ಪ್ರಕರಣದ ವಿವರ, ಅಪಾಯ, ಜಾಲ, ಕಾಲಾನುಕ್ರಮ ಸಂಯೋಜಿಸಲಾಗುತ್ತಿದೆ...",
+      "Info"
+    );
+    handleSend(
+      lang === "en"
+        ? `Generate a full investigation dossier for case ${activeInvestigationCaseNo}.`
+        : `ಪ್ರಕರಣ ${activeInvestigationCaseNo} ಗೆ ಪೂರ್ಣ ತನಿಖಾ ದೋಶಿಯರ್ ರಚಿಸಿ.`,
+      [],
+      { answerModeOverride: "dossier" }
+    );
   };
 
   const handleCloseInvestigation = async () => {
