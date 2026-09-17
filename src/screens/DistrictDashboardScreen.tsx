@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { geoMercator, geoPath } from "d3-geo";
 import type { Feature, Geometry } from "geojson";
 import { useApp } from "../AppContext";
@@ -21,19 +21,12 @@ import {
   Area,
   CartesianGrid,
 } from "recharts";
-import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2, Rows2, FolderOpen, ArrowLeft, Box, Link2, Unlink } from "lucide-react";
+import { Map as MapIcon, RefreshCw, AlertTriangle, Users, ShieldAlert, Building2, Flame, Layers, UserX, Clock, TrendingUp, Activity, MapPin, BarChart3, LayoutGrid, Columns2, Rows2, FolderOpen, ArrowLeft, Link2, Unlink } from "lucide-react";
 import { DistrictSpatialAnalystPanel } from "../components/DistrictSpatialAnalystPanel";
 import { DistrictDemographicPanel } from "../components/DistrictDemographicPanel";
 import { ComparisonDeltaHUD } from "../components/ComparisonDeltaHUD";
 import { DistrictFIRPanel } from "../components/DistrictFIRPanel";
 import { ReasonCollectionModal } from "../components/ReasonCollectionModal";
-
-// Own chunk, same as the retired CrimeIntelligenceScreen.tsx used to keep --
-// it pulls in maplibre-gl (a real, sizeable WebGL library), so nobody pays
-// for it until they actually open the Tactical 3D Map tab.
-const DistrictTacticalPanel = lazy(() =>
-  import("../components/DistrictTacticalPanel").then((m) => ({ default: m.DistrictTacticalPanel }))
-);
 
 interface DistrictSummaryRow {
   district_id: number;
@@ -257,7 +250,7 @@ export const DistrictDashboardScreen: React.FC = () => {
   // scoped to whichever district/station is currently selected -- instead
   // of an officer navigating away and having to re-establish which district
   // they meant on a disconnected page.
-  const [detailTab, setDetailTab] = useState<"overview" | "spatial" | "demographic" | "fir" | "tactical">("overview");
+  const [detailTab, setDetailTab] = useState<"overview" | "spatial" | "demographic" | "fir">("overview");
   const [gatedInfo, setGatedInfo] = useState<{ districtId: number; message: string } | null>(null);
   const [accessRequestId, setAccessRequestId] = useState<string | null>(null);
   const [accessRequestStatus, setAccessRequestStatus] = useState<"idle" | "pending" | "approved" | "rejected">("idle");
@@ -784,7 +777,6 @@ export const DistrictDashboardScreen: React.FC = () => {
           { id: "spatial" as const, label: lang === "en" ? "Spatial Analyst" : "ಪ್ರಾದೇಶಿಕ ವಿಶ್ಲೇಷಣೆ", Icon: MapPin },
           { id: "demographic" as const, label: lang === "en" ? "Demographic Correlation" : "ಜನಸಂಖ್ಯಾ ಪರಸ್ಪರ ಸಂಬಂಧ", Icon: BarChart3 },
           { id: "fir" as const, label: lang === "en" ? "Case Registry" : "ಪ್ರಕರಣ ರಿಜಿಸ್ಟ್ರಿ", Icon: FolderOpen },
-          { id: "tactical" as const, label: lang === "en" ? "Tactical 3D Map" : "ಟ್ಯಾಕ್ಟಿಕಲ್ 3D ನಕ್ಷೆ", Icon: Box },
         ]).map((t) => (
           <button
             key={t.id}
@@ -797,12 +789,7 @@ export const DistrictDashboardScreen: React.FC = () => {
           >
             <t.Icon className="w-3.5 h-3.5" />
             {t.label}
-            {/* Tactical has no statewide mode (per-station 3D geometry needs
-                a real district) -- it manages its own district selector
-                independently of Overview's pick, so this suffix would
-                misleadingly claim "Statewide" while the panel is actually
-                showing one specific district. */}
-            {t.id !== "overview" && t.id !== "tactical" && (
+            {t.id !== "overview" && (
               <span className="text-[9px] font-mono normal-case tracking-normal text-stone-600">
                 {selectedId && districtDetailCache ? `· ${districtDetailCache.district}` : `· ${lang === "en" ? "Statewide" : "ರಾಜ್ಯವ್ಯಾಪಿ"}`}
               </span>
@@ -1020,24 +1007,6 @@ export const DistrictDashboardScreen: React.FC = () => {
           district={selectedId && districtDetailCache ? districtDetailCache.district : null}
           crimeGroup={crimeCategoryFilter}
         />
-      )}
-
-      {/* Tactical 3D Map fold-in: retired CrimeIntelligenceScreen.tsx as a
-          standalone nav destination, same precedent as Spatial/Demographic/
-          FIR above -- see DistrictTacticalPanel.tsx for why this one keeps
-          its own internal district selector instead of the null=statewide
-          convention the other three use. */}
-      {detailTab === "tactical" && (
-        <Suspense fallback={
-          <div className="glass-card p-4 border border-stone-850 min-h-[560px] flex items-center justify-center">
-            <div className="w-8 h-8 border-2 border-stone-800 border-t-[#C79A4E] rounded-full animate-spin" />
-          </div>
-        }>
-          <DistrictTacticalPanel
-            key={selectedId && districtDetailCache ? districtDetailCache.district : "__statewide__"}
-            district={selectedId && districtDetailCache ? districtDetailCache.district : null}
-          />
-        </Suspense>
       )}
 
       {detailTab === "overview" && (

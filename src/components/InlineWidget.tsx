@@ -1,4 +1,4 @@
-import React, { useEffect, useState, lazy, Suspense } from "react";
+import React, { useEffect, useState } from "react";
 import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaflet";
 import L from "leaflet";
 import { useApp } from "../AppContext";
@@ -6,18 +6,6 @@ import { API_BASE } from "../config";
 import { Maximize2, ShieldAlert, ShieldCheck, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart, Newspaper, ExternalLink, Radio, ChevronDown, ChevronRight, Code2, Copy, Check, Sparkles, Download } from "lucide-react";
 import { ExpandedOverlay } from "./ExpandedOverlay";
 import { ErrorBoundary } from "./ErrorBoundary";
-import type { TacticalStation } from "./Tactical3DMap";
-
-// CONFIRMED LIVE BUG (2026-09-16, Finals-part 3.md Section 44): the [3D]
-// toggle on this exact card used to fake a 3D look with a CSS
-// `rotateX(42deg)` transform on the flat 2D Leaflet map -- no real WebGL, no
-// building extrusions. Tactical3DMap (MapLibre GL JS + OpenFreeMap vector
-// tiles) is the real engine; lazy-loaded so maplibre-gl (a real, sizeable
-// WebGL library) only downloads for an officer who actually clicks [3D],
-// same code-splitting reasoning as DistrictDashboardScreen's Tactical tab.
-const Tactical3DMap = lazy(() =>
-  import("./Tactical3DMap").then((m) => ({ default: m.Tactical3DMap }))
-);
 
 // Fit the inline map to the ACTUAL hotspot coordinates every render, and force
 // a resize once the chat bubble has laid out (Leaflet renders grey/half-drawn
@@ -332,10 +320,7 @@ interface InlineWidgetProps {
 }
 
 const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpand, onFollowUpQuery }) => {
-  const { lang, addToast, theme } = useApp();
-  // Section 44: which hotspot pin the officer clicked in Tactical 3D mode --
-  // opens the briefing card (incident count, dominant crime, precinct).
-  const [selectedHotspotIdx, setSelectedHotspotIdx] = useState<number | null>(null);
+  const { lang, addToast } = useApp();
   // F.30: "Explain This Chart" -- hooks declared unconditionally, before the
   // early `return null` below, per the Rules of Hooks (this component has
   // no other useState calls to piggyback the ordering on).
@@ -352,9 +337,8 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
   // than one month arrives (see the effectiveType === "map" render below).
   const [selectedHotspotMonth, setSelectedHotspotMonth] = useState<string | null>(null);
 
-  // Basemap & 3D Layer mode for maps (defaults to high-visibility "street" view)
+  // Basemap mode for maps (defaults to high-visibility "street" view)
   const [mapBasemap, setMapBasemap] = useState<"street" | "satellite" | "dark">("street");
-  const [isMap3D, setIsMap3D] = useState<boolean>(false);
   // F.31: single-chart PNG export -- ref wraps the whole card so the export
   // handler can find whichever chart's real <svg> is actually rendered
   // inside it, without each chart type needing its own separate ref.
@@ -736,47 +720,34 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                   )}
                 </p>
 
-                {/* Basemap (Street/Satellite/Dark) & 3D Layer Toggles */}
-                <div className="flex items-center gap-1.5">
-                  <div className="flex items-center bg-stone-900/90 border border-stone-800 rounded p-0.5 text-[9px] font-mono shadow-sm">
-                    <button
-                      onClick={() => setMapBasemap("street")}
-                      className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
-                        mapBasemap === "street" ? "bg-[#C79A4E]/20 text-[#C79A4E] font-bold" : "text-stone-400 hover:text-stone-200"
-                      }`}
-                      title="High-Visibility Street View"
-                    >
-                      {lang === "en" ? "Street" : "ಬೀದಿ"}
-                    </button>
-                    <button
-                      onClick={() => setMapBasemap("satellite")}
-                      className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
-                        mapBasemap === "satellite" ? "bg-[#C79A4E]/20 text-[#C79A4E] font-bold" : "text-stone-400 hover:text-stone-200"
-                      }`}
-                      title="Aerial Satellite Hybrid View"
-                    >
-                      {lang === "en" ? "Satellite" : "ಉಪಗ್ರಹ"}
-                    </button>
-                    <button
-                      onClick={() => setMapBasemap("dark")}
-                      className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
-                        mapBasemap === "dark" ? "bg-[#C79A4E]/20 text-[#C79A4E] font-bold" : "text-stone-400 hover:text-stone-200"
-                      }`}
-                      title="Tactical Dark View"
-                    >
-                      {lang === "en" ? "Dark" : "ಕಪ್ಪು"}
-                    </button>
-                  </div>
+                {/* Basemap (Street/Satellite/Dark) Toggle */}
+                <div className="flex items-center bg-stone-900/90 border border-stone-800 rounded p-0.5 text-[9px] font-mono shadow-sm">
                   <button
-                    onClick={() => setIsMap3D(!isMap3D)}
-                    className={`px-2 py-0.5 rounded text-[9px] font-mono border transition-all cursor-pointer flex items-center gap-1 ${
-                      isMap3D
-                        ? "bg-[#C79A4E] text-stone-950 font-black border-[#C79A4E] shadow-sm shadow-[#C79A4E]/30"
-                        : "bg-stone-900/90 text-stone-400 border-stone-800 hover:border-stone-700"
+                    onClick={() => setMapBasemap("street")}
+                    className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
+                      mapBasemap === "street" ? "bg-[#C79A4E]/20 text-[#C79A4E] font-bold" : "text-stone-400 hover:text-stone-200"
                     }`}
-                    title={isMap3D ? "Switch to Flat 2D View" : "Switch to 3D Command-Center Tilt"}
+                    title="High-Visibility Street View"
                   >
-                    3D
+                    {lang === "en" ? "Street" : "ಬೀದಿ"}
+                  </button>
+                  <button
+                    onClick={() => setMapBasemap("satellite")}
+                    className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
+                      mapBasemap === "satellite" ? "bg-[#C79A4E]/20 text-[#C79A4E] font-bold" : "text-stone-400 hover:text-stone-200"
+                    }`}
+                    title="Aerial Satellite Hybrid View"
+                  >
+                    {lang === "en" ? "Satellite" : "ಉಪಗ್ರಹ"}
+                  </button>
+                  <button
+                    onClick={() => setMapBasemap("dark")}
+                    className={`px-2 py-0.5 rounded transition-all cursor-pointer ${
+                      mapBasemap === "dark" ? "bg-[#C79A4E]/20 text-[#C79A4E] font-bold" : "text-stone-400 hover:text-stone-200"
+                    }`}
+                    title="Tactical Dark View"
+                  >
+                    {lang === "en" ? "Dark" : "ಕಪ್ಪು"}
                   </button>
                 </div>
               </div>
@@ -810,60 +781,6 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                 className="rounded-lg overflow-hidden border border-stone-800 h-[280px] relative z-0"
                 style={{ background: "#161412" }}
               >
-                {isMap3D ? (() => {
-                  // Section 44: real WebGL 3D (MapLibre + OpenFreeMap building
-                  // extrusions) replaces the old CSS rotateX(42deg) fake tilt.
-                  // Same real hotspot coordinates, just rendered as tactical
-                  // pins instead of flat Leaflet circles -- color reuses
-                  // Tactical3DMap's existing tier palette as an intensity
-                  // proxy (more incidents = more "elevated"), not a new
-                  // fabricated risk signal.
-                  const counts = hotspots.map((h) => h.point_count || 0);
-                  const maxC = Math.max(1, ...counts);
-                  const tacticalStations: TacticalStation[] = hotspots.map((h, idx) => {
-                    const intensity = h.point_count ? h.point_count / maxC : 0.35;
-                    return {
-                      unit_id: idx,
-                      name: h.dominant_station || h.label || (lang === "en" ? "Hotspot" : "ಹಾಟ್‌ಸ್ಪಾಟ್"),
-                      lat: h.lat,
-                      lng: h.lng,
-                      tier: intensity > 0.66 ? "elevated" : intensity > 0.33 ? "typical" : "quiet",
-                    };
-                  });
-                  const selectedHotspot = selectedHotspotIdx != null ? hotspots[selectedHotspotIdx] : null;
-                  return (
-                    <div className="relative w-full h-full">
-                      <Suspense fallback={
-                        <div className="w-full h-full flex items-center justify-center">
-                          <div className="w-6 h-6 border-2 border-stone-800 border-t-[#C79A4E] rounded-full animate-spin" />
-                        </div>
-                      }>
-                        <Tactical3DMap
-                          stations={tacticalStations}
-                          selectedUnitId={selectedHotspotIdx}
-                          onSelectStation={(s) => setSelectedHotspotIdx(typeof s.unit_id === "number" ? s.unit_id : parseInt(String(s.unit_id), 10))}
-                          isDark={theme !== "light"}
-                        />
-                      </Suspense>
-                      {selectedHotspot && (
-                        <div className="absolute top-2 left-2 z-30 bg-stone-950/95 border border-[#C79A4E]/40 rounded-lg px-3 py-2 shadow-xl text-[10.5px] font-mono max-w-[220px]">
-                          <div className="flex items-center justify-between gap-2 mb-1">
-                            <span className="font-bold text-[#C79A4E]">
-                              {selectedHotspot.point_count ?? "?"} {lang === "en" ? "incidents" : "ಘಟನೆಗಳು"}
-                            </span>
-                            <button onClick={() => setSelectedHotspotIdx(null)} className="text-stone-500 hover:text-stone-300 cursor-pointer leading-none">×</button>
-                          </div>
-                          {selectedHotspot.dominant_crime && (
-                            <div className="text-stone-400">{lang === "en" ? "Type" : "ಬಗೆ"}: <span className="text-stone-200">{selectedHotspot.dominant_crime}</span></div>
-                          )}
-                          {selectedHotspot.dominant_station && (
-                            <div className="text-stone-400">{lang === "en" ? "Precinct" : "ಠಾಣೆ"}: <span className="text-stone-200">{selectedHotspot.dominant_station}</span></div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })() : (
                 <div className="w-full h-full" style={{ height: "100%" }}>
                 <MapContainer
                   key={`${hotspots[0]?.lat}-${hotspots[0]?.lng}-${mapBasemap}`}
@@ -953,7 +870,6 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                   </div>
                 )}
                 </div>
-                )}
               </div>
             </div>
           );
