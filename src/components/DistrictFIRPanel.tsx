@@ -64,7 +64,7 @@ interface CaseIntelligence {
 // unchanged either way).
 const PAGE_SIZE = 100;
 
-export const DistrictFIRPanel: React.FC<{ district: string | null }> = ({ district }) => {
+export const DistrictFIRPanel: React.FC<{ district: string | null; crimeGroup?: string | null }> = ({ district, crimeGroup }) => {
   const { lang, addToast, setIsAuthenticated } = useApp();
   const [query, setQuery] = useState("");
   const [firs, setFirs] = useState<CaseRecord[]>([]);
@@ -117,10 +117,12 @@ export const DistrictFIRPanel: React.FC<{ district: string | null }> = ({ distri
       }
 
       const districtParam = district ? `district=${encodeURIComponent(district)}` : "";
+      const crimeGroupParam = crimeGroup ? `crime_group=${encodeURIComponent(crimeGroup)}` : "";
+      const scopeParams = [districtParam, crimeGroupParam].filter(Boolean).join("&");
       const pageParams = `limit=${PAGE_SIZE}&offset=${offset}`;
       const endpoint = searchStr.trim()
-        ? `${API_BASE}/api/cases/search?query=${encodeURIComponent(searchStr)}${districtParam ? `&${districtParam}` : ""}&${pageParams}`
-        : `${API_BASE}/api/cases/all${districtParam ? `?${districtParam}&${pageParams}` : `?${pageParams}`}`;
+        ? `${API_BASE}/api/cases/search?query=${encodeURIComponent(searchStr)}${scopeParams ? `&${scopeParams}` : ""}&${pageParams}`
+        : `${API_BASE}/api/cases/all${scopeParams ? `?${scopeParams}&${pageParams}` : `?${pageParams}`}`;
 
       const response = await fetch(endpoint, {
         headers: {
@@ -177,7 +179,7 @@ export const DistrictFIRPanel: React.FC<{ district: string | null }> = ({ distri
     setSelectedCase(null);
     handleSearch("");
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [district]);
+  }, [district, crimeGroup]);
 
   return (
     <div className="glass-card p-4 border border-stone-850 space-y-4">

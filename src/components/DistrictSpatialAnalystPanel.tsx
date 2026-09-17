@@ -191,9 +191,14 @@ interface DistrictSpatialAnalystPanelProps {
   // panel's own incident/cluster counts to drive a ComparisonDeltaHUD --
   // undefined/omitted means "standalone" (no behavior change).
   onStatsChange?: (stats: { incidents: number; clusters: number }) => void;
+  // Cross-Tab Crime-Category Filter Sync (Section 85/87): when provided by
+  // the parent DistrictDashboardScreen, scopes the hotspot query to this
+  // crime category -- undefined/omitted means "all crime types" (existing
+  // behavior, completely unchanged).
+  crimeGroup?: string;
 }
 
-export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelProps> = ({ district, sharedViewport, onViewportChange, onStatsChange }) => {
+export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelProps> = ({ district, sharedViewport, onViewportChange, onStatsChange, crimeGroup }) => {
   const [points, setPoints] = useState<HotspotPoint[]>([]);
   const [hexbins, setHexbins] = useState<HexBin[]>([]);
   const [viewMode, setViewMode] = useState<"heat" | "hex">("heat");
@@ -231,6 +236,7 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
         qs.set("eps", String(eps));
         qs.set("min_samples", String(minPts));
         if (dayOfWeek !== null) qs.set("day_of_week", String(dayOfWeek));
+        if (crimeGroup) qs.set("crime_group", crimeGroup);
         const response = await fetch(`${API_BASE}/api/cases/spatial-hotspots?${qs.toString()}`, {
           headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
           signal: controller.signal,
@@ -264,7 +270,7 @@ export const DistrictSpatialAnalystPanel: React.FC<DistrictSpatialAnalystPanelPr
       }
     }, 300);
     return () => { clearTimeout(handle); controller.abort(); };
-  }, [district, eps, minPts, dayOfWeek]);
+  }, [district, eps, minPts, dayOfWeek, crimeGroup]);
 
   // F.14: when a specific month is scrubbed to, show that month's own
   // clustered points; "All" (selectedMonth === null) shows the combined view.

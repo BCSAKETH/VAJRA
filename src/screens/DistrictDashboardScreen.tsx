@@ -206,6 +206,12 @@ export const DistrictDashboardScreen: React.FC = () => {
     setSecondaryViewport(vp);
     if (syncViewports) setPrimaryViewport(vp);
   };
+  // Cross-Tab Crime-Category Filter Sync (Finals-part 3.md Section 85/87,
+  // CONFIRMED LIVE GAP closed): lifted here so it persists across the
+  // Spatial/Case Registry tabs (Demographic's own chart is already
+  // per-crime-category by design, so it's not a filter target). Empty
+  // string means "all crime types" (existing behavior, unchanged).
+  const [crimeCategoryFilter, setCrimeCategoryFilter] = useState<string>("");
   // Finals-part 3.md §25 (L225): real per-panel incident/cluster counts
   // reported by each DistrictSpatialAnalystPanel via onStatsChange, fed
   // into ComparisonDeltaHUD above the two maps.
@@ -805,6 +811,48 @@ export const DistrictDashboardScreen: React.FC = () => {
         ))}
       </div>
 
+      {/* Cross-Tab Crime-Category Filter Sync (Section 85/87): shared
+          across Spatial + Case Registry (Demographic's own chart is
+          already broken down by crime category, so it's not a filter
+          target here) -- persists when switching tabs, unlike the old
+          "no filter exists anywhere" state. Options are the REAL crime
+          categories present in whatever's currently on screen (district
+          detail if one's selected, statewide mix otherwise), never a
+          guessed/hardcoded list. */}
+      {(detailTab === "spatial" || detailTab === "fir") && (() => {
+        const realCategories = (
+          (selectedId && districtDetailCache ? detail?.crime_type_distribution : stateOv?.crime_mix) || []
+        )
+          .map((c) => c.name)
+          .filter(Boolean)
+          .sort((a, b) => a.localeCompare(b));
+        return (
+          <div className="flex items-center gap-2 px-1 shrink-0">
+            <span className="text-[9.5px] font-mono font-bold text-stone-500 uppercase tracking-wide">
+              {lang === "en" ? "Crime Category" : "ಅಪರಾಧ ವರ್ಗ"}
+            </span>
+            <select
+              value={crimeCategoryFilter}
+              onChange={(e) => setCrimeCategoryFilter(e.target.value)}
+              className="bg-stone-900 border border-stone-800 rounded-md text-[10.5px] font-mono font-bold text-stone-300 px-2 py-1.5 cursor-pointer"
+            >
+              <option value="">{lang === "en" ? "All Categories" : "ಎಲ್ಲಾ ವರ್ಗಗಳು"}</option>
+              {realCategories.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+            {crimeCategoryFilter && (
+              <button
+                onClick={() => setCrimeCategoryFilter("")}
+                className="text-[9.5px] font-mono text-stone-500 hover:text-stone-300 underline cursor-pointer"
+              >
+                {lang === "en" ? "Clear" : "ತೆರವುಗೊಳಿಸಿ"}
+              </button>
+            )}
+          </div>
+        );
+      })()}
+
       {detailTab === "spatial" && (
         <div className="glass-card p-4 border border-stone-850">
           <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
@@ -918,6 +966,7 @@ export const DistrictDashboardScreen: React.FC = () => {
                     sharedViewport={primaryViewport}
                     onViewportChange={handlePrimaryViewportChange}
                     onStatsChange={setPrimaryStats}
+                    crimeGroup={crimeCategoryFilter}
                   />
                 </div>
                 <div>
@@ -942,13 +991,14 @@ export const DistrictDashboardScreen: React.FC = () => {
                       sharedViewport={secondaryViewport}
                       onViewportChange={handleSecondaryViewportChange}
                       onStatsChange={setSecondaryStats}
+                      crimeGroup={crimeCategoryFilter}
                     />
                   )}
                 </div>
               </div>
             </div>
           ) : (
-            <DistrictSpatialAnalystPanel key={selectedId && districtDetailCache ? districtDetailCache.district : "__statewide__"} district={selectedId && districtDetailCache ? districtDetailCache.district : ""} />
+            <DistrictSpatialAnalystPanel key={selectedId && districtDetailCache ? districtDetailCache.district : "__statewide__"} district={selectedId && districtDetailCache ? districtDetailCache.district : ""} crimeGroup={crimeCategoryFilter} />
           )}
         </div>
       )}
@@ -968,6 +1018,7 @@ export const DistrictDashboardScreen: React.FC = () => {
         <DistrictFIRPanel
           key={selectedId && districtDetailCache ? districtDetailCache.district : "__statewide__"}
           district={selectedId && districtDetailCache ? districtDetailCache.district : null}
+          crimeGroup={crimeCategoryFilter}
         />
       )}
 

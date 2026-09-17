@@ -994,6 +994,7 @@ async def get_accident_spots(
 async def get_spatial_hotspots(
     request: Request,
     district: str = "",
+    crime_group: str = "",
     day_of_week: Optional[int] = None,
     eps: Optional[float] = None,
     min_samples: Optional[int] = None,
@@ -1021,6 +1022,8 @@ async def get_spatial_hotspots(
     tool_params: Dict[str, Any] = {}
     if district:
         tool_params["district"] = district
+    if crime_group:
+        tool_params["crime_group"] = crime_group
     if day_of_week is not None:
         tool_params["day_of_week"] = day_of_week
     if eps is not None:
@@ -1553,6 +1556,38 @@ def _resolve_district_to_unit_ids(district: str) -> Optional[List[int]]:
         return None
 
 
+def _resolve_crime_group_to_head_id(crime_group: str) -> Optional[int]:
+    """
+    Cross-Tab Crime-Category Filter Sync (Finals-part 3.md Section 85/87,
+    CONFIRMED LIVE GAP closed): no endpoint in this file had ever supported
+    filtering by crime category at all -- District Analytics' Spatial/Case
+    Registry tabs always showed every crime type mixed together, with no
+    way to scope either to e.g. "just theft" or "just cybercrime," let
+    alone keep that scope when switching tabs. This resolver is the shared
+    piece both new query-param handlers below use: fuzzy substring match
+    (either direction, same tolerant matching agent_loop.py's
+    list_suspects_by_crime_type handler already uses) against
+    CrimeHead.CrimeGroupName. Returns None if nothing matches (caller then
+    correctly returns zero rows for a real-but-unmatched category, same
+    "never silently ignore a bad filter" discipline as
+    _resolve_district_to_unit_ids above) or if crime_group is empty
+    (no filter requested).
+    """
+    if not crime_group or not crime_group.strip() or not catalyst_app:
+        return None
+    try:
+        cg_lower = crime_group.strip().lower()
+        for h in catalyst_app.zql().execute_query("SELECT CrimeHeadID, CrimeGroupName FROM CrimeHead"):
+            hd = h.get("CrimeHead", {})
+            gn = (hd.get("CrimeGroupName") or "")
+            if cg_lower in gn.lower() or gn.lower() in cg_lower:
+                head_id = hd.get("CrimeHeadID")
+                return int(head_id) if head_id is not None else None
+    except Exception as e:
+        logger.warning(f"_resolve_crime_group_to_head_id failed for {crime_group!r}: {e}")
+    return None
+
+
 def _haversine_km(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
     """Great-circle distance in km. Plain math, no new dependency -- there is
     no haversine/geodesic helper anywhere else in this codebase (confirmed
@@ -1650,7 +1685,7 @@ async def cases_near_point(lat: float, lng: float, radius_km: float = 2.0, distr
 
 @app.get("/api/cases/all")
 async def get_cases_all(
-    request: Request, district: str = "", limit: int = 100, offset: int = 0,
+    request: Request, district: str = "", crime_group: str = "", limit: int = 100, offset: int = 0,
     location_context: str = Depends(security_firewall)
 ):
     """Backs FIRSearchScreen.tsx's default (no search term) view, now folded
@@ -1683,7 +1718,14 @@ async def get_cases_all(
             # everything).
             id_list = ",".join(str(u) for u in (unit_ids or [])) or "-1"
             district_clause = (" AND" if rls else " WHERE") + f" PoliceStationID IN ({id_list})"
-        where_clause = f"{rls}{district_clause}"
+        crime_group_clause = ""
+        if crime_group and crime_group.strip():
+            head_id = _resolve_crime_group_to_head_id(crime_group)
+            # Same "never silently ignore a bad filter" discipline as the
+            # district clause above -- an unmatched crime_group correctly
+            # yields zero rows (head_id -1 matches nothing), not every case.
+            crime_group_clause = (" AND" if (rls or district_clause) else " WHERE") + f" CrimeMajorHeadID = {head_id if head_id is not None else -1}"
+        where_clause = f"{rls}{district_clause}{crime_group_clause}"
         rows = catalyst_app.zql().execute_query(
             f"SELECT CaseMasterID, CrimeNo, BriefFacts, CrimeRegisteredDate, PoliceStationID, CaseCategoryID "
             f"FROM CaseMaster{where_clause} ORDER BY ROWID DESC LIMIT {limit} OFFSET {offset}")
@@ -1703,7 +1745,7 @@ async def get_cases_all(
 
 @app.get("/api/cases/search")
 async def get_cases_search(
-    request: Request, query: str = "", district: str = "", limit: int = 100, offset: int = 0,
+    request: Request, query: str = "", district: str = "", crime_group: str = "", limit: int = 100, offset: int = 0,
     location_context: str = Depends(security_firewall)
 ):
     """Backs FIRSearchScreen.tsx's search box ("Search CrimeNo or facts...").
@@ -1719,7 +1761,7 @@ async def get_cases_search(
     offset = max(0, int(offset))
     q = (query or "").strip()
     if not q:
-        return await get_cases_all(request, district, limit, offset, location_context)
+        return await get_cases_all(request, district, crime_group, limit, offset, location_context)
     try:
         safe_q = escape_zcql_literal(q).replace("*", "")  # strip ZCQL wildcard metacharacters out of raw officer input
         rls = _fir_rls_clause(request, prefix=" AND")
@@ -1728,7 +1770,11 @@ async def get_cases_search(
             unit_ids = _resolve_district_to_unit_ids(district)
             id_list = ",".join(str(u) for u in (unit_ids or [])) or "-1"
             district_clause = f" AND PoliceStationID IN ({id_list})"
-        where_clause = f"WHERE (CrimeNo LIKE '*{safe_q}*' OR BriefFacts LIKE '*{safe_q}*'){rls}{district_clause}"
+        crime_group_clause = ""
+        if crime_group and crime_group.strip():
+            head_id = _resolve_crime_group_to_head_id(crime_group)
+            crime_group_clause = f" AND CrimeMajorHeadID = {head_id if head_id is not None else -1}"
+        where_clause = f"WHERE (CrimeNo LIKE '*{safe_q}*' OR BriefFacts LIKE '*{safe_q}*'){rls}{district_clause}{crime_group_clause}"
         rows = catalyst_app.zql().execute_query(
             f"SELECT CaseMasterID, CrimeNo, BriefFacts, CrimeRegisteredDate, PoliceStationID, CaseCategoryID "
             f"FROM CaseMaster {where_clause} "

@@ -399,6 +399,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 "type": "object",
                 "properties": {
                     "district": {"type": "string", "description": "Optional district name to scope the map to (e.g. Ballari). Omit for a state-wide map."},
+                    "crime_group": {"type": "string", "description": "Optional crime category to scope the map to (e.g. THEFT, CYBERCRIME, ROBBERY). Omit for all crime types."},
                     "day_of_week": {"type": "integer", "description": "C.6: optional, 0=Monday through 6=Sunday. Only set this when the officer explicitly asks about a specific day or 'weekends' (map 'weekend' to a Saturday=5 or Sunday=6 query, one at a time). Omit entirely for a normal, all-days request."},
                     "eps": {"type": "number", "description": "C.6: optional DBSCAN neighborhood radius in degrees (roughly 0.001-0.05). Only set this if the officer explicitly asks for a 'tighter'/'wider' cluster radius; leave unset otherwise."},
                     "min_samples": {"type": "integer", "description": "C.6: optional DBSCAN minimum cluster size (roughly 2-50). Only set this if the officer explicitly asks for a stricter/looser cluster threshold; leave unset otherwise."}
@@ -5820,6 +5821,23 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     where_clause = "WHERE Latitude IS NOT NULL"
                     if unit_ids:
                         where_clause += f" AND PoliceStationID IN ({','.join(map(str, unit_ids))})"
+                    # Cross-Tab Crime-Category Filter Sync (Finals-part 3.md
+                    # Section 85/87, CONFIRMED LIVE GAP closed): reuses the
+                    # crime_names_by_id lookup already fetched just above
+                    # (no second query) -- same tolerant substring match
+                    # both directions as list_suspects_by_crime_type. An
+                    # unmatched crime_group correctly returns an empty map
+                    # (CrimeMajorHeadID = -1 matches nothing) rather than
+                    # silently ignoring the filter and showing everything.
+                    raw_crime_group = self.sanitize_sql_input(params.get("crime_group", ""))
+                    if raw_crime_group:
+                        cg_lower = raw_crime_group.lower()
+                        matched_head_id = next(
+                            (hid for hid, gn in crime_names_by_id.items()
+                             if gn and (cg_lower in gn.lower() or gn.lower() in cg_lower)),
+                            None,
+                        )
+                        where_clause += f" AND CrimeMajorHeadID = {matched_head_id if matched_head_id is not None else -1}"
                     # Intent-gated 180-day recency window: a hotspot map is
                     # asking "where is crime happening NOW," and an
                     # unfiltered 300-row sample can surface old, resolved
