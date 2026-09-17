@@ -27,6 +27,7 @@ import { DistrictDemographicPanel } from "../components/DistrictDemographicPanel
 import { ComparisonDeltaHUD } from "../components/ComparisonDeltaHUD";
 import { DistrictFIRPanel } from "../components/DistrictFIRPanel";
 import { ReasonCollectionModal } from "../components/ReasonCollectionModal";
+import { PoliceStationSelectorModal } from "../components/PoliceStationSelectorModal";
 
 interface DistrictSummaryRow {
   district_id: number;
@@ -240,6 +241,8 @@ export const DistrictDashboardScreen: React.FC = () => {
   const [isLoadingStations, setIsLoadingStations] = useState(false);
   const [selectedStationId, setSelectedStationId] = useState<number | null>(null);
   const [isLoadingStationDetail, setIsLoadingStationDetail] = useState(false);
+  // Section 121: modal station picker replaces the old inline pill cloud.
+  const [showStationPicker, setShowStationPicker] = useState(false);
   const [districtDetailCache, setDistrictDetailCache] = useState<DistrictDetail | null>(null);
 
   // Inter-district access air-lock (Part C item #7): a district/station
@@ -1339,42 +1342,12 @@ export const DistrictDashboardScreen: React.FC = () => {
                     district's Overview content whenever the page-level tab
                     is "overview". */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  {/* Police Stations picker — PS-1's "and specific police stations"
-                      drill-down, one level below the district grid. Real case
-                      counts (one GROUP BY), sorted busiest-first. Only shown at
-                      the district level (not while already drilled into one
-                      station -- the back button above covers that case). */}
-                  {!detail.unit_id && (
-                    <div className="glass-card p-4 border border-stone-850 space-y-2 lg:col-span-2">
-                      <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-2">
-                        <Building2 className="w-3.5 h-3.5 text-[#C79A4E]" />
-                        {detail.district} — {lang === "en" ? "Police Stations" : "ಪೊಲೀಸ್ ಠಾಣೆಗಳು"}
-                      </h3>
-                      {isLoadingStations ? (
-                        <div className="text-[11px] text-stone-500 font-mono py-2">{lang === "en" ? "Loading stations..." : "ಠಾಣೆಗಳು ಲೋಡ್ ಆಗುತ್ತಿವೆ..."}</div>
-                      ) : stations.length === 0 ? (
-                        <div className="text-[11px] text-stone-500 font-mono py-2">{lang === "en" ? "No stations on record for this district." : "ಈ ಜಿಲ್ಲೆಗೆ ಯಾವುದೇ ಠಾಣೆಗಳಿಲ್ಲ."}</div>
-                      ) : (
-                        <div className="overflow-x-auto -mx-1">
-                          <div className="flex flex-wrap gap-2 px-1">
-                            {stations.map((s) => (
-                              <button
-                                key={s.unit_id}
-                                onClick={() => handleSelectStation(s.unit_id)}
-                                disabled={isLoadingStationDetail}
-                                className="flex items-center gap-2 px-3 py-2 rounded-lg border border-stone-800 bg-stone-900/50 hover:bg-stone-800 hover:border-[#C79A4E]/40 transition-all disabled:opacity-50 cursor-pointer"
-                              >
-                                <span className="text-[11px] font-semibold text-stone-200">{s.unit_name}</span>
-                                <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-stone-800 text-[#E4C590]">{s.case_count}</span>
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Threat Index hero — a transparent composite (load vs state × recent momentum). Only at district level, same reasoning as the picker above. */}
+                  {/* Section 121: Threat Index hero, now fused with the Most
+                      Wanted module and the "Select Police Station" trigger --
+                      the standalone Most Wanted card and the inline
+                      pill-cloud (unusable at 100+ stations in a dense
+                      commissionerate) are both gone. District-level only,
+                      same reasoning as the station picker it now launches. */}
                   {!detail.unit_id && (() => {
                     const stateAvg = rows.length ? Math.round(totalActiveCases / rows.length) : 0;
                     const districtActive = rows.find((r) => r.district_id === selectedId)?.active_cases ?? 0;
@@ -1397,18 +1370,47 @@ export const DistrictDashboardScreen: React.FC = () => {
                             <div className="text-[9px] font-mono text-stone-600">{lang === "en" ? "load vs state × momentum · 0–100" : "ಹೊರೆ × ವೇಗ · 0–100"}</div>
                           </div>
                         </div>
-                        <div className="flex gap-5 ml-auto flex-wrap">
+                        <div className="flex gap-5 flex-wrap">
                           <div><div className="text-[9px] font-mono uppercase tracking-wide text-stone-500">{lang === "en" ? "Active" : "ಸಕ್ರಿಯ"}</div><div className="text-lg font-black text-[#C79A4E] font-mono tabular-nums">{districtActive}</div></div>
                           <div><div className="text-[9px] font-mono uppercase tracking-wide text-stone-500">{lang === "en" ? "Trend" : "ಪ್ರವೃತ್ತಿ"}</div><div className="text-lg font-black font-mono tabular-nums" style={{ color: tp > 3 ? "#E24B4A" : tp < -3 ? "#5DCAA5" : "#A8A096" }}>{tp >= 0 ? "+" : ""}{tp}%</div></div>
                           <div><div className="text-[9px] font-mono uppercase tracking-wide text-stone-500">{lang === "en" ? "vs State" : "ರಾಜ್ಯ"}</div><div className="text-lg font-black font-mono tabular-nums" style={{ color: vsAvg > 0 ? "#E24B4A" : "#5DCAA5" }}>{vsAvg >= 0 ? "+" : ""}{vsAvg}%</div></div>
                         </div>
+                        {/* Embedded Most Wanted module */}
+                        <div className="shrink-0">
+                          {detail.most_wanted ? (
+                            <div className="flex items-center gap-2 bg-rose-500/5 border border-rose-500/15 rounded-lg px-3 py-2">
+                              <UserX className="w-4 h-4 text-rose-450 shrink-0" />
+                              <div>
+                                <div className="text-[9px] font-mono uppercase tracking-wide text-stone-500">{lang === "en" ? "Most Wanted" : "ಅತಿ ಬೇಕಾದ"}</div>
+                                <div className="text-[12px] font-extrabold text-stone-100 truncate max-w-[160px]">{detail.most_wanted.suspect}</div>
+                              </div>
+                              <span className="text-[10px] font-mono font-black text-rose-400 shrink-0">{detail.most_wanted.case_count} {lang === "en" ? "cases" : "ಪ್ರಕರಣಗಳು"}</span>
+                            </div>
+                          ) : (
+                            <div className="text-[10px] text-stone-600 font-mono">
+                              {lang === "en" ? "No repeat suspect flagged" : "ಪುನರಾವರ್ತಿತ ಶಂಕಿತರಿಲ್ಲ"}
+                            </div>
+                          )}
+                        </div>
+                        {/* Select Police Station trigger */}
+                        <button
+                          onClick={() => setShowStationPicker(true)}
+                          className="ml-auto shrink-0 flex items-center gap-2 px-3.5 py-2.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 hover:border-[#C79A4E]/40 transition-all cursor-pointer"
+                        >
+                          <Building2 className="w-4 h-4 text-[#C79A4E]" />
+                          <span className="text-[11px] font-bold text-stone-200">{lang === "en" ? "Select Police Station" : "ಠಾಣೆ ಆಯ್ಕೆಮಾಡಿ"}</span>
+                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-stone-800 text-[#E4C590]">{stations.length}</span>
+                        </button>
                       </div>
                     );
                   })()}
 
-                  {/* 12-month incident trend — the time dimension + benchmark vs state */}
+                  {/* Section 121 Pair 1 (left): 12-month incident trend --
+                      time dimension + benchmark vs state. Was lg:col-span-2
+                      (full width); now col-span-1, paired with Recent Case
+                      Activity to its right. */}
                   {detail.monthly_trend && detail.monthly_trend.length > 0 && (
-                    <div className="glass-card p-4 border border-stone-850 space-y-2 lg:col-span-2">
+                    <div className="glass-card p-4 border border-stone-850 space-y-2">
                       <div className="flex items-center justify-between flex-wrap gap-2">
                         <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono">
                           {detail.district} — {lang === "en" ? "12-Month Incident Trend" : "12-ತಿಂಗಳ ಘಟನಾ ಪ್ರವೃತ್ತಿ"}
@@ -1451,6 +1453,33 @@ export const DistrictDashboardScreen: React.FC = () => {
                       </div>
                     </div>
                   )}
+
+                  {/* Section 121 Pair 1 (right): Recent Case Activity. Was
+                      lg:col-span-2 (full width, breaking the dual-column
+                      symmetry); now col-span-1, paired with the trend chart
+                      above. Height-matched via h-44+header to the chart's
+                      own h-44 body so the pair reads as one balanced row. */}
+                  <div className="glass-card p-4 border border-stone-850 space-y-2">
+                    <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-[#C79A4E]" />
+                      {lang === "en" ? "Recent Case Activity" : "ಇತ್ತೀಚಿನ ಪ್ರಕರಣ ಚಟುವಟಿಕೆ"}
+                    </h3>
+                    {detail.recent_cases.length === 0 ? (
+                      <div className="text-[10px] text-stone-600 font-mono py-2">
+                        {lang === "en" ? "No recent case records found." : "ಇತ್ತೀಚಿನ ಪ್ರಕರಣ ದಾಖಲೆಗಳು ಕಂಡುಬಂದಿಲ್ಲ."}
+                      </div>
+                    ) : (
+                      <div className="h-44 overflow-y-auto divide-y divide-stone-850">
+                        {detail.recent_cases.map((c, i) => (
+                          <div key={i} className="py-2 flex items-start gap-3 font-mono">
+                            <span className="text-[10px] font-black text-[#C79A4E] shrink-0 w-24 truncate">{c.crime_no}</span>
+                            <span className="text-[9.5px] text-stone-500 shrink-0 w-20">{c.registered_date?.split(" ")[0]}</span>
+                            <span className="text-[10.5px] text-stone-400 truncate flex-1">{c.brief_facts || "—"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
 
                   {/* CONFIRMED LIVE BUG (2026-09-17, Finals-part 3.md Section
                       85): this was a raw Pie+Legend over ALL CrimeMajorHeadID
@@ -1553,48 +1582,6 @@ export const DistrictDashboardScreen: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Most-wanted */}
-                  <div className="glass-card p-4 border border-stone-850 space-y-3">
-                    <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
-                      <UserX className="w-3.5 h-3.5 text-rose-450" />
-                      {lang === "en" ? "Most Wanted" : "ಅತಿ ಬೇಕಾದ"}
-                    </h3>
-                    {detail.most_wanted ? (
-                      <div className="bg-rose-500/5 border border-rose-500/15 rounded-lg p-3 flex items-center justify-between">
-                        <span className="text-sm font-extrabold text-stone-100 truncate">{detail.most_wanted.suspect}</span>
-                        <span className="text-[10px] font-mono font-black text-rose-400 shrink-0 ml-2">
-                          {detail.most_wanted.case_count} {lang === "en" ? "cases" : "ಪ್ರಕರಣಗಳು"}
-                        </span>
-                      </div>
-                    ) : (
-                      <div className="text-[10px] text-stone-600 font-mono py-2">
-                        {lang === "en" ? "No repeat suspect flagged in this district." : "ಈ ಜಿಲ್ಲೆಯಲ್ಲಿ ಯಾವುದೇ ಪುನರಾವರ್ತಿತ ಶಂಕಿತ ಗುರುತಿಸಲಾಗಿಲ್ಲ."}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Recent case activity */}
-                  <div className="glass-card p-4 border border-stone-850 space-y-3 lg:col-span-2">
-                    <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5 text-[#C79A4E]" />
-                      {lang === "en" ? "Recent Case Activity" : "ಇತ್ತೀಚಿನ ಪ್ರಕರಣ ಚಟುವಟಿಕೆ"}
-                    </h3>
-                    {detail.recent_cases.length === 0 ? (
-                      <div className="text-[10px] text-stone-600 font-mono py-2">
-                        {lang === "en" ? "No recent case records found." : "ಇತ್ತೀಚಿನ ಪ್ರಕರಣ ದಾಖಲೆಗಳು ಕಂಡುಬಂದಿಲ್ಲ."}
-                      </div>
-                    ) : (
-                      <div className="divide-y divide-stone-850">
-                        {detail.recent_cases.map((c, i) => (
-                          <div key={i} className="py-2 flex items-start gap-3 font-mono">
-                            <span className="text-[10px] font-black text-[#C79A4E] shrink-0 w-24 truncate">{c.crime_no}</span>
-                            <span className="text-[9.5px] text-stone-500 shrink-0 w-20">{c.registered_date?.split(" ")[0]}</span>
-                            <span className="text-[10.5px] text-stone-400 truncate flex-1">{c.brief_facts || "—"}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
 
                   {/* Emerging Spike Alerts — per crime-CATEGORY momentum vs its
                       own historical baseline. High + rising pulses in danger red
@@ -1697,7 +1684,7 @@ export const DistrictDashboardScreen: React.FC = () => {
                       drilled into one station. Always carries its synthetic-
                       data disclaimer; never presented as verified fact. */}
                   {!detail.unit_id && (
-                    <div className="glass-card p-4 border border-stone-850 space-y-3 lg:col-span-2">
+                    <div className="glass-card p-4 border border-stone-850 space-y-3">
                       <h3 className="text-[11px] font-black text-stone-200 uppercase tracking-wider font-mono flex items-center gap-1.5">
                         <ShieldAlert className="w-3.5 h-3.5 text-rose-450" />
                         {lang === "en" ? "Syndicate Signals" : "ಸಿಂಡಿಕೇಟ್ ಸಂಕೇತಗಳು"}
@@ -1736,60 +1723,66 @@ export const DistrictDashboardScreen: React.FC = () => {
                       )}
                     </div>
                   )}
+
+                  {/* Section 121 Pair 4 (right): Open-Source Signals, now
+                      inside the same dual-column grid as its own pair
+                      partner (Syndicate Signals) instead of a separate
+                      full-width section below everything. Keeps its
+                      distinct gold-tinted "unverified lead" styling --
+                      Section 121 asks for a shared card SIZE/placement,
+                      not an identical look, since this trust boundary
+                      (open-source vs official CCTNS record) is a real,
+                      deliberate distinction elsewhere in this codebase. */}
+                  <div className="rounded-2xl border border-[#C79A4E]/35 bg-[#C79A4E]/[0.05] p-4 space-y-3">
+                    <div className="flex items-center justify-between flex-wrap gap-2">
+                      <h3 className="text-[11px] font-black uppercase tracking-wider font-mono flex items-center gap-1.5 text-[#E4C590]">
+                        <span className="w-2 h-2 rounded-full bg-[#C79A4E] animate-pulse" />
+                        {lang === "en" ? "Open-Source Signals · Live" : "ಮುಕ್ತ-ಮೂಲ ಸಂಕೇತಗಳು · ನೇರ"}
+                      </h3>
+                      <span className="text-[8.5px] font-mono text-[#C79A4E]/80 uppercase tracking-wide">
+                        {lang === "en" ? "Unverified leads — not official record" : "ಪರಿಶೀಲಿಸದ ಸುಳಿವುಗಳು — ಅಧಿಕೃತ ದಾಖಲೆ ಅಲ್ಲ"}
+                      </span>
+                    </div>
+
+                    {isLoadingSignals ? (
+                      <div className="space-y-2">
+                        {[1, 2].map((n) => <div key={n} className="h-16 rounded-lg shimmer-bg" />)}
+                      </div>
+                    ) : signals && signals.configured && signals.items.length > 0 ? (
+                      <div className="space-y-2">
+                        {signals.items.map((it, i) => (
+                          <a
+                            key={i}
+                            href={it.url || undefined}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="block bg-stone-950/40 hover:bg-stone-950/70 border border-stone-850 hover:border-[#C79A4E]/40 rounded-lg p-3 transition-colors group"
+                          >
+                            <p className="text-[12px] font-semibold text-stone-100 leading-snug line-clamp-2 group-hover:text-[#E4C590]">{it.title}</p>
+                            {it.snippet && <p className="text-[10px] text-stone-500 mt-1 line-clamp-2">{it.snippet}</p>}
+                            <div className="flex items-center gap-2 mt-1.5 text-[9px] font-mono text-stone-500">
+                              <span className="text-[#C79A4E] truncate max-w-[45%]">{it.source}</span>
+                              {it.published && <span className="shrink-0">{it.published.split("T")[0]}</span>}
+                              <span className="ml-auto text-[#C79A4E]/70 group-hover:text-[#E4C590]">↗</span>
+                            </div>
+                          </a>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-[10.5px] text-stone-500 font-mono py-2 leading-relaxed">
+                        {signals && !signals.configured
+                          ? (lang === "en"
+                              ? "Live news is off. Add a free GNEWS_API_KEY in .env and redeploy to light up this lane."
+                              : "ನೇರ ಸುದ್ದಿ ಆಫ್ ಆಗಿದೆ. .env ನಲ್ಲಿ GNEWS_API_KEY ಸೇರಿಸಿ ಮರುನಿಯೋಜಿಸಿ.")
+                          : (lang === "en"
+                              ? "No recent crime-relevant news found for this district."
+                              : "ಈ ಜಿಲ್ಲೆಗೆ ಇತ್ತೀಚಿನ ಸಂಬಂಧಿತ ಸುದ್ದಿ ಕಂಡುಬಂದಿಲ್ಲ.")}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </>
               ) : null}
-
-              {/* ===== OPEN-SOURCE SIGNALS lane — the trust boundary made visible.
-                   Gold-tinted, explicitly labelled "unverified leads", always
-                   BELOW and separate from the official CCTNS charts above. ===== */}
-              <div className="rounded-2xl border border-[#C79A4E]/35 bg-[#C79A4E]/[0.05] p-4 space-y-3">
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <h3 className="text-[11px] font-black uppercase tracking-wider font-mono flex items-center gap-1.5 text-[#E4C590]">
-                    <span className="w-2 h-2 rounded-full bg-[#C79A4E] animate-pulse" />
-                    {lang === "en" ? "Open-Source Signals · Live" : "ಮುಕ್ತ-ಮೂಲ ಸಂಕೇತಗಳು · ನೇರ"}
-                  </h3>
-                  <span className="text-[8.5px] font-mono text-[#C79A4E]/80 uppercase tracking-wide">
-                    {lang === "en" ? "Unverified leads — not official record" : "ಪರಿಶೀಲಿಸದ ಸುಳಿವುಗಳು — ಅಧಿಕೃತ ದಾಖಲೆ ಅಲ್ಲ"}
-                  </span>
-                </div>
-
-                {isLoadingSignals ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {[1, 2].map((n) => <div key={n} className="h-16 rounded-lg shimmer-bg" />)}
-                  </div>
-                ) : signals && signals.configured && signals.items.length > 0 ? (
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    {signals.items.map((it, i) => (
-                      <a
-                        key={i}
-                        href={it.url || undefined}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="block bg-stone-950/40 hover:bg-stone-950/70 border border-stone-850 hover:border-[#C79A4E]/40 rounded-lg p-3 transition-colors group"
-                      >
-                        <p className="text-[12px] font-semibold text-stone-100 leading-snug line-clamp-2 group-hover:text-[#E4C590]">{it.title}</p>
-                        {it.snippet && <p className="text-[10px] text-stone-500 mt-1 line-clamp-2">{it.snippet}</p>}
-                        <div className="flex items-center gap-2 mt-1.5 text-[9px] font-mono text-stone-500">
-                          <span className="text-[#C79A4E] truncate max-w-[45%]">{it.source}</span>
-                          {it.published && <span className="shrink-0">{it.published.split("T")[0]}</span>}
-                          <span className="ml-auto text-[#C79A4E]/70 group-hover:text-[#E4C590]">↗</span>
-                        </div>
-                      </a>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="text-[10.5px] text-stone-500 font-mono py-2 leading-relaxed">
-                    {signals && !signals.configured
-                      ? (lang === "en"
-                          ? "Live news is off. Add a free GNEWS_API_KEY in .env and redeploy to light up this lane."
-                          : "ನೇರ ಸುದ್ದಿ ಆಫ್ ಆಗಿದೆ. .env ನಲ್ಲಿ GNEWS_API_KEY ಸೇರಿಸಿ ಮರುನಿಯೋಜಿಸಿ.")
-                      : (lang === "en"
-                          ? "No recent crime-relevant news found for this district."
-                          : "ಈ ಜಿಲ್ಲೆಗೆ ಇತ್ತೀಚಿನ ಸಂಬಂಧಿತ ಸುದ್ದಿ ಕಂಡುಬಂದಿಲ್ಲ.")}
-                  </div>
-                )}
-              </div>
             </div>
           )}
         </>
@@ -1812,6 +1805,23 @@ export const DistrictDashboardScreen: React.FC = () => {
           await requestDistrictAccess(districtReasonRetryFn || (() => {}), reason);
         }}
       />
+
+      {/* Section 121: searchable modal station picker, triggered from the
+          Threat Index hero's "Select Police Station" button. */}
+      {showStationPicker && detail && (
+        <PoliceStationSelectorModal
+          lang={lang}
+          districtName={detail.district}
+          stations={stations}
+          selectedStationId={selectedStationId}
+          isLoading={isLoadingStations}
+          onSelectStation={(unitId) => {
+            setShowStationPicker(false);
+            handleSelectStation(unitId);
+          }}
+          onClose={() => setShowStationPicker(false)}
+        />
+      )}
 
       {/* Section 18: Un-dismissible Immediate Revocation Shield Modal */}
       {isRevokedModalOpen && (
