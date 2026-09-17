@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
-import { API_BASE } from "../config";
 
 // §9.10 Context-aware greeting. Explicitly EXCLUDES the festival/forecast
 // tie-in (assigned to a teammate, per user instruction, not tracked here).
@@ -41,56 +40,24 @@ function pickTimeGreeting(lang: "en" | "kn"): string {
   return options[Math.floor(Math.random() * options.length)];
 }
 
-interface DigestResponse {
-  open_investigations: number;
-  pending_approvals: number;
-}
-
+// Section 129: the open-investigations/pending-approvals pills used to live
+// here, floating awkwardly above the emblem and below the officer's name.
+// They've moved to AIChatScreen's own Zone 2 telemetry bar (directly under
+// the prompt box) which now owns the single /api/officer/digest fetch --
+// this component goes back to a pure, instant, client-only greeting with
+// zero network dependency.
 export const GreetingHeader: React.FC = () => {
   const { lang, officerName } = useApp(); // officerName ALREADY exists in AppContext (global, persisted)
-  const [digest, setDigest] = useState<DigestResponse | null>(null);
   // Picked once per mount (lazy initializer), not recomputed every render --
   // a fresh visit/new-chat gets a fresh pick, but it doesn't flicker mid-view.
   const [greeting, setGreeting] = useState(() => pickTimeGreeting(lang));
   useEffect(() => { setGreeting(pickTimeGreeting(lang)); }, [lang]);
 
-  useEffect(() => {
-    let cancelled = false;
-    // Loophole L2: the greeting text itself renders instantly from
-    // client-side data only (officerName, browser clock) -- this fetch
-    // pops the digest chips in once ready, never blocking the greeting.
-    fetch(`${API_BASE}/api/officer/digest`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-    })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (!cancelled) setDigest(d); })
-      .catch(() => { /* Loophole L3: silent -- never blocks or breaks the greeting */ });
-    return () => { cancelled = true; };
-  }, []);
-
   return (
-    <div className="text-center">
-      <h1 className="text-xl font-serif text-stone-100">
+    <div className="text-center mb-1">
+      <h1 className="text-xl sm:text-2xl font-serif text-stone-100 tracking-tight">
         {greeting}, {officerName || (lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ")}
       </h1>
-      {digest && (digest.open_investigations > 0 || digest.pending_approvals > 0) && (
-        <div className="flex justify-center flex-wrap gap-2 mt-2">
-          {digest.open_investigations > 0 && (
-            <span className="text-[10px] px-2 py-1 rounded-full bg-stone-900 border border-stone-800 text-stone-400 font-mono">
-              {lang === "en"
-                ? `\u{1F4CB} ${digest.open_investigations} open investigation${digest.open_investigations > 1 ? "s" : ""}`
-                : `\u{1F4CB} ${digest.open_investigations} ಸಕ್ರಿಯ ತನಿಖೆಗಳು`}
-            </span>
-          )}
-          {digest.pending_approvals > 0 && (
-            <span className="text-[10px] px-2 py-1 rounded-full bg-amber-500/10 border border-amber-500/30 text-amber-400 font-mono">
-              {lang === "en"
-                ? `⏳ ${digest.pending_approvals} pending approval${digest.pending_approvals > 1 ? "s" : ""}`
-                : `⏳ ${digest.pending_approvals} ಬಾಕಿ ಅನುಮೋದನೆಗಳು`}
-            </span>
-          )}
-        </div>
-      )}
     </div>
   );
 };

@@ -12,7 +12,9 @@ import { CaseDiary } from "../components/CaseDiary";
 import { ReasonCollectionModal } from "../components/ReasonCollectionModal";
 import { InvestigationBrowser } from "../components/InvestigationBrowser";
 import { VajraLogo } from "../components/VajraLogo";
-import { Download, X, Users, FileText, Globe, Check, MoreVertical, ListChecks, BookText, Pin, ChevronDown, ChevronUp } from "lucide-react";
+import { OSINTCard } from "../components/OSINTCard";
+import { ApprovalsCard } from "../components/ApprovalsCard";
+import { Download, X, Users, FileText, Globe, Check, MoreVertical, ListChecks, BookText, Pin, ChevronDown, ChevronUp, ChevronRight, FolderOpen, Timer } from "lucide-react";
 
 // ExpandedOverlay pulls in Leaflet + Recharts directly (~250KB+ of the main
 // bundle) but only ever renders when a widget is actually expanded -- most
@@ -96,6 +98,8 @@ export const AIChatScreen: React.FC = () => {
     addToast,
     addNotification,
     setIsAuthenticated,
+    roleTier,
+    setCurrentScreen,
     voicePersona,
     transcriptWidth,
     transcriptTextSize,
@@ -1612,6 +1616,32 @@ export const AIChatScreen: React.FC = () => {
   // renders changes, so it's extracted once here and inserted into exactly
   // ONE of the two positions below, never both/duplicated/mounted twice.
   const isEmptyChat = !loadingSessionId && chatMessages.length === 0;
+
+  // Section 129 Zone 2/3: one shared /api/officer/digest fetch for the home
+  // screen's telemetry pills (real open-investigation/pending-task counts)
+  // AND the dual tactical lanes below them (real pending-approvals count +
+  // the officer's own resolved district for OSINT scoping) -- GreetingHeader
+  // no longer fetches this itself (Section 129 moved the pills out of it).
+  interface HomeDigest {
+    open_investigations: number;
+    pending_approvals: number;
+    pending_tasks: number;
+    assigned_district: string | null;
+  }
+  const [homeDigest, setHomeDigest] = useState<HomeDigest | null>(null);
+  useEffect(() => {
+    if (!isEmptyChat) return;
+    let cancelled = false;
+    fetch(`${API_BASE}/api/officer/digest`, {
+      headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d) setHomeDigest(d); })
+      .catch(() => { /* silent -- pills/cards just show their loading state */ });
+    return () => { cancelled = true; };
+  }, [isEmptyChat]);
+  const isSupervisor = roleTier === "supervisor";
+
   const composerContent = (
     <div className={`${composerWidthCls} mx-auto space-y-4 w-full transition-all duration-200`}>
       {/* Suggestion Chips */}
@@ -1805,32 +1835,85 @@ export const AIChatScreen: React.FC = () => {
             ))}
           </div>
         ) : chatMessages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-center w-full animate-fade-in">
-            <div className="max-w-lg mx-auto space-y-4">
-              {/* §9.10 Context-aware greeting -- time/date + officer name (already
-                  a global, persisted AppContext value) + a case-load digest that
-                  fetches asynchronously and never blocks this greeting from
-                  rendering instantly. */}
-              <GreetingHeader />
-              <div className="w-16 h-16 mx-auto">
-                <VajraLogo animated size={64} />
-              </div>
-              <div className="space-y-1.5">
-                <h2 className="text-base font-bold text-stone-200 uppercase tracking-wider">
-                  {t.chatHubTitle}
-                </h2>
-                <p className="text-xs text-stone-500 leading-relaxed">
-                  {t.chatHubDesc}
-                </p>
-              </div>
+          <div className="h-full flex flex-col items-center justify-center text-center w-full max-w-4xl mx-auto px-4 animate-fade-in">
+            {/* ZONE 1: Tight hero unit -- §9.10 context-aware greeting (time/date
+                + officer name) brought close to the emblem and the composer.
+                The old "VAJRA CENTRAL INQUEST HUB" title + CCTNS boilerplate
+                paragraph (t.chatHubTitle/t.chatHubDesc) is gone from here --
+                officers already know what VAJRA does, and it only pushed the
+                prompt box down. The keys stay defined in translations.ts
+                (Loophole L843) in case anything else still reads them. */}
+            <GreetingHeader />
+            <div className="w-13 h-13 my-1">
+              <VajraLogo animated size={52} />
             </div>
-            {/* Claude-style centered home screen: composer lives right here,
-                inline with the greeting, until the first message sends --
-                not pinned to the true bottom of the screen with a gap under
-                it (see composerContent's own definition above). */}
-            <div className="w-full px-4 mt-8">
+            {/* Composer lives right here, inline with the greeting, until the
+                first message sends -- not pinned to the true bottom of the
+                screen with a gap under it (see composerContent's own
+                definition above). */}
+            <div className="w-full max-w-2xl px-2 mt-2">
               {composerContent}
             </div>
+
+            {/* ZONE 2: Telemetry quick-action pills, directly below the
+                prompt box -- real counts from the one shared digest fetch
+                above, never placeholders. */}
+            <div className="flex items-center justify-center flex-wrap gap-3 mt-5 mb-5">
+              <button
+                type="button"
+                onClick={() => setCurrentScreen("investigations")}
+                className="flex items-center gap-2 px-3 py-1 rounded-full bg-stone-900/80 border border-stone-800 hover:border-[#C79A4E]/40 text-stone-400 hover:text-stone-200 text-xs font-mono transition-all cursor-pointer shadow-sm"
+              >
+                <FolderOpen className="w-3.5 h-3.5 text-[#C79A4E]" />
+                <span>
+                  {homeDigest?.open_investigations ?? 0}{" "}
+                  {lang === "en" ? "Open Investigations" : "ಸಕ್ರಿಯ ತನಿಖೆಗಳು"}
+                </span>
+                <ChevronRight className="w-3 h-3 text-stone-500" />
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentScreen("investigations")}
+                className="flex items-center gap-2 px-3 py-1 rounded-full bg-stone-900/80 border border-stone-800 hover:border-[#C79A4E]/40 text-stone-400 hover:text-stone-200 text-xs font-mono transition-all cursor-pointer shadow-sm"
+              >
+                <Timer className="w-3.5 h-3.5 text-[#C79A4E]" />
+                <span>
+                  {homeDigest?.pending_tasks ?? 0}{" "}
+                  {lang === "en" ? "Pending Tasks" : "ಬಾಕಿ ಕಾರ್ಯಗಳು"}
+                </span>
+                <ChevronRight className="w-3 h-3 text-stone-500" />
+              </button>
+            </div>
+
+            {/* ZONE 3: Dynamic self-collapsing dual tactical lanes (Section
+                133). Approvals is only ever mounted for a supervisor with a
+                real pending count > 0 -- for everyone else, OSINT expands
+                front-and-center instead of leaving a half-empty grid. */}
+            {(() => {
+              const hasPendingApprovals = isSupervisor && (homeDigest?.pending_approvals ?? 0) > 0;
+              return (
+                <div
+                  className={
+                    hasPendingApprovals
+                      ? "w-full max-w-4xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-4 text-left transition-all duration-300 ease-in-out"
+                      : "w-full max-w-2xl mx-auto flex justify-center text-left transition-all duration-300 ease-in-out"
+                  }
+                >
+                  <OSINTCard
+                    lang={lang}
+                    isSupervisor={isSupervisor}
+                    districtName={homeDigest?.assigned_district ?? null}
+                  />
+                  {hasPendingApprovals && (
+                    <ApprovalsCard
+                      lang={lang}
+                      pendingCount={homeDigest!.pending_approvals}
+                      onOpenApprovalsDesk={() => setCurrentScreen("supervisor")}
+                    />
+                  )}
+                </div>
+              );
+            })()}
           </div>
         ) : (
           displayMessages.map((msg, idx) => {

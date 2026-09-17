@@ -6521,18 +6521,58 @@ async def search_sessions(q: str, request: Request, location_context: str = Depe
 async def officer_digest(request: Request, location_context: str = Depends(security_firewall)):
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
     if not catalyst_app:
-        return {"open_investigations": 0, "pending_approvals": 0}
+        return {"open_investigations": 0, "pending_approvals": 0, "pending_tasks": 0, "assigned_district": None}
+
+    # Section 129 Zone 3 OSINT lane needs the officer's OWN district by name
+    # to scope their feed -- home_district_id is already resolved server-side
+    # by security_firewall (Unit -> DistrictID), this just names it. Reusing
+    # this one digest call (already fetched by the home screen for the
+    # telemetry pills) avoids a second round-trip and avoids the frontend
+    # ever having to guess/hardcode a district.
+    assigned_district = None
+    home_district_id = getattr(request.state, "home_district_id", None)
+    if home_district_id:
+        try:
+            d_res = catalyst_app.zql().execute_query(
+                f"SELECT DistrictName FROM District WHERE DistrictID = {int(home_district_id)} LIMIT 1"
+            )
+            assigned_district = d_res[0].get("District", {}).get("DistrictName") if d_res else None
+        except Exception as e:
+            logger.warning(f"officer_digest: district name lookup failed: {e}")
+
+    open_session_ids: List[str] = []
     try:
         open_res = catalyst_app.zql().execute_query(
-            f"SELECT COUNT(ROWID) FROM ChatSession WHERE employee_id = {employee_id} "
-            f"AND description IS NOT NULL AND description != '' AND (status = 'active' OR status IS NULL)"
+            f"SELECT session_id FROM ChatSession WHERE employee_id = {employee_id} "
+            f"AND description IS NOT NULL AND description != '' AND (status = 'active' OR status IS NULL) LIMIT 200"
         )
-        open_count = int(open_res[0].get("ChatSession", {}).get("COUNT(ROWID)") or 0) if open_res else 0
+        open_session_ids = [
+            sid for r in (open_res or [])
+            if (sid := r.get("ChatSession", {}).get("session_id"))
+        ]
+        open_count = len(open_session_ids)
     except Exception as e:
         # Loophole L3 corollary: never let this endpoint's failure show up as
         # a broken greeting -- it always returns a safe default instead.
         logger.warning(f"officer_digest: open-investigations count failed (status column may not exist yet): {e}")
         open_count = 0
+
+    # Section 129 Zone 2 "Pending Tasks" pill: a REAL sum of open
+    # (status='pending') InvestigationTask rows across this officer's own
+    # active investigations -- never a placeholder/fabricated number. Zero
+    # open investigations means zero possible pending tasks, so the query
+    # is skipped entirely rather than asking InvestigationTask for nothing.
+    pending_tasks = 0
+    if open_session_ids and catalyst_app:
+        try:
+            id_list = ",".join(f"'{escape_zcql_literal(sid)}'" for sid in open_session_ids)
+            task_res = catalyst_app.zql().execute_query(
+                f"SELECT COUNT(ROWID) FROM InvestigationTask WHERE status = 'pending' AND session_id IN ({id_list})"
+            )
+            pending_tasks = int(task_res[0].get("InvestigationTask", {}).get("COUNT(ROWID)") or 0) if task_res else 0
+        except Exception as e:
+            logger.warning(f"officer_digest: pending-tasks count failed (InvestigationTask table may not exist yet): {e}")
+            pending_tasks = 0
 
     # Real gap found on review: this used to hardcode pending_approvals to 0
     # unconditionally, presented as if it were real data. Supervisors DO have
@@ -6540,6 +6580,9 @@ async def officer_digest(request: Request, location_context: str = Depends(secur
     # POCSO_ACCESS/DISTRICT_ACCESS rows the Supervisor Dashboard's own
     # pending-list endpoints count) -- an ordinary officer genuinely has none
     # (approvals are supervisor-only actions), so 0 stays honest for them.
+    # Section 133's own occupancy invariant is explicit: the Approvals lane's
+    # DOM footprint is zero whenever !isSupervisor OR pendingCount === 0 --
+    # there is no non-supervisor counterpart lane to populate.
     pending_count = 0
     if getattr(request.state, "role_tier", "officer") == "supervisor" and catalyst_app:
         try:
@@ -6556,7 +6599,12 @@ async def officer_digest(request: Request, location_context: str = Depends(secur
         except Exception as e:
             logger.warning(f"officer_digest: pending-approvals count failed: {e}")
             pending_count = 0
-    return {"open_investigations": open_count, "pending_approvals": pending_count}
+    return {
+        "open_investigations": open_count,
+        "pending_approvals": pending_count,
+        "pending_tasks": pending_tasks,
+        "assigned_district": assigned_district,
+    }
 
 
 # ---- §9.8 Auto-flag matches routed into the relevant Investigation --------
