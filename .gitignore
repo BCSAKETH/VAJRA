@@ -68,3 +68,4 @@ vajra_client_deploy.zip
 # local-only, never meant for git (the local .venv copy alone is 1.4GB).
 vendor_backup_numba/
 vlogin11.json
+broken_brain.md
