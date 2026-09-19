@@ -3290,7 +3290,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
         try:
             if isinstance(result, dict) and result.get("text"):
                 _txt = str(result["text"])
-                if "SECTION 63 BHARATIYA SAKSHYA ADHINIYAM" not in _txt and "BSA 2023" not in _txt:
+                _is_fast_path = bool((result.get("data") or {}).get("fast_path"))
+                _is_degraded = (result.get("data") or {}).get("status") == "degraded_mode"
+                _is_structured_viz = result.get("response_type") in ("case_distribution", "map", "trend", "risk", "network", "timeline", "dossier")
+                if not _is_fast_path and not _is_degraded and not _is_structured_viz and "SECTION 63 BHARATIYA SAKSHYA ADHINIYAM" not in _txt and "BSA 2023" not in _txt:
                     from ksp_pnlg_engine import apply_pnlg_voice
                     _is_kn = bool(re.search(r'[\u0C80-\u0CFF]', query))
                     _style_for_pnlg = result.get("response_style", "CCTNS_FORENSIC_LEDGER")
@@ -3381,6 +3384,113 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # officer's original text so every existing parser is byte-for-byte
         # unchanged for English.
         routing_query = officer_query
+        _is_kn = bool(re.search(r'[\u0C80-\u0CFF]', query or routing_query))
+
+        # GREETINGS, CIVILITY & SIGN-OFF FAST-PATH (0ms, Zero-Network):
+        # Greetings ("hi", "hello"), Farewells ("bye", "goodbye"), and Courtesies ("thanks", "roger that")
+        # match NO database entity and require zero DB/LLM calls.
+        # Intercepting them immediately guarantees <1ms response time, saves 5+ DB queries per turn,
+        # and prevents contextual rewrites from mangling conversational phrases (e.g. "roger that").
+        _norm_greet = re.sub(r'[@\-_.,!?#]', ' ', routing_query.lower()).strip()
+        _norm_greet = re.sub(r'\s+', ' ', _norm_greet)
+        _is_kannada_greeting = any(kg in routing_query for kg in ("ನಮಸ್ಕಾರ", "ಹಲೋ", "ಹಾಯ್", "ಶುಭೋದಯ", "ನೀವು ಯಾರು", "ಸಹಾಯ", "ಏನು ಮಾಡಬಹುದು"))
+        _is_english_greeting = _norm_greet in {
+            "hi", "hello", "hey", "namaskara", "namaste", "vanakkam", "pranam", "pranamalu",
+            "good morning", "good afternoon", "good evening", "good day",
+            "hi vajra", "hello vajra", "hey vajra", "vajra hi", "vajra hello", "vajra hey",
+            "who are you", "what are you", "what can you do", "help", "how can you help",
+            "start", "menu", "status"
+        }
+        if _is_kannada_greeting or _is_english_greeting:
+            if _is_kannada_greeting:
+                greet_text = (
+                    f"ನಮಸ್ಕಾರ ಅಧಿಕಾರಿ {officer_name or 'ಅವರೇ'}. **ವಜ್ರ (VAJRA.AI)** ಪೊಲೀಸ್ ಗುಪ್ತಚರ ಸಹಾಯಕ ಸಕ್ರಿಯವಾಗಿದೆ ಮತ್ತು ಕಾರ್ಯನಿರ್ವಹಿಸುತ್ತಿದೆ.\n\n"
+                    "ನಾನು ನಿಮಗೆ ಈ ಕೆಳಗಿನ ಕ್ಷೇತ್ರಗಳಲ್ಲಿ ಸಹಾಯ ಮಾಡಬಲ್ಲೆ:\n"
+                    "• **CCTNS ಪ್ರಕರಣಗಳ ಪರಿಶೀಲನೆ:** FIR ವಿವರಗಳು, ದಿನಾಂಕ, ಹಾಗೂ ತನಿಖಾ ಸ್ಥಿತಿ.\n"
+                    "• **ಆರೋಪಿಗಳ ವಿಶ್ಲೇಷಣೆ & MO ಪ್ರೊಫೈಲ್:** ಅಪರಾಧ ಇತಿಹಾಸ, ಪುನರಾವರ್ತಿತ ಮಾದರಿಗಳು, ಹಾಗೂ ಶಿಕ್ಷೆಯ ಅಪಾಯದ ಅಂಕ (Risk Score).\n"
+                    "• **ಸಿಂಡಿಕೇಟ್ & ಹಣಕಾಸು ಜಾಲ:** ಸಹ-ಆರೋಪಿಗಳ ಸಂಪರ್ಕಗಳು, ಮ್ಯೂಲ್ ಖಾತೆಗಳು, ಮತ್ತು ಹವಾಲಾ ಲಿಂಕ್‌ಗಳು.\n"
+                    "• **OSINT ಲೈವ್ ಹುಡುಕಾಟ:** ಇಂಟರ್ನೆಟ್, ಸೈಬರ್ ಕ್ರೈಮ್ ಎಚ್ಚರಿಕೆಗಳು, ಮತ್ತು ಮುಕ್ತ ಮೂಲ ಗುಪ್ತಚರ ಮಾಹಿತಿ.\n\n"
+                    "ಪ್ರಕರಣ ಸಂಖ್ಯೆ (`CR-...`), ಆರೋಪಿಯ ಹೆಸರು, ಅಥವಾ ಯಾವುದೇ ತನಿಖಾ ಪ್ರಶ್ನೆಯನ್ನು ದಾಖಲಿಸಿ."
+                )
+            else:
+                greet_text = (
+                    f"Greetings, Officer {officer_name or 'Colleague'}. **VAJRA.AI Intelligence Copilot** is fully operational and standing by.\n\n"
+                    "I am equipped to assist your investigation across key policing domains:\n"
+                    "• **CCTNS Case Intelligence:** Instant FIR lookups, case timelines, and status reports.\n"
+                    "• **Offender Profiling & MO:** Recidivism risk scoring, behavioral MO analysis, and repeat patterns.\n"
+                    "• **Syndicate & Network Discovery:** Co-accused graphs, shared phone/vehicle links, and hawala/mule accounts.\n"
+                    "• **Open-Source Intelligence (OSINT):** Web investigations, cyber threat feeds, and institutional verification.\n\n"
+                    "Enter a case number (`CR-...`), suspect name, phone/account, or an OSINT query to begin."
+                )
+            self._write_audit_log(employee_id, "Greeting Fast-Path", "", officer_query, greet_text[:200], session_id)
+            context = session_memory.get_session_context(session_id)
+            history = context.get("messages", [])
+            history.append({"role": "assistant", "content": greet_text})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            return {
+                "text": greet_text,
+                "response_type": "text",
+                "data": {"fast_path": True, "type": "greeting"},
+                "citations": [{"type": "System Status", "id": "VAJRA.AI Core", "details": "Real-time AI copilot operational"}],
+                "is_simulated": False,
+                "simulated_reason": ""
+            }
+
+        # FAREWELLS & SIGN-OFF FAST-PATH (0ms, bypasses heavy GLM loop & DB):
+        _is_kannada_farewell = any(kf in routing_query for kf in ("ಬೈ", "ಹೋಗಿ ಬರುತ್ತೇನೆ", "ಮುಕ್ತಾಯ", "ನಿರ್ಗಮಿಸು", "ವಿಶ್ರಾಂತಿ", "ನಿಲ್ಲಿಸು"))
+        _is_english_farewell = _norm_greet in {
+            "bye", "goodbye", "good bye", "bye vajra", "bye bye", "cya", "see you", "see ya",
+            "sign off", "signing off", "stand down", "exit", "quit", "log off", "logging off",
+            "dismiss", "dismissed", "tata"
+        }
+        if _is_kannada_farewell or _is_english_farewell:
+            if _is_kannada_farewell:
+                farewell_text = f"ಕರ್ತವ್ಯ ಮುಕ್ತಾಯ. ವಜ್ರ (VAJRA.AI) ಪೊಲೀಸ್ ಗುಪ್ತಚರ ಸಹಾಯಕ ನಿಮ್ಮ ಮುಂದಿನ ಸೇವೆಗೆ ಸದಾ ಸಿದ್ಧ, ಅಧಿಕಾರಿ {officer_name or 'ಅವರೇ'}. ಜೈ ಹಿಂದ್."
+            else:
+                farewell_text = f"Standing down. VAJRA Intelligence Copilot remains on standby for your shift, Officer {officer_name or 'Colleague'}. Jai Hind."
+            self._write_audit_log(employee_id, "Farewell Fast-Path", "", officer_query, farewell_text[:200], session_id)
+            context = session_memory.get_session_context(session_id)
+            history = context.get("messages", [])
+            history.append({"role": "assistant", "content": farewell_text})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            return {
+                "text": farewell_text,
+                "response_type": "text",
+                "data": {"fast_path": True, "type": "farewell"},
+                "citations": [{"type": "System Status", "id": "VAJRA.AI Core", "details": "Intelligence copilot on standby"}],
+                "is_simulated": False,
+                "simulated_reason": ""
+            }
+
+        # COURTESY & ACKNOWLEDGMENT FAST-PATH (0ms, bypasses heavy GLM loop & DB):
+        _is_kannada_courtesy = any(kc in routing_query for kc in ("ಧನ್ಯವಾದ", "ಧನ್ಯವಾದಗಳು", "ತುಂಬಾ ಧನ್ಯವಾದಗಳು", "ಸರಿ", "ಅರ್ಥವಾಯಿತು"))
+        _is_english_courtesy = _norm_greet in {
+            "thanks", "thank you", "thank you vajra", "thanks vajra", "thx", "thank u",
+            "much appreciated", "appreciated", "roger", "roger that", "copy that", "copy",
+            "understood", "noted", "clear", "good job", "great job", "well done", "ok", "okay",
+            "alright", "all right"
+        }
+        if _is_kannada_courtesy or _is_english_courtesy:
+            if _is_kannada_courtesy:
+                courtesy_text = f"ನಿಮ್ಮ ಸೇವೆಯಲ್ಲಿ, ಅಧಿಕಾರಿ {officer_name or 'ಅವರೇ'}. ಮುಂದಿನ CCTNS ಪರಿಶೀಲನೆ, ದೋಷಾರೋಪಣಾ ಪಟ್ಟಿ ಅಥವಾ ತನಿಖಾ ಸಹಾಯಕ್ಕಾಗಿ ತಿಳಿಸಿ."
+            else:
+                courtesy_text = f"At your service, Officer {officer_name or 'Colleague'}. Let me know if you need further CCTNS lookups, dossier generation, or OSINT sweeps."
+            self._write_audit_log(employee_id, "Courtesy Fast-Path", "", officer_query, courtesy_text[:200], session_id)
+            context = session_memory.get_session_context(session_id)
+            history = context.get("messages", [])
+            history.append({"role": "assistant", "content": courtesy_text})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            return {
+                "text": courtesy_text,
+                "response_type": "text",
+                "data": {"fast_path": True, "type": "courtesy"},
+                "citations": [{"type": "System Status", "id": "VAJRA.AI Core", "details": "Standing by for active investigation"}],
+                "is_simulated": False,
+                "simulated_reason": ""
+            }
 
         # ATTACHMENT TURNS: the frontend prepends the uploaded file's analysis as
         # "Attachment analysis: <analysis>\n\n<what the officer typed>". That prose is
@@ -3600,54 +3710,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                                    "details": "Answered directly from this session's history — no model call."}],
                     "is_simulated": False, "simulated_reason": ""}
 
-        # GREETINGS & INTRODUCTORY FAST-PATH:
-        # Greetings like "hi", "hello", "namaskara", "@vajra hi" match NO database tool.
-        # When the LLM endpoint is slow or on transient cooldown, relying on the model
-        # triggers "AI reasoning is temporarily unavailable" (the exact bug observed live).
-        # Answer them DETERMINISTICALLY in 0ms with police-grade readiness and dignity.
-        _norm_greet = re.sub(r'[@\-_.,!?#]', ' ', routing_query.lower()).strip()
-        _norm_greet = re.sub(r'\s+', ' ', _norm_greet)
-        _is_kannada_greeting = any(kg in routing_query for kg in ("ನಮಸ್ಕಾರ", "ಹಲೋ", "ಹಾಯ್", "ಶುಭೋದಯ", "ನೀವು ಯಾರು", "ಸಹಾಯ", "ಏನು ಮಾಡಬಹುದು"))
-        _is_english_greeting = _norm_greet in {
-            "hi", "hello", "hey", "namaskara", "namaste", "vanakkam", "pranam", "pranamalu",
-            "good morning", "good afternoon", "good evening", "good day",
-            "hi vajra", "hello vajra", "hey vajra", "vajra hi", "vajra hello", "vajra hey",
-            "who are you", "what are you", "what can you do", "help", "how can you help",
-            "start", "menu", "status"
-        }
-        if _is_kannada_greeting or _is_english_greeting:
-            if _is_kannada_greeting:
-                greet_text = (
-                    f"ನಮಸ್ಕಾರ ಅಧಿಕಾರಿ {officer_name or 'ಅವರೇ'}. **ವಜ್ರ (VAJRA.AI)** ಪೊಲೀಸ್ ಗುಪ್ತಚರ ಸಹಾಯಕ ಸಕ್ರಿಯವಾಗಿದೆ ಮತ್ತು ಕಾರ್ಯನಿರ್ವಹಿಸುತ್ತಿದೆ.\n\n"
-                    "ನಾನು ನಿಮಗೆ ಈ ಕೆಳಗಿನ ಕ್ಷೇತ್ರಗಳಲ್ಲಿ ಸಹಾಯ ಮಾಡಬಲ್ಲೆ:\n"
-                    "• **CCTNS ಪ್ರಕರಣಗಳ ಪರಿಶೀಲನೆ:** FIR ವಿವರಗಳು, ದಿನಾಂಕ, ಹಾಗೂ ತನಿಖಾ ಸ್ಥಿತಿ.\n"
-                    "• **ಆರೋಪಿಗಳ ವಿಶ್ಲೇಷಣೆ & MO ಪ್ರೊಫೈಲ್:** ಅಪರಾಧ ಇತಿಹಾಸ, ಪುನರಾವರ್ತಿತ ಮಾದರಿಗಳು, ಹಾಗೂ ಶಿಕ್ಷೆಯ ಅಪಾಯದ ಅಂಕ (Risk Score).\n"
-                    "• **ಸಿಂಡಿಕೇಟ್ & ಹಣಕಾಸು ಜಾಲ:** ಸಹ-ಆರೋಪಿಗಳ ಸಂಪರ್ಕಗಳು, ಮ್ಯೂಲ್ ಖಾತೆಗಳು, ಮತ್ತು ಹವಾಲಾ ಲಿಂಕ್‌ಗಳು.\n"
-                    "• **OSINT ಲೈವ್ ಹುಡುಕಾಟ:** ಇಂಟರ್ನೆಟ್, ಸೈಬರ್ ಕ್ರೈಮ್ ಎಚ್ಚರಿಕೆಗಳು, ಮತ್ತು ಮುಕ್ತ ಮೂಲ ಗುಪ್ತಚರ ಮಾಹಿತಿ.\n\n"
-                    "ಪ್ರಕರಣ ಸಂಖ್ಯೆ (`CR-...`), ಆರೋಪಿಯ ಹೆಸರು, ಅಥವಾ ಯಾವುದೇ ತನಿಖಾ ಪ್ರಶ್ನೆಯನ್ನು ದಾಖಲಿಸಿ."
-                )
-            else:
-                greet_text = (
-                    f"Greetings, Officer {officer_name or 'Colleague'}. **VAJRA.AI Intelligence Copilot** is fully operational and standing by.\n\n"
-                    "I am equipped to assist your investigation across key policing domains:\n"
-                    "• **CCTNS Case Intelligence:** Instant FIR lookups, case timelines, and status reports.\n"
-                    "• **Offender Profiling & MO:** Recidivism risk scoring, behavioral MO analysis, and repeat patterns.\n"
-                    "• **Syndicate & Network Discovery:** Co-accused graphs, shared phone/vehicle links, and hawala/mule accounts.\n"
-                    "• **Open-Source Intelligence (OSINT):** Web investigations, cyber threat feeds, and institutional verification.\n\n"
-                    "Enter a case number (`CR-...`), suspect name, phone/account, or an OSINT query to begin."
-                )
-            self._write_audit_log(employee_id, "Greeting Fast-Path", "", officer_query, greet_text[:200], session_id)
-            history.append({"role": "assistant", "content": greet_text})
-            context["messages"] = history
-            session_memory.update_session_context(session_id, context)
-            return {
-                "text": greet_text,
-                "response_type": "text",
-                "data": {"fast_path": True, "type": "greeting"},
-                "citations": [{"type": "System Status", "id": "VAJRA.AI Core", "details": "Real-time AI copilot operational"}],
-                "is_simulated": False,
-                "simulated_reason": ""
-            }
+
 
         # RELATIONSHIP-BETWEEN-TWO-NAMES: confirmed live failure on two
         # fronts -- (1) the generic case-search path found one semantically-
@@ -4134,7 +4197,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     if fallback_decision is None:
                         fallback_decision = self._keyword_route_tool(routing_query)
                         fallback_label = "Keyword Match"
-                    if fallback_decision is None and len(routing_query.strip()) > 3:
+                    if fallback_decision is None and len(routing_query.strip()) >= 2:
                         _q_low_fallback = routing_query.lower()
                         # Database-First Inversion (Finals-part 5.md Section 155-157):
                         # the ultimate catch-all is the internal CCTNS Case Registry,
@@ -4268,7 +4331,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     try:
                         from ksp_pnlg_engine import synthesize_deterministic_answer
                         _fast_data = tool_output.get("data") or tool_output.get("structured_data") or tool_output
-                        _fast_lang = "kn" if is_kannada else "en"
+                        _fast_lang = "kn" if _is_kn else "en"
                         _fast_ans = synthesize_deterministic_answer(
                             tool_name=tool_name,
                             tool_data=_fast_data,
@@ -4380,7 +4443,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 from ksp_pnlg_engine import synthesize_deterministic_answer
                 _fast_syn = None
                 if last_tool_name and isinstance(data_payload, dict):
-                    _fast_syn = synthesize_deterministic_answer(last_tool_name, data_payload, session_id, query, "0", "kn" if is_kannada else "en")
+                    _fast_syn = synthesize_deterministic_answer(last_tool_name, data_payload, session_id, query, "0", "kn" if _is_kn else "en")
                 if _fast_syn:
                     response_text = _fast_syn
                     logger.info(f"Sub-3s deterministic synthesis succeeded for {last_tool_name} via 28-block PNLG.")
@@ -10975,10 +11038,11 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
         total_cases = sum(d["value"] for d in data_list)
 
-        text_result = f"Distribution of cases by type across {district or 'all districts'} (Total: {total_cases} cases):\n"
+        stations_str = f" ({len(unit_ids)} jurisdictional police stations)" if unit_ids else ""
+        text_result = f"Distribution of cases by type across {district or 'all districts'}{stations_str} (Total: {total_cases:,} cases registered in CCTNS):\n"
         for d in data_list[:5]:
             pct = (d["value"] / total_cases * 100) if total_cases > 0 else 0.0
-            text_result += f"- **{d['name']}**: {d['value']} cases ({pct:.1f}%)\n"
+            text_result += f"- **{d['name']}**: {d['value']:,} cases ({pct:.1f}%)\n"
         if len(data_list) > 5:
             text_result += f"- and {len(data_list) - 5} other crime categories."
 

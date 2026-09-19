@@ -47,19 +47,15 @@ SECTION_PALETTE: Dict[str, Dict[str, List[str]]] = {
     # --- CLUSTER 1: COMMAND & CIVILITY ---
     "GREETING_COURTESY": {
         "en": [
-            "Officer, reviewing the verified state registers for your inquiry.",
-            "Officer, intelligence brief retrieved from state records.",
-            "Officer, CCTNS datastore query verified. Situational summary follows:",
-            "Officer, records retrieved from the State Crime Records Bureau.",
-            "Officer, investigative brief prepared as requested.",
-            "Officer, reviewing Case Diary and Station Crime Register entries.",
+            "Officer, here is the verified intelligence summary from state records:",
+            "Officer, situational overview compiled from CCTNS registers:",
+            "Officer, operational brief retrieved from state crime records:",
+            "Officer, investigative findings prepared from verified records:",
         ],
         "kn": [
-            "ಅಧಿಕಾರಿಗಳೇ, ನಿಮ್ಮ ವಿಚಾರಣೆಗಾಗಿ ಪರಿಶೀಲಿಸಲಾದ ರಾಜ್ಯ ದಾಖಲೆಗಳ ವಿವರ:",
-            "ಅಧಿಕಾರಿಗಳೇ, ರಾಜ್ಯ ಅಪರಾಧ ದಾಖಲಾತಿ ಕೋಶದಿಂದ ಮಾಹಿತಿ ಪಡೆಯಲಾಗಿದೆ:",
-            "ಅಧಿಕಾರಿಗಳೇ, CCTNS ದತ್ತಾಂಶ ಪರಿಶೀಲನೆ ಪೂರ್ಣಗೊಂಡಿದೆ. ಸಾರಾಂಶ ಕೆಳಕಂಡಂತಿದೆ:",
-            "ಅಧಿಕಾರಿಗಳೇ, ಠಾಣಾ ಅಪರಾಧ ದಾಖಲೆಗಳ ಆಧಾರದ ಮೇಲೆ ಸಿದ್ಧಪಡಿಸಲಾದ ವರದಿ:",
-            "ಅಧಿಕಾರಿಗಳೇ, ತನಿಖಾ ಕಡತಗಳ ಪರಿಶೀಲನೆಯಂತೆ ವಿವರಗಳು ಲಭ್ಯವಿವೆ:",
+            "ಅಧಿಕಾರಿಗಳೇ, ಪರಿಶೀಲಿಸಲಾದ ರಾಜ್ಯ ದಾಖಲೆಗಳ ಸಾರಾಂಶ ಇಲ್ಲಿದೆ:",
+            "ಅಧಿಕಾರಿಗಳೇ, CCTNS ದತ್ತಾಂಶದ ಆಧಾರದ ಮೇಲಿನ ತನಿಖಾ ವಿವರಗಳು ಕೆಳಕಂಡಂತಿವೆ:",
+            "ಅಧಿಕಾರಿಗಳೇ, ರಾಜ್ಯ ಅಪರಾಧ ದಾಖಲಾತಿ ಕೋಶದಿಂದ ಪಡೆದ ವಿವರಗಳು:",
         ],
     },
     "STRATEGIC_SUMMARY": {
@@ -792,12 +788,20 @@ def apply_pnlg_voice(
         if stripped and stripped[0].islower():
             stripped = stripped[0].upper() + stripped[1:]
 
-        # 2. Avoid double greeting if already starts with respectful address
-        _ALREADY_NATURAL = re.compile(r"^\s*(officer|ಅಧಿಕಾರಿಗಳೇ|sir|ma'am|jai hind)\b", re.IGNORECASE)
-        if _ALREADY_NATURAL.match(stripped):
+        # 2. Avoid double greeting or canned opener if already starts with respectful address, alert, or structured content
+        _ALREADY_NATURAL = re.compile(
+            r"^\s*("
+            r"officer|ಅಧಿಕಾರಿಗಳೇ|sir|ma'am|jai hind|colleague|greetings|namaskara|namaste|ನಮಸ್ಕಾರ|"
+            r"standing down|at your service|distribution of|case types|cr\.no\.|case reference|"
+            r"hello|hi|welcome|noted|understood|based on|according to|investigation|cctns|fir|"
+            r"summary|analysis|overview|record|report|total|in |the "
+            r")\b",
+            re.IGNORECASE
+        )
+        if _ALREADY_NATURAL.match(stripped) or stripped.startswith(("⚠️", ">", "#", "##", "###", "```", "[", "•", "-", "*", "|")):
             return stripped if _extract_bracket_tags(stripped) >= original_tags else text
 
-        # 3. Deterministically select lead-in phrase
+        # 3. Deterministically select lead-in phrase ONLY if genuinely unstructured
         lang_key = "kn" if lang == "kn" else "en"
         variants = SECTION_PALETTE["GREETING_COURTESY"].get(lang_key, SECTION_PALETTE["GREETING_COURTESY"]["en"])
         
