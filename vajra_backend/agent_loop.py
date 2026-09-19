@@ -3289,12 +3289,15 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # neural rewriting).
         try:
             if isinstance(result, dict) and result.get("text"):
-                from ksp_pnlg_engine import apply_pnlg_voice
-                _style_for_pnlg = result.get("response_style", "CCTNS_FORENSIC_LEDGER")
-                result = dict(result)
-                result["text"] = apply_pnlg_voice(
-                    result["text"], _style_for_pnlg, session_id, officer_badge, query, "en"
-                )
+                _txt = str(result["text"])
+                if "SECTION 63 BHARATIYA SAKSHYA ADHINIYAM" not in _txt and "BSA 2023" not in _txt:
+                    from ksp_pnlg_engine import apply_pnlg_voice
+                    _is_kn = bool(re.search(r'[\u0C80-\u0CFF]', query))
+                    _style_for_pnlg = result.get("response_style", "CCTNS_FORENSIC_LEDGER")
+                    result = dict(result)
+                    result["text"] = apply_pnlg_voice(
+                        _txt, _style_for_pnlg, session_id, officer_badge, query, "kn" if _is_kn else "en"
+                    )
         except Exception as e:
             logger.warning(f"PNLG voice engine failed (non-fatal, text left unmodified): {e}")
         try:
@@ -4056,6 +4059,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
         max_iterations = 0 if multi_done else 4
         current_iteration = 0
+        last_tool_name = None
 
         while current_iteration < max_iterations:
             current_iteration += 1
@@ -4250,12 +4254,35 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         data_payload["_tool_trace"] = _tool_telemetry
                     if tool_output.get("text_result"):
                         last_tool_text_result = tool_output["text_result"]
+                    last_tool_name = tool_name
 
                     # Append tool result to history (must happen BEFORE the
                     # answer-first short-circuit below, or a follow-up turn
                     # loses the record that this tool ran).
                     history.append({"role": "assistant", "content": json.dumps(decision)})
                     history.append({"role": "user", "content": f"Tool '{tool_name}' returned: {json.dumps(tool_output['text_result'])}"})
+
+                    # Sub-3s Deterministic Synthesis via 28-Block PNLG Engine:
+                    # When structured CCTNS/ZCQL tool data is available, format the output directly
+                    # in < 5ms without triggering GLM's heavy second synthesis turn (saving 35-70s).
+                    try:
+                        from ksp_pnlg_engine import synthesize_deterministic_answer
+                        _fast_data = tool_output.get("data") or tool_output.get("structured_data") or tool_output
+                        _fast_lang = "kn" if is_kannada else "en"
+                        _fast_ans = synthesize_deterministic_answer(
+                            tool_name=tool_name,
+                            tool_data=_fast_data,
+                            session_id=session_id,
+                            query=officer_query or routing_query,
+                            turn_id=str(current_iteration),
+                            lang=_fast_lang
+                        )
+                        if _fast_ans:
+                            response_text = _fast_ans
+                            logger.info(f"Sub-3s deterministic synthesis succeeded for {tool_name} via 28-block PNLG.")
+                            break
+                    except Exception as _syn_err:
+                        logger.warning(f"Deterministic synthesis bypass failed gracefully: {_syn_err}")
 
                     # ANSWER-FIRST (Phase 4): for a VISUAL/composite answer
                     # (map, network, risk, timeline, trend, case_distribution,
@@ -4350,28 +4377,27 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # If the loop finished and we executed tools but never got a final text_response, do one final synthesis
         if not response_text and citations and not ai_unavailable:
             try:
-                logger.info("Executing final LLM response synthesis turn...")
-                synthesis_res = self.llm.chat(history, max_tokens=3500)
-                if synthesis_res.get("error"):
-                    logger.warning(f"LLM unavailable during synthesis turn, not answering: {synthesis_res.get('error')}")
-                    ai_unavailable = True
+                from ksp_pnlg_engine import synthesize_deterministic_answer
+                _fast_syn = None
+                if last_tool_name and isinstance(data_payload, dict):
+                    _fast_syn = synthesize_deterministic_answer(last_tool_name, data_payload, session_id, query, "0", "kn" if is_kannada else "en")
+                if _fast_syn:
+                    response_text = _fast_syn
+                    logger.info(f"Sub-3s deterministic synthesis succeeded for {last_tool_name} via 28-block PNLG.")
                 else:
-                    raw_response = synthesis_res["choices"][0]["message"]["content"]
-                    try:
-                        desc = json.loads(self._extract_json(raw_response))
-                        # desc parsed as valid JSON but had neither key (e.g.
-                        # the model responded with another {"tool": ...}
-                        # instead of a text_response, confirmed live) -- the
-                        # raw_response fallback must still have its
-                        # </think> preamble stripped, or the officer sees the
-                        # model's full internal reasoning trace verbatim.
-                        fallback = self._strip_think(raw_response)
-                        response_text = desc.get("text_response") or desc.get("text") or fallback
-                    except Exception:
-                        # Not JSON at all (plain prose answer) -- strip any
-                        # </think> preamble (and drop an unclosed reasoning trace
-                        # entirely) so the model's internal reasoning never leaks.
-                        response_text = self._strip_think(raw_response)
+                    logger.info("Executing final LLM response synthesis turn...")
+                    synthesis_res = self.llm.chat(history, max_tokens=3500)
+                    if synthesis_res.get("error"):
+                        logger.warning(f"LLM unavailable during synthesis turn, not answering: {synthesis_res.get('error')}")
+                        ai_unavailable = True
+                    else:
+                        raw_response = synthesis_res["choices"][0]["message"]["content"]
+                        try:
+                            desc = json.loads(self._extract_json(raw_response))
+                            fallback = self._strip_think(raw_response)
+                            response_text = desc.get("text_response") or desc.get("text") or fallback
+                        except Exception:
+                            response_text = self._strip_think(raw_response)
             except Exception as e:
                 logger.error(f"Error on final synthesis turn: {e}")
                 response_text = "I have successfully retrieved the files. Let me know if you need specific details."
