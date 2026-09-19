@@ -4763,12 +4763,9 @@ async def _run_ai_turn_and_persist(
     # prevent that, not just to be thorough.
     if officer_name and officer_badge:
         query_for_agent = (
-            f"[Context: you are speaking with Officer {officer_name}, badge {officer_badge}. "
-            f"If they ask who they are, their name, badge, rank, station, or current assignment, "
-            f"call the get_my_profile tool (or answer directly if already known) -- never guess. "
-            f"Do NOT use '{officer_name}' as a suspect_name or entity_id parameter for any other "
-            f"tool (risk score, network, MO profile, financial links, full report, etc.) -- this is "
-            f"the officer asking about themselves, not a suspect to investigate.]\n\n{query_for_agent}"
+            f"[Context: Authenticated Officer is {officer_name}, badge/KGID {officer_badge}. "
+            f"Never treat this officer as a suspect or accused person. "
+            f"Only call get_my_profile if the user explicitly asks 'who am I' or 'my profile'.]\n\n{query_for_agent}"
         )
 
     # If this session is an Investigation linked to a real case, prepend that

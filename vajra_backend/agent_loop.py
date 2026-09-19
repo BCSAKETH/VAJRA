@@ -3393,13 +3393,23 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # and prevents contextual rewrites from mangling conversational phrases (e.g. "roger that").
         _norm_greet = re.sub(r'[@\-_.,!?#]', ' ', routing_query.lower()).strip()
         _norm_greet = re.sub(r'\s+', ' ', _norm_greet)
+        _single_collapsed = re.sub(r'(.)\1+', r'\1', _norm_greet)
         _is_kannada_greeting = any(kg in routing_query for kg in ("ನಮಸ್ಕಾರ", "ಹಲೋ", "ಹಾಯ್", "ಶುಭೋದಯ", "ನೀವು ಯಾರು", "ಸಹಾಯ", "ಏನು ಮಾಡಬಹುದು"))
-        _is_english_greeting = _norm_greet in {
+
+        # Match typos and informal greeting variations: hekllll, helllo, helo, heyyy, hiii, etc.
+        _greeting_regex = re.compile(
+            r'^(h+[eaiou]*[ylo]+|h+e+k+l+|h+a+i+|g+o+o+d+\s*(m+o+r+n+i+n+g+|e+v+e+n+i+n+g+|d+a+y+|a+f+t+e+r+n+o+o+n+)|s+u+p+|y+o+|h+o+l+a+|w+a+s+s+u+p+|h+o+w+d+y+)\b',
+            re.IGNORECASE
+        )
+        _is_regex_greeting = bool(_greeting_regex.search(_norm_greet)) or bool(_greeting_regex.search(_single_collapsed))
+        _is_english_greeting = _is_regex_greeting or _norm_greet in {
             "hi", "hello", "hey", "namaskara", "namaste", "vanakkam", "pranam", "pranamalu",
             "good morning", "good afternoon", "good evening", "good day",
             "hi vajra", "hello vajra", "hey vajra", "vajra hi", "vajra hello", "vajra hey",
             "who are you", "what are you", "what can you do", "help", "how can you help",
-            "start", "menu", "status"
+            "start", "menu", "status", "vajra", "bot"
+        } or _single_collapsed in {
+            "hi", "helo", "hey", "namaskar", "namaste", "vanakam", "pranam"
         }
         if _is_kannada_greeting or _is_english_greeting:
             if _is_kannada_greeting:
@@ -3488,6 +3498,34 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 "response_type": "text",
                 "data": {"fast_path": True, "type": "courtesy"},
                 "citations": [{"type": "System Status", "id": "VAJRA.AI Core", "details": "Standing by for active investigation"}],
+                "is_simulated": False,
+                "simulated_reason": ""
+            }
+
+        # SYSTEM PROBE / MINIMAL TEST INPUT FAST-PATH (e.g. "asdf", "test", "testing", "check", "123"):
+        # Prevents accidental deep forensic pipelines or robotic "Input Integrity: Failed" lectures.
+        _test_triggers = {"asdf", "test", "testing", "check", "qwerty", "xyz", "abc", "123", "1234", "probe"}
+        if _single_collapsed in _test_triggers or _norm_greet in _test_triggers:
+            probe_text = (
+                f"Greetings, Officer {officer_name or 'Colleague'}. **VAJRA.AI Intelligence Copilot** is active and connected to CCTNS.\n\n"
+                "To initiate an investigative query, specify an operational parameter:\n"
+                "• **Case Records:** e.g. `CR-2026-31313` or `cases in Bengaluru Urban`\n"
+                "• **Suspect & Recidivism:** e.g. `suspect Ramesh` or `risk for Ramesh`\n"
+                "• **Hotspot Clusters:** e.g. `hotspots in Mysuru` or `high crime beats`\n"
+                "• **Syndicate / Mule Rings:** e.g. `network for Ramesh` or `mule accounts`\n"
+                "• **Statutory Evidentiary SOP:** e.g. `Section 63 BSA checklist`"
+            )
+            self._write_audit_log(employee_id, "System Probe Fast-Path", "", officer_query, probe_text[:200], session_id)
+            context = session_memory.get_session_context(session_id)
+            history = context.get("messages", [])
+            history.append({"role": "assistant", "content": probe_text})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            return {
+                "text": probe_text,
+                "response_type": "text",
+                "data": {"fast_path": True, "type": "probe"},
+                "citations": [{"type": "System Status", "id": "VAJRA.AI Core", "details": "Real-time AI copilot operational"}],
                 "is_simulated": False,
                 "simulated_reason": ""
             }
