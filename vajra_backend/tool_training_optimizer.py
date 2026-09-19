@@ -94,9 +94,44 @@ CANONICAL_GOLD_EXEMPLARS = [
         "source": "canonical"
     },
     {
-        "query": "State-wide chargesheet conviction rate and arrest analytics",
-        "tool": "case_outcome_analytics",
+        "query": "What are the top crimes and offences in Bengaluru",
+        "tool": "get_case_types_distribution",
+        "parameters": {"district": "Bengaluru Urban"},
+        "score": 1.0,
+        "source": "canonical"
+    },
+    {
+        "query": "Crime categories breakdown and case distribution in Mysuru",
+        "tool": "get_case_types_distribution",
+        "parameters": {"district": "Mysuru"},
+        "score": 1.0,
+        "source": "canonical"
+    },
+    {
+        "query": "Which districts have the highest crime rate and worst offences",
+        "tool": "rank_districts",
         "parameters": {},
+        "score": 1.0,
+        "source": "canonical"
+    },
+    {
+        "query": "Monthly crime trends and pattern analysis over time in Belagavi",
+        "tool": "get_crime_trends",
+        "parameters": {"district": "Belagavi"},
+        "score": 1.0,
+        "source": "canonical"
+    },
+    {
+        "query": "How many cybercrime and fraud cases registered in 2025",
+        "tool": "count_cases",
+        "parameters": {"crime_group": "CYBERCRIME"},
+        "score": 1.0,
+        "source": "canonical"
+    },
+    {
+        "query": "List cybercrime and murder cases in Hubballi",
+        "tool": "list_cases",
+        "parameters": {"district": "Hubballi-Dharwad"},
         "score": 1.0,
         "source": "canonical"
     }
@@ -228,7 +263,7 @@ def get_matching_tool_exemplars(query: str, limit: int = 2) -> List[Dict[str, An
         # Give bonus to specific investigative keyword matches
         core_boost = 0.0
         for token in intersection:
-            if token in ("fir", "cctns", "risk", "mule", "syndicate", "network", "hotspot", "dossier", "plate", "ifsc", "aadhaar", "offender"):
+            if token in ("fir", "cctns", "risk", "mule", "syndicate", "network", "hotspot", "dossier", "plate", "ifsc", "aadhaar", "offender", "crime", "crimes", "trends", "distribution", "breakdown", "statistics", "offences"):
                 core_boost += 0.15
 
         final_score = jaccard + core_boost

@@ -97,7 +97,84 @@ class CognitiveBrainMixin:
         if fast:
             logger.info(f"Fast-route: '{fast['tool']}' chosen deterministically, skipping GLM tool-selection")
             return {"forced_decision": fast, "multi_decisions": None, "decided_by": "keyword"}
+        sem = self._route_semantic(routing_query)
+        if sem:
+            logger.info(f"Semantic-route: '{sem['tool']}' chosen via local SOTIE vector similarity, skipping GLM")
+            return {"forced_decision": sem, "multi_decisions": None, "decided_by": "semantic_vector"}
         return {"forced_decision": None, "multi_decisions": None, "decided_by": "none"}
+
+    def _route_semantic(self, query: str) -> Optional[Dict[str, Any]]:
+        """
+        Cognitive Brain Local Semantic Router:
+        Uses SOTIE's Experience Replay Buffer and dynamic token/vector similarity
+        to deterministically match core investigative intents (crime distributions,
+        hotspots, networks, offender risk, patrol planning, statutory lookups)
+        in sub-5ms without blocking on external cloud LLM round-trips.
+        """
+        if not query or len(query.strip()) < 3:
+            return None
+        q_low = query.lower()
+        # Don't hijack explicit web searches or external URL inquiries
+        if any(ws in q_low for ws in ("search the web", "web search", "google it", "google ", "find online", "on the internet", "the internet", "summarize this url", "read this url")):
+            return None
+        try:
+            from tool_training_optimizer import get_matching_tool_exemplars
+            exemplars = get_matching_tool_exemplars(query, limit=1)
+            if not exemplars:
+                return None
+            best = exemplars[0]
+            # Must meet minimum confidence score threshold
+            if best.get("score", 0.0) < 0.35:
+                return None
+
+            tool_name = best.get("tool")
+            if not tool_name:
+                return None
+
+            # Extract and merge runtime entities/parameters from the actual query
+            params = dict(best.get("parameters") or {})
+
+            # Dynamic District extraction if tool operates on district
+            if "district" in params or tool_name in ("get_case_types_distribution", "query_hotspots", "get_crime_trends", "plan_patrol_deployment", "list_cases", "rank_districts"):
+                from agent_loop import get_real_districts
+                real = get_real_districts()
+                real_d = ""
+                for item in sorted(real, key=len, reverse=True):
+                    if item and item.lower() in q_low:
+                        real_d = item
+                        break
+                if not real_d:
+                    for m in re.finditer(r"[a-z]{4,}", q_low):
+                        tok = m.group(0)
+                        if tok in ("bengaluru", "bangalore"):
+                            real_d = "Bengaluru Urban"
+                            break
+                        elif tok in ("mysore", "mysuru"):
+                            real_d = "Mysuru"
+                            break
+                        elif tok in ("belgaum", "belagavi"):
+                            real_d = "Belagavi"
+                            break
+                        elif tok in ("mangalore", "mangaluru"):
+                            real_d = "Mangaluru City"
+                            break
+                        elif tok in ("hubballi", "hubli", "dharwad"):
+                            real_d = "Hubballi-Dharwad"
+                            break
+                if real_d and tool_name != "rank_districts":
+                    params["district"] = real_d
+
+            # Case number extraction
+            m_case = re.search(r"\bCR-\d{4}-\d+\b", query, re.IGNORECASE)
+            if m_case:
+                params["case_no"] = m_case.group(0).upper()
+                if "crime_no" in params or tool_name in ("generate_case_dossier", "summarize_case"):
+                    params["crime_no"] = m_case.group(0).upper()
+
+            return {"tool": tool_name, "parameters": params}
+        except Exception as e:
+            logger.warning(f"Cognitive Brain _route_semantic failed (non-fatal): {e}")
+            return None
 
     # ---- 2. RELATIONSHIP UNDERSTANDING -----------------------------------
 

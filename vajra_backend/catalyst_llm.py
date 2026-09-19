@@ -353,13 +353,13 @@ class CatalystLLM:
             # can now hold an officer's chat turn open for minutes before
             # ever falling back -- accepted deliberately in exchange for
             # letting slow-but-working turns actually complete.
-            _last_failure_reason = "unknown"
-            for attempt, delay in enumerate([0, 3]):
+            _req_timeout = 15 if tools else 45
+            for attempt, delay in enumerate([0, 2] if tools else [0, 3]):
                 if delay:
                     time.sleep(delay)
                 try:
-                    logger.info(f"Posting to Catalyst LLM Serving endpoint (attempt {attempt + 1}): {self.endpoint_url}")
-                    res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=90)
+                    logger.info(f"Posting to Catalyst LLM Serving endpoint (attempt {attempt + 1}, timeout {_req_timeout}s): {self.endpoint_url}")
+                    res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=_req_timeout)
 
                     if res.status_code == 200:
                         data = res.json()

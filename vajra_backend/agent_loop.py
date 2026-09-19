@@ -80,10 +80,10 @@ def get_real_districts() -> List[str]:
 # narrow: any conjunction ("and", "compare", "vs") bails out to the normal
 # pipeline rather than risk truncating a real multi-part question.
 _FAST_PATH_PATTERNS = [
-    (re.compile(r"^(?:show\s+)?top\s+(?:crimes?|offences?|cases?)\s+(?:in|for|at)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "get_case_types_distribution"),
-    (re.compile(r"^(?:show\s+)?(?:crime\s+)?distribution\s+(?:in|for|at)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "get_case_types_distribution"),
-    (re.compile(r"^(?:show\s+)?(?:crime\s+)?trends?\s+(?:in|for|at)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "get_crime_trends"),
-    (re.compile(r"^(?:show\s+)?(?:crime\s+)?hotspots?\s+(?:in|for|at)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "query_hotspots"),
+    (re.compile(r"^(?:show\s+)?(?:the\s+)?(?:top|most\s+frequent|highest|main|common)\s+(?:crimes?|offences?|cases?)\s+(?:in|for|at|of|across)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "get_case_types_distribution"),
+    (re.compile(r"^(?:show\s+)?(?:the\s+)?(?:crime\s+)?(?:distribution|breakdown|statistics|stats|categories)\s+(?:in|for|at|of|across)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "get_case_types_distribution"),
+    (re.compile(r"^(?:show\s+)?(?:the\s+)?(?:crime\s+)?trends?\s+(?:in|for|at|of|across)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "get_crime_trends"),
+    (re.compile(r"^(?:show\s+)?(?:the\s+)?(?:crime\s+)?hotspots?\s+(?:in|for|at|of|across)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "query_hotspots"),
 ]
 
 
@@ -91,11 +91,27 @@ def check_fast_path_intent(query: str, real_districts: List[str]) -> Optional[Di
     cleaned = re.sub(r"[?!.,]+$", "", (query or "").strip())
     if not cleaned or re.search(r"\b(and|compare|vs|versus|while|between|also)\b", cleaned, re.IGNORECASE):
         return None
+    # Strip conversational filler prefix so natural phrasings match instantly
+    cleaned = re.sub(r"^(?:what\s+(?:are|is)\s+(?:the\s+)?|tell\s+me\s+(?:about\s+)?(?:the\s+)?|can\s+you\s+(?:show|give|tell)\s+(?:me\s+)?(?:the\s+)?|please\s+(?:show|give|tell\s+me\s+)?(?:the\s+)?|give\s+me\s+(?:the\s+)?|show\s+(?:me\s+)?(?:the\s+)?|list\s+(?:the\s+)?|which\s+(?:are\s+)?(?:the\s+)?|what\s+are\s+)", "", cleaned, flags=re.IGNORECASE).strip()
     for pattern, tool_name in _FAST_PATH_PATTERNS:
         match = pattern.match(cleaned)
         if match:
             raw_dist = match.group("district").strip()
-            resolved = next((d for d in real_districts if raw_dist.lower() in d.lower() or d.lower() in raw_dist.lower()), None)
+            # Direct or colloquial alias resolution
+            resolved = None
+            rd_low = raw_dist.lower()
+            if rd_low in ("bengaluru", "bangalore"):
+                resolved = "Bengaluru Urban"
+            elif rd_low in ("mysore", "mysuru"):
+                resolved = "Mysuru"
+            elif rd_low in ("belgaum", "belagavi"):
+                resolved = "Belagavi"
+            elif rd_low in ("mangalore", "mangaluru"):
+                resolved = "Mangaluru City"
+            elif rd_low in ("hubli", "hubballi", "dharwad"):
+                resolved = "Hubballi-Dharwad"
+            else:
+                resolved = next((d for d in real_districts if raw_dist.lower() in d.lower() or d.lower() in raw_dist.lower()), None)
             if resolved:
                 return {"tool": tool_name, "parameters": {"district": resolved}}
     return None
@@ -1848,7 +1864,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             (["trend", "over time", "increasing", "decreasing", "seasonal pattern"], "get_crime_trends",
              {"district": district, "crime_group": crime_group, "months": months_g}, "yes"),
             (["pie chart", "case types", "types of cases", "distribution of cases", "cases by type", "crime categories",
-              "breakdown", "distribution"], "get_case_types_distribution",
+              "breakdown", "distribution", "top crimes", "top crime", "most frequent crimes", "common crimes", "crime breakdown", "crime statistics", "crime stats", "highest crime types", "top offences", "top cases"], "get_case_types_distribution",
              {"district": district, "crime_group": crime_group, "years_back": years_back_g}, "yes"),
             (["demographic", "socio-economic", "socio economic", "correlation"], "get_demographic_correlation", {"district": district}, district),
             (["repeat offender", "habitual"], "get_repeat_offenders", {"district": district}, "yes"),
@@ -2914,7 +2930,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
     @staticmethod
     def _extract_json(content_str: str) -> str:
-        """
+        r"""
         The deployed GLM model (crm-di-glm47b_30b_it) is a "thinking" model --
         it emits step-by-step reasoning text before the actual answer, often
         ending with the real JSON inside a ```json fenced block (confirmed

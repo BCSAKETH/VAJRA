@@ -1681,7 +1681,7 @@ export const AIChatScreen: React.FC = () => {
   const isSupervisor = roleTier === "supervisor";
 
   const composerContent = (
-    <div className={`${composerWidthCls} mx-auto space-y-4 w-full transition-all duration-200`}>
+    <div className={`${composerWidthCls} mx-auto space-y-4 w-full transition-all duration-200 pointer-events-auto`}>
       {/* Suggestion Chips */}
       {chatMessages.length === 0 && (
         <div className="flex flex-wrap gap-2 justify-center">
@@ -2104,25 +2104,16 @@ export const AIChatScreen: React.FC = () => {
           role="region"
           aria-label={lang === "en" ? "VAJRA AI Copilot Prompt Composer" : "VAJRA AI ಪ್ರಾಂಪ್ಟ್ ಕಂಪೋಸರ್"}
         >
-          {/* Section 168 (Finals-part 5.md Module 5): the previous 8px
-              solid-to-transparent gradient sat directly above a fully
-              transparent padded wrapper, so the fade's opaque bottom edge
-              met bare transparency in a single pixel row -- a visible hard
-              seam across the screen width wherever message content
-              scrolled behind it. Extending the gradient's reach down
-              through the composer's own backdrop (via a shared backdrop-
-              blur + a soft low-opacity tint on the wrapper itself) removes
-              that discontinuity and reads as one continuous glass surface
-              instead of a fade meeting a cliff. */}
-          <div className="relative backdrop-blur-md">
-            <div className="pointer-events-none absolute inset-x-0 -top-16 h-16 bg-gradient-to-t from-[var(--color-background-dark)] to-transparent" />
-            <div className="pointer-events-none absolute inset-0 bg-[var(--color-background-dark)]/30" />
-            <div
-              ref={composerRef}
-              className="relative pointer-events-auto p-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))]"
-            >
-              {composerContent}
-            </div>
+          {/* Floating composer capsule: only the centered input box itself is
+              translucent (via .glass-panel + .composer-elevation). The full-width
+              translucent bar, backdrop-blur, and gradient seam across the bottom
+              of the viewport have been completely removed. Pointer-events are kept
+              transparent on outer gutters so clicks pass through to thread content. */}
+          <div
+            ref={composerRef}
+            className="p-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))]"
+          >
+            {composerContent}
           </div>
         </div>
       )}
