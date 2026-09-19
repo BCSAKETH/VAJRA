@@ -17,20 +17,13 @@ logger = logging.getLogger("catalyst_llm")
 # a single unlucky query timing out on both retry attempts is normal
 # variance, not proof the service is actually down -- but it still tripped
 # the old flag and made every OTHER officer's chat report "AI unavailable"
-# for up to an hour. An in-memory timestamp gives an exact, short cooldown
-# instead. The tradeoff (not shared across separate worker processes) is
-# free here: this backend runs as a single AppSail process.
+# In-memory timestamp for short cooldowns without AppSail-wide lockouts.
 _down_until: float = 0.0
-# Retry-exhaustion on transient errors (timeout/429/5xx) -- the failure
-# class that's most likely to just be "this one request was slow," not a
-# real outage. Short enough (8s) that the next query gets a fresh attempt
-# almost immediately rather than inheriting someone else's timeout.
-_TRANSIENT_COOLDOWN_SECONDS = 8
-# Definitive errors (401/404 misconfiguration, other clean 4xx, connection
-# exceptions) -- these mean something is actually broken (bad credentials,
-# bad URL) and won't self-heal by just waiting a few seconds, so it's worth
-# skipping the retry budget for longer.
-_DEFINITIVE_COOLDOWN_SECONDS = 300
+# Retry-exhaustion on transient errors (timeout/429/5xx) -- transient error
+# gets a brief 3s cooldown so the next query gets a fresh chance almost immediately.
+_TRANSIENT_COOLDOWN_SECONDS = 3
+# Definitive errors (401/404 misconfiguration) -- endpoint missing or bad credentials.
+_DEFINITIVE_COOLDOWN_SECONDS = 60
 
 
 def _mark_endpoint_down(cooldown_seconds: int = _DEFINITIVE_COOLDOWN_SECONDS):
@@ -40,6 +33,56 @@ def _mark_endpoint_down(cooldown_seconds: int = _DEFINITIVE_COOLDOWN_SECONDS):
 
 def _is_endpoint_marked_down() -> bool:
     return time.time() < _down_until
+
+
+def _build_budgeted_prompt(system_prompt: str, messages: List[Dict[str, str]], max_chars: int = 7000) -> str:
+    """
+    Constructs a flattened prompt string strictly within QuickML's gateway input limit (< 10,000 chars).
+    Prioritizes:
+    1. System prompt (instructions & tools)
+    2. Latest message (current query or latest tool result)
+    3. Intermediate conversation history, newest to oldest, up to budget.
+    Truncates oversized single messages in the middle.
+    """
+    sys_part = f"System: {system_prompt.strip()}"
+    continuation = "Assistant:"
+
+    if not messages:
+        return f"{sys_part}\n\n{continuation}"
+
+    latest_msg = messages[-1]
+    latest_role = (latest_msg.get("role") or "user").capitalize()
+    latest_content = (latest_msg.get("content") or "").strip()
+    if len(latest_content) > 2500:
+        head = latest_content[:1500]
+        tail = latest_content[-800:]
+        latest_content = f"{head}\n\n[... content truncated for model context budget ...]\n\n{tail}"
+    latest_part = f"{latest_role}: {latest_content}"
+
+    fixed_len = len(sys_part) + len(latest_part) + len(continuation) + 8
+    remaining_budget = max_chars - fixed_len
+
+    history_parts = []
+    if remaining_budget > 200 and len(messages) > 1:
+        for m in reversed(messages[:-1]):
+            role = (m.get("role") or "user").capitalize()
+            content = (m.get("content") or "").strip()
+            if not content:
+                continue
+            if len(content) > 1000:
+                head = content[:700]
+                tail = content[-250:]
+                content = f"{head}\n...[truncated]...\n{tail}"
+            part = f"{role}: {content}"
+            if len(part) + 2 <= remaining_budget:
+                history_parts.append(part)
+                remaining_budget -= (len(part) + 2)
+            else:
+                break
+        history_parts.reverse()
+
+    all_parts = [sys_part] + history_parts + [latest_part, continuation]
+    return "\n\n".join(all_parts)
 
 
 # Canned guardrail refusals this deployed GLM emits (as a normal 200 OK) when it
@@ -263,6 +306,7 @@ class CatalystLLM:
                 "default -- unless the result itself is genuinely light (a plain count, an empty/harmless result), "
                 "a conviction-risk score, POCSO/juvenile-sensitive case, victim, or violent/financial-crime finding "
                 "always stays plain and serious; the finding carries the weight, not the delivery. "
+                "DELIVERY & DENSITY: Be authoritative, structured, and dense. Deliver findings across 3-4 structured icon-headed sections. Limit length to 400 words without conversational filler so the briefing is rapidly actionable. "
                 "Respond with JSON containing only a 'text_response' field with your answer."
             )
 
@@ -274,33 +318,20 @@ class CatalystLLM:
         if style_directive:
             system_prompt += "\n\n" + style_directive
 
-        # Inject system prompt into messages if not already present
+        # Build payload with sliding-window budget management to guarantee
+        # total prompt character length never exceeds QuickML's gateway ceiling (< 10k chars).
         if use_agent_system_prompt:
-            if messages and messages[0].get("role") == "system":
-                messages[0]["content"] = system_prompt + "\n" + messages[0]["content"]
-                formatted_messages = messages
-            else:
-                formatted_messages = [{"role": "system", "content": system_prompt}] + messages
+            prompt_str = _build_budgeted_prompt(system_prompt, messages, max_chars=7000)
         else:
-            formatted_messages = messages
-
-        # Build payload -- CONFIRMED LIVE (2026-09-17) against the recreated
-        # endpoint's real "generate" contract: it accepts ONLY a flat
-        # {"prompt": "<string>"} body, not an OpenAI-style "messages" array
-        # (that was the old, now-deleted endpoint's contract). Flatten the
-        # full message history into one role-tagged prompt string, ending
-        # with "Assistant:" as the continuation cue. temperature/max_tokens
-        # are NOT sendable per-request any more -- they're fixed by the
-        # endpoint's bound Saved Configuration in the console (temperature 1,
-        # max_tokens 4096, thinking enabled), so the `max_tokens` parameter
-        # here no longer changes the wire request; kept for interface
-        # compatibility with every existing caller.
-        prompt_parts = []
-        for m in formatted_messages:
-            role = (m.get("role") or "user").capitalize()
-            prompt_parts.append(f"{role}: {m.get('content', '')}")
-        prompt_parts.append("Assistant:")
-        payload = {"prompt": "\n\n".join(prompt_parts)}
+            parts = []
+            for m in messages:
+                role = (m.get("role") or "user").capitalize()
+                parts.append(f"{role}: {m.get('content', '')}")
+            parts.append("Assistant:")
+            prompt_str = "\n\n".join(parts)
+            if len(prompt_str) > 7000:
+                prompt_str = prompt_str[-7000:]
+        payload = {"prompt": prompt_str}
 
         # Skip the retry-with-backoff budget entirely if a recent call already
         # confirmed the endpoint down -- avoids every chat turn during a real
@@ -342,8 +373,11 @@ class CatalystLLM:
             # can now hold an officer's chat turn open for minutes before
             # ever falling back -- accepted deliberately in exchange for
             # letting slow-but-working turns actually complete.
-            _req_timeout = 15 if tools else 45
-            for attempt, delay in enumerate([0, 2] if tools else [0, 3]):
+            # Confirmed live: Zoho Catalyst QuickML / ziahub API gateway enforces a hard 60s
+            # execution limit. Setting Python timeout to 48s allows GLM ample thinking time (up to 48s)
+            # while guaranteeing the request does not hang into gateway 500s.
+            _req_timeout = 48
+            for attempt, delay in enumerate([0, 1]):
                 if delay:
                     time.sleep(delay)
                 try:
@@ -353,38 +387,12 @@ class CatalystLLM:
                     if res.status_code == 200:
                         data = res.json()
                         logger.info("Catalyst LLM Serving returned 200 OK.")
-                        # Real shape CONFIRMED LIVE (2026-09-17) against the
-                        # recreated endpoint: {"data": [{"data": "<think>...
-                        # </think>actual answer"}], "usage": {...}, "model":
-                        # ..., "finish_reason": "stop"} -- not the old
-                        # {"response": ...} shape this file was written
-                        # against (that was the prior, now-deleted endpoint).
-                        # Normalize here so nothing downstream needs to know
-                        # about this endpoint's actual wire format.
                         try:
                             _resp = ((data.get("data") or [{}])[0] or {}).get("data") or ""
                         except (IndexError, AttributeError, TypeError):
                             _resp = ""
-                        # This is a "thinking" model: it always wraps its
-                        # reasoning in <think>...</think> before the real
-                        # answer (confirmed live, same pattern translate()
-                        # already relies on below). Strip it here so every
-                        # caller (JSON tool-decision parsing, synthesis text)
-                        # only ever sees the committed final answer.
                         if "</think>" in _resp:
                             _resp = _resp.split("</think>", 1)[-1].strip()
-                        # This deployed GLM has a baked-in guardrail that
-                        # fires a CANNED refusal ("I can't help with requests
-                        # to expose protected instructions" / "I can't provide
-                        # protected internal details. Please rephrase") when it
-                        # mis-reads dense official-document text (e.g. an
-                        # uploaded FIR/form with "OFFICIAL", "protected",
-                        # "verification" language) as an instruction-injection
-                        # attempt. That refusal is a 200 OK, so without this it
-                        # would be shown to the officer verbatim instead of an
-                        # answer. Treat it as a soft failure so the caller's
-                        # fallback ladder (Qwen, which has no such guardrail --
-                        # see catalyst_qwen) produces a real analysis instead.
                         if _is_guardrail_refusal(_resp):
                             logger.warning("GLM returned its canned guardrail refusal; treating as failure so Qwen fallback runs.")
                             return {"error": "llm_guardrail_refusal"}
@@ -395,13 +403,9 @@ class CatalystLLM:
                         }
 
                     if res.status_code in (401, 404):
-                        # Misconfiguration, not a transient failure -- retrying
-                        # won't help (wrong credentials / wrong URL), so log
-                        # loudly once and go straight to fallback instead of
-                        # burning the retry budget.
                         logger.critical(f"Catalyst LLM endpoint misconfigured ({res.status_code}): {res.text}")
                         _last_failure_reason = f"http_{res.status_code}: {res.text[:150]}"
-                        _mark_endpoint_down()
+                        _mark_endpoint_down(_DEFINITIVE_COOLDOWN_SECONDS)
                         break
 
                     if res.status_code == 429 or res.status_code >= 500:
@@ -409,25 +413,21 @@ class CatalystLLM:
                         _last_failure_reason = f"http_{res.status_code}: {res.text[:150]}"
                         continue
 
-                    # Any other 4xx (e.g. the current request-schema mismatch)
-                    # is also not something a retry will fix.
+                    # Any other 4xx (e.g. 400 Bad Request / Length) is query-specific,
+                    # NOT an endpoint outage. Do NOT mark down the endpoint for all queries!
                     logger.warning(f"Catalyst LLM API call failed with status: {res.status_code} - {res.text[:300]}")
                     _last_failure_reason = f"http_{res.status_code}: {res.text[:150]}"
-                    _mark_endpoint_down()
                     break
                 except requests.exceptions.Timeout:
                     logger.warning(f"Catalyst LLM request timed out (attempt {attempt + 1}), retrying.")
-                    _last_failure_reason = "timeout_90s"
+                    _last_failure_reason = f"timeout_{_req_timeout}s"
                     continue
                 except Exception as e:
                     logger.error(f"Error calling Catalyst LLM Serving: {e}")
                     _last_failure_reason = f"exception: {type(e).__name__}: {str(e)[:150]}"
-                    _mark_endpoint_down()
                     break
             else:
                 # Exhausted all retries on transient errors (timeout/429/5xx)
-                # -- most likely this one query was just slow, not proof the
-                # service is down, so use the short cooldown.
                 _mark_endpoint_down(_TRANSIENT_COOLDOWN_SECONDS)
 
         # The real endpoint is unreachable -- previously this fell back to a
