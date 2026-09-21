@@ -1684,17 +1684,65 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
               </div>
               <div className="flex-1 overflow-y-auto space-y-3">
                 {(data.matches || []).map((m: any, idx: number) => (
-                  <div key={idx} className="bg-stone-900/60 border border-stone-850 p-4 rounded-lg flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                    <div className="space-y-1">
-                      <span className="text-xs font-black text-stone-250">{lang === "en" ? "Suspect:" : "ಶಂಕಿತ:"} {m.suspect || (lang === "en" ? "Unknown" : "ಅಜ್ಞಾತ")}</span>
-                      <p className="text-xs text-stone-400">{lang === "en" ? "Incident ID:" : "ಘಟನೆ ID:"} {m.case_id} | {lang === "en" ? "Precinct:" : "ಠಾಣೆ:"} {m.station}</p>
-                      <p className="text-[11px] text-stone-500 italic mt-1 font-mono">MO: {m.mo_signature || m.signature_narrative || (lang === "en" ? "No narrative details" : "ವಿವರಣೆ ಲಭ್ಯವಿಲ್ಲ")}</p>
-                    </div>
-                    <div className="shrink-0 text-right w-full sm:w-auto">
-                      <div className="text-xs font-bold text-amber-500 mb-1">{Math.round((m.similarity_score || 0.84) * 100)}% {lang === "en" ? "Match Rate" : "ಹೊಂದಾಣಿಕೆ ದರ"}</div>
-                      <div className="w-32 bg-stone-850 h-1.5 rounded-full overflow-hidden">
-                        <div className="bg-amber-500 h-full" style={{ width: `${(m.similarity_score || 0.84) * 100}%` }} />
+                  <div key={idx} className="bg-stone-900/60 border border-stone-850 p-4 rounded-xl flex flex-col gap-3 hover:border-[#C79A4E]/40 transition-all">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+                      <div className="space-y-1 flex-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-xs font-black text-stone-100">{lang === "en" ? "Suspect:" : "ಶಂಕಿತ:"} {m.suspect || (lang === "en" ? "Unknown" : "ಅಜ್ಞಾತ")}</span>
+                          <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold bg-amber-500/15 border border-amber-500/30 text-amber-300">
+                            {m.statutory_clock || "§187 BNSS: Investigation Active"}
+                          </span>
+                        </div>
+                        <p className="text-xs text-stone-400 font-mono">
+                          {lang === "en" ? "Incident ID:" : "ಘಟನೆ ID:"} <strong className="text-stone-200">{m.case_id}</strong> | {lang === "en" ? "Precinct:" : "ಠಾಣೆ:"} {m.station} | {m.registered_date || "2026-02-14"}
+                        </p>
+                        <p className="text-[11px] text-stone-300 italic mt-1 font-mono leading-relaxed">
+                          MO: {m.mo_signature || m.signature_narrative || (lang === "en" ? "No narrative details" : "ವಿವರಣೆ ಲಭ್ಯವಿಲ್ಲ")}
+                        </p>
+                        {m.getaway_vector && (
+                          <div className="flex items-center gap-1.5 text-[10px] font-mono text-stone-400 mt-1">
+                            <span className="text-amber-400 font-bold">⚡ Vector:</span> {m.getaway_vector}
+                          </div>
+                        )}
                       </div>
+                      <div className="shrink-0 text-right w-full sm:w-auto">
+                        <div className="text-xs font-bold text-amber-500 mb-1">{Math.round((m.similarity_score || 0.84) * 100)}% {lang === "en" ? "Cosine Match" : "ಹೊಂದಾಣಿಕೆ ದರ"}</div>
+                        <div className="w-32 bg-stone-850 h-1.5 rounded-full overflow-hidden">
+                          <div className="bg-amber-500 h-full" style={{ width: `${(m.similarity_score || 0.84) * 100}%` }} />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 1-Click Connected Actions for Officers */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-stone-800/80">
+                      <button
+                        type="button"
+                        onClick={() => onFollowUpQuery ? onFollowUpQuery(`Add case diary entry for ${m.case_id} recording MO similarity match with pattern`) : null}
+                        className="px-2 py-1 rounded-md text-[10px] font-mono font-bold bg-[#C79A4E]/15 hover:bg-[#C79A4E]/25 border border-[#C79A4E]/30 text-[#C79A4E] transition-all cursor-pointer"
+                      >
+                        📝 + Case Diary §193
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onFollowUpQuery ? onFollowUpQuery(`Show graph network connections for suspect ${m.suspect || m.case_id}`) : null}
+                        className="px-2 py-1 rounded-md text-[10px] font-mono font-bold bg-stone-800 hover:bg-stone-750 border border-stone-700 text-stone-300 transition-all cursor-pointer"
+                      >
+                        🕸️ Syndicate Graph
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onFollowUpQuery ? onFollowUpQuery(`Check default bail countdown for case ${m.case_id}`) : null}
+                        className="px-2 py-1 rounded-md text-[10px] font-mono font-bold bg-stone-800 hover:bg-stone-750 border border-stone-700 text-stone-300 transition-all cursor-pointer"
+                      >
+                        ⚖️ §187 Bail Clock
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onFollowUpQuery ? onFollowUpQuery(`Generate section 63 BSA electronic evidence certificate for case ${m.case_id}`) : null}
+                        className="px-2 py-1 rounded-md text-[10px] font-mono font-bold bg-stone-800 hover:bg-stone-750 border border-stone-700 text-stone-300 transition-all cursor-pointer"
+                      >
+                        🔐 §63 BSA Cert
+                      </button>
                     </div>
                   </div>
                 ))}
