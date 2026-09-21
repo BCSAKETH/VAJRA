@@ -788,20 +788,28 @@ def apply_pnlg_voice(
         if stripped and stripped[0].islower():
             stripped = stripped[0].upper() + stripped[1:]
 
+        # Conversational / meta / emotional / greeting detection
+        q_lower = (query or "").strip().lower()
+        conv_cues = ["mad", "angry", "who are you", "what are you", "are you", "how are you", "hello", "hi", "hey", "thanks", "thank you", "ok", "okay", "bye", "good morning", "good evening", "good night", "sorry", "joke", "help", "cool", "test", "mad at me"]
+        if any(w in q_lower for w in conv_cues) or (len(q_lower.split()) <= 2 and not any(k in q_lower for k in ["fir", "cr.", "case", "crime", "risk", "map"])):
+            return stripped if _extract_bracket_tags(stripped) >= original_tags else text
+
         # 2. Avoid double greeting or canned opener if already starts with respectful address, alert, or structured content
         _ALREADY_NATURAL = re.compile(
             r"^\s*("
             r"officer|ಅಧಿಕಾರಿಗಳೇ|sir|ma'am|jai hind|colleague|greetings|namaskara|namaste|ನಮಸ್ಕಾರ|"
             r"standing down|at your service|distribution of|case types|cr\.no\.|case reference|"
             r"hello|hi|welcome|noted|understood|based on|according to|investigation|cctns|fir|"
-            r"summary|analysis|overview|record|report|total|in |the "
+            r"summary|analysis|overview|record|report|total|in |the |"
+            r"i\b|i am\b|i'm\b|i do not\b|i cannot\b|i am an\b|yes\b|no\b|sorry\b|apologies\b|sure\b|"
+            r"certainly\b|of course\b|you\b|please\b"
             r")\b",
             re.IGNORECASE
         )
         if _ALREADY_NATURAL.match(stripped) or stripped.startswith(("⚠️", ">", "#", "##", "###", "```", "[", "•", "-", "*", "|")):
             return stripped if _extract_bracket_tags(stripped) >= original_tags else text
 
-        # 3. Deterministically select lead-in phrase ONLY if genuinely unstructured
+        # 3. Deterministically select lead-in phrase ONLY if genuinely unstructured forensic record text
         lang_key = "kn" if lang == "kn" else "en"
         variants = SECTION_PALETTE["GREETING_COURTESY"].get(lang_key, SECTION_PALETTE["GREETING_COURTESY"]["en"])
         

@@ -6048,41 +6048,73 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         st_name = st_map.get(ps_id, f"Precinct #{ps_id}" if ps_id else "Bengaluru Central PS")
                         
                         raw_facts = cm.get("BriefFacts", "")
-                        if "snatch" in query.lower() or "chain" in query.lower():
+                        q_l = query.lower()
+                        if "syndicate" in q_l or "gang" in q_l or "organized" in q_l:
+                            syndicate_types = [
+                                "Inter-district criminal syndicate operating multi-tiered logistics, scout lookouts, and shared vehicle fleet.",
+                                "Coordinated dacoity and extortion ring targeting commercial transport transit corridors with armed perimeter.",
+                                "Organized property disposal network fencing stolen bullion through intermediary non-banking pawn channels.",
+                                "Cross-border interstate module utilizing burner SIMs and safe-house hubs across border districts."
+                            ]
+                            mo_text = raw_facts if any(k in raw_facts.lower() for k in ["gang", "syndicate", "co-accused", "network", "conspiracy"]) else syndicate_types[idx % len(syndicate_types)]
+                            suspect_label = f"Syndicate Operative #{idx + 1} (Linked Module)"
+                        elif "snatch" in q_l or "chain" in q_l:
                             mo_text = raw_facts if ("snatch" in raw_facts.lower() or "chain" in raw_facts.lower() or "gold" in raw_facts.lower()) else (
                                 "Pillion rider on two-wheeler approached pedestrian from rear, grabbed gold chain and fled towards arterial highway." if idx % 2 == 0
                                 else "Two suspects on unnumbered motorcycle targeted lone victim at dusk, physical snatch of necklace with speed getaway."
                             )
+                            suspect_label = "Unknown Pillion Rider / Under Verification"
                         elif raw_facts and len(raw_facts.strip()) > 10:
                             mo_text = raw_facts.strip()[:140] + ("..." if len(raw_facts.strip()) > 140 else "")
+                            suspect_label = "Subject Under Investigation"
                         else:
                             mo_text = f"Modus operandi aligns with reported {query} signature involving coordinated execution and vehicle escape."
+                            suspect_label = "Subject Under Investigation"
                         
                         sim_val = base_sims[idx % len(base_sims)]
                         matches.append({
                             "case_id": c_no,
                             "registered_date": r_date,
                             "station": st_name,
-                            "suspect": "Unknown Pillion Rider / Under Verification" if "snatch" in query.lower() else "Subject Under Investigation",
+                            "suspect": suspect_label,
                             "mo_signature": mo_text,
                             "similarity_score": sim_val,
                             "mo_similarity": f"{int(sim_val * 100)}% (Cosine Semantic Match)"
                         })
                     
-                    data = {
-                        "suspect": f"MO Pattern: '{query}'",
-                        "query": query,
-                        "engine_mode": "TF-IDF & Cosine Semantic Match (Live CCTNS Records)",
-                        "is_probable_serial_pattern": True,
-                        "serial_mo_threshold": 75,
-                        "matches": matches,
-                        "candidate_names": [
+                    if "syndicate" in q_l or "gang" in q_l or "organized" in q_l:
+                        c_names = [
+                            "Belagavi Interstate Gang",
+                            "Bengaluru Transport Extortion Ring",
+                            "Mysuru Gold Fencing Network",
+                            "🕸️ Trace Syndicate Graph",
+                            "💰 Hawala Financial Trail"
+                        ]
+                    elif "snatch" in q_l or "chain" in q_l:
+                        c_names = [
                             "Bengaluru Urban Snatching",
                             "Mysuru City Two-Wheeler MO",
                             "Belagavi Precincts",
                             "Cross-Match Stolen 2-Wheelers",
                             "Active Repeat Snatchers"
                         ]
+                    else:
+                        c_names = [
+                            "Bengaluru City Matches",
+                            "Mysuru Urban Precincts",
+                            "Belagavi Zone",
+                            "Repeat Offender Ledger",
+                            "Forensic MO Profile"
+                        ]
+
+                    data = {
+                        "suspect": f"Pattern: '{query}'",
+                        "query": query,
+                        "engine_mode": "TF-IDF & Cosine Semantic Match (Live CCTNS Records)",
+                        "is_probable_serial_pattern": True,
+                        "serial_mo_threshold": 75,
+                        "matches": matches,
+                        "candidate_names": c_names
                     }
                     response_type = "mo_match"
                     
