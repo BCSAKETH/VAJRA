@@ -6173,15 +6173,26 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     for m in matches[:4]:
                         lines.append(f"• **{m['case_id']}** ({m['mo_similarity']} · {m['station']}): {m['mo_signature']}")
                     
-                    lines.append(
-                        "\n---\n"
-                        "❓ **Investigative Clarifications & Tactical Refinements:**\n"
-                        "Your query did not specify a district, suspect, or timeframe. You can narrow this lead using:\n"
-                        "1. **District / Precinct:** Narrow to *Bengaluru Urban*, *Mysuru City*, or *Belagavi*.\n"
-                        "2. **Timeframe Filter:** Query cases from the *Last 90 Days* vs *Multi-Year Archive*.\n"
-                        "3. **Vehicle / Stolen Asset Linkage:** Cross-reference against recently stolen two-wheelers (e.g., Pulsar, Apache, FZ) used in getaways.\n\n"
-                        "👉 *Select any quick chip below or type your refined parameters.*"
-                    )
+                    if "syndicate" in q_l or "gang" in q_l or "organized" in q_l:
+                        lines.append(
+                            "\n---\n"
+                            "❓ **Investigative Clarifications & Syndicate Intelligence Refinements:**\n"
+                            "Your query did not specify a target district, illicit trade category, or financial vector across Karnataka. You can narrow this intelligence lead using:\n"
+                            "1. **Jurisdiction / Corridor:** Narrow to *Bengaluru Urban*, *Belagavi Interstate Border*, *Mysuru Corridor*, or *Coastal Mangaluru*.\n"
+                            "2. **Syndicate Crime Vertical:** Filter by *Transport & Commercial Extortion*, *Bullion Fencing*, *Cyber Mule Rings*, or *Interstate Dacoity*.\n"
+                            "3. **Financial & Hawala Vectors:** Trace shell accounts and seizure freeze trails under §106 BNSS.\n\n"
+                            "👉 *Select any quick chip below or type your refined parameters.*"
+                        )
+                    else:
+                        lines.append(
+                            "\n---\n"
+                            "❓ **Investigative Clarifications & Tactical Refinements:**\n"
+                            "Your query did not specify a district, suspect, or timeframe. You can narrow this lead using:\n"
+                            "1. **District / Precinct:** Narrow to *Bengaluru Urban*, *Mysuru City*, or *Belagavi*.\n"
+                            "2. **Timeframe Filter:** Query cases from the *Last 90 Days* vs *Multi-Year Archive*.\n"
+                            "3. **Vehicle / Stolen Asset Linkage:** Cross-reference against recently stolen two-wheelers (e.g., Pulsar, Apache, FZ) used in getaways.\n\n"
+                            "👉 *Select any quick chip below or type your refined parameters.*"
+                        )
                     
                     text_result = "\n".join(lines)
                     citations.append({"type": "TF-IDF / Cosine MO Engine", "id": query, "details": f"{len(matches)} grounded case patterns matched"})
