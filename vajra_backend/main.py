@@ -7970,8 +7970,8 @@ async def tts_endpoint(payload: TTSRequest, request: Request):
         speaker=speaker,
         style=style,
     )
-    if not result:
-        raise HTTPException(status_code=502, detail="Speech synthesis is temporarily unavailable.")
+    if not result or not result[0]:
+        return Response(content=b"", status_code=204)
     audio_bytes, media_type = result
     return Response(content=audio_bytes, media_type=media_type, headers={"X-Cache": cache_status})
 

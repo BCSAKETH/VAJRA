@@ -40,11 +40,9 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
   const [noteDraft, setNoteDraft] = useState("");
   // Loophole L4: disabled (not hidden) while a review call is in flight.
   const [isReviewing, setIsReviewing] = useState(false);
+  // Non-blocking background review tracker
+  const [inFlightReviews, setInFlightReviews] = useState<Record<number, boolean>>({});
   const [lastReview, setLastReview] = useState<{ taskId: number; text: string } | null>(null);
-  // §9.5 fix: real attachment state -- a picked file uploads via the
-  // lightweight storage-only endpoint (not the heavy Qwen/Zia pipeline
-  // /api/chat/attachments runs) the moment it's chosen, so `handleComplete`
-  // just sends the already-resolved stratus_id alongside the note.
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [isUploadingFile, setIsUploadingFile] = useState(false);
   const [attachmentStratusId, setAttachmentStratusId] = useState<string | null>(null);
@@ -83,7 +81,7 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
 
   const handlePickFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    e.target.value = ""; // allow re-picking the same file name later
+    e.target.value = "";
     if (!file) return;
     setUploadError(null);
     if (file.size > MAX_TASK_ATTACHMENT_BYTES) {
@@ -116,49 +114,51 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
     }
   };
 
-  const handleComplete = async (taskId: number) => {
-    // Client-side check is a UX nicety only -- the server enforces the real
-    // minimum-content gate regardless (Loophole L1).
+  const handleComplete = (taskId: number) => {
     if (noteDraft.trim().length < 15) return;
-    setIsReviewing(true);
-    try {
-      const res = await fetch(`${API_BASE}/api/investigations/${sessionId}/tasks/${taskId}/complete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ note: noteDraft.trim(), attachment_stratus_id: attachmentStratusId || undefined }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        setCompletingId(null);
-        setNoteDraft("");
-        setPendingFile(null);
-        setAttachmentStratusId(null);
-        setUploadError(null);
-        // 2026-09-15 upgrade: the AI review now cross-checks the note (and
-        // any attached evidence photo) against the case record and this
-        // investigation's own history, and can auto-add concrete follow-up
-        // tasks when it finds something worth checking. ai_flag (a
-        // discrepancy/uncertain summary) already renders per-task below via
-        // task.ai_flag once `load()` refetches -- this banner covers the
-        // one thing that wouldn't otherwise be obvious: new tasks having
-        // been silently added to the list underneath the one just closed.
+    const submittedNote = noteDraft.trim();
+    const stratusId = attachmentStratusId || undefined;
+
+    // Immediately unblock user: close input drawer and mark task as in-flight background review
+    setCompletingId(null);
+    setNoteDraft("");
+    setPendingFile(null);
+    setAttachmentStratusId(null);
+    setUploadError(null);
+    setInFlightReviews((prev) => ({ ...prev, [taskId]: true }));
+
+    // Run AI multimodal vision & forensic analysis in parallel background
+    fetch(`${API_BASE}/api/investigations/${sessionId}/tasks/${taskId}/complete`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({ note: submittedNote, attachment_stratus_id: stratusId }),
+    })
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((data) => {
         const addedCount = Array.isArray(data.tasks_added) ? data.tasks_added.length : 0;
         if (addedCount > 0) {
           const taskWord = addedCount === 1 ? (lang === "en" ? "task" : "ಕಾರ್ಯ") : (lang === "en" ? "tasks" : "ಕಾರ್ಯಗಳು");
           setLastReview({
             taskId,
             text: lang === "en"
-              ? `AI added ${addedCount} follow-up ${taskWord} based on this review: ${data.tasks_added.join("; ")}`
+              ? `AI added ${addedCount} follow-up ${taskWord} based on evidence review: ${data.tasks_added.join("; ")}`
               : `ಈ ಪರಿಶೀಲನೆಯ ಆಧಾರದ ಮೇಲೆ AI ${addedCount} ಅನುಸರಣಾ ${taskWord} ಸೇರಿಸಿದೆ: ${data.tasks_added.join("; ")}`,
           });
         } else if (data.follow_up_question) {
           setLastReview({ taskId, text: data.follow_up_question });
         }
         load();
-      }
-    } finally {
-      setIsReviewing(false);
-    }
+      })
+      .catch(() => {
+        load();
+      })
+      .finally(() => {
+        setInFlightReviews((prev) => {
+          const copy = { ...prev };
+          delete copy[taskId];
+          return copy;
+        });
+      });
   };
 
   return (
@@ -194,7 +194,7 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
               <div key={task.ROWID} className="border border-stone-850 rounded-lg p-2.5">
                 <button
                   onClick={() => {
-                    if (task.status === "done") return;
+                    if (task.status === "done" || inFlightReviews[task.ROWID]) return;
                     setCompletingId(completingId === task.ROWID ? null : task.ROWID);
                     setNoteDraft("");
                     setPendingFile(null);
@@ -202,10 +202,12 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
                     setUploadError(null);
                   }}
                   className="w-full flex items-start gap-2 text-left cursor-pointer disabled:cursor-not-allowed"
-                  disabled={task.status === "done"}
+                  disabled={task.status === "done" || Boolean(inFlightReviews[task.ROWID])}
                 >
                   {task.status === "done" ? (
                     <CheckCircle2 className="w-4 h-4 text-[#5DCAA5] shrink-0 mt-0.5" />
+                  ) : inFlightReviews[task.ROWID] ? (
+                    <Loader2 className="w-4 h-4 text-amber-400 shrink-0 mt-0.5 animate-spin" />
                   ) : (
                     <Circle className="w-4 h-4 text-stone-600 shrink-0 mt-0.5" />
                   )}
@@ -213,6 +215,14 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
                     {task.description}
                   </span>
                 </button>
+                
+                {inFlightReviews[task.ROWID] && (
+                  <div className="mt-2 pl-6 flex items-center gap-2 text-[10.5px] font-mono text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2.5 py-1.5 rounded-lg">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                    <span>{lang === "en" ? "AI Evidence Review in progress (background)..." : "ಹಿನ್ನೆಲೆಯಲ್ಲಿ AI ಸಾಕ್ಷ್ಯ ಪರಿಶೀಲನೆ ಪ್ರಗತಿಯಲ್ಲಿದೆ..."}</span>
+                  </div>
+                )}
+
                 {task.status === "done" && task.completion_note && (
                   <p className="text-[10px] text-stone-500 mt-1.5 pl-6 italic">"{task.completion_note}"</p>
                 )}
@@ -222,7 +232,7 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
                     <span>{task.ai_flag}</span>
                   </div>
                 )}
-                {completingId === task.ROWID && (
+                {completingId === task.ROWID && !inFlightReviews[task.ROWID] && (
                   <div className="mt-2 pl-6 space-y-2">
                     <textarea
                       value={noteDraft}
@@ -231,10 +241,6 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
                       rows={3}
                       className="w-full bg-stone-950/60 border border-stone-800 focus:border-[#C79A4E]/50 rounded-lg p-2 text-[11px] text-stone-200 focus:outline-none resize-none"
                     />
-                    {/* §9.5 fix: the real "+ upload" half of "forced note +
-                        upload" -- optional, never blocks completion on its
-                        own (the note's own 15-char minimum is the only hard
-                        gate, matching Loophole L3's advisory-only posture). */}
                     <input ref={fileInputRef} type="file" onChange={handlePickFile} className="hidden" />
                     {pendingFile ? (
                       <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-950/40">
@@ -268,13 +274,10 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
                     {uploadError && <p className="text-[10px] text-rose-400">{uploadError}</p>}
                     <button
                       onClick={() => handleComplete(task.ROWID)}
-                      disabled={isReviewing || isUploadingFile || noteDraft.trim().length < 15}
+                      disabled={isUploadingFile || noteDraft.trim().length < 15}
                       className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-[#C79A4E]/10 hover:bg-[#C79A4E]/20 border border-[#C79A4E]/30 text-[#C79A4E] text-[11px] font-bold disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
                     >
-                      {isReviewing ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-                      {isReviewing
-                        ? (lang === "en" ? "AI reviewing..." : "AI ಪರಿಶೀಲಿಸುತ್ತಿದೆ...")
-                        : (lang === "en" ? "Mark Complete" : "ಪೂರ್ಣಗೊಳಿಸಿ")}
+                      <span>{lang === "en" ? "Submit Note & Evidence for AI Review" : "AI ಪರಿಶೀಲನೆಗೆ ಸಲ್ಲಿಸಿ"}</span>
                     </button>
                   </div>
                 )}
