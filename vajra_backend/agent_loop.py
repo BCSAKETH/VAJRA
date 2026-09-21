@@ -11606,12 +11606,16 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     content = page.get("text") or page.get("content") or ""
                     title = page.get("title") or url
                     if content:
-                        clean_content = _sanitize_external_content(content[:1800])
+                        # Ad & Paywall Stripper (§Upgrade 47.2): Strip paywall banners, cookie prompts, and clutter
+                        stripped = re.sub(r"(?i)(accept\s+cookies|subscribe\s+to\s+read|advertisement|sponsored\s+content|sign\s+in\s+to\s+continue|turn\s+off\s+adblocker|cookie\s+policy)", "", content)
+                        stripped = re.sub(r"\n\s*\n+", "\n\n", stripped).strip()
+                        clean_content = _sanitize_external_content(stripped[:1800])
                         text_result = f"🌐 **Open-Source Web Intelligence: {title}**\n\n{clean_content}"
                         data = {
                             "url": url,
                             "title": title,
                             "domain": re.sub(r"https?://([^/]+).*", r"\1", url),
+                            "ad_paywall_stripped": True,
                             "content_summary": clean_content[:400] + "...",
                             "statutory_notice": "Unverified Open-Source OSINT. Must be corroborated before court submission.",
                             "sha256_hash": hashlib.sha256(content.encode()).hexdigest(),
