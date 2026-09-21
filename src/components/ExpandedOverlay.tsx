@@ -10,6 +10,7 @@ import { NetworkGraph } from "./NetworkGraph";
 import { downloadJson, downloadHotspotsAsGeoJson, downloadSvgAsPng } from "../lib/widgetExport";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { BASEMAP_TILES, BasemapMode } from "../lib/basemap";
+import { UniversalPoliceIntelCard, getTacticalMeta } from "./UniversalPoliceIntelCard";
 
 // Confirmed live: the old 10-color palette repeats via index % length once a
 // breakdown has more than 10 categories (real crime-type distributions
@@ -543,6 +544,21 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                     <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "District Benchmark" : "ಜಿಲ್ಲಾ ಮಾನದಂಡ"}</h3>
                   </>
                 )}
+                {![
+                  "map", "network", "risk", "forecast", "timeline", "mo_match",
+                  "correlation", "repeat_offenders", "crime_groups", "trend",
+                  "case_distribution", "case_funnel", "offender_timeline",
+                  "unit_scorecards", "district_benchmark", "case_list"
+                ].includes(type) && (() => {
+                  const meta = getTacticalMeta(type, data, lang);
+                  const HeaderIcon = meta.icon;
+                  return (
+                    <>
+                      <HeaderIcon className="w-5 h-5 text-[#C79A4E]" />
+                      <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{meta.title}</h3>
+                    </>
+                  );
+                })()}
               </>
             )}
           </div>
@@ -1982,6 +1998,21 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                 )}
               </div>
             </div>
+          )}
+
+          {![
+            "map", "network", "risk", "forecast", "timeline", "mo_match",
+            "correlation", "repeat_offenders", "crime_groups", "trend",
+            "case_distribution", "case_funnel", "offender_timeline",
+            "unit_scorecards", "district_benchmark", "case_list"
+          ].includes(type) && (
+            <UniversalPoliceIntelCard
+              type={type}
+              data={data}
+              lang={lang}
+              onFollowUpQuery={onFollowUpQuery}
+              onClose={onClose}
+            />
           )}
         </div>
       </div>

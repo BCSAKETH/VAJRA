@@ -1807,7 +1807,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
             <div className="divide-y divide-stone-850">
               {message.data.panels.map((panel: any, i: number) => {
                 const title = decodeDisplayText((lang === "kn" ? panel.title_kn : panel.title_en) || panel.title_en || "");
-                const isWidget = WIDGET_PANEL_TYPES.has(panel.type) && panel.data;
+                const isWidget = (WIDGET_PANEL_TYPES.has(panel.type) || (panel.data && typeof panel.data === "object" && Object.keys(panel.data).length > 0)) && panel.data;
                 return (
                   <div key={i} className="px-4 py-3">
                     <div className="flex items-center gap-2 mb-2 text-[10.5px] font-mono uppercase tracking-[0.14em] text-[#C79A4E]/90">
