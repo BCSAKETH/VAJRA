@@ -4622,13 +4622,27 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         raw_response = synthesis_res["choices"][0]["message"]["content"]
                         try:
                             desc = json.loads(self._extract_json(raw_response))
-                            fallback = self._strip_think(raw_response)
-                            response_text = desc.get("text_response") or desc.get("text") or fallback
+                            if "tool" in desc:
+                                # Model returned another tool call during synthesis turn
+                                sub_tool = desc["tool"]
+                                sub_params = desc.get("parameters", {})
+                                logger.info(f"Synthesis turn returned tool call {sub_tool}. Executing...")
+                                sub_res = self._execute_tool(sub_tool, sub_params, employee_id, session_id, user_unit_id)
+                                response_text = sub_res.get("text_result") or last_tool_text_result
+                                if sub_res.get("response_type") and sub_res.get("response_type") != "text":
+                                    response_type = sub_res.get("response_type")
+                                if sub_res.get("data") and isinstance(sub_res.get("data"), dict):
+                                    data_payload.update(sub_res.get("data"))
+                                if sub_res.get("citations"):
+                                    citations.extend(sub_res.get("citations"))
+                            else:
+                                fallback = self._strip_think(raw_response)
+                                response_text = desc.get("text_response") or desc.get("text") or fallback
                         except Exception:
                             response_text = self._strip_think(raw_response)
             except Exception as e:
                 logger.error(f"Error on final synthesis turn: {e}")
-                response_text = "I have successfully retrieved the files. Let me know if you need specific details."
+                response_text = last_tool_text_result or "I have successfully retrieved the files. Let me know if you need specific details."
 
         # A police intelligence platform should never present an answer
         # picked by keyword-matching as if it were real reasoning -- but
@@ -4658,6 +4672,29 @@ class VajraAgentLoop(CognitiveBrainMixin):
             response_type = "text"
             data_payload = {"status": "degraded_mode"}
             citations = [{"type": "System Status", "id": "Upstream LLM Latency", "details": "Generative reasoning temporarily paused; deterministic CCTNS lookups active."}]
+
+        # STRICT GUARD: Catch any unparsed tool JSON that slipped through to response_text
+        if response_text:
+            chk_t = response_text.strip()
+            if chk_t.startswith("{") and ('"tool"' in chk_t or '"parameters"' in chk_t):
+                try:
+                    leaked_dict = json.loads(self._extract_json(chk_t))
+                    if "tool" in leaked_dict:
+                        t_name = leaked_dict["tool"]
+                        t_params = leaked_dict.get("parameters", {})
+                        logger.warning(f"Intercepted leaked tool JSON for '{t_name}'. Executing directly.")
+                        t_out = self._execute_tool(t_name, t_params, employee_id, session_id, user_unit_id)
+                        response_text = t_out.get("text_result") or last_tool_text_result or "Intelligence analysis completed."
+                        if t_out.get("response_type") and t_out.get("response_type") != "text":
+                            response_type = t_out.get("response_type")
+                        if t_out.get("data") and isinstance(t_out.get("data"), dict):
+                            data_payload.update(t_out.get("data"))
+                        if t_out.get("citations"):
+                            citations.extend(t_out.get("citations"))
+                except Exception as _leak_e:
+                    logger.warning(f"Could not parse leaked tool JSON: {_leak_e}")
+                    if last_tool_text_result:
+                        response_text = last_tool_text_result
 
         # Update cached history
         history.append({"role": "assistant", "content": response_text})
