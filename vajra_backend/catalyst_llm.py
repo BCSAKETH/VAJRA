@@ -32,12 +32,14 @@ def _mark_endpoint_down(cooldown_seconds: int = _DEFINITIVE_COOLDOWN_SECONDS):
 
 
 def _is_endpoint_marked_down() -> bool:
-    return time.time() < _down_until
+    # Always attempt the query to give officers live execution without cascade lockouts
+    return False
 
 
-def _build_budgeted_prompt(system_prompt: str, messages: List[Dict[str, str]], max_chars: int = 7000) -> str:
+def _build_budgeted_prompt(system_prompt: str, messages: List[Dict[str, str]], max_chars: int = 9500) -> str:
     """
-    Constructs a flattened prompt string strictly within QuickML's gateway input limit (< 10,000 chars).
+    Constructs a flattened prompt string strictly within QuickML's gateway input limit (< 10,000 chars),
+    calibrated to a 9,500 character budget for maximum rich detail while preserving a safe buffer.
     Prioritizes:
     1. System prompt (instructions & tools)
     2. Latest message (current query or latest tool result)
@@ -53,9 +55,9 @@ def _build_budgeted_prompt(system_prompt: str, messages: List[Dict[str, str]], m
     latest_msg = messages[-1]
     latest_role = (latest_msg.get("role") or "user").capitalize()
     latest_content = (latest_msg.get("content") or "").strip()
-    if len(latest_content) > 2500:
-        head = latest_content[:1500]
-        tail = latest_content[-800:]
+    if len(latest_content) > 3500:
+        head = latest_content[:2200]
+        tail = latest_content[-1200:]
         latest_content = f"{head}\n\n[... content truncated for model context budget ...]\n\n{tail}"
     latest_part = f"{latest_role}: {latest_content}"
 
@@ -69,9 +71,9 @@ def _build_budgeted_prompt(system_prompt: str, messages: List[Dict[str, str]], m
             content = (m.get("content") or "").strip()
             if not content:
                 continue
-            if len(content) > 1000:
-                head = content[:700]
-                tail = content[-250:]
+            if len(content) > 1500:
+                head = content[:1000]
+                tail = content[-450:]
                 content = f"{head}\n...[truncated]...\n{tail}"
             part = f"{role}: {content}"
             if len(part) + 2 <= remaining_budget:
@@ -117,21 +119,31 @@ class CatalystLLM:
     Calls GLM-4.7-Flash using OAuth access tokens.
     """
     def __init__(self):
-        self.project_id = os.getenv("CATALYST_PROJECT_ID")
+        self.project_id = os.getenv("CATALYST_PROJECT_ID", "50212000000025002")
         self.region = os.getenv("CATALYST_REGION", "IN")
         domain = "in" if self.region == "IN" else "com"
 
-        # Pull endpoint URL from environment, fallback to standard BaaS QuickML endpoint structure
+        # Pull endpoint URL from environment, fallback to live confirmed GLM endpoint
         self.endpoint_url = os.getenv(
-            "CATALYST_LLM_ENDPOINT",
-            f"https://api.catalyst.zoho.{domain}/baas/v1/project/{self.project_id}/quickml/genai/llm/chat"
+            "CATALYST_LLM_ENDPOINT"
+        ) or f"https://console.catalyst.zoho.{domain}/quickml/v1/project/{self.project_id}/genai/endpoints/glm-flash-47/generate"
+        self.endpoint_key = os.getenv(
+            "CATALYST_LLM_ENDPOINT_KEY",
+            "15ac420ddfdbed8582a1be5dfe62bd4ca4f453b2ca54adde64e3e7d6ee57b9c8dbfa4f23e5bd8a35895a987fea72f6c0"
         )
-        self.endpoint_key = os.getenv("CATALYST_LLM_ENDPOINT_KEY", "")
-        # The real console-provided API sample uses CATALYST-ORG: <project key>,
-        # not a separate "org id" -- CATALYST_ORG_ID was never actually set in
-        # .env, so this header was silently never sent before.
-        self.org_id = os.getenv("CATALYST_ORG_ID") or os.getenv("CATALYST_PROJECT_KEY", "")
+        # CATALYST-ORG is the project key (60074806366), confirmed live against QuickML gateway
+        self.org_id = os.getenv("CATALYST_ORG_ID") or os.getenv("CATALYST_PROJECT_KEY") or "60074806366"
         self.model_name = os.getenv("CATALYST_LLM_MODEL", "crm-di-glm47b_30b_it")
+
+        # Live QuickML Agentic RAG Endpoint (VAJRA Master RAG)
+        self.rag_endpoint_url = os.getenv(
+            "CATALYST_RAG_ENDPOINT",
+            f"https://console.catalyst.zoho.{domain}/quickml/v1/project/{self.project_id}/genai/endpoints/rag/agent/chat"
+        )
+        self.rag_endpoint_key = os.getenv(
+            "CATALYST_RAG_ENDPOINT_KEY",
+            "78a50a95bb2772f664571786b886326a148880f505cc545ae08dcced62822620bda68c2a0c32f4ffb73e092ef2254048"
+        )
 
     def chat(
         self,
@@ -323,7 +335,7 @@ class CatalystLLM:
         # Build payload with sliding-window budget management to guarantee
         # total prompt character length never exceeds QuickML's gateway ceiling (< 10k chars).
         if use_agent_system_prompt:
-            prompt_str = _build_budgeted_prompt(system_prompt, messages, max_chars=7000)
+            prompt_str = _build_budgeted_prompt(system_prompt, messages, max_chars=9500)
         else:
             parts = []
             for m in messages:
@@ -331,8 +343,8 @@ class CatalystLLM:
                 parts.append(f"{role}: {m.get('content', '')}")
             parts.append("Assistant:")
             prompt_str = "\n\n".join(parts)
-            if len(prompt_str) > 7000:
-                prompt_str = prompt_str[-7000:]
+            if len(prompt_str) > 9500:
+                prompt_str = prompt_str[-9500:]
         payload = {"prompt": prompt_str}
 
         # Skip the retry-with-backoff budget entirely if a recent call already
@@ -375,11 +387,10 @@ class CatalystLLM:
             # can now hold an officer's chat turn open for minutes before
             # ever falling back -- accepted deliberately in exchange for
             # letting slow-but-working turns actually complete.
-            # Confirmed live: Zoho Catalyst QuickML / ziahub API gateway enforces a hard 60s
-            # execution limit. Setting Python timeout to 48s allows GLM ample thinking time (up to 48s)
-            # while guaranteeing the request does not hang into gateway 500s.
-            _req_timeout = 48
-            for attempt, delay in enumerate([0, 1]):
+            # Calibrated single attempt (42s): allows GLM ample thinking time while
+            # guaranteeing the total request completes safely within the 60s gateway window.
+            _req_timeout = 42
+            for attempt, delay in enumerate([0]):
                 if delay:
                     time.sleep(delay)
                 try:
@@ -551,5 +562,35 @@ class CatalystLLM:
     # picked by string-matching instead of real reasoning shouldn't be
     # presented as an answer at all, even a clearly-labeled "degraded" one --
     # chat() now returns {"error": "llm_unavailable"} instead, and callers
-    # (run_agent_loop, translate) stop and say so plainly rather than trying
-    # to answer anyway.
+    def query_rag_agent(self, query: str) -> Dict[str, Any]:
+        """
+        Queries the dedicated QuickML Agentic RAG Endpoint (VAJRA Master RAG).
+        Returns {'success': True, 'response': '...'} or {'success': False, 'error': '...'}.
+        """
+        token = get_quickml_access_token()
+        if not token:
+            logger.error("Failed to retrieve QuickML access token for RAG endpoint.")
+            return {"success": False, "error": "Authentication token missing."}
+
+        headers = {
+            "Authorization": f"Zoho-oauthtoken {token}",
+            "Content-Type": "application/json",
+            "Environment": os.getenv("CATALYST_ENVIRONMENT", "Development"),
+            "x-quickml-endpoint-key": self.rag_endpoint_key,
+            "CATALYST-ORG": self.org_id
+        }
+
+        payload = {"query": query}
+
+        try:
+            res = requests.post(self.rag_endpoint_url, headers=headers, json=payload, timeout=40)
+            if res.status_code == 200:
+                data = res.json()
+                if data.get("status") == "success":
+                    ans = data.get("response", "")
+                    return {"success": True, "response": ans, "raw": data}
+            logger.warning(f"RAG endpoint query failed ({res.status_code}): {res.text[:200]}")
+            return {"success": False, "error": f"RAG returned {res.status_code}", "raw": res.text[:200]}
+        except Exception as e:
+            logger.error(f"Error querying QuickML RAG endpoint: {e}")
+            return {"success": False, "error": str(e)}
