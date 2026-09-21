@@ -2006,12 +2006,12 @@ class VajraAgentLoop(CognitiveBrainMixin):
         if name:
             # If explicitly asking for money laundering/mule ring/hawala, let detect_financial_ring handle it as a single tool
             if has("money laundering", "mule", "financial ring", "laundering trail", "money trail"):
-                return None
-            if has("network", "connection", "syndicate", "co-accused", "linked", "connected to", "associate"):
+                facets.append(("detect_financial_ring", {"suspect_name": name}))
+            if has("network", "connection", "syndicate", "co-accused", "linked", "connected to", "associate", "gang"):
                 facets.append(("query_graph_network", {"suspect_name": name, "requested_layers": _infer_requested_layers(query)}))
             if has("risk", "conviction", "recidiv", "re-offend", "reoffend", "dangerous", "threat"):
                 facets.append(("get_offender_risk", {"suspect_name": name}))
-            if has("mo ", "modus operandi", "behavioral", "behaviour", "method of"):
+            if has("mo ", "modus operandi", "behavioral", "behaviour", "method of", "signature"):
                 facets.append(("get_mo_profile", {"suspect_name": name}))
             if has("financial", "money", "transaction", "bank account", "hawala"):
                 facets.append(("query_financial_links", {"entity_id": name}))
@@ -2020,31 +2020,41 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 facets.append(("get_case_sections", {"case_no": case_no}))
             if has("timeline", "chronology", "milestone", "sequence"):
                 facets.append(("get_case_timeline", {"case_no": case_no}))
+            if has("intelligence", "dossier", "accused roster", "network"):
+                facets.append(("get_case_intelligence_dossier", {"case_no": case_no}))
 
-        # TOPIC COMPOUND: "analyse the internet about <crime> AND make a pie chart"
-        # -> pull live open-web signals AND the grounded CCTNS distribution, shown
-        # side by side. Answers the real two-part ask (officer wanted the internet
-        # scan AND a chart) instead of silently doing only one. Honest boundary:
-        # web results are unverified leads, the pie is grounded records.
-        if not facets:
-            _cg = ""
-            _qc = q.replace(" ", "")
-            for g in self._KNOWN_CRIME_GROUPS:
-                if g.lower() in q or g.lower().replace(" ", "") in _qc:
-                    _cg = g; break
-            if not _cg:
-                for alias, canon in (("cyber", "CYBERCRIME"), ("hacking", "CYBERCRIME"),
-                                     ("phishing", "CYBERCRIME"), ("drug", "NARCOTICS"),
-                                     ("narcotic", "NARCOTICS")):
-                    if alias in q:
-                        _cg = canon; break
-            wants_web = has("internet", "web", "online", "google", "news", "latest")
-            wants_chart = has("pie chart", "bar chart", "chart", "distribution", "breakdown", "graph", "visuali")
-            if _cg and wants_web and wants_chart:
-                _yb2 = re.search(r"(?:last|past|previous)\s+(\d{1,2})\s+year", q)
-                facets.append(("web_search", {"query": query}))
-                facets.append(("get_case_types_distribution",
-                               {"crime_group": _cg, "years_back": int(_yb2.group(1)) if _yb2 else 0}))
+        # BROAD STATE-WIDE & MULTI-GOAL CRIME PATTERN FACETS:
+        # If an officer asks a comprehensive or multi-goal crime pattern question:
+        # e.g. "analyze chain snatching across Bengaluru, check hotspots, repeat offenders, and syndicate ties"
+        _q_low = q.lower()
+        has_mo = any(k in _q_low for k in ("similar", "modus operandi", "mo", "pattern", "cases like", "snatch", "burglary", "theft", "robbery", "narcotics", "cyber"))
+        has_hotspot = any(k in _q_low for k in ("hotspot", "map", "clusters", "density", "stations", "precincts", "spatial", "where"))
+        has_repeat = any(k in _q_low for k in ("repeat offender", "recidivist", "habitual", "history sheeter", "rowdy", "most active"))
+        has_syndicate = any(k in _q_low for k in ("syndicate", "gang", "network", "organized crime", "co-accused", "group"))
+        has_trend = any(k in _q_low for k in ("trend", "forecast", "monthly", "spike", "distribution", "breakdown", "stats", "chart", "graph"))
+        has_statute = any(k in _q_low for k in ("section", "bns", "bnss", "legal", "statutory", "law", "charge"))
+
+        matched_district = ""
+        for d in get_real_districts():
+            if d.lower() in _q_low:
+                matched_district = d
+                break
+
+        # Discover dynamic parallel tool facets based on full multi-intent query:
+        if has_mo and ("similar" in _q_low or "mo" in _q_low or "pattern" in _q_low or "snatch" in _q_low or "theft" in _q_low or "narcotic" in _q_low):
+            facets.append(("find_similar_cases", {"query": query, "district": matched_district}))
+        if has_hotspot:
+            facets.append(("query_hotspots", {"district": matched_district, "crime_type": "Theft" if "theft" in _q_low or "snatch" in _q_low else "All"}))
+        if has_repeat:
+            facets.append(("get_repeat_offenders", {"district": matched_district}))
+        if has_syndicate:
+            facets.append(("detect_crime_groups", {"district": matched_district}))
+        if has_trend:
+            facets.append(("get_case_types_distribution", {"district": matched_district or "Bengaluru Urban"}))
+        if has_statute and case_no:
+            facets.append(("get_case_sections", {"case_no": case_no}))
+        elif has_statute:
+            facets.append(("suggest_sections", {"query": query}))
 
         seen, out = set(), []
         for tool, params in facets:
@@ -2052,8 +2062,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 continue
             seen.add(tool)
             out.append({"tool": tool, "parameters": params})
-            if len(out) >= 3:
-                break
+        
+        # Returns ALL dynamically discovered tools (no artificial cap!)
         return out if len(out) >= 2 else None
 
     # Per-tool trigger words used ONLY to pre-filter which tool schemas get
@@ -4258,47 +4268,90 @@ class VajraAgentLoop(CognitiveBrainMixin):
         multi_done = False
         if multi_decisions:
             _MULTI_TITLES = {
-                "query_graph_network": ("Criminal Network", "ಅಪರಾಧ ಜಾಲ"),
-                "get_offender_risk": ("Conviction Risk", "ಶಿಕ್ಷೆ ಅಪಾಯ"),
-                "get_mo_profile": ("Modus Operandi", "ಕಾರ್ಯ ವಿಧಾನ"),
-                "query_financial_links": ("Financial Links", "ಆರ್ಥಿಕ ಸಂಪರ್ಕಗಳು"),
-                "get_case_sections": ("Applied Sections", "ಅನ್ವಯಿತ ವಿಭಾಗಗಳು"),
-                "get_case_timeline": ("Case Timeline", "ಪ್ರಕರಣ ಕಾಲಾನುಕ್ರಮ"),
+                "find_similar_cases": ("Semantic Modus Operandi Matching", "ಕಾರ್ಯ ವಿಧಾನ ಹೊಂದಾಣಿಕೆ"),
+                "query_hotspots": ("Geospatial Hotspot Density", "ಅಪರಾಧ ಹಾಟ್‌ಸ್ಪಾಟ್ ಸಾಂದ್ರತೆ"),
+                "get_repeat_offenders": ("Active Repeat Offender Registry", "ಸಕ್ರಿಯ ಪುನರಾವರ್ತಿತ ಅಪರಾಧಿಗಳು"),
+                "detect_crime_groups": ("Organized Syndicate Networks", "ಸಂಘಟಿತ ಅಪರಾಧ ಸಿಂಡಿಕೇಟ್‌ಗಳು"),
+                "query_graph_network": ("Criminal Network Graph", "ಅಪರಾಧ ಜಾಲ"),
+                "get_offender_risk": ("Conviction & Recidivism Risk", "ಶಿಕ್ಷೆ ಅಪಾಯ"),
+                "get_mo_profile": ("Behavioral MO Profile", "ಕಾರ್ಯ ವಿಧಾನ"),
+                "query_financial_links": ("Financial & Hawala Links", "ಆರ್ಥಿಕ ಸಂಪರ್ಕಗಳು"),
+                "detect_financial_ring": ("Mule Account & Hawala Ring", "ಮ್ಯೂಲ್ ಖಾತೆ ಜಾಲ"),
+                "get_case_sections": ("Applied Statutory Sections", "ಅನ್ವಯಿತ ವಿಭಾಗಗಳು"),
+                "suggest_sections": ("Recommended Statutory Charges", "ಶಿಫಾರಸು ಮಾಡಿದ ವಿಭಾಗಗಳು"),
+                "get_case_timeline": ("Case Chronology Timeline", "ಪ್ರಕರಣ ಕಾಲಾನುಕ್ರಮ"),
                 "web_search": ("Open-Web Signals (unverified)", "ಅಂತರ್ಜಾಲ ಸೂಚನೆಗಳು (ಪರಿಶೀಲಿಸದ)"),
-                "get_case_types_distribution": ("CCTNS Records Distribution", "ದಾಖಲೆಗಳ ವಿತರಣೆ"),
+                "get_case_types_distribution": ("CCTNS Crime Distribution", "ದಾಖಲೆಗಳ ವಿತರಣೆ"),
             }
-            panels, combined = [], []
-            for dec in multi_decisions:
-                tn = dec["tool"]
+
+            # High-speed parallel concurrent execution across all discovered tool facets
+            def _run_single_facet(dec):
+                t_name = dec["tool"]
+                t_params = dec.get("parameters", {})
                 try:
-                    out = self._execute_tool(tn, dec.get("parameters", {}), employee_id, session_id, user_unit_id)
-                except Exception as e:
-                    logger.warning(f"Multi-tool: {tn} failed: {e}")
+                    res = self._execute_tool(t_name, t_params, employee_id, session_id, user_unit_id)
+                    return {"tool": t_name, "params": t_params, "result": res, "error": None}
+                except Exception as ex:
+                    logger.warning(f"Parallel tool execution failed for {t_name}: {ex}")
+                    return {"tool": t_name, "params": t_params, "result": {}, "error": str(ex)}
+
+            _max_w = min(8, len(multi_decisions))
+            with ThreadPoolExecutor(max_workers=_max_w) as executor:
+                parallel_results = list(executor.map(_run_single_facet, multi_decisions))
+
+            panels, combined = [], []
+            inquest_found = None
+            candidate_names_all = []
+
+            for r in parallel_results:
+                if r["error"]:
                     continue
+                out = r["result"]
+                tn = r["tool"]
                 if out.get("citations"):
                     citations.extend(out["citations"])
                 rt = out.get("response_type") or "text"
                 r_text = (out.get("text_result") or "").strip()
                 r_data = out.get("data")
                 has_data = bool(r_data) and (not isinstance(r_data, dict) or any(v for v in r_data.values()))
+                
+                if isinstance(r_data, dict):
+                    if r_data.get("clarification_inquest") and not inquest_found:
+                        inquest_found = r_data["clarification_inquest"]
+                    if r_data.get("candidate_names"):
+                        candidate_names_all.extend(r_data["candidate_names"])
+
                 if not has_data and len(r_text) < 3:
                     continue
-                t_en, t_kn = _MULTI_TITLES.get(tn, (tn, tn))
+                t_en, t_kn = _MULTI_TITLES.get(tn, (tn.replace('_', ' ').title(), tn))
                 panels.append({"type": rt if rt != "text" else "text", "panel_key": tn,
                                "title_en": t_en, "title_kn": t_kn, "data": r_data, "text": r_text})
                 if r_text:
-                    combined.append(f"{t_en}: {r_text}")
+                    combined.append(f"### 📌 {t_en}\n{r_text}")
+
             if len(panels) >= 2:
-                response_text = "\n\n".join(combined) if combined else f"Assembled {len(panels)} facets."
+                response_text = "\n\n".join(combined) if combined else f"Assembled {len(panels)} facets in parallel."
                 response_type = "dossier"
-                data_payload = {"panels": panels}
+                data_payload = {
+                    "panels": panels,
+                    "candidate_names": list(dict.fromkeys(candidate_names_all))[:8]
+                }
+                if inquest_found:
+                    data_payload["clarification_inquest"] = inquest_found
+                    data_payload["query"] = routing_query
+
                 subject = (multi_decisions[0].get("parameters") or {}).get("suspect_name") \
                     or (multi_decisions[0].get("parameters") or {}).get("entity_id") \
-                    or (multi_decisions[0].get("parameters") or {}).get("case_no") or ""
-                citations.append({"type": "Multi-Facet Answer", "id": subject,
-                                  "details": f"{len(panels)} facets fused in one turn: {', '.join(p['panel_key'] for p in panels)}"})
-                self._write_audit_log(employee_id, "Multi-Facet Answer", subject,
-                                      f"Multi-tool: {[d['tool'] for d in multi_decisions]}", response_text, session_id)
+                    or (multi_decisions[0].get("parameters") or {}).get("case_no") \
+                    or (multi_decisions[0].get("parameters") or {}).get("query") or "Statewide Pattern"
+                
+                citations.append({
+                    "type": "Parallel Multi-Tool Intelligence",
+                    "id": f"{len(panels)} Concurrent Facets",
+                    "details": f"Parallel concurrent sweep executed across: {', '.join(p['panel_key'] for p in panels)}"
+                })
+                self._write_audit_log(employee_id, "Parallel Multi-Facet Answer", subject,
+                                      f"Parallel tools: {[d['tool'] for d in multi_decisions]}", response_text[:300], session_id)
                 multi_done = True
 
         max_iterations = 0 if multi_done else 4
