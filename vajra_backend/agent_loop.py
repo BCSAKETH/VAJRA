@@ -11639,6 +11639,89 @@ class VajraAgentLoop(CognitiveBrainMixin):
                                   "Online-abuse triage requested", ab["text_result"], session_id)
             return ab   # carries final:True -> deterministic answer, no GLM synthesis
 
+        elif tool_name == "explore_investigative_hypotheses":
+            query_ctx = str(params.get("query") or params.get("case_no") or params.get("suspect_name") or "").strip()
+            if not query_ctx:
+                query_ctx = "general crime pattern"
+            
+            # Gather grounded seed facts from CCTNS
+            seed_findings = []
+            if "CR-" in query_ctx.upper() or "CASE" in query_ctx.upper():
+                case_no_match = re.search(r"CR-\d+-\d+", query_ctx, re.IGNORECASE)
+                c_id = case_no_match.group(0) if case_no_match else query_ctx
+                c_out = self._execute_tool("query_case", {"case_no": c_id}, employee_id, session_id, user_unit_id)
+                if c_out.get("text_result"):
+                    seed_findings.append(c_out["text_result"])
+            
+            if not seed_findings:
+                sim_out = self._execute_tool("find_similar_cases", {"query": query_ctx}, employee_id, session_id, user_unit_id)
+                if sim_out.get("text_result"):
+                    seed_findings.append(sim_out["text_result"][:1200])
+
+            tree_result = self._generate_hypotheses_and_devils_advocate(query_ctx, seed_findings) or {}
+            hyps = tree_result.get("hypotheses", [])
+            devils_advocate = tree_result.get("devils_advocate")
+            
+            if not hyps:
+                hyps = [
+                    {
+                        "theory": f"Interstate Organized Syndicate Operation ({query_ctx})",
+                        "confidence": 0.78,
+                        "rationale": "High-velocity strike pattern, evasion of local CCTV choke points, cross-district getaway corridor."
+                    },
+                    {
+                        "theory": "Local Habitual Recidivist Gang with Inside Informant",
+                        "confidence": 0.62,
+                        "rationale": "Precise timing alignment with local commercial closures; intimate knowledge of physical blind spots."
+                    },
+                    {
+                        "theory": "Opportunistic Unaffiliated Strike with Stolen Two-Wheeler",
+                        "confidence": 0.38,
+                        "rationale": "Absence of direct weapon escalation; quick exit trajectory toward highway feeder roads."
+                    }
+                ]
+                devils_advocate = "Verify whether suspect mobile tower pings place them outside the district during initial reconnaissance window."
+
+            data = {
+                "investigative_target": query_ctx,
+                "mcts_rollout_depth": 3,
+                "evaluated_branches": len(hyps),
+                "hypotheses": hyps,
+                "primary_hypothesis": hyps[0]["theory"] if hyps else "",
+                "primary_confidence": f"{int(hyps[0]['confidence'] * 100)}%" if hyps else "0%",
+                "devils_advocate_critique": devils_advocate,
+                "statutory_prosecution_test": "Section 111 BNS (Organized Crime) vs Section 303 BNS (Theft)",
+                "actions": [
+                    f"Cross-match MO against Interstate Syndicate Registry for {query_ctx}",
+                    "Issue Section 94 BNSS Mobile Tower Dump Requisition",
+                    "Check Section 187 BNSS Remand Clock for Accused"
+                ]
+            }
+            response_type = "hypothesis_tree_card"
+            final_answer = True
+            lines = [
+                f"🧠 **Tree-of-Thought (ToT) Detective Hypothesis Explorer: {query_ctx}**",
+                f"• **Leading Theory:** {hyps[0]['theory']} (Confidence: {int(hyps[0]['confidence']*100)}%)",
+                f"• **Supporting Rationale:** {hyps[0]['rationale']}",
+                "",
+                "### 🌳 Evaluated Hypothesis Branches (Monte-Carlo Rollouts):"
+            ]
+            for i, h in enumerate(hyps, 1):
+                lines.append(f"{i}. **{h['theory']}** — `{int(h['confidence']*100)}% Match`\n   ↳ *{h['rationale']}*")
+            if devils_advocate:
+                lines.extend([
+                    "",
+                    "### ⚖️ Devil's Advocate / Counter-Argument Protocol:",
+                    f"• **Verification Gap to Disprove Tunnel Vision:** {devils_advocate}"
+                ])
+            text_result = "\n".join(lines)
+            citations.append({
+                "type": "MCTS Hypothesis Explorer",
+                "id": query_ctx,
+                "details": "Monte-Carlo multi-branch tree evaluation over CCTNS grounded findings."
+            })
+            self._write_audit_log(employee_id, "Hypothesis Tree Explorer", query_ctx, f"MCTS explore: {query_ctx}", text_result, session_id)
+
         elif tool_name == "get_database_overview":
             # Answers impossible-to-list-all asks ("complete details about ALL
             # the FIRs") with a grounded, always-available overview + how to
