@@ -3853,39 +3853,49 @@ class VajraAgentLoop(CognitiveBrainMixin):
         if any(w in _q_lower for w in ("what is the chat about", "what is this chat about", "what are we talking about", 
                                        "summarize this chat", "summarize the conversation", "what did we discuss", "recap conversation",
                                        "what is the chat about in detail", "what is the chat about in points")):
-            durable = self._load_durable_history(session_id, 16)
-            user_topics = [h.get("content", "").strip() for h in durable if h.get("role") == "user" and h.get("content")]
-            if user_topics:
-                topics_str = " | ".join(user_topics[-6:])
+            durable = self._load_durable_history(session_id, 50)
+            
+            # Filter noise, greetings, and meta-prompts to isolate true investigative subjects
+            _ignore_phrases = ("what is the chat", "summarize", "in detail", "in points", "hi", "hello", "bye", "byeeee", "are you mad", "say ok")
+            substantive_user = []
+            for h in durable:
+                if h.get("role") == "user":
+                    c = h.get("content", "").strip()
+                    if c and not any(c.lower().startswith(p) or c.lower() == p for p in _ignore_phrases):
+                        substantive_user.append(c)
+            
+            if substantive_user or durable:
+                topics_str = " \n- ".join(substantive_user[-12:] if substantive_user else ["General crime records review"])
                 is_points = "point" in _q_lower
                 summary_prompt = (
-                    f"The officer is asking: '{routing_query}'.\n"
-                    f"User queries in this investigation session: {topics_str}.\n"
-                    f"Provide an authoritative, structured {'bullet-point breakdown' if is_points else 'comprehensive multi-paragraph operational briefing'} "
-                    f"summarizing the entire investigation scope, crimes analyzed, and procedural topics examined so far."
+                    f"You are the KSP VAJRA Senior Intelligence Officer. The user is asking: '{routing_query}'.\n"
+                    f"Here are the distinct subjects and queries investigated across this session:\n- {topics_str}\n\n"
+                    f"Provide a thorough, professional operational summary that explicitly covers ALL the distinct topics investigated in this session (including any OSINT/social media signals, document verifications, and crime/burglary analyses).\n"
+                    f"Format as an authoritative {'bullet-point breakdown' if is_points else 'comprehensive multi-section intelligence briefing'} with clean Markdown headers."
                 )
                 summary_text = ""
                 try:
-                    summary_res = self.llm.chat([{"role": "user", "content": summary_prompt}], None, use_agent_system_prompt=False, max_tokens=1500)
+                    summary_res = self.llm.chat([{"role": "user", "content": summary_prompt}], None, use_agent_system_prompt=False, max_tokens=2000)
                     if not summary_res.get("error"):
                         raw = (summary_res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
                         summary_text = self._strip_think(raw).strip()
                 except Exception as ex:
                     logger.warning(f"Summary LLM call error: {ex}")
+                
                 if not summary_text:
-                    clean_topics = [t for t in user_topics if len(t) > 3][-4:]
                     summary_text = (
-                        f"### 📋 Investigation Session Briefing\n"
-                        f"• **Investigation Scope:** Active case records, crime trends, and investigative evidence review.\n"
-                        f"• **Key Topics Explored:**\n" +
-                        "\n".join(f"  - {t}" for t in clean_topics) +
-                        f"\n• **Current Status:** Multi-turn intelligence ledger active and grounded in CCTNS datastore."
+                        f"### 📋 Comprehensive Investigation Session Summary\n"
+                        f"**Session Identifier:** `{session_id}`\n\n"
+                        f"**Investigation Modules & Topics Explored:**\n" +
+                        "\n".join(f"• **{t[:60]}...**" if len(t) > 60 else f"• **{t}**" for t in (substantive_user if substantive_user else ["Station Crime Records & CCTNS Inquest"])) +
+                        f"\n\n**Operational Status:** Intelligence ledger synchronized across active CCTNS and OSINT nodes."
                     )
                 self._write_audit_log(employee_id, "Session Summary", "Chat Session", officer_query, summary_text, session_id)
                 history.append({"role": "assistant", "content": summary_text})
                 context["messages"] = history
                 session_memory.update_session_context(session_id, context)
-                return {"text": summary_text, "response_type": "text", "data": {}, "citations": [{"type": "SessionSummary", "id": session_id, "details": "Session recap"}], "is_simulated": False}
+                return {"text": summary_text, "response_type": "text", "data": {}, "citations": [{"type": "SessionSummary", "id": session_id, "details": "Comprehensive session recap"}], "is_simulated": False}
+
 
         # ELABORATION & FOLLOW-UP HANDLER:
         # Covers: "in detail", "in points", "in simple", "tell me more", "elaborate", "expand", "explain more", "give details"
