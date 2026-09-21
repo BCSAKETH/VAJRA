@@ -3617,18 +3617,30 @@ class ChatRequest(BaseModel):
     attachment_analysis: Optional[str] = None
 
 
-def _bump_chat_session_active(session_id: str):
-    if not catalyst_app:
+def _bump_chat_session_active(session_id: str, new_user_text: Optional[str] = None):
+    if not catalyst_app or not session_id:
         return
     try:
-        existing = catalyst_app.zql().execute_query(f"SELECT ROWID FROM ChatSession WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 1")
+        existing = catalyst_app.zql().execute_query(f"SELECT ROWID, description FROM ChatSession WHERE session_id = '{escape_zcql_literal(session_id)}' LIMIT 1")
         if existing:
-            zcql_update_row("ChatSession", {
-                "ROWID": existing[0].get("ChatSession", {}).get("ROWID"),
+            row_data = existing[0].get("ChatSession", {})
+            row = {
+                "ROWID": row_data.get("ROWID"),
                 "last_active_at": datetime.utcnow().isoformat()
-            })
+            }
+            if new_user_text and len(new_user_text.strip()) > 3:
+                clean_q = new_user_text.strip()
+                _meta = ("what is the chat", "summarize", "in detail", "in points", "hi", "hello", "bye", "byeeee", "are you mad", "say ok", "from starting")
+                if not any(clean_q.lower().startswith(p) or clean_q.lower() == p for p in _meta):
+                    cur_desc = (row_data.get("description") or "").strip()
+                    bullet = f"• {clean_q[:70]}"
+                    if bullet not in cur_desc:
+                        updated_desc = (cur_desc + "\n" + bullet).strip() if cur_desc else bullet
+                        row["description"] = updated_desc[:450]
+            zcql_update_row("ChatSession", row)
     except Exception as e:
-        logger.warning(f"Could not update ChatSession.last_active_at: {e}")
+        logger.warning(f"Could not update ChatSession description / last_active_at: {e}")
+
 
 
 def _resolve_variant_info(session_id: str, target_msg_id: str, sender: str) -> Dict[str, Any]:
@@ -4009,7 +4021,7 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
         if sender_employee_id is not None:
             row["sender_employee_id"] = sender_employee_id
         zcql_insert_row("ChatMessage", row)
-        _bump_chat_session_active(session_id)
+        _bump_chat_session_active(session_id, text if sender == "user" else None)
         return
     except Exception as e:
         logger.warning(f"Full ChatMessage insert failed (retrying with safe standard fields): {e}")
@@ -4026,7 +4038,7 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
             "sent_at": datetime.utcnow().isoformat()
         }
         zcql_insert_row("ChatMessage", row)
-        _bump_chat_session_active(session_id)
+        _bump_chat_session_active(session_id, text if sender == "user" else None)
         return
     except Exception as e:
         logger.warning(f"Standard ChatMessage insert failed (retrying with minimal payload): {e}")
@@ -4043,7 +4055,8 @@ def _persist_chat_message(session_id: str, sender: str, text: str, response_type
             "sent_at": datetime.utcnow().isoformat()
         }
         zcql_insert_row("ChatMessage", row)
-        _bump_chat_session_active(session_id)
+        _bump_chat_session_active(session_id, text if sender == "user" else None)
+
     except Exception as e:
         logger.error(f"CRITICAL: Failed to persist ChatMessage for session {session_id}: {e}")
 
