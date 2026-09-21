@@ -1587,7 +1587,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
             : <div className={`whitespace-pre-wrap font-sans text-stone-200 ${sizeStyles.userBubble}`}>{displayText}</div>}
 
           {/* Claude-style Rich Tactical Inquest & Clarification Assistant */}
-          {isAI && isLast && message.data?.clarification_inquest && onQuickReply && (
+          {isAI && message.data?.clarification_inquest && onQuickReply && (
             <div className="mt-3 p-3.5 rounded-xl border border-[#C79A4E]/40 bg-gradient-to-r from-[#C79A4E]/15 via-stone-900 to-stone-900 shadow-lg shadow-[#C79A4E]/5">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5">
