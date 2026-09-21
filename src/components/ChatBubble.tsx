@@ -6,6 +6,7 @@ import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check,
 import { InlineWidget } from "./InlineWidget";
 import { API_BASE } from "../config";
 import { ReasonCollectionModal } from "./ReasonCollectionModal";
+import { TacticalClarificationModal } from "./TacticalClarificationModal";
 
 // KSP Response Tailor (Finals-part 3.md Section 48) -- mirrors
 // vajra_backend/ksp_response_tailor.py's STYLE_LABELS. A small, honest badge
@@ -542,6 +543,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   // once per stratus_id and cached in this map (keyed by stratus_id) so
   // re-renders never re-fetch the same blob.
   const [previewUrls, setPreviewUrls] = useState<Record<string, string>>({});
+  const [showInquestModal, setShowInquestModal] = useState(false);
   const previewUrlsRef = useRef<Record<string, string>>({});
   useEffect(() => {
     const atts = message.attachments || [];
@@ -1583,6 +1585,48 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
           ) : isAI
             ? <div className={`font-sans text-stone-200 ${sizeStyles.prose}`}>{renderRich(displayText, sizeStyles)}</div>
             : <div className={`whitespace-pre-wrap font-sans text-stone-200 ${sizeStyles.userBubble}`}>{displayText}</div>}
+
+          {/* Claude-style Rich Tactical Inquest & Clarification Assistant */}
+          {isAI && isLast && message.data?.clarification_inquest && onQuickReply && (
+            <div className="mt-3 p-3.5 rounded-xl border border-[#C79A4E]/40 bg-gradient-to-r from-[#C79A4E]/15 via-stone-900 to-stone-900 shadow-lg shadow-[#C79A4E]/5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-lg bg-[#C79A4E]/20 text-[#C79A4E] border border-[#C79A4E]/30 animate-pulse">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-xs font-bold text-amber-200 tracking-wide">
+                      {message.data.clarification_inquest.title || "Tactical Inquest & Investigation Refinement"}
+                    </div>
+                    <div className="text-[11px] text-stone-400">
+                      {message.data.clarification_inquest.steps?.length || 4} Operational Dimensions (Multi-Select & Custom Write-Ins)
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowInquestModal(true)}
+                  className="flex items-center justify-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg bg-gradient-to-r from-[#C79A4E] to-amber-500 text-black hover:from-amber-400 hover:to-amber-300 shadow-md shadow-[#C79A4E]/20 transition-all cursor-pointer font-sans"
+                >
+                  <span>⚡ Open Refinement Modal</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* Modal instance */}
+          {showInquestModal && message.data?.clarification_inquest && onQuickReply && (
+            <TacticalClarificationModal
+              inquest={message.data.clarification_inquest}
+              baseQuery={message.data?.query || "similar cases"}
+              isOpen={showInquestModal}
+              onClose={() => setShowInquestModal(false)}
+              onSubmitRefinement={(synthesized) => {
+                onQuickReply(synthesized);
+              }}
+            />
+          )}
 
           {/* Clarifying-question quick-reply chips: only when the answer
               carries REAL structured candidates (an ambiguous name matching

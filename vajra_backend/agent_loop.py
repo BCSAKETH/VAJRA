@@ -4380,16 +4380,31 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         fallback_label = "Keyword Match"
                     if fallback_decision is None and len(routing_query.strip()) >= 2:
                         _q_low_fallback = routing_query.lower()
-                        # Database-First Inversion (Finals-part 5.md Section 155-157):
+                        # Database-First Inversion:
                         # the ultimate catch-all is the internal CCTNS Case Registry,
                         # not external web search -- OSINT only fires here if the
                         # officer's own words explicitly asked for it.
                         if any(ws in _q_low_fallback for ws in ("search the web", "web search", "search internet", "google", "online news", "website", "url")):
                             fallback_decision = {"tool": "web_search", "parameters": {"query": routing_query}}
                             fallback_label = "Explicit OSINT Web Fallback"
+                        elif re.search(r"\b(cr|fir)[-/\s]?\d{4}[-/\s]?\d+\b", _q_low_fallback) or re.search(r"\b\d{3,6}/\d{2,4}\b", _q_low_fallback):
+                            fallback_decision = {"tool": "query_case", "parameters": {"case_no": routing_query}}
+                            fallback_label = "CCTNS Case Record Lookup"
+                        elif any(d.lower() in _q_low_fallback for d in ("bengaluru", "bangalore", "mysuru", "mysore", "belagavi", "belgaum", "mangaluru", "hubballi", "dharwad", "kalaburagi", "shivamogga")):
+                            # District / City matches or breakdowns
+                            matched_d = "Bengaluru Urban" if "bengalur" in _q_low_fallback or "bangalor" in _q_low_fallback else (
+                                "Mysuru" if "mysur" in _q_low_fallback or "mysor" in _q_low_fallback else (
+                                    "Belagavi" if "belaga" in _q_low_fallback or "belgau" in _q_low_fallback else "Bengaluru Urban"
+                                )
+                            )
+                            if "distribution" in _q_low_fallback or "stats" in _q_low_fallback or "top" in _q_low_fallback:
+                                fallback_decision = {"tool": "get_case_types_distribution", "parameters": {"district": matched_d}}
+                            else:
+                                fallback_decision = {"tool": "find_similar_cases", "parameters": {"query": routing_query, "district": matched_d}}
+                            fallback_label = "CCTNS District Intelligence Safety Net"
                         else:
-                            fallback_decision = {"tool": "query_case", "parameters": {"query": routing_query}}
-                            fallback_label = "CCTNS Datastore Safety Net"
+                            fallback_decision = {"tool": "find_similar_cases", "parameters": {"query": routing_query}}
+                            fallback_label = "CCTNS Semantic Safety Net"
                 if fallback_decision is not None:
                     logger.warning(f"Tool-selection fallback used ({fallback_label}, iteration {current_iteration}): {fallback_decision}")
                     citations.append({
@@ -6165,6 +6180,155 @@ class VajraAgentLoop(CognitiveBrainMixin):
                             "Forensic MO Profile"
                         ]
 
+                    # Build Claude-style rich multi-step tactical inquest payload
+                    inquest_payload = {
+                        "inquest_id": f"inquest-{int(time.time())}",
+                        "title": f"Tactical Investigation Refinement: '{query}'",
+                        "summary": "Narrow this lead by selecting parameters across operational dimensions or typing custom specifics:",
+                        "steps": [
+                            {
+                                "step_id": "jurisdiction",
+                                "title": "Target Jurisdiction & Transit Corridor",
+                                "subtitle": "Select all active commissionerates or highway corridors to include in this pattern cross-reference:",
+                                "type": "multi_select",
+                                "write_in_placeholder": "Specify custom police station, beat circle, or highway toll plaza...",
+                                "options": [
+                                    {
+                                        "id": "blr_urban",
+                                        "label": "Bengaluru Urban Metropolitan",
+                                        "icon": "🏢",
+                                        "badge": "High CCTV Density",
+                                        "description": "High-density urban commissionerate precincts (Hebbal, Jayanagar, Yeshwantpur) with active ANPR camera grid and traffic choke points.",
+                                        "param_patch": "Bengaluru Urban"
+                                    },
+                                    {
+                                        "id": "mys_corridor",
+                                        "label": "Mysuru-Bengaluru Express Corridor",
+                                        "icon": "🛣️",
+                                        "badge": "Interstate Transit",
+                                        "description": "Highway transit zones frequently leveraged for rapid getaway runs and inter-district property dispersal across Southern range stations.",
+                                        "param_patch": "Mysuru Corridor"
+                                    },
+                                    {
+                                        "id": "bel_border",
+                                        "label": "Belagavi Interstate Border Belt",
+                                        "icon": "🌲",
+                                        "badge": "Border Checkpoint",
+                                        "description": "Maharashtra-Karnataka border checkpoints, cross-border stolen vehicle smuggling, and non-local syndicate safe-house nodes.",
+                                        "param_patch": "Belagavi Interstate"
+                                    },
+                                    {
+                                        "id": "mgl_coastal",
+                                        "label": "Coastal Mangaluru Industrial Belt",
+                                        "icon": "🌊",
+                                        "badge": "Port Corridor",
+                                        "description": "Port logistics zones, interstate Hawala money transfer trails, and coastal bullion disposal networks.",
+                                        "param_patch": "Coastal Mangaluru"
+                                    }
+                                ]
+                            },
+                            {
+                                "step_id": "timeframe",
+                                "title": "Temporal Analysis Window",
+                                "subtitle": "Select the historical depth for CCTNS FIR register scanning:",
+                                "type": "single_select",
+                                "write_in_placeholder": "Specify custom date range (e.g., 'Jan 2024 to Nov 2024')...",
+                                "options": [
+                                    {
+                                        "id": "t_30d",
+                                        "label": "Active 30-Day Hotspot Window",
+                                        "icon": "⚡",
+                                        "badge": "Immediate Threat",
+                                        "description": "Focus strictly on recent active cases reported in the last 30 days to identify an active, ongoing spree.",
+                                        "param_patch": "Last 30 Days"
+                                    },
+                                    {
+                                        "id": "t_90d",
+                                        "label": "90-Day Seasonal Horizon (Recommended)",
+                                        "icon": "📅",
+                                        "badge": "Recommended",
+                                        "description": "Standard quarter scan covering seasonal bail releases, recent prison discharges, and emerging inter-district MO patterns.",
+                                        "param_patch": "Last 90 Days"
+                                    },
+                                    {
+                                        "id": "t_3y",
+                                        "label": "Multi-Year Historical Archive (3 Years)",
+                                        "icon": "🗄️",
+                                        "badge": "Deep Scan",
+                                        "description": "Comprehensive longitudinal ledger lookup to identify habitual offenders, dormant syndicates, and legacy MO signatures.",
+                                        "param_patch": "Multi-Year Archive"
+                                    }
+                                ]
+                            },
+                            {
+                                "step_id": "mo_vectors",
+                                "title": "Modus Operandi & Getaway Corroboration",
+                                "subtitle": "Select physical and behavioral MO traits observed at scene of offense:",
+                                "type": "multi_select",
+                                "write_in_placeholder": "Specify custom getaway vehicle make, color, or weapon type...",
+                                "options": [
+                                    {
+                                        "id": "mo_stolen_bike",
+                                        "label": "Stolen High-Performance 2-Wheelers",
+                                        "icon": "🏍️",
+                                        "badge": "Vehicle Vector",
+                                        "description": "Cross-match against unnumbered Pulsar, Apache, and FZ motorcycles reported stolen within 48 hours of incidents.",
+                                        "param_patch": "Stolen 2-Wheelers Getaway"
+                                    },
+                                    {
+                                        "id": "mo_pillion",
+                                        "label": "Two-Up Pillion Snatch Execution",
+                                        "icon": "👥",
+                                        "badge": "Tactical MO",
+                                        "description": "Rider maintains throttle while pillion targets lone pedestrian from blind rear angle during dusk/dawn hours (18:00-21:00).",
+                                        "param_patch": "Pillion Snatch MO"
+                                    },
+                                    {
+                                        "id": "mo_bullion_fencing",
+                                        "label": "Bullion & Unorganized Pawn Shop Fencing",
+                                        "icon": "💰",
+                                        "badge": "Asset Trail",
+                                        "description": "Trace intermediary goldsmiths and non-banking pawnbrokers melting stolen gold bullion without KYC compliance.",
+                                        "param_patch": "Bullion Fencing"
+                                    }
+                                ]
+                            },
+                            {
+                                "step_id": "statutory_forensics",
+                                "title": "Statutory Directives & Financial Forensics",
+                                "subtitle": "Select legal mandates and evidentiary tracking protocols:",
+                                "type": "multi_select",
+                                "write_in_placeholder": "Specify target bank branch, UPI handle, or IMEIs...",
+                                "options": [
+                                    {
+                                        "id": "sec_106",
+                                        "label": "§106 BNSS Property Attachment / Bank Freeze",
+                                        "icon": "⚖️",
+                                        "badge": "Legal Freeze",
+                                        "description": "Issue immediate statutory freeze mandates to financial institutions holding proceeds of crime under Section 106 BNSS.",
+                                        "param_patch": "Section 106 BNSS Bank Freeze"
+                                    },
+                                    {
+                                        "id": "sec_480",
+                                        "label": "Bail Opposition Dossier (§480 BNSS)",
+                                        "icon": "📋",
+                                        "badge": "Prosecution",
+                                        "description": "Compile recidivism velocity history to oppose bail under Section 480 BNSS based on persistent criminal threat.",
+                                        "param_patch": "Section 480 BNSS Bail Opposition"
+                                    },
+                                    {
+                                        "id": "bsa_63",
+                                        "label": "BSA §63 Digital Chain of Custody Certification",
+                                        "icon": "🔐",
+                                        "badge": "Digital Evidence",
+                                        "description": "Generate cryptographic SHA-256 integrity hashes for CCTV snippets and mobile forensic dumps under BSA Section 63.",
+                                        "param_patch": "BSA Section 63 Digital Certificate"
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+
                     data = {
                         "suspect": f"Pattern: '{query}'",
                         "query": query,
@@ -6172,7 +6336,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         "is_probable_serial_pattern": True,
                         "serial_mo_threshold": 75,
                         "matches": matches,
-                        "candidate_names": c_names
+                        "candidate_names": c_names,
+                        "clarification_inquest": inquest_payload
                     }
                     response_type = "mo_match"
                     
