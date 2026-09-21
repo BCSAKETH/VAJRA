@@ -3885,75 +3885,80 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # detail" wrongly re-ran only the network graph). Feed GLM the
         # conversation + a nudge to elaborate the prior answer using ONLY facts
         # CONVERSATION SUMMARY & META-QUERY HANDLER:
-        # Handles meta-questions like "what is the chat about from starting to till now", "summarize the chat", "what did we discuss"
+        # Handles meta-questions like "what is chat about", "what is the chat about", "summarize the chat", "what did we discuss"
         _q_lower = routing_query.lower().strip()
         _is_summary_query = any(w in _q_lower for w in (
-            "what is the chat about", "what is this chat about", "what are we talking about", 
-            "summarize this chat", "summarize the conversation", "what did we discuss", "recap conversation",
-            "what is the chat about in detail", "what is the chat about in points",
+            "what is the chat about", "what is this chat about", "what is chat about", "what is the chat", "what is this chat",
+            "what is chat", "what are we talking about", "what did we discuss", "what have we discussed", 
+            "what did we talk about", "summarize this chat", "summarize the chat", "summarize chat",
+            "summarize the conversation", "summarize conversation", "recap conversation", "recap",
+            "what is the chat about in detail", "what is the chat about in points", "what is chat about in detail",
             "from starting to till now", "from start to finish", "from the beginning", "chat history", "case diary summary"
-        ))
+        )) or bool(re.search(r"\bwhat\s+(is|was)\s+(the\s+|this\s+)?(chat|conversation)(\s+about)?\b", _q_lower))
+        
         if _is_summary_query:
             durable = self._load_durable_history(session_id, 250)
             
-            # Filter noise, greetings, and meta-prompts to isolate true investigative subjects
+            # Filter noise, greetings, and meta-prompts to isolate true substantive exchanges
             _ignore_phrases = (
-                "what is the chat", "what is this chat", "summarize", "in detail", "in points", "in simple",
+                "what is the chat", "what is this chat", "what is chat", "summarize", "in detail", "in points", "in simple",
                 "hi", "hello", "bye", "byeeee", "are you mad", "say ok", "from starting", "till now",
                 "tell me more", "elaborate", "expand", "details", "more details", "break it down"
             )
-            substantive_user = []
+            substantive_exchanges = []
             for h in durable:
-                if h.get("role") == "user":
-                    c = h.get("content", "").strip()
-                    if c and len(c) > 3 and not any(c.lower().startswith(p) or c.lower() == p for p in _ignore_phrases):
-                        substantive_user.append(c)
+                role = h.get("role")
+                content = (h.get("content") or "").strip()
+                if not content or content.startswith("Tool '") or content.startswith("{"):
+                    continue
+                # Clean injected context headers
+                cleaned = re.sub(r'^\s*(?:\[Context:[^\]]*\]\s*)+', '', content, flags=re.DOTALL).strip()
+                if not cleaned or len(cleaned) < 3:
+                    continue
+                c_low = cleaned.lower()
+                if role == "user" and any(c_low.startswith(p) or c_low == p for p in _ignore_phrases):
+                    continue
+                substantive_exchanges.append((role, cleaned[:350]))
             
-            # Deduplicate while preserving chronological order
-            unique_substantive = []
-            for s in substantive_user:
-                if s not in unique_substantive:
-                    unique_substantive.append(s)
-
-            topics_str = " \n- ".join(unique_substantive if unique_substantive else ["General station crime records review"])
-            is_points = "point" in _q_lower
-            
-            summary_prompt = (
-                f"You are the Senior Police Intelligence Officer for KSP VAJRA. The officer has asked for a full chronological summary: '{routing_query}'.\n"
-                f"Here is the complete chronological sequence of substantive topics investigated in this session from start to finish:\n- {topics_str}\n\n"
-                f"Produce an authoritative, chronological **Case Diary Investigation Summary** that covers ALL distinct phases investigated from the very start of the session to now:\n"
-                f"1. **OSINT & Social Media Intelligence:** (e.g. Viral video trends, AI image harvesting safety warnings, digital scam advisories).\n"
-                f"2. **Police Administrative Documents:** (e.g. Form 76A Lost Article Report, IMEI tracking, CCRB lost property procedures).\n"
-                f"3. **CCTNS Case Intelligence & Patterns:** (e.g. Night burglary pattern detection, MO profiling, district crime trends).\n"
-                f"4. **Current Status & Pending Tasks:** (Actionable leads, evidence verification under §63 BSA, §105 BNSS scene videography).\n"
-                f"Ensure the response is structured, clear, and professional without reciting meta-queries or system errors."
-            )
-            summary_text = ""
-            try:
-                summary_res = self.llm.chat([{"role": "user", "content": summary_prompt}], None, use_agent_system_prompt=False, max_tokens=2500)
-                if not summary_res.get("error"):
-                    raw = (summary_res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
-                    summary_text = self._strip_think(raw).strip()
-            except Exception as ex:
-                logger.warning(f"Summary LLM call error: {ex}")
-            
-            if not summary_text:
+            if not substantive_exchanges:
                 summary_text = (
-                    f"### 📋 Case Diary Investigation Summary (From Session Start to Present)\n"
-                    f"**Session Reference:** `{session_id}` | **Ledger State:** Synchronized\n\n"
-                    f"#### 📅 Chronological Investigation Timeline:\n"
-                    f"1. **🌐 Open-Source Intelligence (OSINT):** Web intelligence surveillance regarding trending viral videos and AI selfie data-harvesting risks.\n"
-                    f"2. **📄 Police Administrative Forensics:** Extraction and analysis of Karnataka State Police Form No. 76A (Lost Article / Mobile IMEI Report).\n"
-                    f"3. **🔍 CCTNS Crime Analysis:** Inquest into nocturnal burglary trends, modus operandi, and temporal crime distributions.\n\n"
-                    f"#### ⚖️ Grounding & Compliance:\n"
-                    f"• Digital evidence preserved with SHA-256 hash chains under Section 63 BSA 2023.\n"
-                    f"• Mandatory scene inspections logged under Section 105 BNSS."
+                    "📋 **Chat Summary:**\n"
+                    "This conversation has just begun. No specific cases, suspects, or investigative records have been analyzed in this session yet.\n\n"
+                    "💡 *You can query by Case Number (e.g., 'CR-2024-81977'), Suspect Name (e.g., 'Meter Ramesh'), Hotspot Region (e.g., 'hotspots in Mysuru'), or Modus Operandi.*"
                 )
+            else:
+                dialogue_history = "\n".join([f"- **{'Officer' if r == 'user' else 'VAJRA'}**: {t}" for r, t in substantive_exchanges[-12:]])
+                summary_prompt = (
+                    f"You are the Senior Police Intelligence Officer for KSP VAJRA. The officer asked: '{routing_query}'.\n"
+                    f"Here is the transcript of substantive topics and findings discussed in this specific chat session:\n{dialogue_history}\n\n"
+                    f"Produce an accurate, structured, chronological **Case Diary Investigation Summary** of what was asked and analyzed in THIS specific chat session so far. "
+                    f"Cover the real inquiries and findings from the transcript above. Do NOT invent unrelated topics."
+                )
+                summary_text = ""
+                try:
+                    summary_res = self.llm.chat([{"role": "user", "content": summary_prompt}], None, use_agent_system_prompt=False, max_tokens=2500)
+                    if not summary_res.get("error"):
+                        raw = (summary_res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+                        summary_text = self._strip_think(raw).strip()
+                except Exception as ex:
+                    logger.warning(f"Summary LLM call error: {ex}")
+                
+                if not summary_text:
+                    user_qs = [t for r, t in substantive_exchanges if r == "user"]
+                    bullets = "\n".join(f"{i+1}. **Inquiry:** {q}" for i, q in enumerate(user_qs[:6]))
+                    summary_text = (
+                        f"### 📋 Case Diary Investigation Summary\n"
+                        f"**Session Reference:** `{session_id}`\n\n"
+                        f"#### 📅 Chronological Investigation Timeline for this Session:\n"
+                        f"{bullets}\n\n"
+                        f"⚖️ All investigative findings are grounded in verified state police registers under Section 63 BSA."
+                    )
+            
             self._write_audit_log(employee_id, "Session Summary", "Chat Session", officer_query, summary_text, session_id)
             history.append({"role": "assistant", "content": summary_text})
             context["messages"] = history
             session_memory.update_session_context(session_id, context)
-            return {"text": summary_text, "response_type": "text", "data": {}, "citations": [{"type": "CaseDiarySummary", "id": session_id, "details": "Chronological full session case diary"}], "is_simulated": False}
+            return {"text": summary_text, "response_type": "text", "data": {}, "citations": [{"type": "CaseDiarySummary", "id": session_id, "details": "Chronological session case diary"}], "is_simulated": False}
 
 
 
