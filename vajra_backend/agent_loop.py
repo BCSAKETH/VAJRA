@@ -6481,6 +6481,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         }
 
                     data = {
+                        "type": "mo_match",
                         "suspect": f"Pattern: '{query}'",
                         "query": query,
                         "engine_mode": "TF-IDF & Cosine Semantic Match (Live CCTNS Records)",
