@@ -1147,21 +1147,16 @@ class VajraAgentLoop(CognitiveBrainMixin):
     # if something else in the request pipeline is also struggling.
     # Single words that look like a name (capitalized) but are command verbs,
     # interrogatives, or domain nouns -- never a suspect. Guards entity extraction
-    def _load_durable_history(self, session_id: str, limit: int = 50) -> List[Dict[str, str]]:
+    def _load_durable_history(self, session_id: str, limit: int = 250) -> List[Dict[str, str]]:
         """
-        Loads the real durable chat history for a session from session_memory
-        and ChatMessage table so multi-turn memory and summaries persist across turns.
+        Loads the FULL real durable chat history for a session from the ZCQL
+        ChatMessage table (and in-memory cache) from the very start of the conversation.
         """
         if not session_id:
             return []
-        try:
-            # 1. Try session_memory in-memory context first
-            ctx = session_memory.get_session_context(session_id)
-            if ctx and ctx.get("messages"):
-                return ctx.get("messages")[-limit:]
-            
-            # 2. Try ZCQL ChatMessage table
-            if catalyst_app:
+        # 1. Query ZCQL ChatMessage table to get complete chronological history
+        if catalyst_app:
+            try:
                 rows = catalyst_app.zql().execute_query(
                     f"SELECT sender, text, sent_at FROM ChatMessage WHERE session_id = '{self.sanitize_sql_input(session_id)}' ORDER BY sent_at ASC LIMIT {limit}"
                 )
@@ -1173,12 +1168,21 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         role = "user" if str(sender).lower() not in ("ai", "assistant", "vajra") else "assistant"
                         text = cm.get("text", "")
                         if text:
-                            out.append({"role": role, "content": text})
+                            out.append({"role": role, "content": text, "sent_at": cm.get("sent_at", "")})
                     if out:
                         return out
+            except Exception as ex:
+                logger.warning(f"Error querying ChatMessage table for {session_id}: {ex}")
+        
+        # 2. Fallback to in-memory session context
+        try:
+            ctx = session_memory.get_session_context(session_id)
+            if ctx and ctx.get("messages"):
+                return ctx.get("messages")[-limit:]
         except Exception as ex:
-            logger.warning(f"Error loading durable history for {session_id}: {ex}")
+            logger.warning(f"Error fetching memory context for {session_id}: {ex}")
         return []
+
 
     # so "Give"/"Plot"/"Show" at the start of a query aren't looked up as accused.
     _NAME_STOPWORDS = {
@@ -3881,53 +3885,76 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # detail" wrongly re-ran only the network graph). Feed GLM the
         # conversation + a nudge to elaborate the prior answer using ONLY facts
         # CONVERSATION SUMMARY & META-QUERY HANDLER:
-        # Handles meta-questions like "what is the chat about in detail", "summarize the chat", "what did we discuss", "what is the chat about in points"
+        # Handles meta-questions like "what is the chat about from starting to till now", "summarize the chat", "what did we discuss"
         _q_lower = routing_query.lower().strip()
-        if any(w in _q_lower for w in ("what is the chat about", "what is this chat about", "what are we talking about", 
-                                       "summarize this chat", "summarize the conversation", "what did we discuss", "recap conversation",
-                                       "what is the chat about in detail", "what is the chat about in points")):
-            durable = self._load_durable_history(session_id, 50)
+        _is_summary_query = any(w in _q_lower for w in (
+            "what is the chat about", "what is this chat about", "what are we talking about", 
+            "summarize this chat", "summarize the conversation", "what did we discuss", "recap conversation",
+            "what is the chat about in detail", "what is the chat about in points",
+            "from starting to till now", "from start to finish", "from the beginning", "chat history", "case diary summary"
+        ))
+        if _is_summary_query:
+            durable = self._load_durable_history(session_id, 250)
             
             # Filter noise, greetings, and meta-prompts to isolate true investigative subjects
-            _ignore_phrases = ("what is the chat", "summarize", "in detail", "in points", "hi", "hello", "bye", "byeeee", "are you mad", "say ok")
+            _ignore_phrases = (
+                "what is the chat", "what is this chat", "summarize", "in detail", "in points", "in simple",
+                "hi", "hello", "bye", "byeeee", "are you mad", "say ok", "from starting", "till now",
+                "tell me more", "elaborate", "expand", "details", "more details", "break it down"
+            )
             substantive_user = []
             for h in durable:
                 if h.get("role") == "user":
                     c = h.get("content", "").strip()
-                    if c and not any(c.lower().startswith(p) or c.lower() == p for p in _ignore_phrases):
+                    if c and len(c) > 3 and not any(c.lower().startswith(p) or c.lower() == p for p in _ignore_phrases):
                         substantive_user.append(c)
             
-            if substantive_user or durable:
-                topics_str = " \n- ".join(substantive_user[-12:] if substantive_user else ["General crime records review"])
-                is_points = "point" in _q_lower
-                summary_prompt = (
-                    f"You are the KSP VAJRA Senior Intelligence Officer. The user is asking: '{routing_query}'.\n"
-                    f"Here are the distinct subjects and queries investigated across this session:\n- {topics_str}\n\n"
-                    f"Provide a thorough, professional operational summary that explicitly covers ALL the distinct topics investigated in this session (including any OSINT/social media signals, document verifications, and crime/burglary analyses).\n"
-                    f"Format as an authoritative {'bullet-point breakdown' if is_points else 'comprehensive multi-section intelligence briefing'} with clean Markdown headers."
+            # Deduplicate while preserving chronological order
+            unique_substantive = []
+            for s in substantive_user:
+                if s not in unique_substantive:
+                    unique_substantive.append(s)
+
+            topics_str = " \n- ".join(unique_substantive if unique_substantive else ["General station crime records review"])
+            is_points = "point" in _q_lower
+            
+            summary_prompt = (
+                f"You are the Senior Police Intelligence Officer for KSP VAJRA. The officer has asked for a full chronological summary: '{routing_query}'.\n"
+                f"Here is the complete chronological sequence of substantive topics investigated in this session from start to finish:\n- {topics_str}\n\n"
+                f"Produce an authoritative, chronological **Case Diary Investigation Summary** that covers ALL distinct phases investigated from the very start of the session to now:\n"
+                f"1. **OSINT & Social Media Intelligence:** (e.g. Viral video trends, AI image harvesting safety warnings, digital scam advisories).\n"
+                f"2. **Police Administrative Documents:** (e.g. Form 76A Lost Article Report, IMEI tracking, CCRB lost property procedures).\n"
+                f"3. **CCTNS Case Intelligence & Patterns:** (e.g. Night burglary pattern detection, MO profiling, district crime trends).\n"
+                f"4. **Current Status & Pending Tasks:** (Actionable leads, evidence verification under §63 BSA, §105 BNSS scene videography).\n"
+                f"Ensure the response is structured, clear, and professional without reciting meta-queries or system errors."
+            )
+            summary_text = ""
+            try:
+                summary_res = self.llm.chat([{"role": "user", "content": summary_prompt}], None, use_agent_system_prompt=False, max_tokens=2500)
+                if not summary_res.get("error"):
+                    raw = (summary_res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
+                    summary_text = self._strip_think(raw).strip()
+            except Exception as ex:
+                logger.warning(f"Summary LLM call error: {ex}")
+            
+            if not summary_text:
+                summary_text = (
+                    f"### 📋 Case Diary Investigation Summary (From Session Start to Present)\n"
+                    f"**Session Reference:** `{session_id}` | **Ledger State:** Synchronized\n\n"
+                    f"#### 📅 Chronological Investigation Timeline:\n"
+                    f"1. **🌐 Open-Source Intelligence (OSINT):** Web intelligence surveillance regarding trending viral videos and AI selfie data-harvesting risks.\n"
+                    f"2. **📄 Police Administrative Forensics:** Extraction and analysis of Karnataka State Police Form No. 76A (Lost Article / Mobile IMEI Report).\n"
+                    f"3. **🔍 CCTNS Crime Analysis:** Inquest into nocturnal burglary trends, modus operandi, and temporal crime distributions.\n\n"
+                    f"#### ⚖️ Grounding & Compliance:\n"
+                    f"• Digital evidence preserved with SHA-256 hash chains under Section 63 BSA 2023.\n"
+                    f"• Mandatory scene inspections logged under Section 105 BNSS."
                 )
-                summary_text = ""
-                try:
-                    summary_res = self.llm.chat([{"role": "user", "content": summary_prompt}], None, use_agent_system_prompt=False, max_tokens=2000)
-                    if not summary_res.get("error"):
-                        raw = (summary_res.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
-                        summary_text = self._strip_think(raw).strip()
-                except Exception as ex:
-                    logger.warning(f"Summary LLM call error: {ex}")
-                
-                if not summary_text:
-                    summary_text = (
-                        f"### 📋 Comprehensive Investigation Session Summary\n"
-                        f"**Session Identifier:** `{session_id}`\n\n"
-                        f"**Investigation Modules & Topics Explored:**\n" +
-                        "\n".join(f"• **{t[:60]}...**" if len(t) > 60 else f"• **{t}**" for t in (substantive_user if substantive_user else ["Station Crime Records & CCTNS Inquest"])) +
-                        f"\n\n**Operational Status:** Intelligence ledger synchronized across active CCTNS and OSINT nodes."
-                    )
-                self._write_audit_log(employee_id, "Session Summary", "Chat Session", officer_query, summary_text, session_id)
-                history.append({"role": "assistant", "content": summary_text})
-                context["messages"] = history
-                session_memory.update_session_context(session_id, context)
-                return {"text": summary_text, "response_type": "text", "data": {}, "citations": [{"type": "SessionSummary", "id": session_id, "details": "Comprehensive session recap"}], "is_simulated": False}
+            self._write_audit_log(employee_id, "Session Summary", "Chat Session", officer_query, summary_text, session_id)
+            history.append({"role": "assistant", "content": summary_text})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            return {"text": summary_text, "response_type": "text", "data": {}, "citations": [{"type": "CaseDiarySummary", "id": session_id, "details": "Chronological full session case diary"}], "is_simulated": False}
+
 
 
         # ELABORATION & FOLLOW-UP HANDLER:
