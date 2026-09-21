@@ -91,6 +91,14 @@ def check_fast_path_intent(query: str, real_districts: List[str]) -> Optional[Di
     cleaned = re.sub(r"[?!.,]+$", "", (query or "").strip())
     if not cleaned or re.search(r"\b(and|compare|vs|versus|while|between|also)\b", cleaned, re.IGNORECASE):
         return None
+    
+    # Fast path for similarity / MO / syndicate searches
+    c_low = cleaned.lower()
+    if re.search(r"\b(?:find\s+|show\s+|search\s+|trace\s+)?similar\s+(?:syndicates?|gangs?|cases?|crimes?|patterns?|mo|modus\s+operandi|snatching|theft|burglary|robbery|dacoity|extortion|fraud)\b", c_low):
+        return {"tool": "find_similar_cases", "parameters": {"query": cleaned}}
+    if any(k in c_low for k in ("similar syndicates", "similar gang", "similar cases", "similar crimes", "similar mo")):
+        return {"tool": "find_similar_cases", "parameters": {"query": cleaned}}
+
     # Strip conversational filler prefix so natural phrasings match instantly
     cleaned = re.sub(r"^(?:what\s+(?:are|is)\s+(?:the\s+)?|tell\s+me\s+(?:about\s+)?(?:the\s+)?|can\s+you\s+(?:show|give|tell)\s+(?:me\s+)?(?:the\s+)?|please\s+(?:show|give|tell\s+me\s+)?(?:the\s+)?|give\s+me\s+(?:the\s+)?|show\s+(?:me\s+)?(?:the\s+)?|list\s+(?:the\s+)?|which\s+(?:are\s+)?(?:the\s+)?|what\s+are\s+)", "", cleaned, flags=re.IGNORECASE).strip()
     for pattern, tool_name in _FAST_PATH_PATTERNS:
