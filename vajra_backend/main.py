@@ -3628,18 +3628,14 @@ def _bump_chat_session_active(session_id: str, new_user_text: Optional[str] = No
                 "ROWID": row_data.get("ROWID"),
                 "last_active_at": datetime.utcnow().isoformat()
             }
-            if new_user_text and len(new_user_text.strip()) > 3:
-                clean_q = new_user_text.strip()
-                _meta = ("what is the chat", "summarize", "in detail", "in points", "hi", "hello", "bye", "byeeee", "are you mad", "say ok", "from starting")
-                if not any(clean_q.lower().startswith(p) or clean_q.lower() == p for p in _meta):
-                    cur_desc = (row_data.get("description") or "").strip()
-                    bullet = f"• {clean_q[:70]}"
-                    if bullet not in cur_desc:
-                        updated_desc = (cur_desc + "\n" + bullet).strip() if cur_desc else bullet
-                        row["description"] = updated_desc[:450]
+            # If description was erroneously set to auto-summary bullet list, reset it to empty
+            # so normal chats stay in the normal ungrouped chat list and don't hijack Investigations.
+            cur_desc = (row_data.get("description") or "").strip()
+            if cur_desc.startswith("•") or "•" in cur_desc:
+                row["description"] = ""
             zcql_update_row("ChatSession", row)
     except Exception as e:
-        logger.warning(f"Could not update ChatSession description / last_active_at: {e}")
+        logger.warning(f"Could not update ChatSession last_active_at: {e}")
 
 
 
@@ -4127,18 +4123,24 @@ async def list_sessions(request: Request, location_context: str = Depends(securi
         # the signed-in officer never created.
         # "Lost chats" bug fixed here (confirmed live: one officer had 136
         # real chat sessions in ChatSession, but this LIMIT 50 silently cut
-        # off the 86 oldest -- not deleted, just invisible everywhere this
-        # list feeds: the sidebar, the new "View all conversations" page,
-        # search). Raised to 300, this codebase's own established ZCQL
-        # single-query cap (same bound already used for ChatGroup/session-meta/
-        # InvestigationTask elsewhere in this file) -- covers every real
-        # officer's chat volume today with real headroom.
+        # Normal chats are sessions that were NOT explicitly created as an Investigation.
+        # Queries all sessions for this officer and filters out explicit Investigations.
         owned = catalyst_app.zql().execute_query(
-            f"SELECT session_id, title, last_active_at FROM ChatSession "
-            f"WHERE employee_id = {employee_id} AND (description IS NULL OR description = '') "
+            f"SELECT session_id, title, description, last_active_at FROM ChatSession "
+            f"WHERE employee_id = {employee_id} "
             f"ORDER BY last_active_at DESC LIMIT 300"
         )
-        sessions = [r.get("ChatSession", {}) for r in owned]
+        sessions = []
+        for r in owned:
+            cs = r.get("ChatSession", {})
+            desc = (cs.get("description") or "").strip()
+            # If description is empty OR contains rogue auto-summary bullets, it is a normal chat
+            if not desc or desc.startswith("•") or "•" in desc:
+                sessions.append({
+                    "session_id": cs.get("session_id"),
+                    "title": cs.get("title"),
+                    "last_active_at": cs.get("last_active_at")
+                })
         seen_session_ids = {s["session_id"] for s in sessions}
 
         part_res = catalyst_app.zql().execute_query(
@@ -4153,12 +4155,19 @@ async def list_sessions(request: Request, location_context: str = Depends(securi
             if sid in seen_session_ids:
                 continue
             sess_res = catalyst_app.zql().execute_query(
-                f"SELECT session_id, title, last_active_at FROM ChatSession "
-                f"WHERE session_id = '{escape_zcql_literal(sid)}' AND (description IS NULL OR description = '') LIMIT 1"
+                f"SELECT session_id, title, description, last_active_at FROM ChatSession "
+                f"WHERE session_id = '{escape_zcql_literal(sid)}' LIMIT 1"
             )
             if sess_res:
-                seen_session_ids.add(sid)
-                sessions.append(sess_res[0].get("ChatSession", {}))
+                cs = sess_res[0].get("ChatSession", {})
+                desc = (cs.get("description") or "").strip()
+                if not desc or desc.startswith("•") or "•" in desc:
+                    seen_session_ids.add(sid)
+                    sessions.append({
+                        "session_id": cs.get("session_id"),
+                        "title": cs.get("title"),
+                        "last_active_at": cs.get("last_active_at")
+                    })
 
         # is_cowork: true if this officer was invited in, OR if anyone else
         # has been invited into a session they own -- the history list
@@ -5855,7 +5864,7 @@ async def list_investigations(request: Request, location_context: str = Depends(
             "case_no": r["ChatSession"].get("case_no") or None,
             "last_active_at": r["ChatSession"]["last_active_at"],
             "role": "owner"
-        } for r in owned]
+        } for r in owned if not r["ChatSession"].get("description", "").strip().startswith("•") and "•" not in r["ChatSession"].get("description", "")]
         # Track session_ids already listed as "owner" so a stray/self
         # CoworkParticipant row (e.g. from testing an invite on one's own
         # session) can't make the same investigation show up twice.
@@ -5873,13 +5882,15 @@ async def list_investigations(request: Request, location_context: str = Depends(
                 f"SELECT title, description, case_no, last_active_at FROM ChatSession WHERE session_id = '{escape_zcql_literal(sid)}' AND description != '' LIMIT 1"
             )
             if sess_res:
-                seen_session_ids.add(sid)
                 s = sess_res[0]["ChatSession"]
-                investigations.append({
-                    "session_id": sid, "title": s["title"], "description": s["description"],
-                    "case_no": s.get("case_no") or None, "last_active_at": s.get("last_active_at"),
-                    "role": part.get("role"), "is_cowork": True
-                })
+                desc = (s.get("description") or "").strip()
+                if not desc.startswith("•") and "•" not in desc:
+                    seen_session_ids.add(sid)
+                    investigations.append({
+                        "session_id": sid, "title": s["title"], "description": s["description"],
+                        "case_no": s.get("case_no") or None, "last_active_at": s.get("last_active_at"),
+                        "role": part.get("role"), "is_cowork": True
+                    })
 
         # Owner-side investigations don't know yet whether anyone accepted an
         # invite into them -- role stays "owner" either way, so without this
