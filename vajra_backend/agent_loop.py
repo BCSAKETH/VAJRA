@@ -1147,6 +1147,39 @@ class VajraAgentLoop(CognitiveBrainMixin):
     # if something else in the request pipeline is also struggling.
     # Single words that look like a name (capitalized) but are command verbs,
     # interrogatives, or domain nouns -- never a suspect. Guards entity extraction
+    def _load_durable_history(self, session_id: str, limit: int = 50) -> List[Dict[str, str]]:
+        """
+        Loads the real durable chat history for a session from session_memory
+        and ChatMessage table so multi-turn memory and summaries persist across turns.
+        """
+        if not session_id:
+            return []
+        try:
+            # 1. Try session_memory in-memory context first
+            ctx = session_memory.get_session_context(session_id)
+            if ctx and ctx.get("messages"):
+                return ctx.get("messages")[-limit:]
+            
+            # 2. Try ZCQL ChatMessage table
+            if catalyst_app:
+                rows = catalyst_app.zql().execute_query(
+                    f"SELECT sender, text, sent_at FROM ChatMessage WHERE session_id = '{self.sanitize_sql_input(session_id)}' ORDER BY sent_at ASC LIMIT {limit}"
+                )
+                if rows:
+                    out = []
+                    for r in rows:
+                        cm = r.get("ChatMessage", {})
+                        sender = cm.get("sender", "user")
+                        role = "user" if str(sender).lower() not in ("ai", "assistant", "vajra") else "assistant"
+                        text = cm.get("text", "")
+                        if text:
+                            out.append({"role": role, "content": text})
+                    if out:
+                        return out
+        except Exception as ex:
+            logger.warning(f"Error loading durable history for {session_id}: {ex}")
+        return []
+
     # so "Give"/"Plot"/"Show" at the start of a query aren't looked up as accused.
     _NAME_STOPWORDS = {
         "give", "show", "plot", "find", "tell", "get", "list", "map", "search", "check",
