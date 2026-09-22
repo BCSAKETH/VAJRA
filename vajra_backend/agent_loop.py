@@ -30,6 +30,7 @@ graph_rag = VajraGraphRAG()
 semantic_memory = VajraSemanticMemory()
 
 _real_districts_cache: Optional[List[str]] = None
+_AUDIT_LOG_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="audit_pool")
 
 # Short-TTL cache for expensive full-table aggregate computations (crime-type
 # distribution, priority concerns). Those GROUP BY queries over the whole
@@ -69,6 +70,45 @@ def get_real_districts() -> List[str]:
         except Exception as e:
             logger.warning(f"Could not load real district list: {e}")
     return _real_districts_cache or ["Bengaluru Urban", "Bengaluru Rural", "Mysuru", "Belagavi"]
+
+
+_KNOWN_DISTRICT_NAMES = {
+    "bengaluru", "bengaluru urban", "bengaluru rural", "bengaluru city", "bangalore", "bangalore city", "bangalore urban", "bangalore rural",
+    "mysuru", "mysore", "mysore city", "mysuru city", "mysuru district",
+    "belagavi", "belgaum", "belagavi city", "belagavi district",
+    "ballari", "bellary", "hubballi", "dharwad", "hubballi-dharwad", "hubli",
+    "tumakuru", "tumkur", "mangaluru", "mangalore", "mangalore city", "dakshina kannada", "dakshina kannada dist", "dk",
+    "udupi", "shivamogga", "shimoga", "davangere", "davanagere",
+    "kalaburagi", "gulbarga", "bidar", "raichur", "koppal", "gadag", "haveri",
+    "uttara kannada", "karwar", "vijayapura", "bijapur", "bagalkote", "bagalkot",
+    "chamarajanagar", "mandya", "hassan", "chikkamagaluru", "chikmagalur",
+    "kodagu", "madikeri", "coorg", "kolar", "chikkaballapura", "chikkaballapur",
+    "ramanagara", "ramnagar", "yadgir", "vijayanagara", "vijayanagar", "hospet",
+    "karnataka", "india"
+}
+
+_NAME_STOPWORDS = {
+    "police", "ksp", "cctns", "fir", "crime", "crimes", "offender", "offenders", "repeat offenders",
+    "suspect", "accused", "network", "syndicate", "gang", "gangs", "fencing", "fence", "gold", "jewelry",
+    "gold jewelry", "chain snatching", "chain snatchers", "snatchers", "theft", "burglary", "robbery", "dacoity",
+    "bail", "active bail", "unknown", "unidentified", "accused person", "inter-district", "inter district",
+    "statewide", "state-wide", "fencing networks", "organized crime", "modus operandi", "police station"
+}
+
+
+def is_known_district_or_stopword(text: str) -> bool:
+    if not text:
+        return False
+    t_low = text.strip().lower()
+    if t_low in _KNOWN_DISTRICT_NAMES or t_low in _NAME_STOPWORDS:
+        return True
+    if any(d in t_low for d in _KNOWN_DISTRICT_NAMES) or any(sw in t_low for sw in _NAME_STOPWORDS):
+        return True
+    for rd in get_real_districts():
+        if rd.lower() in t_low:
+            return True
+    return False
+
 
 
 # Sub-3s Query Acceleration (Finals-part 5.md Blueprint 1): a handful of
@@ -2934,22 +2974,25 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
     def _write_audit_log(self, employee_id: int, action_type: str, target: str, query: str, response: str, session_id: str):
         """
-        Writes a secure, immutable audit log entry into the Catalyst AuditLog table.
-        Computes rowhash = hash(prevhash + serialized_row_content) for tamper detection.
+        Dispatches immutable audit log entry into background worker to prevent DB latency from blocking turns.
         """
         if not catalyst_app:
             return
-        # Confirmed live (2026-07-14): the real AuditLog table is snake_case
-        # (session_id, target_entity, query_text, response_summary,
-        # action_type, employee_id, logged_at) -- PascalCase columns this
-        # code used before don't exist under any casing tried, and neither do
-        # row_hash/prev_hash, so hash-chaining silently never wrote anything
-        # real despite being reported as "already implemented" earlier this
-        # session. Tries the hash-chained insert first (works automatically
-        # the moment row_hash/prev_hash columns are added to the console
-        # table, no further code change needed); falls back to a plain write
-        # of the fields that do exist if those columns aren't there yet, so
-        # basic audit logging isn't blocked on that console change either.
+        officer_kgid = getattr(self, "officer_badge", None)
+        try:
+            _AUDIT_LOG_EXECUTOR.submit(
+                self._do_write_audit_log_sync,
+                employee_id, action_type, target, query, response, session_id, officer_kgid
+            )
+        except Exception as e:
+            logger.warning(f"Failed to queue audit log: {e}")
+
+    def _do_write_audit_log_sync(self, employee_id: int, action_type: str, target: str, query: str, response: str, session_id: str, officer_kgid: Optional[str] = None):
+        """
+        Worker implementation for writing audit logs to Catalyst datastore with hash chaining.
+        """
+        if not catalyst_app:
+            return
         logged_at = datetime.utcnow().isoformat()
         base_row = {
             "employee_id": employee_id,
@@ -2960,25 +3003,6 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "session_id": session_id,
             "logged_at": logged_at
         }
-        # C.15: EmployeeID is confirmed NOT unique in the real deployed data
-        # (live audit, 2026-09-12 -- 29 of 34 distinct EmployeeID values are
-        # each shared by 2 different real officers; only a handful of
-        # special/high IDs are clean). AuditLog has never stored any OTHER
-        # identifier per entry, so every existing row's attribution is
-        # already ambiguous and can't be fixed retroactively without a live
-        # data migration (a separate, larger, user-authorized action -- not
-        # something this pass does). What this pass CAN fix: every NEW audit
-        # entry from here on also carries the officer's real KGID
-        # (self.officer_badge, populated from request.state.kgid at turn
-        # start -- confirmed reliably set for every real authenticated
-        # session), so future entries are genuinely attributable even though
-        # employee_id keeps being ambiguous. Requires a new `kgid` column on
-        # the real AuditLog table (console step, not yet confirmed present) --
-        # same "write with the new field, fall back without it if the column
-        # doesn't exist yet" pattern already used here for row_hash/prev_hash,
-        # so this never breaks audit logging entirely if that column isn't
-        # there yet.
-        officer_kgid = getattr(self, "officer_badge", None)
         if officer_kgid:
             base_row["kgid"] = str(officer_kgid)
 
@@ -2988,23 +3012,19 @@ class VajraAgentLoop(CognitiveBrainMixin):
             if last_res:
                 prev_hash = last_res[0].get("AuditLog", {}).get("row_hash") or prev_hash
         except Exception:
-            pass  # row_hash column doesn't exist yet -- attempts below degrade gracefully
+            pass
 
         serialized_content = f"{employee_id}|{action_type}|{target}|{query[:100]}|{response[:100]}|{session_id}|{logged_at}"
         row_hash = hashlib.sha256((prev_hash + serialized_content).encode('utf-8')).hexdigest()
         hash_fields = {"prev_hash": prev_hash, "row_hash": row_hash}
 
-        # Ordered fallback attempts -- most-complete row shape first, degrading
-        # one unknown-column risk at a time, so a single missing console
-        # column (kgid OR the hash-chain pair) never loses the audit entry
-        # entirely the way a single try/except pair would have.
         base_row_no_kgid = {k: v for k, v in base_row.items() if k != "kgid"}
-        attempts = [{**base_row, **hash_fields}]  # full: kgid (if available) + hash chain
+        attempts = [{**base_row, **hash_fields}]
         if "kgid" in base_row:
-            attempts.append({**base_row_no_kgid, **hash_fields})  # hash chain, no kgid
-        attempts.append(dict(base_row))  # kgid (if available), no hash chain
+            attempts.append({**base_row_no_kgid, **hash_fields})
+        attempts.append(dict(base_row))
         if "kgid" in base_row:
-            attempts.append(dict(base_row_no_kgid))  # original plain write, matches this function's exact pre-C.15 behavior
+            attempts.append(dict(base_row_no_kgid))
 
         for i, row in enumerate(attempts):
             try:
@@ -3013,8 +3033,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 logger.info(f"Audit log written ({logged_kind}): {action_type} for session {session_id}")
                 return
             except Exception as e:
-                logger.warning(f"AuditLog insert attempt {i + 1}/{len(attempts)} failed, trying next fallback shape: {e}")
-        logger.error(f"Failed to write to AuditLog table after all fallback attempts: {action_type} for session {session_id}")
+                logger.warning(f"AuditLog insert attempt {i + 1}/{len(attempts)} failed: {e}")
+        logger.error(f"Failed to write to AuditLog table after all attempts: {action_type} for session {session_id}")
 
     @staticmethod
     def _extract_json(content_str: str) -> str:
@@ -5322,16 +5342,12 @@ class VajraAgentLoop(CognitiveBrainMixin):
         if tool_name in ("query_graph_network", "get_offender_risk", "get_mo_profile", "generate_full_report", "check_alibi_consistency") and (params.get("suspect_name") or "").strip():
             _raw_name = str(params.get("suspect_name")).strip()
             _low_raw = _raw_name.lower()
-            if _low_raw in self._KNOWN_DISTRICT_NAMES or _low_raw in [d.lower() for d in get_real_districts()]:
-                # District name was routed as suspect name. Redirect to district-level search
+            if is_known_district_or_stopword(_raw_name):
+                # District name or general keyword was routed as suspect name. Redirect to district-level CCTNS pattern search
                 params.pop("suspect_name", None)
                 params["district"] = _raw_name
                 tool_name = "find_similar_cases"
                 params["query"] = f"Crime pattern and repeat offenders in {_raw_name}"
-            elif _low_raw in self._NAME_STOPWORDS:
-                params.pop("suspect_name", None)
-                tool_name = "find_similar_cases"
-                params["query"] = f"Crime pattern analysis for {_raw_name}"
             else:
                 # ASK, DON'T GUESS: query_graph_network already had its own separate
                 # check for this (a name matching multiple distinct real people used

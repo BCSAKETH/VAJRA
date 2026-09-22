@@ -2045,14 +2045,14 @@ export const AIChatScreen: React.FC = () => {
             "Traversing 3-Hop Syndicate Co-Accused & Louvain Graph Nodes...",
             "Computing Section 187 BNSS Remand & 60/90-Day Default Bail Clocks...",
             "Intersecting Stolen Getaway Vehicles & Highway Exit Corridors...",
-            "QuickML GLM-4.7-Flash synthesizing tactical operational brief..."
+            "Synthesizing tactical operational intelligence brief..."
           ] : [
             "31 ಜಿಲ್ಲೆಗಳ 1,695,718 CCTNS ದಾಖಲೆಗಳನ್ನು ಪರಿಶೀಲಿಸಲಾಗುತ್ತಿದೆ...",
             "CrimeMajorHeadID ಸೂಚಿಗಳನ್ನು ವಿಂಗಡಿಸಿ FIR ದಾಖಲೆಗಳನ್ನು ಪಡೆಯಲಾಗುತ್ತಿದೆ...",
             "ಸಿಂಡಿಕೇಟ್ ಆರೋಪಿಗಳ 3-ಹಂತದ ನೆಟ್‌ವರ್ಕ್ ಗ್ರಾಫ್ ವಿಶ್ಲೇಷಿಸಲಾಗುತ್ತಿದೆ...",
             "ಸೆಕ್ಷನ್ 187 BNSS ರಿಮಾಂಡ್ ಮತ್ತು ಡೀಫಾಲ್ಟ್ ಜಾಮೀನು ಗಡುವು ಲೆಕ್ಕಿಸಲಾಗುತ್ತಿದೆ...",
             "ಕಳವು ವಾಹನಗಳು ಮತ್ತು ಹೆದ್ದಾರಿ ಮಾರ್ಗಗಳನ್ನು ತಾಳೆ ನೋಡಲಾಗುತ್ತಿದೆ...",
-            "ಕ್ವಿಕ್‌ಎಂಎಲ್ GLM-4.7-Flash ಕಾರ್ಯಾಚರಣಾ ವರದಿ ಸಿದ್ಧಪಡಿಸುತ್ತಿದೆ..."
+            "ಕಾರ್ಯಾಚರಣಾ ವರದಿ ಸಿದ್ಧಪಡಿಸಲಾಗುತ್ತಿದೆ..."
           ];
 
           const activeStep = tickerMessage || PROCEDURAL_TICKER_STEPS[Math.floor(thinkingSeconds / 2.5) % PROCEDURAL_TICKER_STEPS.length];
