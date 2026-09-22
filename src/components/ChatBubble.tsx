@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { ChatMessage, useApp, TranscriptTextSize, TtsSettings, TtsSpeed } from "../AppContext";
 import { translations } from "../i18n";
+import { API_BASE } from "../config";
 import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ShieldAlert, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2, Info, Pin, PinOff, ScanLine } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 import { ReasonCollectionModal } from "./ReasonCollectionModal";
@@ -1586,15 +1587,24 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
             : <div className={`whitespace-pre-wrap font-sans text-stone-200 ${sizeStyles.userBubble}`}>{displayText}</div>}
 
           {/* Claude-style Step-by-Step Embedded Tactical Inquest & Clarification (No Popup Modal) */}
-          {isAI && message.data?.clarification_inquest && onQuickReply && (
-            <InlineTacticalInquest
-              inquest={message.data.clarification_inquest}
-              baseQuery={message.data?.query || "similar cases"}
-              onSubmitRefinement={(synthesized) => {
-                onQuickReply(synthesized);
-              }}
-            />
-          )}
+          {(() => {
+            const inquestData = message.data?.clarification_inquest 
+              || (Array.isArray(message.data?.panels) ? message.data.panels.find((p: any) => p?.data?.clarification_inquest)?.data?.clarification_inquest : null)
+              || message.data?.dossier?.clarification_inquest
+              || (Array.isArray(message.data?.matches) ? message.data.matches.find((m: any) => m?.clarification_inquest)?.clarification_inquest : null);
+
+            if (!isAI || !inquestData || !onQuickReply) return null;
+
+            return (
+              <InlineTacticalInquest
+                inquest={inquestData}
+                baseQuery={message.data?.query || message.text || "similar cases"}
+                onSubmitRefinement={(synthesized) => {
+                  onQuickReply(synthesized);
+                }}
+              />
+            );
+          })()}
 
           {/* Clarifying-question quick-reply chips: only when the answer
               carries REAL structured candidates (an ambiguous name matching

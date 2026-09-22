@@ -1215,6 +1215,27 @@ class VajraAgentLoop(CognitiveBrainMixin):
         "conviction", "behavioral", "behavioural", "behavior", "behaviour", "score", "scores",
         "act", "bns", "ipc", "bnss", "bsa", "section", "sections", "law", "laws", "legal",
         "offence", "offences", "step", "steps", "upi", "minor",
+        "bengaluru", "bangalore", "mysuru", "mysore", "belagavi", "belgaum", "ballari", "bellary",
+        "hubballi", "hubli", "dharwad", "tumakuru", "tumkur", "mangaluru", "mangalore",
+        "udupi", "shivamogga", "shimoga", "davanagere", "kalaburagi", "gulbarga", "bidar",
+        "raichur", "koppal", "gadag", "haveri", "vijayapura", "bijapur", "bagalkote", "bagalkot",
+        "chamarajanagar", "mandya", "hassan", "chikkamagaluru", "kodagu", "kolar", "chikkaballapura",
+        "ramanagara", "yadgir", "vijayanagara", "karnataka", "india", "statewide", "inter-district",
+        "gold jewelry", "chain snatchers", "chain snatching", "repeat offenders", "active bail", "snatchers"
+    }
+
+    _KNOWN_DISTRICT_NAMES = {
+        "bengaluru urban", "bengaluru city", "bengaluru rural", "bengaluru", "bangalore",
+        "mysuru", "mysore", "belagavi", "belgaum", "ballari", "bellary", "hubballi", "hubli",
+        "dharwad", "tumakuru", "tumkur", "mangaluru", "mangalore", "dakshina kannada",
+        "udupi", "shivamogga", "shimoga", "davanagere", "davangere", "kalaburagi", "gulbarga",
+        "bidar", "raichur", "koppal", "gadag", "haveri", "uttara kannada", "karwar",
+        "vijayapura", "bijapur", "bagalkote", "bagalkot", "chamarajanagar", "mandya",
+        "hassan", "chikkamagaluru", "chikmagalur", "kodagu", "coorg", "kolar",
+        "chikkaballapura", "ramanagara", "yadgir", "vijayanagara", "karnataka", "india",
+        "gold jewelry", "chain snatchers", "chain snatching", "repeat offenders", "active bail",
+        "organized crime", "modus operandi", "cctns", "fir", "police station", "police",
+        "inter-district", "statewide", "state-wide", "fencing networks", "snatchers"
     }
 
     # C.1: common real-world misspellings of the words
@@ -1706,19 +1727,23 @@ class VajraAgentLoop(CognitiveBrainMixin):
             # Prefer a full "First Last" capitalized match
             m = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", query)
             if m:
-                c = m.group(1)
-                if c.lower() not in self._NAME_STOPWORDS:
+                c = m.group(1).strip()
+                if c.lower() not in self._NAME_STOPWORDS and c.lower() not in self._KNOWN_DISTRICT_NAMES and c.lower() not in [d.lower() for d in get_real_districts()]:
                     return c
             # "suspect X" checked before the more generic "for X"/"connected to X"
             for cue in (r"suspect", r"for", r"connected to", r"of"):
                 m2 = re.search(rf"\b{cue}\s+([a-zA-Z]+)\b", query, re.IGNORECASE)
-                if m2 and m2.group(1).lower() not in ("suspect",) and m2.group(1).lower() not in self._NAME_STOPWORDS:
-                    return m2.group(1).title()
+                if m2:
+                    cand = m2.group(1).strip()
+                    if cand.lower() not in ("suspect",) and cand.lower() not in self._NAME_STOPWORDS and cand.lower() not in self._KNOWN_DISTRICT_NAMES and cand.lower() not in [d.lower() for d in get_real_districts()]:
+                        return cand.title()
             # Reversed word order ("is ramesh connected to") -- a word
             # immediately BEFORE "connected"/"linked".
             m3 = re.search(r"\b([a-zA-Z]+)\s+(?:connected|linked)\b", query, re.IGNORECASE)
-            if m3 and m3.group(1).lower() not in ("is", "who", "what", "crimes") and m3.group(1).lower() not in self._NAME_STOPWORDS:
-                return m3.group(1).title()
+            if m3:
+                cand3 = m3.group(1).strip()
+                if cand3.lower() not in ("is", "who", "what", "crimes") and cand3.lower() not in self._NAME_STOPWORDS and cand3.lower() not in self._KNOWN_DISTRICT_NAMES and cand3.lower() not in [d.lower() for d in get_real_districts()]:
+                    return cand3.title()
             return ""
 
         def guess_case_no() -> str:
@@ -1989,14 +2014,19 @@ class VajraAgentLoop(CognitiveBrainMixin):
         name = ""
         m = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", query)
         if m:
-            name = m.group(1)
-        else:
+            cand = m.group(1).strip()
+            if cand.lower() not in self._NAME_STOPWORDS and cand.lower() not in self._KNOWN_DISTRICT_NAMES and cand.lower() not in [d.lower() for d in get_real_districts()]:
+                name = cand
+        if not name:
             for cue in ("suspect", "of", "for", "on", "about"):
                 m2 = re.search(rf"\b{cue}\s+([a-zA-Z]+)\b", query, re.IGNORECASE)
-                if m2 and m2.group(1).lower() not in (
-                    "suspect", "the", "a", "this", "that", "reoffending", "crime", "him", "her", "them", "case"):
-                    name = m2.group(1).title()
-                    break
+                if m2:
+                    cand2 = m2.group(1).strip()
+                    if cand2.lower() not in (
+                        "suspect", "the", "a", "this", "that", "reoffending", "crime", "him", "her", "them", "case"
+                    ) and cand2.lower() not in self._NAME_STOPWORDS and cand2.lower() not in self._KNOWN_DISTRICT_NAMES and cand2.lower() not in [d.lower() for d in get_real_districts()]:
+                        name = cand2.title()
+                        break
         cm = re.search(r"\bCR-\d{4}-\d+\b", query, re.IGNORECASE)
         case_no = cm.group(0).upper() if cm else ""
 
@@ -5291,52 +5321,64 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # simply not on record (the requested behaviour).
         if tool_name in ("query_graph_network", "get_offender_risk", "get_mo_profile", "generate_full_report", "check_alibi_consistency") and (params.get("suspect_name") or "").strip():
             _raw_name = str(params.get("suspect_name")).strip()
-            # ASK, DON'T GUESS: query_graph_network already had its own separate
-            # check for this (a name matching multiple distinct real people used
-            # to get silently fabricated into one fake combined syndicate --
-            # confirmed live with "ramesh" matching ~15 people). get_offender_risk
-            # and get_mo_profile had NO equivalent check at all: _fuzzy_accused_
-            # match's LIMIT 1 silently picked whichever matching person came
-            # first and confidently reported a risk score / MO profile for
-            # possibly the WRONG person with the same name. This closes that
-            # gap for all three by checking DISTINCT matches before resolving,
-            # and asking the officer to disambiguate instead of guessing --
-            # same honest behavior the network tool already had, extended here.
-            if catalyst_app:
-                try:
-                    _esc = self.sanitize_sql_input(_raw_name)
-                    _dist_res = catalyst_app.zql().execute_query(
-                        f"SELECT DISTINCT AccusedName FROM Accused WHERE AccusedName LIKE '*{_esc}*' LIMIT 10")
-                    _dist_names = [r.get("Accused", {}).get("AccusedName") for r in _dist_res
-                                  if r.get("Accused", {}).get("AccusedName")]
-                except Exception:
-                    _dist_names = []
-                if len(_dist_names) > 1:
-                    return {
-                        "text_result": (
-                            f"\"{_raw_name}\" matches {len(_dist_names)}{'+' if len(_dist_names) == 10 else ''} "
-                            f"different people in the database, not one suspect ({', '.join(sorted(_dist_names)[:5])}"
-                            f"{', ...' if len(_dist_names) > 5 else ''}). Please provide a fuller name (full first "
-                            f"and last name) to identify a specific person."
-                        ),
-                        "response_type": "text", "data": {"candidate_names": _dist_names, "needs_clarification": True},
-                        "citations": [{"type": "Accused Datastore", "id": _raw_name,
-                                       "details": "Name matched multiple distinct accused records -- ambiguous, not resolved."}],
-                        "final": True,
-                    }
-            _canon = self._fuzzy_accused_match(_raw_name)
-            if _canon:
-                params["suspect_name"] = _canon
+            _low_raw = _raw_name.lower()
+            if _low_raw in self._KNOWN_DISTRICT_NAMES or _low_raw in [d.lower() for d in get_real_districts()]:
+                # District name was routed as suspect name. Redirect to district-level search
+                params.pop("suspect_name", None)
+                params["district"] = _raw_name
+                tool_name = "find_similar_cases"
+                params["query"] = f"Crime pattern and repeat offenders in {_raw_name}"
+            elif _low_raw in self._NAME_STOPWORDS:
+                params.pop("suspect_name", None)
+                tool_name = "find_similar_cases"
+                params["query"] = f"Crime pattern analysis for {_raw_name}"
             else:
-                return {
-                    "text_result": (f"\"{_raw_name}\" was not found in the database. No accused record matches this "
-                                    f"name — I also checked for spelling and transliteration variants and found none. "
-                                    f"Please verify the name, try a different spelling, or search by case number."),
-                    "response_type": "text", "data": {},
-                    "citations": [{"type": "Database Lookup", "id": _raw_name,
-                                   "details": "No matching accused record found, including fuzzy/transliteration match."}],
-                    "final": True,   # definitive -> skip GLM synthesis (which would just hang when GLM is slow)
-                }
+                # ASK, DON'T GUESS: query_graph_network already had its own separate
+                # check for this (a name matching multiple distinct real people used
+                # to get silently fabricated into one fake combined syndicate --
+                # confirmed live with "ramesh" matching ~15 people). get_offender_risk
+                # and get_mo_profile had NO equivalent check at all: _fuzzy_accused_
+                # match's LIMIT 1 silently picked whichever matching person came
+                # first and confidently reported a risk score / MO profile for
+                # possibly the WRONG person with the same name. This closes that
+                # gap for all three by checking DISTINCT matches before resolving,
+                # and asking the officer to disambiguate instead of guessing --
+                # same honest behavior the network tool already had, extended here.
+                if catalyst_app:
+                    try:
+                        _esc = self.sanitize_sql_input(_raw_name)
+                        _dist_res = catalyst_app.zql().execute_query(
+                            f"SELECT DISTINCT AccusedName FROM Accused WHERE AccusedName LIKE '*{_esc}*' LIMIT 10")
+                        _dist_names = [r.get("Accused", {}).get("AccusedName") for r in _dist_res
+                                      if r.get("Accused", {}).get("AccusedName")]
+                    except Exception:
+                        _dist_names = []
+                    if len(_dist_names) > 1:
+                        return {
+                            "text_result": (
+                                f"\"{_raw_name}\" matches {len(_dist_names)}{'+' if len(_dist_names) == 10 else ''} "
+                                f"different people in the database, not one suspect ({', '.join(sorted(_dist_names)[:5])}"
+                                f"{', ...' if len(_dist_names) > 5 else ''}). Please provide a fuller name (full first "
+                                f"and last name) to identify a specific person."
+                            ),
+                            "response_type": "text", "data": {"candidate_names": _dist_names, "needs_clarification": True},
+                            "citations": [{"type": "Accused Datastore", "id": _raw_name,
+                                           "details": "Name matched multiple distinct accused records -- ambiguous, not resolved."}],
+                            "final": True,
+                        }
+                _canon = self._fuzzy_accused_match(_raw_name)
+                if _canon:
+                    params["suspect_name"] = _canon
+                else:
+                    return {
+                        "text_result": (f"\"{_raw_name}\" was not found in the database. No accused record matches this "
+                                        f"name — I also checked for spelling and transliteration variants and found none. "
+                                        f"Please verify the name, try a different spelling, or search by case number."),
+                        "response_type": "text", "data": {},
+                        "citations": [{"type": "Database Lookup", "id": _raw_name,
+                                       "details": "No matching accused record found, including fuzzy/transliteration match."}],
+                        "final": True,   # definitive -> skip GLM synthesis (which would just hang when GLM is slow)
+                    }
 
         # 0. get_my_profile -- the logged-in officer's OWN identity. Self-
         # contained (keyed by the employee_id already resolved from the
