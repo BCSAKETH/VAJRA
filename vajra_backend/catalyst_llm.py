@@ -123,13 +123,13 @@ class CatalystLLM:
         self.region = os.getenv("CATALYST_REGION", "IN")
         domain = "in" if self.region == "IN" else "com"
 
-        # Pull endpoint URL from environment, fallback to live confirmed GLM endpoint
+        # Pull endpoint URL from environment, defaulting to the conversation-mode /chat endpoint
         self.endpoint_url = os.getenv(
             "CATALYST_LLM_ENDPOINT"
-        ) or f"https://console.catalyst.zoho.{domain}/quickml/v1/project/{self.project_id}/genai/endpoints/glm-flash-47/generate"
+        ) or f"https://console.catalyst.zoho.{domain}/quickml/v1/project/{self.project_id}/genai/endpoints/glm-flash-47/chat"
         self.endpoint_key = os.getenv(
             "CATALYST_LLM_ENDPOINT_KEY",
-            "15ac420ddfdbed8582a1be5dfe62bd4ca4f453b2ca54adde64e3e7d6ee57b9c8dbfa4f23e5bd8a35895a987fea72f6c0"
+            "ab88e69c79b4142cb5372a8a84581f12b047890c1a5bb28e2c34a3e740a617df89aca7d4ae65ddabd2a9c8af9f89a944"
         )
         # CATALYST-ORG is the project key (60074806366), confirmed live against QuickML gateway
         self.org_id = os.getenv("CATALYST_ORG_ID") or os.getenv("CATALYST_PROJECT_KEY") or "60074806366"
@@ -332,20 +332,49 @@ class CatalystLLM:
         if style_directive:
             system_prompt += "\n\n" + style_directive
 
-        # Build payload with sliding-window budget management to guarantee
-        # total prompt character length never exceeds QuickML's gateway ceiling (< 10k chars).
-        if use_agent_system_prompt:
-            prompt_str = _build_budgeted_prompt(system_prompt, messages, max_chars=9500)
+        # Build payload based on endpoint type:
+        # 1. /chat endpoint: Supports up to 500,000 characters with native OpenAI-compatible messages array
+        # 2. /generate endpoint: Flat {"prompt": prompt_str} (capped to 10k chars)
+        is_chat_endpoint = self.endpoint_url.rstrip("/").endswith("/chat")
+        if is_chat_endpoint:
+            chat_messages = []
+            if use_agent_system_prompt and system_prompt:
+                # Prepend rich system instructions into first user turn (QuickML gateway pattern)
+                first_content = f"System: {system_prompt.strip()}\n\n"
+                if messages:
+                    first_m = messages[0]
+                    first_role = first_m.get("role") or "user"
+                    chat_messages.append({"role": "user", "content": first_content + (first_m.get("content") or "")})
+                    for m in messages[1:]:
+                        r = m.get("role") or "user"
+                        if r == "system":
+                            r = "user"
+                        chat_messages.append({"role": r, "content": m.get("content", "")})
+                else:
+                    chat_messages.append({"role": "user", "content": first_content + "Please proceed."})
+            else:
+                for m in messages:
+                    r = m.get("role") or "user"
+                    if r == "system":
+                        r = "user"
+                    chat_messages.append({"role": r, "content": m.get("content", "")})
+            payload = {
+                "model": self.model_name,
+                "messages": chat_messages
+            }
         else:
-            parts = []
-            for m in messages:
-                role = (m.get("role") or "user").capitalize()
-                parts.append(f"{role}: {m.get('content', '')}")
-            parts.append("Assistant:")
-            prompt_str = "\n\n".join(parts)
-            if len(prompt_str) > 9500:
-                prompt_str = prompt_str[-9500:]
-        payload = {"prompt": prompt_str}
+            if use_agent_system_prompt:
+                prompt_str = _build_budgeted_prompt(system_prompt, messages, max_chars=9500)
+            else:
+                parts = []
+                for m in messages:
+                    role = (m.get("role") or "user").capitalize()
+                    parts.append(f"{role}: {m.get('content', '')}")
+                parts.append("Assistant:")
+                prompt_str = "\n\n".join(parts)
+                if len(prompt_str) > 9500:
+                    prompt_str = prompt_str[-9500:]
+            payload = {"prompt": prompt_str}
 
         # Skip the retry-with-backoff budget entirely if a recent call already
         # confirmed the endpoint down -- avoids every chat turn during a real
@@ -356,39 +385,6 @@ class CatalystLLM:
             logger.info("Catalyst LLM endpoint recently confirmed down (in-process cooldown) -- skipping to fallback.")
             _last_failure_reason = "skipped_cooldown_from_recent_failure"
         else:
-            # Confirmed live: this is a "thinking" model that writes
-            # extensive step-by-step reasoning before answering -- real
-            # response times ranged 25-58s across early test calls. The old
-            # 25s timeout with 4 short-delay retries meant most calls timed
-            # out on attempts 1-2 before the model was even done thinking,
-            # then burned the whole retry budget re-asking the same slow
-            # question from scratch rather than just waiting for the one in
-            # flight. 60s helped, but a full session's worth of real timing
-            # data later showed EVERY successful call completed under 60s --
-            # several within a few seconds of that ceiling (47.9s, 54.3s,
-            # 55.5s observed) -- while every timeout was a genuine held-open
-            # connection past 60s, never a fast rejection (no 429 seen
-            # anywhere). That combination means some calls that would have
-            # succeeded at 65-90s were being killed right at the edge.
-            # Raised to 300s (5 minutes) per attempt, at the officer's own
-            # explicit request to prioritize letting GLM actually finish its
-            # real analysis over falling back to raw/unpolished output. This
-            # codebase's own "confirmed live" notes document real successful
-            # turns up to 140s+ under load (a screenshot mid-session showed a
-            # legitimate in-progress turn still running at 132s, not yet
-            # killed by anything upstream), and the specific fallback this
-            # was raised to avoid -- the later "write a polished narrative"
-            # synthesis call timing out and falling back to raw tool output
-            # -- is explicitly noted as common "under sustained load," i.e.
-            # exactly when the model needs the most room, not the least.
-            # Neither FastAPI/Uvicorn nor AppSail impose their own shorter
-            # request timeout here, so this Python-level value is the real
-            # ceiling. Tradeoff, stated plainly: a genuinely stuck request
-            # can now hold an officer's chat turn open for minutes before
-            # ever falling back -- accepted deliberately in exchange for
-            # letting slow-but-working turns actually complete.
-            # Calibrated single attempt (42s): allows GLM ample thinking time while
-            # guaranteeing the total request completes safely within the 60s gateway window.
             _req_timeout = 42
             for attempt, delay in enumerate([0]):
                 if delay:
@@ -400,10 +396,14 @@ class CatalystLLM:
                     if res.status_code == 200:
                         data = res.json()
                         logger.info("Catalyst LLM Serving returned 200 OK.")
-                        try:
-                            _resp = ((data.get("data") or [{}])[0] or {}).get("data") or ""
-                        except (IndexError, AttributeError, TypeError):
-                            _resp = ""
+                        _resp = ""
+                        if "choices" in data and data["choices"]:
+                            _resp = data["choices"][0].get("message", {}).get("content") or ""
+                        elif "data" in data and data["data"]:
+                            try:
+                                _resp = (data["data"][0] or {}).get("data") or ""
+                            except (IndexError, AttributeError, TypeError):
+                                _resp = ""
                         if "</think>" in _resp:
                             _resp = _resp.split("</think>", 1)[-1].strip()
                         if _is_guardrail_refusal(_resp):
