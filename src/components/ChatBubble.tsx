@@ -4,9 +4,8 @@ import { ChatMessage, useApp, TranscriptTextSize, TtsSettings, TtsSpeed } from "
 import { translations } from "../i18n";
 import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ShieldAlert, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2, Info, Pin, PinOff, ScanLine } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
-import { API_BASE } from "../config";
 import { ReasonCollectionModal } from "./ReasonCollectionModal";
-import { TacticalClarificationModal } from "./TacticalClarificationModal";
+import { TacticalClarificationModal, InlineTacticalInquest } from "./TacticalClarificationModal";
 
 // KSP Response Tailor (Finals-part 3.md Section 48) -- mirrors
 // vajra_backend/ksp_response_tailor.py's STYLE_LABELS. A small, honest badge
@@ -1586,42 +1585,11 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
             ? <div className={`font-sans text-stone-200 ${sizeStyles.prose}`}>{renderRich(displayText, sizeStyles)}</div>
             : <div className={`whitespace-pre-wrap font-sans text-stone-200 ${sizeStyles.userBubble}`}>{displayText}</div>}
 
-          {/* Claude-style Rich Tactical Inquest & Clarification Assistant */}
+          {/* Claude-style Step-by-Step Embedded Tactical Inquest & Clarification (No Popup Modal) */}
           {isAI && message.data?.clarification_inquest && onQuickReply && (
-            <div className="mt-3 p-3.5 rounded-xl border border-[#C79A4E]/40 bg-gradient-to-r from-[#C79A4E]/15 via-stone-900 to-stone-900 shadow-lg shadow-[#C79A4E]/5">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-2 rounded-lg bg-[#C79A4E]/20 text-[#C79A4E] border border-[#C79A4E]/30 animate-pulse">
-                    <Sparkles className="w-4 h-4" />
-                  </div>
-                  <div>
-                    <div className="text-xs font-bold text-amber-200 tracking-wide">
-                      {message.data.clarification_inquest.title || "Tactical Inquest & Investigation Refinement"}
-                    </div>
-                    <div className="text-[11px] text-stone-400">
-                      {message.data.clarification_inquest.steps?.length || 4} Operational Dimensions (Multi-Select & Custom Write-Ins)
-                    </div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowInquestModal(true)}
-                  className="flex items-center justify-center gap-1.5 px-3.5 py-1.5 text-xs font-bold rounded-lg bg-gradient-to-r from-[#C79A4E] to-amber-500 text-black hover:from-amber-400 hover:to-amber-300 shadow-md shadow-[#C79A4E]/20 transition-all cursor-pointer font-sans"
-                >
-                  <span>⚡ Open Refinement Modal</span>
-                  <ChevronRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* Modal instance */}
-          {showInquestModal && message.data?.clarification_inquest && onQuickReply && (
-            <TacticalClarificationModal
+            <InlineTacticalInquest
               inquest={message.data.clarification_inquest}
               baseQuery={message.data?.query || "similar cases"}
-              isOpen={showInquestModal}
-              onClose={() => setShowInquestModal(false)}
               onSubmitRefinement={(synthesized) => {
                 onQuickReply(synthesized);
               }}

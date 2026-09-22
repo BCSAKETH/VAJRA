@@ -360,3 +360,308 @@ export const TacticalClarificationModal: React.FC<TacticalClarificationModalProp
     </div>
   );
 };
+
+export interface InlineTacticalInquestProps {
+  inquest: ClarificationInquest;
+  baseQuery: string;
+  onSubmitRefinement: (synthesizedQuery: string, activeFilters?: Record<string, any>) => void;
+  onDismiss?: () => void;
+}
+
+export const InlineTacticalInquest: React.FC<InlineTacticalInquestProps> = ({
+  inquest,
+  baseQuery,
+  onSubmitRefinement,
+  onDismiss,
+}) => {
+  const [currentStepIdx, setCurrentStepIdx] = useState(0);
+  const [selections, setSelections] = useState<Record<string, string[]>>(() => {
+    const initial: Record<string, string[]> = {};
+    inquest.steps?.forEach((s) => {
+      initial[s.step_id] = [];
+    });
+    return initial;
+  });
+  const [writeIns, setWriteIns] = useState<Record<string, string>>({});
+
+  if (!inquest || !inquest.steps || inquest.steps.length === 0) {
+    return null;
+  }
+
+  const currentStep = inquest.steps[currentStepIdx] || inquest.steps[0];
+  const isMulti = currentStep.type === 'multi_select';
+  const totalSteps = inquest.steps.length;
+
+  const toggleOption = (stepId: string, optPatch: string, isSingle: boolean) => {
+    setSelections((prev) => {
+      const currentList = prev[stepId] || [];
+      if (isSingle) {
+        return { ...prev, [stepId]: [optPatch] };
+      }
+      if (currentList.includes(optPatch)) {
+        return { ...prev, [stepId]: currentList.filter((x) => x !== optPatch) };
+      } else {
+        return { ...prev, [stepId]: [...currentList, optPatch] };
+      }
+    });
+  };
+
+  const handleWriteInChange = (stepId: string, val: string) => {
+    setWriteIns((prev) => ({ ...prev, [stepId]: val }));
+  };
+
+  const totalSelectedCount =
+    Object.values(selections).reduce((acc, list) => acc + list.length, 0) +
+    Object.values(writeIns).filter((w) => w.trim().length > 0).length;
+
+  const handleNext = () => {
+    if (currentStepIdx < totalSteps - 1) {
+      setCurrentStepIdx((prev) => prev + 1);
+    } else {
+      handleFinalSubmit();
+    }
+  };
+
+  const handlePrev = () => {
+    if (currentStepIdx > 0) {
+      setCurrentStepIdx((prev) => prev - 1);
+    }
+  };
+
+  const handleFinalSubmit = () => {
+    const collectedParts: string[] = [];
+    inquest.steps.forEach((s) => {
+      const picked = selections[s.step_id] || [];
+      const custom = writeIns[s.step_id]?.trim();
+      if (picked.length > 0) {
+        collectedParts.push(...picked);
+      }
+      if (custom) {
+        collectedParts.push(custom);
+      }
+    });
+
+    let synthesized = baseQuery;
+    if (collectedParts.length > 0) {
+      synthesized = `Refine investigation: ${baseQuery} [Parameters: ${collectedParts.join(', ')}]`;
+    }
+
+    onSubmitRefinement(synthesized, { selections, writeIns });
+  };
+
+  return (
+    <div className="my-3 w-full rounded-2xl border border-[#C79A4E]/40 bg-gradient-to-b from-stone-900/95 via-stone-900/90 to-stone-950/95 shadow-xl shadow-[#C79A4E]/5 overflow-hidden text-neutral-100 animate-fadeIn">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[#C79A4E]/20 bg-gradient-to-r from-[#C79A4E]/15 via-stone-900 to-stone-900">
+        <div className="flex items-center gap-2.5">
+          <div className="p-1.5 rounded-lg bg-[#C79A4E]/20 border border-[#C79A4E]/30 text-[#C79A4E] shrink-0">
+            <Sparkles className="w-4 h-4 animate-pulse" />
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-[#C79A4E]">
+                Tactical Inquest
+              </span>
+              <span className="px-1.5 py-0.2 text-[9.5px] font-mono rounded bg-[#C79A4E]/20 text-amber-300 border border-[#C79A4E]/30">
+                Question {currentStepIdx + 1} of {totalSteps}
+              </span>
+            </div>
+            <div className="text-xs font-bold text-white tracking-wide">
+              {inquest.title || 'Investigative Clarification & Refinement'}
+            </div>
+          </div>
+        </div>
+
+        {onDismiss && (
+          <button
+            onClick={onDismiss}
+            className="p-1 rounded-lg text-stone-400 hover:text-white hover:bg-stone-800 transition-colors"
+            title="Dismiss Inquest"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+
+      {/* Step Pills */}
+      <div className="flex items-center gap-1.5 px-4 py-2 bg-stone-950/70 border-b border-stone-800 overflow-x-auto custom-scrollbar">
+        {inquest.steps.map((s, idx) => {
+          const isDone = idx < currentStepIdx;
+          const isCurrent = idx === currentStepIdx;
+          const count = (selections[s.step_id]?.length || 0) + (writeIns[s.step_id]?.trim() ? 1 : 0);
+
+          return (
+            <button
+              key={s.step_id}
+              onClick={() => setCurrentStepIdx(idx)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-left transition-all text-xs border shrink-0 ${
+                isCurrent
+                  ? 'bg-[#C79A4E]/15 border-[#C79A4E]/50 text-amber-300 font-semibold'
+                  : isDone
+                  ? 'bg-stone-900 border-emerald-500/30 text-emerald-400'
+                  : 'bg-stone-900/40 border-stone-800 text-stone-500 hover:text-stone-400'
+              }`}
+            >
+              <div
+                className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold ${
+                  isDone
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                    : isCurrent
+                    ? 'bg-[#C79A4E] text-black'
+                    : 'bg-stone-800 text-stone-400'
+                }`}
+              >
+                {isDone ? <Check className="w-2.5 h-2.5" /> : idx + 1}
+              </div>
+              <span className="truncate max-w-[120px]">{s.title.split(' ')[0]}</span>
+              {count > 0 && (
+                <span className="text-[9px] text-[#C79A4E] font-mono">({count})</span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Question Details */}
+      <div className="p-4 space-y-3">
+        <div className="space-y-0.5">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-mono text-[#C79A4E]">Q{currentStepIdx + 1}:</span>
+            <h4 className="text-xs font-bold text-white">{currentStep.title}</h4>
+          </div>
+          <p className="text-[11px] text-stone-400 leading-relaxed">{currentStep.subtitle}</p>
+        </div>
+
+        {/* Option Cards */}
+        <div className="space-y-2">
+          {currentStep.options.map((opt) => {
+            const isSelected = (selections[currentStep.step_id] || []).includes(opt.param_patch);
+            return (
+              <div
+                key={opt.id}
+                onClick={() => toggleOption(currentStep.step_id, opt.param_patch, !isMulti)}
+                className={`group relative flex items-start gap-3 p-3 rounded-xl cursor-pointer border transition-all select-none ${
+                  isSelected
+                    ? 'bg-[#C79A4E]/10 border-[#C79A4E]/60 shadow-md shadow-[#C79A4E]/5'
+                    : 'bg-stone-900/60 border-stone-800 hover:border-stone-700 hover:bg-stone-850'
+                }`}
+              >
+                <div
+                  className={`mt-0.5 w-4 h-4 rounded flex items-center justify-center border transition-all shrink-0 ${
+                    isSelected
+                      ? 'bg-[#C79A4E] border-amber-400 text-black shadow-sm'
+                      : 'border-stone-700 bg-stone-800/80 text-transparent group-hover:border-stone-600'
+                  }`}
+                >
+                  <Check className="w-3 h-3 stroke-[3]" />
+                </div>
+
+                {opt.icon && <span className="text-base select-none shrink-0">{opt.icon}</span>}
+
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <span
+                      className={`text-xs font-bold tracking-wide ${
+                        isSelected ? 'text-amber-200' : 'text-stone-200 group-hover:text-white'
+                      }`}
+                    >
+                      {opt.label}
+                    </span>
+                    {opt.badge && (
+                      <span
+                        className={`px-1.5 py-0.5 text-[9.5px] font-mono rounded-full border shrink-0 ${
+                          isSelected
+                            ? 'bg-[#C79A4E]/20 text-amber-300 border-[#C79A4E]/40'
+                            : 'bg-stone-800 text-stone-400 border-stone-700'
+                        }`}
+                      >
+                        {opt.badge}
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-0.5 text-[11px] leading-relaxed text-stone-400 group-hover:text-stone-300">
+                    {opt.description}
+                  </p>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Custom Write-In Option */}
+        <div className="pt-1">
+          <div className="flex items-center gap-1.5 text-[10.5px] text-[#C79A4E] font-medium mb-1">
+            <Edit3 className="w-3 h-3" />
+            <span>✍️ Type your own custom constraint or specific query:</span>
+          </div>
+          <div className="relative">
+            <input
+              type="text"
+              value={writeIns[currentStep.step_id] || ''}
+              onChange={(e) => handleWriteInChange(currentStep.step_id, e.target.value)}
+              placeholder={currentStep.write_in_placeholder || 'Type custom constraint, station, or parameter...'}
+              className="w-full px-3 py-2 text-xs bg-stone-950 border border-stone-800 rounded-xl text-stone-200 placeholder-stone-600 focus:outline-none focus:border-[#C79A4E]/50 focus:ring-1 focus:ring-[#C79A4E]/30 transition-all font-mono"
+            />
+            {writeIns[currentStep.step_id] && (
+              <button
+                onClick={() => handleWriteInChange(currentStep.step_id, '')}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-stone-500 hover:text-stone-300 text-xs"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Footer Controls */}
+      <div className="flex items-center justify-between px-4 py-2.5 bg-stone-950/80 border-t border-stone-800">
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-stone-400 font-mono">
+            Active Filters: <strong className="text-[#C79A4E]">{totalSelectedCount}</strong>
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {currentStepIdx > 0 && (
+            <button
+              onClick={handlePrev}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-stone-300 bg-stone-900 border border-stone-800 hover:bg-stone-850 hover:text-white transition-all"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+              <span>Back</span>
+            </button>
+          )}
+
+          {currentStepIdx < totalSteps - 1 ? (
+            <>
+              <button
+                onClick={handleNext}
+                className="px-3 py-1.5 rounded-lg text-xs font-semibold text-stone-400 hover:text-stone-200 hover:bg-stone-900 transition-all"
+              >
+                Skip
+              </button>
+              <button
+                onClick={handleNext}
+                className="flex items-center gap-1 px-3.5 py-1.5 rounded-lg text-xs font-bold text-black bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-300 hover:to-amber-400 shadow-md shadow-[#C79A4E]/20 transition-all"
+              >
+                <span>Next Question</span>
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={handleFinalSubmit}
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-black bg-gradient-to-r from-amber-400 via-amber-300 to-amber-500 hover:from-amber-300 hover:to-amber-400 shadow-lg shadow-[#C79A4E]/30 transition-all"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Refine Investigation ({totalSelectedCount})</span>
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
