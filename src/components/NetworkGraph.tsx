@@ -501,7 +501,7 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
       {selectedTraceNodes.length === 2 && (
         <div className="absolute top-2 left-1/2 -translate-x-1/2 z-10 bg-stone-900 border border-[#C79A4E]/40 rounded-xl px-3 py-2 shadow-xl flex items-center gap-2 text-[11px]">
           <span className="text-stone-300">
-            Trace connection between <b className="text-[#E4C590]">{selectedTraceNodes[0].label}</b> and <b className="text-[#E4C590]">{selectedTraceNodes[1].label}</b>?
+            Trace connection between <b className="text-[#E4C590]">{String(selectedTraceNodes[0]?.label ?? "")}</b> and <b className="text-[#E4C590]">{String(selectedTraceNodes[1]?.label ?? "")}</b>?
           </span>
           <button onClick={fireTrace} className="px-2 py-0.5 rounded-lg bg-[#C79A4E] text-stone-950 font-bold cursor-pointer">Trace</button>
           <button onClick={() => setSelectedForTrace([])} className="px-2 py-0.5 rounded-lg border border-stone-700 text-stone-400 cursor-pointer">Cancel</button>
@@ -669,7 +669,10 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
                 fontFamily="monospace"
                 fontWeight={n.type === "suspect" ? 700 : 500}
               >
-                {n.label.length > maxLabelLen ? n.label.slice(0, maxLabelLen - 2) + "…" : n.label}
+                {(() => {
+                  const lbl = String(n.label ?? "");
+                  return lbl.length > maxLabelLen ? lbl.slice(0, maxLabelLen - 2) + "…" : lbl;
+                })()}
               </text>
               {n.sublabel && !isDense && (
                 <text

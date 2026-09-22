@@ -221,6 +221,57 @@ export const getTacticalMeta = (type: string, data?: any, lang: "en" | "kn" = "e
     };
   }
 
+  if (t.includes("recidivism") || t.includes("offender_risk")) {
+    return {
+      title: lang === "en" ? "Calibrated Recidivism Risk & Offender Profiling" : "ಪರಿಷ್ಕೃತ ಮರು-ಅಪರಾಧ ಅಪಾಯ ಮತ್ತು ಶಂಕಿತರ ಪ್ರೊಫೈಲಿಂಗ್",
+      statute: "§ 480 BNSS / CCTNS Grounded",
+      category: "RECIDIVISM & BAIL OPPOSITION",
+      icon: Target,
+      badgeColor: "bg-rose-500/20 text-rose-300 border-rose-500/40",
+      accent: "#EF4444"
+    };
+  }
+  if (t.includes("cyber_abuse") || t.includes("online_abuse") || t.includes("harassment")) {
+    return {
+      title: lang === "en" ? "Online Abuse & Cyber Harassment Legal Advisory" : "ಆನ್‌ಲೈನ್ ಕಿರುಕುಳ ಮತ್ತು ಸೈಬರ್ ದೌರ್ಜನ್ಯ ಕಾನೂನು ಸಲಹೆ",
+      statute: "BNS / IT Act / § 63 BSA 2023",
+      category: "CYBER HARASSMENT ADVISORY",
+      icon: ShieldAlert,
+      badgeColor: "bg-rose-500/20 text-rose-300 border-rose-500/40",
+      accent: "#F43F5E"
+    };
+  }
+  if (t.includes("chargesheet")) {
+    return {
+      title: lang === "en" ? "Chargesheet Readiness & Statutory Filing Tracker" : "ಆರೋಪಪಟ್ಟಿ ಸಿದ್ಧತೆ ಮತ್ತು ಶಾಸನಬದ್ಧ ಸಲ್ಲಿಕೆ ಟ್ರ್ಯಾಕರ್",
+      statute: "§ 193 BNSS 2023",
+      category: "PROSECUTION PIPELINE",
+      icon: FileText,
+      badgeColor: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+      accent: "#F59E0B"
+    };
+  }
+  if (t.includes("cdr") || t.includes("call_detail")) {
+    return {
+      title: lang === "en" ? "Call Detail Record (CDR) Tower & IMEI Forensics" : "ಕರೆ ವಿವರ ದಾಖಲೆ (CDR) ಮತ್ತು IMEI ವಿಧಿವಿಜ್ಞಾನ",
+      statute: "§ 94 BNSS / Telecommunications Act",
+      category: "TELECOM FORENSICS",
+      icon: PhoneCall,
+      badgeColor: "bg-sky-500/20 text-sky-300 border-sky-500/40",
+      accent: "#0EA5E9"
+    };
+  }
+  if (t.includes("syndicate") || t.includes("hierarchy")) {
+    return {
+      title: lang === "en" ? "Organized Syndicate Operational Hierarchy" : "ಸಂಘಟಿತ ಅಪರಾಧ ಜಾಲ ಕಾರ್ಯಾಚರಣಾ ಶ್ರೇಣಿ",
+      statute: "§ 111 BNS 2023 (Organised Crime)",
+      category: "SYNDICATE RECONNAISSANCE",
+      icon: Users,
+      badgeColor: "bg-purple-500/20 text-purple-300 border-purple-500/40",
+      accent: "#A855F7"
+    };
+  }
+
   // Fallback cleanly formatted
   const formattedTitle = type
     .replace(/_/g, " ")
@@ -295,14 +346,44 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
     }
   }
 
-  // Connected 1-Click Action Buttons
-  const actions: string[] = Array.isArray(data?.actions) && data.actions.length > 0
+  // Connected 1-Click Action Buttons normalized to { label, query }
+  interface ActionItem {
+    label: string;
+    query: string;
+  }
+
+  const rawActions = Array.isArray(data?.actions) && data.actions.length > 0
     ? data.actions
     : [
         data?.case_no ? `Add case diary entry for ${data.case_no}` : "View recent high-risk cases",
         data?.case_no ? `Export High Court PDF for ${data.case_no}` : "Check pending warrants across district",
         data?.case_no ? `View syndicate network for ${data.case_no}` : "Generate district crime review"
       ];
+
+  const normalizedActions: ActionItem[] = rawActions.map((act: any) => {
+    if (typeof act === "string") {
+      return { label: act, query: act };
+    }
+    if (typeof act === "object" && act !== null) {
+      const label = String(act.label || act.title || act.name || act.id || "Execute Action");
+      let query = typeof act.query === "string" ? act.query : "";
+      if (!query && act.label) {
+        query = String(act.label).replace(/^[^\w\s§]+/, "").trim();
+        if (act.params?.suspect_name && !query.toLowerCase().includes(String(act.params.suspect_name).toLowerCase())) {
+          query += ` for ${act.params.suspect_name}`;
+        } else if (act.params?.case_no && !query.toLowerCase().includes(String(act.params.case_no).toLowerCase())) {
+          query += ` for ${act.params.case_no}`;
+        }
+      }
+      if (!query && act.tool) {
+        query = String(act.tool).replace(/_/g, " ");
+        if (act.params?.suspect_name) query += ` for ${act.params.suspect_name}`;
+        if (act.params?.case_no) query += ` for ${act.params.case_no}`;
+      }
+      return { label, query: query || label };
+    }
+    return { label: String(act), query: String(act) };
+  });
 
   return (
     <div className="w-full flex flex-col gap-4 font-sans text-stone-200">
@@ -461,7 +542,7 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
                             {subLabel}:
                           </span>
                           <span className="text-[11px] font-mono text-stone-200 text-right truncate max-w-[200px]">
-                            {String(iv)}
+                            {typeof iv === "object" ? JSON.stringify(iv) : String(iv)}
                           </span>
                         </div>
                       );
@@ -469,7 +550,7 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
                   </div>
                 ) : (
                   <div className="text-xs font-mono text-stone-200">
-                    {String(item)}
+                    {typeof item === "object" ? JSON.stringify(item) : String(item)}
                   </div>
                 )}
               </div>
@@ -516,21 +597,21 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
       </div>
 
       {/* 6. 1-Click Connected Tactical Actions Toolbar */}
-      {actions.length > 0 && onFollowUpQuery && (
+      {normalizedActions.length > 0 && onFollowUpQuery && (
         <div className="space-y-2 pt-1 border-t border-stone-850">
           <span className="text-[10.5px] font-mono text-stone-400 uppercase tracking-wider flex items-center gap-1.5">
             <Sparkles className="w-3.5 h-3.5 text-[#C79A4E]" />
             {lang === "en" ? "1-Click Connected Operational Actions" : "1-ಕ್ಲಿಕ್ ಕಾರ್ಯಾಚರಣಾ ಕ್ರಮಗಳು"}
           </span>
           <div className="flex flex-wrap gap-2">
-            {actions.map((act, i) => (
+            {normalizedActions.map((act, i) => (
               <button
                 key={i}
                 type="button"
-                onClick={() => onFollowUpQuery(act)}
+                onClick={() => onFollowUpQuery(act.query)}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-stone-900 border border-stone-750 hover:border-[#C79A4E]/60 text-stone-200 hover:text-[#C79A4E] shadow-sm transition-all hover:scale-[1.02] cursor-pointer"
               >
-                <span>{act}</span>
+                <span>{act.label}</span>
                 <ChevronRight className="w-3.5 h-3.5 opacity-60" />
               </button>
             ))}

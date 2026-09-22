@@ -189,7 +189,10 @@ const MapFitter: React.FC<{ points: { lat: number; lng: number }[] }> = ({ point
 };
 
 const MapCard: React.FC<AppletComponentSpec> = ({ title, data }) => {
-  const points: { lat: number; lng: number; label?: string }[] = Array.isArray(data) ? data : [];
+  const rawPoints: { lat: number; lng: number; label?: string }[] = Array.isArray(data) ? data : [];
+  const points = rawPoints.filter(
+    (p: any) => typeof p?.lat === "number" && !isNaN(p.lat) && typeof p?.lng === "number" && !isNaN(p.lng)
+  );
   const center: [number, number] = points.length > 0 ? [points[0].lat, points[0].lng] : [12.9716, 77.5946];
   return (
     <CardShell title={title}>

@@ -631,7 +631,10 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
         {/* Content Pane */}
         <div ref={contentRef} className={inline ? "flex-1 overflow-y-auto overflow-x-hidden" : "flex-1 p-6 overflow-y-auto bg-stone-950/15"}>
           {type === "map" && (() => {
-            const hotspots: { lat: number; lng: number; label?: string }[] = data.hotspots || [];
+            const rawHotspots: { lat: number; lng: number; label?: string }[] = Array.isArray(data.hotspots) ? data.hotspots : [];
+            const hotspots = rawHotspots.filter(
+              (h: any) => typeof h?.lat === "number" && !isNaN(h.lat) && typeof h?.lng === "number" && !isNaN(h.lng)
+            );
             const isSat = mapBasemap === "satellite";
             return (
               <div className="h-full flex flex-col gap-3">
@@ -1894,15 +1897,20 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                 ) : null}
               </div>
               <div className="flex-1 overflow-y-auto space-y-2">
-                {(data.cases || []).map((c: any, idx: number) => (
-                  <div key={idx} className="bg-stone-900/60 border border-stone-850 p-3.5 rounded-lg flex justify-between items-center gap-3">
-                    <div className="space-y-0.5 min-w-0">
-                      <span className="text-xs font-black text-stone-250 block truncate font-mono">{c.crime_no}</span>
-                      <span className="text-[11px] text-stone-450">{c.station}</span>
+                {(data.cases || []).map((c: any, idx: number) => {
+                  const crimeNo = typeof c === "string" ? c : (c?.crime_no || (lang === "en" ? "Case Record" : "ಪ್ರಕರಣ"));
+                  const station = typeof c === "object" && c !== null ? c?.station : "";
+                  const regDate = typeof c === "object" && c !== null ? c?.registered_date : "";
+                  return (
+                    <div key={idx} className="bg-stone-900/60 border border-stone-850 p-3.5 rounded-lg flex justify-between items-center gap-3">
+                      <div className="space-y-0.5 min-w-0">
+                        <span className="text-xs font-black text-stone-250 block truncate font-mono">{crimeNo}</span>
+                        {station && <span className="text-[11px] text-stone-450">{station}</span>}
+                      </div>
+                      {regDate && <div className="shrink-0 text-right text-[11px] text-stone-450 font-mono">{regDate}</div>}
                     </div>
-                    <div className="shrink-0 text-right text-[11px] text-stone-450 font-mono">{c.registered_date}</div>
-                  </div>
-                ))}
+                  );
+                })}
                 {(data.cases || []).length === 0 && (
                   <div className="text-center py-10 text-stone-550">{lang === "en" ? "No matching cases on record." : "ಯಾವುದೇ ಹೊಂದಾಣಿಕೆಯ ಪ್ರಕರಣಗಳ ದಾಖಲೆ ಇಲ್ಲ."}</div>
                 )}
@@ -1947,9 +1955,9 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                         <div className="text-[9px] text-stone-500 uppercase tracking-wider">{lang === "en" ? "shared cases" : "ಹಂಚಿದ ಪ್ರಕರಣಗಳು"}</div>
                       </div>
                     </div>
-                    {g.case_ids && g.case_ids.length > 0 && (
+                    {Array.isArray(g.case_ids) && g.case_ids.length > 0 && (
                       <div className="text-[10px] text-stone-500 font-mono truncate">
-                        {lang === "en" ? "Case IDs: " : "ಪ್ರಕರಣ ID: "}{g.case_ids.join(", ")}
+                        {lang === "en" ? "Case IDs: " : "ಪ್ರಕರಣ ID: "}{g.case_ids.map((id: any) => typeof id === "object" ? JSON.stringify(id) : String(id)).join(", ")}
                       </div>
                     )}
                     {/* F.11: threat score + its 3 real components -- always
