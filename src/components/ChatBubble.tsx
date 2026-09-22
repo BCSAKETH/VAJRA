@@ -1733,21 +1733,31 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                       -- captured at the one real choke point every query
                       already passes through (see vajra_core.py's
                       patched_execute_query), not reconstructed or guessed. */}
-                  {Array.isArray(message.data?._zcql_provenance) && message.data._zcql_provenance.length > 0 && (
-                    <div className="rounded-md border border-stone-800 bg-stone-950/70 p-2.5 space-y-1">
-                      <div className="flex items-center gap-1.5 text-[9px] uppercase tracking-wider text-stone-400 font-mono">
-                        <ShieldCheck className="w-2.5 h-2.5 shrink-0" />
-                        {lang === "en" ? "🔍 Grounding & ZCQL provenance" : "🔍 ಆಧಾರ ಮತ್ತು ZCQL ಪುರಾವೆ"}
-                      </div>
-                      <div className="space-y-1 max-h-40 overflow-y-auto">
-                        {message.data._zcql_provenance.map((q: string, i: number) => (
-                          <div key={i} className="text-[9.5px] font-mono text-stone-400 break-all bg-stone-900/60 rounded px-1.5 py-1">
-                            {q}
+                  {(() => {
+                    const rawProv = Array.isArray(message.data?._zcql_provenance) ? message.data._zcql_provenance : [];
+                    const prov = rawProv.filter(
+                      (q: string) => typeof q === "string" && !/\bFROM\s+(ChatMessage|ChatSession|UserSession|AuditLog)\b/i.test(q)
+                    );
+                    if (prov.length === 0) return null;
+                    return (
+                      <div className="rounded-md border border-stone-800 bg-stone-950/70 p-2.5 space-y-1">
+                        <div className="flex items-center justify-between gap-1.5 text-[9px] uppercase tracking-wider text-stone-400 font-mono">
+                          <div className="flex items-center gap-1.5">
+                            <ShieldCheck className="w-3 h-3 text-emerald-400 shrink-0" />
+                            <span>{lang === "en" ? "Grounded CCTNS Provenance (§63 BSA 2023)" : "CCTNS ಆಧಾರ ಪುರಾವೆ (§63 BSA 2023)"}</span>
                           </div>
-                        ))}
+                          <span className="text-[8.5px] text-emerald-400 font-mono">AUDITED ✅</span>
+                        </div>
+                        <div className="space-y-1 max-h-40 overflow-y-auto">
+                          {prov.map((q: string, i: number) => (
+                            <div key={i} className="text-[9.5px] font-mono text-stone-300 break-all bg-stone-900/80 border border-stone-850 rounded px-2 py-1">
+                              {q}
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
                   <div className="text-[9px] text-stone-600 pt-1 border-t border-stone-850">
                     {lang === "en"
                       ? "Every VAJRA answer is grounded in real records — no fabricated data. This trail is written to the tamper-evident audit ledger; any edit changes the integrity hash."
