@@ -21,6 +21,7 @@ from catalyst_llm import CatalystLLM
 from catalyst_qwen import CatalystQwen
 from vajra_cognitive_brain import CognitiveBrainMixin
 from tool_training_optimizer import get_matching_tool_exemplars, resolve_entity_aliases, update_bandit_weights, get_tool_bandit_weight
+from crime_heads_118_map import ALL_118_CRIME_HEADS_MAP
 
 logger = logging.getLogger(__name__)
 
@@ -6123,42 +6124,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 try:
                     q_l = query.lower()
                     
-                    # 118-Category Verified CCTNS CrimeHeadID Mapping
-                    CRIME_HEAD_KEYWORDS = {
-                        17: ["chain snatching", "snatch", "necklace", "mangalsutra", "gold chain", "pillion snatch", "bag snatch"],
-                        1: ["theft", "stolen", "stealing", "larceny", "pilferage", "pickpocket"],
-                        16: ["motor vehicle theft", "vehicle theft", "bike theft", "car theft", "scooter theft", "automobile theft", "stolen vehicle", "stolen bike"],
-                        2: ["burglary", "house breaking", "break in", "door break", "window grill", "residential theft"],
-                        37: ["night burglary", "burglary night", "night break in", "commercial shutter"],
-                        65: ["day burglary", "burglary day", "day housebreak"],
-                        3: ["robbery", "armed robbery", "highway robbery", "extortion robbery", "knife point"],
-                        4: ["dacoity", "armed dacoity", "gang robbery", "hold up", "weapons robbery"],
-                        5: ["murder", "homicide", "killing", "assassination"],
-                        6: ["attempt to murder", "attempted murder", "murderous attack", "stab attempt"],
-                        106: ["culpable homicide", "unintentional killing"],
-                        11: ["cybercrime", "cyber crime", "phishing", "online fraud", "otp fraud", "apk fraud", "telegram scam", "crypto fraud", "mule account", "part time job scam", "sextortion"],
-                        115: ["cyber crime", "information technology act", "cyber offence"],
-                        12: ["narcotics", "drug", "ganja", "cocaine", "mdma", "contraband", "ndps", "smuggling", "peddler", "opium", "heroin", "cannabis", "synthetic drugs", "meth", "weed"],
-                        112: ["narcotic drugs", "psychotropic substances", "ndps act"],
-                        13: ["arms act", "illegal weapon", "firearm", "country pistol", "desi katta", "ammunition"],
-                        97: ["arms act 1959", "illegal arms"],
-                        7: ["kidnapping", "abduction", "hostage"],
-                        40: ["kidnapping and abduction", "child kidnapping"],
-                        29: ["pocso", "minor sexual assault", "child abuse", "protection of children"],
-                        23: ["missing person", "missing", "disappeared", "untraceable"],
-                        19: ["riots", "rioting", "unlawful assembly", "mob violence", "communal riot"],
-                        20: ["arson", "fire attack", "burning property"],
-                        9: ["cheating", "fraud", "scam", "deception", "impersonation"],
-                        10: ["fraud", "financial fraud", "chit fund", "investment scam"],
-                        35: ["forgery", "fake document", "forged certificate", "stamp paper forgery"],
-                        49: ["criminal breach of trust", "embezzlement", "fund siphoning"],
-                        8: ["assault", "grievous hurt", "physical attack", "beating"],
-                        34: ["cases of hurt", "assault with weapon", "severe injury"],
-                        18: ["sexual offences", "outraging modesty", "sexual harassment"],
-                        91: ["rape", "aggravated sexual assault"],
-                        87: ["human trafficking", "trafficking of persons"],
-                        119: ["counterfeiting", "fake currency", "counterfeit notes", "ficn"]
-                    }
+                    # 118-Category Verified CCTNS CrimeHeadID Mapping (All 118 Official Crime Heads Mapped)
+                    CRIME_HEAD_KEYWORDS = ALL_118_CRIME_HEADS_MAP
                     
                     matched_head_ids = []
                     for head_id, kws in CRIME_HEAD_KEYWORDS.items():
