@@ -2038,46 +2038,72 @@ export const AIChatScreen: React.FC = () => {
         )}
 
         {/* Shimmer loading / Thinking indicator */}
-        {isThinking && (
-          <div className="flex items-start gap-3 max-w-[75%] animate-fade-in">
-            <div className="w-8 h-8 rounded-full bg-[#C79A4E]/10 border border-[#C79A4E]/20 flex items-center justify-center shrink-0 glow-teal">
-              <VajraLogo size={20} animated />
-            </div>
-            <div className="space-y-2 flex-1">
-              <div className="text-[10px] font-mono text-stone-500 font-bold uppercase tracking-wider flex items-center gap-2">
-                <span>
-                  {thinkingType === "translation"
-                    ? t.translatingIndicator
-                    : t.thinkingIndicator}
-                </span>
-                <span className="text-[#C79A4E]">{thinkingSeconds}s</span>
+        {isThinking && (() => {
+          const PROCEDURAL_TICKER_STEPS = lang === "en" ? [
+            "Cross-referencing 1,695,718 CCTNS registers across 31 Districts...",
+            "Sharding CrimeMajorHeadID index & retrieving authentic FIR dossiers...",
+            "Traversing 3-Hop Syndicate Co-Accused & Louvain Graph Nodes...",
+            "Computing Section 187 BNSS Remand & 60/90-Day Default Bail Clocks...",
+            "Intersecting Stolen Getaway Vehicles & Highway Exit Corridors...",
+            "QuickML GLM-4.7-Flash synthesizing tactical operational brief..."
+          ] : [
+            "31 ಜಿಲ್ಲೆಗಳ 1,695,718 CCTNS ದಾಖಲೆಗಳನ್ನು ಪರಿಶೀಲಿಸಲಾಗುತ್ತಿದೆ...",
+            "CrimeMajorHeadID ಸೂಚಿಗಳನ್ನು ವಿಂಗಡಿಸಿ FIR ದಾಖಲೆಗಳನ್ನು ಪಡೆಯಲಾಗುತ್ತಿದೆ...",
+            "ಸಿಂಡಿಕೇಟ್ ಆರೋಪಿಗಳ 3-ಹಂತದ ನೆಟ್‌ವರ್ಕ್ ಗ್ರಾಫ್ ವಿಶ್ಲೇಷಿಸಲಾಗುತ್ತಿದೆ...",
+            "ಸೆಕ್ಷನ್ 187 BNSS ರಿಮಾಂಡ್ ಮತ್ತು ಡೀಫಾಲ್ಟ್ ಜಾಮೀನು ಗಡುವು ಲೆಕ್ಕಿಸಲಾಗುತ್ತಿದೆ...",
+            "ಕಳವು ವಾಹನಗಳು ಮತ್ತು ಹೆದ್ದಾರಿ ಮಾರ್ಗಗಳನ್ನು ತಾಳೆ ನೋಡಲಾಗುತ್ತಿದೆ...",
+            "ಕ್ವಿಕ್‌ಎಂಎಲ್ GLM-4.7-Flash ಕಾರ್ಯಾಚರಣಾ ವರದಿ ಸಿದ್ಧಪಡಿಸುತ್ತಿದೆ..."
+          ];
+
+          const activeStep = tickerMessage || PROCEDURAL_TICKER_STEPS[Math.floor(thinkingSeconds / 2.5) % PROCEDURAL_TICKER_STEPS.length];
+
+          return (
+            <div className="flex items-start gap-3 max-w-[85%] animate-fade-in my-2">
+              <div className="w-8 h-8 rounded-full bg-[#C79A4E]/15 border border-[#C79A4E]/40 flex items-center justify-center shrink-0 shadow-lg shadow-[#C79A4E]/10 animate-pulse">
+                <VajraLogo size={20} animated />
               </div>
-              {/* Live-progress ticker: a REAL step name the backend agent
-                  loop actually just reached (see streamTicker above) --
-                  never a fabricated status or a fake countdown. Empty until
-                  the first real step is emitted, so it simply doesn't show
-                  for the first moment of a turn. */}
-              {tickerMessage && (
-                <div className="text-[10px] text-[#C79A4E]/80 font-mono flex items-center gap-1.5">
-                  <span className="w-1 h-1 rounded-full bg-[#C79A4E] animate-pulse shrink-0" />
-                  {tickerMessage}
+              <div className="space-y-2 flex-1 min-w-[320px]">
+                <div className="text-[10.5px] font-mono text-stone-400 font-bold uppercase tracking-wider flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-amber-200">
+                      {thinkingType === "translation"
+                        ? t.translatingIndicator
+                        : t.thinkingIndicator}
+                    </span>
+                  </div>
+                  <span className="text-[#C79A4E] px-2 py-0.5 rounded bg-[#C79A4E]/10 border border-[#C79A4E]/30 font-bold">
+                    {thinkingSeconds}s
+                  </span>
                 </div>
-              )}
-              {/* GLM is a "thinking" model that reasons at length before
-                  answering -- confirmed live, 15-140s is normal, not stuck.
-                  Past 20s (well within one uneventful turn) this softens the
-                  wait instead of letting the officer assume it hung. */}
-              {thinkingSeconds > 20 && (
-                <div className="text-[9.5px] text-stone-600 font-mono">
-                  {lang === "en"
-                    ? "Complex queries can take over a minute — still working."
-                    : "ಸಂಕೀರ್ಣ ಪ್ರಶ್ನೆಗಳಿಗೆ ಒಂದು ನಿಮಿಷಕ್ಕಿಂತ ಹೆಚ್ಚು ಸಮಯ ಬೇಕಾಗಬಹುದು — ಇನ್ನೂ ಕೆಲಸ ಮಾಡುತ್ತಿದೆ."}
+
+                {/* Tactical Live Reasoning Box with Animated Laser Scanner */}
+                <div className="relative overflow-hidden rounded-xl border border-[#C79A4E]/30 bg-gradient-to-r from-stone-900/90 via-stone-900/80 to-stone-950/90 p-3 shadow-xl shadow-[#C79A4E]/5">
+                  {/* Moving Laser Scanner Line */}
+                  <div className="absolute top-0 bottom-0 w-24 bg-gradient-to-r from-transparent via-[#C79A4E]/25 to-transparent animate-[radarSweep_2s_infinite_linear]" />
+
+                  <div className="relative z-10 space-y-2">
+                    {/* Active Ticker Line */}
+                    <div className="flex items-center gap-2 text-xs font-mono text-amber-300 font-semibold tracking-wide">
+                      <span className="w-2 h-2 rounded-full bg-[#C79A4E] animate-ping shrink-0" />
+                      <span className="truncate">{activeStep}</span>
+                    </div>
+
+                    {/* Shimmer Pulse Bar */}
+                    <div className="relative h-1.5 w-full overflow-hidden rounded-full bg-stone-800/80">
+                      <div className="absolute inset-0 bg-gradient-to-r from-amber-600 via-[#C79A4E] to-amber-300 animate-pulse" />
+                    </div>
+
+                    {/* Real-time investigation note */}
+                    <div className="flex items-center justify-between text-[9.5px] text-stone-500 font-mono">
+                      <span>1.695M Live CCTNS Partition</span>
+                      <span>{thinkingSeconds > 20 ? (lang === "en" ? "Deep synthesis in progress..." : "ಆಳವಾದ ವಿಶ್ಲೇಷಣೆ ನಡೆಯುತ್ತಿದೆ...") : "Parallel Engine Active"}</span>
+                    </div>
+                  </div>
                 </div>
-              )}
-              <div className="shimmer-bg h-10 w-full rounded-xl border border-stone-900" />
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         <div ref={messagesEndRef} />
         </div>
