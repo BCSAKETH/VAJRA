@@ -1066,8 +1066,10 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
 
         _ttsPut(key, url);
         return url;
-      } catch (e) {
-        console.warn("TTS fetchChunkAudio error:", e);
+      } catch (e: any) {
+        if (e?.name !== "AbortError") {
+          console.warn("TTS fetchChunkAudio error:", e);
+        }
         return null;
       } finally {
         clearTimeout(to);
