@@ -352,6 +352,18 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
     return <NewsView data={data} lang={lang} />;
   }
 
+  // Suppress non-visual legal memorandum / text docket response types -- the formatted text is the product
+  if (
+    type === "bail_opposition_docket" ||
+    type === "legal_memo" ||
+    type === "warrant_execution_board" ||
+    type === "diary_search_results" ||
+    type === "diary_stats_card" ||
+    type === "case_status_badge"
+  ) {
+    return null;
+  }
+
   // Resolve sub-data across top-level keys, nested sub-objects, or panels
   const netData = (data?.nodes && data.nodes.length > 0)
     ? data
@@ -469,7 +481,7 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
         const canvas = document.createElement("canvas");
         canvas.width = width * 2; // 2x for a crisp, briefing-quality export
         canvas.height = height * 2;
-        const ctx = canvas.getContext("2d");
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (!ctx) return;
         ctx.scale(2, 2);
         ctx.drawImage(img, 0, 0, width, height);

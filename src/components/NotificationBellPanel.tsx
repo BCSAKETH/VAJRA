@@ -30,9 +30,11 @@ export const NotificationBellPanel: React.FC = () => {
   const panelRef = useClickOutside<HTMLDivElement>(isOpen, useCallback(() => setIsOpen(false), []));
 
   const loadInvitations = async () => {
+    const token = localStorage.getItem("vajra_token");
+    if (!token) return;
     try {
       const res = await fetch(`${API_BASE}/api/cowork/invitations`, {
-        headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+        headers: { "Authorization": `Bearer ${token}` },
       });
       if (res.ok) {
         setInvitations(await res.json());

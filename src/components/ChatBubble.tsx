@@ -202,12 +202,13 @@ const splitIntoSpeechChunks = (text: string): string[] => {
 // against -- adding that complexity now would be solving a problem this
 // architecture doesn't have.
 //
-// KEEP IN SYNC WITH vajra_backend/catalyst_smartbrowz.py's
-// _clean_and_format_text() entity-tag regex -- same entity classes should
-// highlight identically in the live chat and the exported PDF.
-const ENTITY_RE = /(?:PhonePe-\w+|ICICI-\w+|Paytm-\w+|GPay-\w+|BTC-\w+|CR-\d{4}-\d+|CR\/\w+\/\w+\/\w+|Section\s?\d+(?:\(\d+\))?[A-Za-z]?(?:\s(?:IPC|BNS|BNSS|JJA|BSA))?|§\s?\d+[A-Za-z]?|₹[\d,]+(?:\.\d+)?|\d+(?:\.\d+)?%)/;
+// Technical token identifiers (CR-XXXX, transaction hashes, mule IDs) for sleek monospace badges
+const TECHNICAL_BADGE_RE = /(?:PhonePe-\w+|ICICI-\w+|Paytm-\w+|GPay-\w+|BTC-\w+|CR-\d{4}-\d+|CR\/\w+\/\w+\/\w+|[a-f0-9]{32,64})/;
+// Statutory sections & currency/percentage metrics for continuous high-contrast gold styling (no pill box)
+const STATUTORY_CITATION_RE = /(?:Section\s?\d+(?:\(\d+\))?[A-Za-z]?(?:\s(?:IPC|BNS|BNSS|JJA|BSA|NDPS|IT Act))?|§\s?\d+[A-Za-z]?(?:\(\d+\))?|₹[\d,]+(?:\.\d+)?|\d+(?:\.\d+)?%)/;
+
 const INLINE_SPLIT_RE = new RegExp(
-  `(\`[^\`\n]+\`|\\*\\*[^*\n]+\\*\\*|\\*[^*\n]+\\*|_[^_\n]+_|${ENTITY_RE.source})`,
+  `(\`[^\`\n]+\`|\\*\\*[^*\n]+\\*\\*|\\*[^*\n]+\\*|_[^_\n]+_|${TECHNICAL_BADGE_RE.source}|${STATUTORY_CITATION_RE.source})`,
   "g"
 );
 
@@ -215,7 +216,7 @@ const renderInline = (s: string, kb: string): React.ReactNode[] => {
   return s.split(INLINE_SPLIT_RE).map((p, i) => {
     if (!p) return null;
     if (p.startsWith("`") && p.endsWith("`") && p.length > 1) {
-      return <code key={kb + i} className="font-mono text-[12px] bg-stone-900/70 border border-stone-800 rounded px-1 py-0.5">{p.slice(1, -1)}</code>;
+      return <code key={kb + i} className="font-mono text-[12px] bg-stone-900/70 border border-stone-800 rounded px-1 py-0.5 text-stone-200">{p.slice(1, -1)}</code>;
     }
     if (p.startsWith("**") && p.endsWith("**")) {
       return <strong key={kb + i} className="font-semibold text-stone-100">{p.slice(2, -2)}</strong>;
@@ -223,8 +224,11 @@ const renderInline = (s: string, kb: string): React.ReactNode[] => {
     if ((p.startsWith("*") && p.endsWith("*")) || (p.startsWith("_") && p.endsWith("_"))) {
       return <em key={kb + i} className="italic text-stone-200">{p.slice(1, -1)}</em>;
     }
-    if (ENTITY_RE.test(p)) {
-      return <span key={kb + i} className="font-mono text-[12.5px] bg-[#C79A4E]/10 text-[#C79A4E] border border-[#C79A4E]/25 rounded px-1">{p}</span>;
+    if (TECHNICAL_BADGE_RE.test(p)) {
+      return <span key={kb + i} className="font-mono text-[11.5px] bg-[#C79A4E]/15 text-[#E4C590] border border-[#C79A4E]/30 rounded px-1.5 py-0.2 select-all">{p}</span>;
+    }
+    if (STATUTORY_CITATION_RE.test(p)) {
+      return <span key={kb + i} className="text-[#E4C590] font-semibold">{p}</span>;
     }
     return <React.Fragment key={kb + i}>{p}</React.Fragment>;
   });
@@ -398,10 +402,10 @@ const renderRich = (text: string, styles?: (typeof TEXT_SIZE_STYLES)["medium"]):
       flushBullets("h" + i);
       const level = h[1].length;
       const cls = level === 1
-        ? `font-black text-stone-100 ${s.h1}`
+        ? `font-black uppercase tracking-wider text-stone-100 border-b border-[#C79A4E]/30 pb-1.5 mb-2.5 mt-3.5 ${s.h1}`
         : level === 2
-        ? `font-bold text-stone-100 ${s.h2}`
-        : `font-semibold text-stone-100 ${s.h3}`;
+        ? `font-bold text-[#E4C590] tracking-wide mt-3 mb-1 ${s.h2}`
+        : `font-bold text-[#E4C590] tracking-normal mt-2.5 mb-1 ${s.h3}`;
       blocks.push(<div key={i} className={cls}>{renderInline(h[2], i + "h")}</div>);
     } else if (bulMatch) {
       bullets.push({ node: renderInline(bulMatch[2], i + "b"), nested: bulMatch[1].length >= 2 });
@@ -516,7 +520,52 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   };
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [feedback, setFeedback] = useState<"up" | "down" | null>(null);
+
+  const handleExportPDF = () => {
+    setIsExportingPdf(true);
+    try {
+      const title = message.data?.case_no || "VAJRA-Legal-Memorandum";
+      const printWindow = window.open("", "_blank");
+      if (printWindow) {
+        printWindow.document.write(`
+          <!DOCTYPE html>
+          <html>
+            <head>
+              <title>${title}</title>
+              <style>
+                body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; padding: 40px; color: #1c1917; line-height: 1.6; }
+                h1 { font-size: 18px; border-bottom: 2px solid #C79A4E; padding-bottom: 8px; text-transform: uppercase; }
+                h2, h3 { font-size: 14px; color: #78350f; margin-top: 20px; }
+                p, li { font-size: 13px; }
+                .footer { margin-top: 40px; border-top: 1px solid #e7e5e4; padding-top: 10px; font-size: 10px; color: #78716c; font-family: monospace; }
+              </style>
+            </head>
+            <body>
+              <div style="text-align: center; margin-bottom: 24px;">
+                <div style="font-weight: bold; font-size: 16px; letter-spacing: 1px;">KARNATAKA STATE POLICE • CCTNS INVESTIGATION DOSSIER</div>
+                <div style="font-size: 11px; color: #78716c; margin-top: 4px;">DIRECTORATE OF PROSECUTION BRIEFING MEMORANDUM • SECTION 63 BSA</div>
+              </div>
+              <div style="white-space: pre-wrap;">${displayText}</div>
+              <div class="footer">
+                STAMP: VERIFIED CCTNS LEGAL MEMORANDUM • GENERATED: ${new Date().toISOString()} • SHA-256 PROVENANCE SEALED
+              </div>
+              <script>
+                window.onload = function() { window.print(); };
+              </script>
+            </body>
+          </html>
+        `);
+        printWindow.document.close();
+      }
+    } catch (err) {
+      console.error("PDF export error:", err);
+    } finally {
+      setTimeout(() => setIsExportingPdf(false), 1000);
+    }
+  };
+
   // Conversation branching: inline edit mode for a user message.
   const [isEditing, setIsEditing] = useState(false);
   const [editDraft, setEditDraft] = useState(message.text);
@@ -1583,7 +1632,32 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
               </div>
             </div>
           ) : isAI
-            ? <div className={`font-sans text-stone-200 ${sizeStyles.prose}`}>{renderRich(displayText, sizeStyles)}</div>
+            ? (
+              <div>
+                <div className={`font-sans text-stone-200 ${sizeStyles.prose}`}>{renderRich(displayText, sizeStyles)}</div>
+                {displayText.length > 40 && (
+                  <div className="mt-3.5 pt-2.5 border-t border-stone-850/80 flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCopy}
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-stone-900/80 hover:bg-[#C79A4E]/15 border border-stone-800 hover:border-[#C79A4E]/40 text-stone-300 hover:text-[#E4C590] text-[11px] font-mono transition-all cursor-pointer shadow-sm"
+                    >
+                      {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-[#C79A4E]" />}
+                      <span>{copied ? (lang === "en" ? "Copied" : "ನಕಲಿಸಲಾಗಿದೆ") : (lang === "en" ? "Copy Memo / Text" : "ಮೆಮೊ ನಕಲಿಸಿ")}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleExportPDF}
+                      disabled={isExportingPdf}
+                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-stone-900/80 hover:bg-[#C79A4E]/15 border border-stone-800 hover:border-[#C79A4E]/40 text-stone-300 hover:text-[#E4C590] text-[11px] font-mono transition-all cursor-pointer shadow-sm disabled:opacity-50"
+                    >
+                      {isExportingPdf ? <Loader2 className="w-3.5 h-3.5 animate-spin text-[#C79A4E]" /> : <FileText className="w-3.5 h-3.5 text-[#C79A4E]" />}
+                      <span>{isExportingPdf ? (lang === "en" ? "Generating PDF..." : "PDF ರಚಿಸಲಾಗುತ್ತಿದೆ...") : (lang === "en" ? "Export Court PDF" : "ಕೋರ್ಟ್ PDF ರಫ್ತು")}</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
             : <div className={`whitespace-pre-wrap font-sans text-stone-200 ${sizeStyles.userBubble}`}>{displayText}</div>}
 
           {/* Claude-style Step-by-Step Embedded Tactical Inquest & Clarification (No Popup Modal) */}

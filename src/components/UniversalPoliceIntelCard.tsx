@@ -303,12 +303,14 @@ export const getTacticalMeta = (type: string, data?: any, lang: "en" | "kn" = "e
 
 export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> = ({
   type,
-  data = {},
+  data,
   lang = "en",
   onFollowUpQuery,
   onClose
 }) => {
-  const meta = getTacticalMeta(type, data, lang);
+  const cardData: Record<string, any> = (data && typeof data === "object") ? data : {};
+  const currentLang: "en" | "kn" = lang === "kn" ? "kn" : "en";
+  const meta = getTacticalMeta(type, cardData, currentLang);
   const IconComponent = meta.icon;
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const [showRawJson, setShowRawJson] = useState(false);
@@ -334,8 +336,8 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
     ? data.zcql_provenance
     : [];
 
-  if (typeof data === "object" && data !== null) {
-    for (const [k, v] of Object.entries(data)) {
+  if (typeof cardData === "object" && cardData !== null) {
+    for (const [k, v] of Object.entries(cardData)) {
       if (v === null || v === undefined) continue;
 
       // 1. Omit private / internal underscore-prefixed keys and session plumbing
@@ -528,12 +530,12 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
     query: string;
   }
 
-  const rawActions = Array.isArray(data?.actions) && data.actions.length > 0
-    ? data.actions
+  const rawActions = Array.isArray(cardData?.actions) && cardData.actions.length > 0
+    ? cardData.actions
     : [
-        data?.case_no ? `Add case diary entry for ${data.case_no}` : "View recent high-risk cases",
-        data?.case_no ? `Export High Court PDF for ${data.case_no}` : "Check pending warrants across district",
-        data?.case_no ? `View syndicate network for ${data.case_no}` : "Generate district crime review"
+        cardData?.case_no ? `Add case diary entry for ${cardData.case_no}` : "View recent high-risk cases",
+        cardData?.case_no ? `Export High Court PDF for ${cardData.case_no}` : "Check pending warrants across district",
+        cardData?.case_no ? `View syndicate network for ${cardData.case_no}` : "Generate district crime review"
       ];
 
   const normalizedActions: ActionItem[] = rawActions.map((act: any) => {
@@ -589,9 +591,9 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
                 <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-stone-800/80 border border-stone-700 text-stone-300">
                   {meta.statute}
                 </span>
-                {data?.urgency_tier && (
+                {cardData?.urgency_tier && (
                   <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 border border-amber-500/30 text-amber-300">
-                    {data.urgency_tier}
+                    {cardData.urgency_tier}
                   </span>
                 )}
               </div>
@@ -602,13 +604,13 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
           </div>
 
           {/* Quick Case / Entity Tag */}
-          {(data?.case_no || data?.plate_number || data?.ifsc || data?.witness_name || data?.accused_in_remand || data?.suspect_name) && (
+          {(cardData?.case_no || cardData?.plate_number || cardData?.ifsc || cardData?.witness_name || cardData?.accused_in_remand || cardData?.suspect_name) && (
             <div className="self-start sm:self-auto px-3 py-1.5 rounded-lg bg-stone-950/80 border border-stone-800 text-right">
               <span className="block text-[10px] font-mono text-stone-400 uppercase tracking-wider">
-                {lang === "en" ? "Active Reference" : "ಪ್ರಸ್ತುತ ಉಲ್ಲೇಖ"}
+                {currentLang === "en" ? "Active Reference" : "ಪ್ರಸ್ತುತ ಉಲ್ಲೇಖ"}
               </span>
               <span className="text-xs font-mono font-black text-[#C79A4E]">
-                {data.case_no || data.plate_number || data.ifsc || data.witness_name || data.accused_in_remand || data.suspect_name}
+                {cardData.case_no || cardData.plate_number || cardData.ifsc || cardData.witness_name || cardData.accused_in_remand || cardData.suspect_name}
               </span>
             </div>
           )}

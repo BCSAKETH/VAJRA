@@ -939,7 +939,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                   </div>
 
                   <div className="w-full">
-                    <ResponsiveContainer width="100%" height={Math.max(340, shapData.length * 48)}>
+                    <ResponsiveContainer minWidth={0} width="100%" height={Math.max(340, shapData.length * 48)}>
                       <BarChart
                         data={shapData}
                         layout="vertical"
@@ -1225,7 +1225,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
               <ChartTypeToggle value={forecastChartType} onChange={setForecastChartType} options={["line", "bar", "area"]} lang={lang} />
 
               <div className="flex-1 min-h-[280px]">
-                <ResponsiveContainer width="100%" height={260}>
+                <ResponsiveContainer minWidth={0} width="100%" height={260}>
                   {forecastChartType === "bar" ? (
                     <BarChart data={forecastData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
@@ -1375,7 +1375,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
               <ChartTypeToggle value={trendChartType} onChange={setTrendChartType} options={["line", "bar", "area"]} lang={lang} />
 
               <div className="flex-1 min-h-[240px]">
-                <ResponsiveContainer width="100%" height={240}>
+                <ResponsiveContainer minWidth={0} width="100%" height={240}>
                   {trendChartType === "bar" ? (
                     <BarChart data={trendData} margin={{ top: 10, right: 30, left: 10, bottom: 10 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" />
@@ -1435,7 +1435,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
 
               <div className="flex-1 flex flex-col md:flex-row items-center justify-center gap-8 min-h-[280px]">
                 <div className="w-full md:w-1/2 h-[280px] flex items-center justify-center">
-                  <ResponsiveContainer width="100%" height="100%">
+                  <ResponsiveContainer minWidth={0} width="100%" height="100%">
                     {distributionChartType === "pie" ? (
                       <PieChart>
                         <Pie
@@ -1609,7 +1609,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                 </p>
               </div>
               <div className="h-[320px] shrink-0">
-                <ResponsiveContainer width="100%" height="100%">
+                <ResponsiveContainer minWidth={0} width="100%" height="100%">
                   <RadarChart data={data.benchmarks || []} outerRadius="72%">
                     <PolarGrid stroke="rgba(255,255,255,0.08)" />
                     <PolarAngleAxis dataKey="district" tick={{ fill: "#a89f92", fontSize: 10 }} />

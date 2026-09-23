@@ -94,8 +94,9 @@ export const TacticalClarificationModal: React.FC<TacticalClarificationModalProp
   };
 
   // Count total active selections across all steps
-  const totalSelectedCount = Object.values(selections).reduce((acc, list) => acc + list.length, 0) +
-    Object.values(writeIns).filter(w => w.trim().length > 0).length;
+  const totalSelectedCount: number =
+    (Object.values(selections) as any[]).reduce<number>((acc, list) => acc + (Array.isArray(list) ? list.length : 0), 0) +
+    (Object.values(writeIns) as any[]).filter((w) => typeof w === "string" && w.trim().length > 0).length;
 
   const handleNext = () => {
     if (currentStepIdx < totalSteps - 1) {
@@ -410,9 +411,9 @@ export const InlineTacticalInquest: React.FC<InlineTacticalInquestProps> = ({
     setWriteIns((prev) => ({ ...prev, [stepId]: val }));
   };
 
-  const totalSelectedCount =
-    Object.values(selections).reduce((acc, list) => acc + list.length, 0) +
-    Object.values(writeIns).filter((w) => w.trim().length > 0).length;
+  const totalSelectedCount: number =
+    (Object.values(selections) as any[]).reduce<number>((acc, list) => acc + (Array.isArray(list) ? list.length : 0), 0) +
+    (Object.values(writeIns) as any[]).filter((w) => typeof w === "string" && w.trim().length > 0).length;
 
   const handleNext = () => {
     if (currentStepIdx < totalSteps - 1) {

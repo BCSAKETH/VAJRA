@@ -134,8 +134,8 @@ export const TaskChecklist: React.FC<TaskChecklistProps> = ({ sessionId, lang, o
       body: JSON.stringify({ note: submittedNote, attachment_stratus_id: stratusId }),
     })
       .then((r) => (r.ok ? r.json() : {}))
-      .then((data) => {
-        const addedCount = Array.isArray(data.tasks_added) ? data.tasks_added.length : 0;
+      .then((data: any) => {
+        const addedCount = Array.isArray(data?.tasks_added) ? data.tasks_added.length : 0;
         if (addedCount > 0) {
           const taskWord = addedCount === 1 ? (lang === "en" ? "task" : "ಕಾರ್ಯ") : (lang === "en" ? "tasks" : "ಕಾರ್ಯಗಳು");
           setLastReview({

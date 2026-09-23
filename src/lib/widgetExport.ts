@@ -74,7 +74,7 @@ export function downloadSvgAsPng(svgEl: SVGSVGElement, filename: string, scale =
     const canvas = document.createElement("canvas");
     canvas.width = width * scale;
     canvas.height = (height + footerH) * scale;
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) return;
     ctx.fillStyle = "#0b1220";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
