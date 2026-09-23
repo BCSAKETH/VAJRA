@@ -16,6 +16,7 @@ from vajra_core import catalyst_app, VajraGraphRAG, VajraSemanticMemory, MOBehav
     has_active_pocso_grant, create_pocso_request, find_active_pocso_request, _compute_mo_vector, \
     start_zql_log, get_zql_log, escape_zcql_literal, get_cached_syndicate_clusters, \
     _district_for_accused  # C.8, F.12: shared 3-hop district resolution
+from session_memory import VajraSessionMemory
 from catalyst_llm import CatalystLLM
 from catalyst_qwen import CatalystQwen
 from catalyst_rag import CatalystRAG
