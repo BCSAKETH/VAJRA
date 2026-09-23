@@ -3522,65 +3522,71 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "hi", "helo", "hey", "namaskar", "namaste", "vanakam", "pranam"
         }
 
-        # Conversational check-ins / small talk (e.g. "how are you vajra", "hor are vajra after along time", "are you active")
-        _is_conversational_checkin = bool(re.search(
-            r'\b(h+[oau]+r+\s+(are|r)|how\s+(are|r)\s+(you|u|vajra|things|it)|hows\s+it\s+going|how\s+do\s+you\s+do|after\s+(a\s+)?long\s+time|long\s+time|back\s+again|are\s+you\s+(there|online|active|ready|working)|what\s+is\s+vajra|who\s+are\s+you|tell\s+me\s+about\s+yourself)\b',
+        # Conversational check-ins / small talk / greetings (e.g. "how are you vajra", "hor are vajra after along time", "hi", "helllooooo")
+        _is_conversational = _is_kannada_greeting or _is_english_greeting or bool(re.search(
+            r'\b(h+[oau]+r+\s+(are|r)|how\s+(are|r)\s+(you|u|vajra|things|it)|hows\s+it\s+going|how\s+do\s+you\s+do|after\s+(a\s+)?long\s+time|long\s+time|back\s+again|are\s+you\s+(there|online|active|ready|working)|what\s+is\s+vajra|who\s+are\s+you|tell\s+me\s+about\s+yourself|what\s+do\s+you\s+think)\b',
             _norm_greet,
             re.IGNORECASE
         ))
 
-        if _is_conversational_checkin:
-            checkin_text = (
-                f"I am fully active, operational, and connected to the Karnataka State Police CCTNS grid, Officer {officer_name or 'Colleague'}.\n\n"
-                "All intelligence subsystems (CCTNS records, suspect recidivism profiling, organized syndicate mapping, and OSINT) are standing by.\n\n"
-                "How can I assist your investigation today?"
+        if _is_conversational:
+            chat_context = session_memory.get_session_context(session_id)
+            history = chat_context.get("messages", [])
+            
+            # Formulate human officer colleague persona with zero tools for sub-second generation
+            sys_prompt = (
+                f"You are VAJRA, the official AI Crime Intelligence Copilot for the Karnataka State Police (KSP), "
+                f"speaking as an experienced, sharp, and trusted police intelligence colleague to Officer {officer_name or 'Colleague'}.\n\n"
+                "CONVERSATIONAL DIRECTIVES:\n"
+                "1. HUMAN COLLEAGUE VOICE: Speak naturally, warmly, and respectfully like a fellow police officer on duty. "
+                "Never sound like a robot, IVR system, or text generator. NEVER say 'Status is normalized', 'Inputs verified', 'Systems running', or dump bulleted capability menus.\n"
+                "2. ATTENTIVE & HELPFUL: Acknowledge the officer's greeting, small talk, or check-in conversationally. Ask naturally what case, FIR, suspect, or intelligence task we are working on.\n"
+                "3. MEMORY: Weave in relevant context from recent conversation if applicable.\n"
+                "4. LANGUAGE: If the officer speaks in Kannada, respond in natural, respectful Kannada.\n"
+                "5. IDENTITY: You are exclusively VAJRA (Karnataka State Police). Never mention Dewanshi, Zia, GLM, or ChatGPT.\n"
+                "6. LENGTH: Keep responses concise (2 to 3 sentences max) and natural."
             )
-            self._write_audit_log(employee_id, "Checkin Fast-Path", "", officer_query, checkin_text[:200], session_id)
-            context = session_memory.get_session_context(session_id)
-            history = context.get("messages", [])
-            history.append({"role": "assistant", "content": checkin_text})
-            context["messages"] = history
-            session_memory.update_session_context(session_id, context)
-            return {
-                "text": checkin_text,
-                "response_type": "text",
-                "data": {"fast_path": True, "type": "checkin"},
-                "citations": [{"type": "System Status", "id": "VAJRA.AI Core", "details": "Real-time AI copilot operational"}],
-                "is_simulated": False,
-                "simulated_reason": ""
-            }
-
-        if _is_kannada_greeting or _is_english_greeting:
-            if _is_kannada_greeting:
-                greet_text = (
-                    f"ನಮಸ್ಕಾರ ಅಧಿಕಾರಿ {officer_name or 'ಅವರೇ'}. **ವಜ್ರ (VAJRA.AI)** ಪೊಲೀಸ್ ಗುಪ್ತಚರ ಸಹಾಯಕ ಸಕ್ರಿಯವಾಗಿದೆ ಮತ್ತು ಕಾರ್ಯನಿರ್ವಹಿಸುತ್ತಿದೆ.\n\n"
-                    "ನಾನು ನಿಮಗೆ ಈ ಕೆಳಗಿನ ಕ್ಷೇತ್ರಗಳಲ್ಲಿ ಸಹಾಯ ಮಾಡಬಲ್ಲೆ:\n"
-                    "• **CCTNS ಪ್ರಕರಣಗಳ ಪರಿಶೀಲನೆ:** FIR ವಿವರಗಳು, ದಿನಾಂಕ, ಹಾಗೂ ತನಿಖಾ ಸ್ಥಿತಿ.\n"
-                    "• **ಆರೋಪಿಗಳ ವಿಶ್ಲೇಷಣೆ & MO ಪ್ರೊಫೈಲ್:** ಅಪರಾಧ ಇತಿಹಾಸ, ಪುನರಾವರ್ತಿತ ಮಾದರಿಗಳು, ಹಾಗೂ ಶಿಕ್ಷೆಯ ಅಪಾಯದ ಅಂಕ (Risk Score).\n"
-                    "• **ಸಿಂಡಿಕೇಟ್ & ಹಣಕಾಸು ಜಾಲ:** ಸಹ-ಆರೋಪಿಗಳ ಸಂಪರ್ಕಗಳು, ಮ್ಯೂಲ್ ಖಾತೆಗಳು, ಮತ್ತು ಹವಾಲಾ ಲಿಂಕ್‌ಗಳು.\n"
-                    "• **OSINT ಲೈವ್ ಹುಡುಕಾಟ:** ಇಂಟರ್ನೆಟ್, ಸೈಬರ್ ಕ್ರೈಮ್ ಎಚ್ಚರಿಕೆಗಳು, ಮತ್ತು ಮುಕ್ತ ಮೂಲ ಗುಪ್ತಚರ ಮಾಹಿತಿ.\n\n"
-                    "ಪ್ರಕರಣ ಸಂಖ್ಯೆ (`CR-...`), ಆರೋಪಿಯ ಹೆಸರು, ಅಥವಾ ಯಾವುದೇ ತನಿಖಾ ಪ್ರಶ್ನೆಯನ್ನು ದಾಖಲಿಸಿ."
+            
+            recent_turns = []
+            for m in history[-4:]:
+                if m.get("content"):
+                    recent_turns.append({"role": m.get("role", "user"), "content": m["content"]})
+            recent_turns.append({"role": "user", "content": officer_query})
+            
+            dynamic_reply = ""
+            try:
+                llm_res = self.llm.chat(
+                    messages=recent_turns,
+                    system_prompt=sys_prompt,
+                    tools=None,
+                    stream=False,
+                    max_tokens=150
                 )
-            else:
-                greet_text = (
-                    f"Greetings, Officer {officer_name or 'Colleague'}. **VAJRA.AI Intelligence Copilot** is fully operational and standing by.\n\n"
-                    "I am equipped to assist your investigation across key policing domains:\n"
-                    "• **CCTNS Case Intelligence:** Instant FIR lookups, case timelines, and status reports.\n"
-                    "• **Offender Profiling & MO:** Recidivism risk scoring, behavioral MO analysis, and repeat patterns.\n"
-                    "• **Syndicate & Network Discovery:** Co-accused graphs, shared phone/vehicle links, and hawala/mule accounts.\n"
-                    "• **Open-Source Intelligence (OSINT):** Web investigations, cyber threat feeds, and institutional verification.\n\n"
-                    "Enter a case number (`CR-...`), suspect name, phone/account, or an OSINT query to begin."
-                )
-            self._write_audit_log(employee_id, "Greeting Fast-Path", "", officer_query, greet_text[:200], session_id)
-            context = session_memory.get_session_context(session_id)
-            history = context.get("messages", [])
-            history.append({"role": "assistant", "content": greet_text})
-            context["messages"] = history
-            session_memory.update_session_context(session_id, context)
+                if llm_res and isinstance(llm_res, dict):
+                    choices = llm_res.get("choices") or []
+                    if choices:
+                        raw_msg = choices[0].get("message", {}).get("content", "").strip()
+                        raw_msg = self._strip_think(raw_msg).strip()
+                        if raw_msg and len(raw_msg) > 5 and "Dewanshi" not in raw_msg:
+                            dynamic_reply = raw_msg
+            except Exception as ex:
+                logger.warning(f"Fast conversational LLM pass fallback: {ex}")
+            
+            if not dynamic_reply:
+                if _is_kn or _is_kannada_greeting:
+                    dynamic_reply = f"ನಮಸ್ಕಾರ ಅಧಿಕಾರಿ {officer_name or 'ಅವರೇ'}. ವಜ್ರ (VAJRA.AI) ಸಕ್ರಿಯವಾಗಿದೆ ಮತ್ತು CCTNS ಜಾಲದೊಂದಿಗೆ ಸಂಪರ್ಕದಲ್ಲಿದೆ. ಇವತ್ತಿನ ತನಿಖೆಯಲ್ಲಿ ನಾವು ಯಾವ ಪ್ರಕರಣ ಅಥವಾ ಆರೋಪಿಯ ಬಗ್ಗೆ ಕೆಲಸ ಮಾಡಬೇಕು?"
+                else:
+                    dynamic_reply = f"Good to connect with you, Officer {officer_name or 'Colleague'}. All CCTNS telemetry is active and running smooth across the state. Ready whenever you are—what case or suspect are we digging into today?"
+            
+            self._write_audit_log(employee_id, "Conversational Dialogue", "", officer_query, dynamic_reply[:200], session_id)
+            history.append({"role": "user", "content": officer_query})
+            history.append({"role": "assistant", "content": dynamic_reply})
+            chat_context["messages"] = history
+            session_memory.update_session_context(session_id, chat_context)
             return {
-                "text": greet_text,
+                "text": dynamic_reply,
                 "response_type": "text",
-                "data": {"fast_path": True, "type": "greeting"},
+                "data": {"fast_path": True, "type": "chitchat"},
                 "citations": [{"type": "System Status", "id": "VAJRA.AI Core", "details": "Real-time AI copilot operational"}],
                 "is_simulated": False,
                 "simulated_reason": ""
