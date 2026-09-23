@@ -1632,32 +1632,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
               </div>
             </div>
           ) : isAI
-            ? (
-              <div>
-                <div className={`font-sans text-stone-200 ${sizeStyles.prose}`}>{renderRich(displayText, sizeStyles)}</div>
-                {displayText.length > 40 && (
-                  <div className="mt-3.5 pt-2.5 border-t border-stone-850/80 flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleCopy}
-                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-stone-900/80 hover:bg-[#C79A4E]/15 border border-stone-800 hover:border-[#C79A4E]/40 text-stone-300 hover:text-[#E4C590] text-[11px] font-mono transition-all cursor-pointer shadow-sm"
-                    >
-                      {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5 text-[#C79A4E]" />}
-                      <span>{copied ? (lang === "en" ? "Copied" : "ನಕಲಿಸಲಾಗಿದೆ") : (lang === "en" ? "Copy Memo / Text" : "ಮೆಮೊ ನಕಲಿಸಿ")}</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleExportPDF}
-                      disabled={isExportingPdf}
-                      className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-stone-900/80 hover:bg-[#C79A4E]/15 border border-stone-800 hover:border-[#C79A4E]/40 text-stone-300 hover:text-[#E4C590] text-[11px] font-mono transition-all cursor-pointer shadow-sm disabled:opacity-50"
-                    >
-                      {isExportingPdf ? <Loader2 className="w-3.5 h-3.5 animate-spin text-[#C79A4E]" /> : <FileText className="w-3.5 h-3.5 text-[#C79A4E]" />}
-                      <span>{isExportingPdf ? (lang === "en" ? "Generating PDF..." : "PDF ರಚಿಸಲಾಗುತ್ತಿದೆ...") : (lang === "en" ? "Export Court PDF" : "ಕೋರ್ಟ್ PDF ರಫ್ತು")}</span>
-                    </button>
-                  </div>
-                )}
-              </div>
-            )
+            ? <div className={`font-sans text-stone-200 ${sizeStyles.prose}`}>{renderRich(displayText, sizeStyles)}</div>
             : <div className={`whitespace-pre-wrap font-sans text-stone-200 ${sizeStyles.userBubble}`}>{displayText}</div>}
 
           {/* Claude-style Step-by-Step Embedded Tactical Inquest & Clarification (No Popup Modal) */}

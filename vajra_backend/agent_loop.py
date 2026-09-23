@@ -3521,6 +3521,35 @@ class VajraAgentLoop(CognitiveBrainMixin):
         } or _single_collapsed in {
             "hi", "helo", "hey", "namaskar", "namaste", "vanakam", "pranam"
         }
+
+        # Conversational check-ins / small talk (e.g. "how are you vajra", "hor are vajra after along time", "are you active")
+        _is_conversational_checkin = bool(re.search(
+            r'\b(h+[oau]+r+\s+(are|r)|how\s+(are|r)\s+(you|u|vajra|things|it)|hows\s+it\s+going|how\s+do\s+you\s+do|after\s+(a\s+)?long\s+time|long\s+time|back\s+again|are\s+you\s+(there|online|active|ready|working)|what\s+is\s+vajra|who\s+are\s+you|tell\s+me\s+about\s+yourself)\b',
+            _norm_greet,
+            re.IGNORECASE
+        ))
+
+        if _is_conversational_checkin:
+            checkin_text = (
+                f"I am fully active, operational, and connected to the Karnataka State Police CCTNS grid, Officer {officer_name or 'Colleague'}.\n\n"
+                "All intelligence subsystems (CCTNS records, suspect recidivism profiling, organized syndicate mapping, and OSINT) are standing by.\n\n"
+                "How can I assist your investigation today?"
+            )
+            self._write_audit_log(employee_id, "Checkin Fast-Path", "", officer_query, checkin_text[:200], session_id)
+            context = session_memory.get_session_context(session_id)
+            history = context.get("messages", [])
+            history.append({"role": "assistant", "content": checkin_text})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            return {
+                "text": checkin_text,
+                "response_type": "text",
+                "data": {"fast_path": True, "type": "checkin"},
+                "citations": [{"type": "System Status", "id": "VAJRA.AI Core", "details": "Real-time AI copilot operational"}],
+                "is_simulated": False,
+                "simulated_reason": ""
+            }
+
         if _is_kannada_greeting or _is_english_greeting:
             if _is_kannada_greeting:
                 greet_text = (
