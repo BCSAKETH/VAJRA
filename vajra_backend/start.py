@@ -9,5 +9,5 @@ import os
 # downloaded and unpacked live. Prepending vendor/ to sys.path means
 # `pip install` never has to run inside the constrained runtime container
 # at all -- everything needed is already on disk from the archive itself.
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor"))
-os.execv(sys.executable, [sys.executable, "main.py"])
+main_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "main.py")
+os.execv(sys.executable, [sys.executable, main_path])

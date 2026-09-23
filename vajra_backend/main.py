@@ -12687,10 +12687,6 @@ async def explain_chart(payload: ExplainChartPayload, location_context: str = De
 
 if __name__ == "__main__":
     import uvicorn
-    # Catalyst AppSail's process launcher execs the app-config.json "command"
-    # without a shell, so "$X_ZOHO_CATALYST_LISTEN_PORT" in that string never
-    # gets expanded (confirmed live: the literal unexpanded string showed up
-    # in the exec-failure log). Reading the real port from the environment
-    # here instead means the command string never needs shell syntax at all.
-    port = int(os.getenv("X_ZOHO_CATALYST_LISTEN_PORT", "8000"))
-    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False)
+    port_str = os.getenv("X_ZOHO_CATALYST_LISTEN_PORT") or os.getenv("PORT") or "8000"
+    port = int(port_str)
+    uvicorn.run(app, host="0.0.0.0", port=port)
