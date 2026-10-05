@@ -3201,16 +3201,44 @@ class VajraAgentLoop(CognitiveBrainMixin):
             logger.warning(f"_check_pending_clarification failed: {e}")
             return None
 
-    def _rewrite_query_with_context(self, current_query: str, history: List[Dict[str, str]]) -> str:
+    def _rewrite_query_with_context(self, current_query: str, history: List[Dict[str, str]], session_id: str = "") -> str:
         """
         Phase 1 Anaphora Resolution & Contextual Rewrite (per LLM Internet Search Mechanics.md).
         Resolves pronouns ('that', 'it', 'they'), conversational corrections ('that's wrong', 'accurate info'),
-        and elliptic follow-ups ('its pincode', 'what about their phone') against prior conversation turns.
+        and elliptic follow-ups ('its pincode', 'what about their phone') against prior conversation turns,
+        as well as persistent attachment entities (vehicle registration plates, suspect names, FIRs) from session memory.
         """
-        if not history or len(history) < 2 or not current_query:
+        if not current_query:
             return current_query
 
         cq_lower = current_query.lower().strip()
+
+        # Multimodal Attachment Cross-Turn Persistence (VAJRA 2.0 To-Be):
+        # Resolve references to uploaded media entities ("this vehicle", "this plate", "this suspect", "the driver")
+        if session_id:
+            try:
+                att_entities = session_memory.get_attachment_entities(session_id)
+                if att_entities:
+                    if any(v in cq_lower for v in ("this vehicle", "this car", "this bike", "this plate", "vehicle plate", "registration plate", "vehicle number")) and att_entities.get("vehicle_numbers"):
+                        v_num = att_entities["vehicle_numbers"][0]
+                        if v_num.lower() not in cq_lower:
+                            current_query = f"{current_query} (Vehicle Plate: {v_num})"
+                            cq_lower = current_query.lower()
+                    if any(s in cq_lower for s in ("this suspect", "this accused", "this person", "the driver", "the rider", "the culprit")) and att_entities.get("suspect_names"):
+                        s_name = att_entities["suspect_names"][0]
+                        if s_name.lower() not in cq_lower:
+                            current_query = f"{current_query} (Suspect: {s_name})"
+                            cq_lower = current_query.lower()
+                    if any(c in cq_lower for c in ("this case", "this fir", "the fir", "the case")) and att_entities.get("case_numbers"):
+                        c_no = att_entities["case_numbers"][0]
+                        if c_no.lower() not in cq_lower:
+                            current_query = f"{current_query} (FIR: {c_no})"
+                            cq_lower = current_query.lower()
+            except Exception as ex:
+                logger.warning(f"Error checking attachment entities for contextual rewrite: {ex}")
+
+        if not history or len(history) < 2:
+            return current_query
 
         # Part H.0: resume a diary/task write action the assistant just claimed
         # it couldn't perform. A short confirmation like "now try" carries none
@@ -3238,19 +3266,6 @@ class VajraAgentLoop(CognitiveBrainMixin):
             if _last_assistant_idx is not None:
                 _last_assistant = _hist[_last_assistant_idx].get("content", "").lower()
                 if any(p in _last_assistant for p in _refusal_phrases):
-                    # CONFIRMED LIVE BUG (2026-09-15): on a SECOND+ retry
-                    # ("try again to add to task" after an earlier "try
-                    # again" already got the same copy-paste refusal), the
-                    # walk-back below used to stop at the nearest preceding
-                    # user turn -- which, on a repeat retry, is just the
-                    # PREVIOUS short confirm-cue message itself ("try again
-                    # to add to task"), not the true original detailed
-                    # request. That degenerate original_request then got
-                    # reused turn after turn, producing the identical
-                    # refusal forever. Skip any user turn that is itself
-                    # just a bare confirm-cue (no substantial content beyond
-                    # the cue phrase) so this always resolves to the real
-                    # original ask.
                     _original_request = ""
                     for i in range(_last_assistant_idx - 1, -1, -1):
                         _h = _hist[i]
@@ -3267,17 +3282,6 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         _original_request = _content
                         break
                     if _original_request:
-                        # Always fold in the exact natural-language cue
-                        # phrases _is_complex_query's _COMPLEX_STRONG_CUES
-                        # list matches on ("add the tasks", "update the case
-                        # diary") -- the raw tool-name-style instruction used
-                        # here previously ("call add_case_diary_entry
-                        # and/or add_investigation_task") named the tools
-                        # correctly but matched NONE of the keyword-router's
-                        # natural-language cues, so the rewritten query kept
-                        # falling through to a tool-less chat completion
-                        # instead of ever reaching the compiler that could
-                        # actually call them.
                         return (f"{_original_request} -- yes, actually add the tasks and update the case "
                                  f"diary now by calling add_case_diary_entry and/or add_investigation_task "
                                  f"using the content you already drafted above; do not just describe it again.")
@@ -3734,6 +3738,24 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 _att_history_note = f"I've reviewed the attached file. {_att_analysis}" if _att_analysis else None
                 query = _asked
 
+            # Extract and persist structured multimodal entities across turns (plates, suspects, FIRs)
+            if _att_analysis and session_id:
+                try:
+                    _plates = re.findall(r'\b[A-Z]{2}[-\s]?[0-9]{1,2}[-\s]?[A-Z]{1,3}[-\s]?[0-9]{4}\b', _att_analysis)
+                    _suspects = re.findall(r'(?:suspect|accused|driver|culprit|person)\s*[:\-]?\s*([A-Z][a-zA-Z\s]{2,25})', _att_analysis, re.IGNORECASE)
+                    _firs = re.findall(r'(?:Crime\s*No\.?|FIR\s*#?)\s*[:\-]?\s*([0-9]+/[0-9]{4})', _att_analysis, re.IGNORECASE)
+                    _ent_dict = {}
+                    if _plates:
+                        _ent_dict["vehicle_numbers"] = list(set(_plates))
+                    if _suspects:
+                        _ent_dict["suspect_names"] = [s.strip() for s in set(_suspects)]
+                    if _firs:
+                        _ent_dict["case_numbers"] = list(set(_firs))
+                    if _ent_dict:
+                        session_memory.save_attachment_entities(session_id, _ent_dict)
+                except Exception as ex:
+                    logger.warning(f"Error extracting attachment entities: {ex}")
+
         # Kanglish normalization (routing only -- see _normalize_kanglish):
         # lets the existing fast English keyword router recognize a
         # romanized-Kannada intent instead of falling through to a 20-140s
@@ -3780,7 +3802,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # Phase 1 Anaphora Resolution & Contextual Rewrite (per LLM Internet Search Mechanics.md):
         # Resolves pronouns ('that', 'it', 'they'), conversational corrections ('that's wrong', 'accurate info'),
         # and elliptic follow-ups ('its pincode', 'what about their phone') against prior conversation turns.
-        rewritten_q = self._rewrite_query_with_context(routing_query, history)
+        rewritten_q = self._rewrite_query_with_context(routing_query, history, session_id=session_id)
         if rewritten_q and rewritten_q != routing_query:
             logger.info(f"Query rewritten with context: '{routing_query}' -> '{rewritten_q}'")
             routing_query = rewritten_q
