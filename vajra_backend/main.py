@@ -128,12 +128,25 @@ app = FastAPI(
 import officer_governance
 app.include_router(officer_governance.router)
 
-# NOTE: CORSMiddleware intentionally removed.
-# Zoho ZGS (the AppSail reverse-proxy gateway) already injects CORS headers
-# on every response. Adding FastAPI's CORSMiddleware on top causes duplicate
-# Access-Control-Allow-Origin headers, which browsers reject as invalid CORS
-# (resulting in "Failed to fetch"). ZGS is configured to allow the Catalyst
-# web client origin at the project level.
+# Robust OPTIONS Preflight & Non-Duplicating CORS Middleware
+@app.middleware("http")
+async def custom_cors_and_options_handler(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Allow-Credentials": "true",
+            }
+        )
+    response = await call_next(request)
+    if "access-control-allow-origin" not in response.headers:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+    return response
 
 
 # Load serialized ML artifacts
