@@ -230,7 +230,7 @@ except Exception as e:
 
 
 import asyncio
-import httpx
+import aiohttp
 
 def _zcql_escape_value(v) -> str:
     if v is None:
@@ -262,7 +262,7 @@ class AsyncZCQLEngine:
     """
     High-throughput Asynchronous ZCQL Engine for Zoho Catalyst AppSail.
     Features:
-    - Connection-pooled async HTTP queries via httpx.AsyncClient
+    - Connection-pooled async HTTP queries via aiohttp.ClientSession
     - Automatic token caching & self-healing refresh on 401
     - Keysetted pagination (ROWID > last_rowid) to automatically bypass ZCQL's 300-row limit
     - Parallel multi-table async_gather_joins() using asyncio.gather()
@@ -272,15 +272,14 @@ class AsyncZCQLEngine:
         self.project_id = os.getenv("CATALYST_PROJECT_ID", "50212000000025002")
         self.url = f"https://api.catalyst.zoho.in/baas/v1/project/{self.project_id}/query"
         self.timeout = timeout
-        self._client: Optional[httpx.AsyncClient] = None
+        self._session: Optional[aiohttp.ClientSession] = None
 
-    async def get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                timeout=httpx.Timeout(self.timeout, connect=10.0),
-                limits=httpx.Limits(max_keepalive_connections=50, max_connections=100)
-            )
-        return self._client
+    async def get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            timeout_cfg = aiohttp.ClientTimeout(total=self.timeout, connect=10.0)
+            connector = aiohttp.TCPConnector(limit=100, limit_per_host=50)
+            self._session = aiohttp.ClientSession(timeout=timeout_cfg, connector=connector)
+        return self._session
 
     async def execute_query(self, query: str) -> List[Dict[str, Any]]:
         logger.info(f"[AsyncZCQL] Query: {query}")
@@ -298,24 +297,28 @@ class AsyncZCQLEngine:
             "X-Catalyst-Environment": "Development",
             "environment": "Development"
         }
-        client = await self.get_client()
+        session = await self.get_session()
         try:
-            res = await client.post(self.url, headers=headers, json={"query": query})
+            async with session.post(self.url, headers=headers, json={"query": query}) as res:
+                if res.status == 401:
+                    logger.warning("[AsyncZCQL] 401 token expired, forcing refresh and retrying...")
+                    fresh_token = get_cached_access_token(force_refresh=True)
+                    if fresh_token:
+                        headers["Authorization"] = f"Zoho-oauthtoken {fresh_token}"
+                        async with session.post(self.url, headers=headers, json={"query": query}) as retry_res:
+                            if retry_res.status != 200:
+                                res_text = await retry_res.text()
+                                raise Exception(f"Async ZCQL query failed: {retry_res.status} - {res_text}")
+                            data = await retry_res.json()
+                            return data.get("data", [])
+                if res.status != 200:
+                    res_text = await res.text()
+                    raise Exception(f"Async ZCQL query failed: {res.status} - {res_text}")
+                data = await res.json()
+                return data.get("data", [])
         except Exception as e:
             logger.warning(f"[AsyncZCQL] Network error: {e}")
             raise e
-
-        if res.status_code == 401:
-            logger.warning("[AsyncZCQL] 401 token expired, forcing refresh and retrying...")
-            fresh_token = get_cached_access_token(force_refresh=True)
-            if fresh_token:
-                headers["Authorization"] = f"Zoho-oauthtoken {fresh_token}"
-                res = await client.post(self.url, headers=headers, json={"query": query})
-
-        if res.status_code != 200:
-            raise Exception(f"Async ZCQL query failed: {res.status_code} - {res.text}")
-
-        return res.json().get("data", [])
 
     async def execute_paginated_query(
         self,
@@ -390,8 +393,8 @@ class AsyncZCQLEngine:
         await self.execute_query(f"INSERT INTO {table_name} ({cols}) VALUES ({vals})")
 
     async def close(self):
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
+        if self._session and not self._session.closed:
+            await self._session.close()
 
 
 # Global async ZCQL engine instance
