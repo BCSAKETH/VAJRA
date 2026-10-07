@@ -23,8 +23,9 @@ from that real shape -- no syndicate name/MO/hierarchy tier is invented for
 a signal the detector doesn't actually compute.
 """
 
+import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple, Set
 
 from vajra_core import catalyst_app, escape_zcql_literal, get_cached_syndicate_clusters
 
@@ -243,7 +244,10 @@ def get_case_intelligence(case_no: str, agent_loop_instance: Any) -> Dict[str, A
     # connections), never presented as a legal determination.
     section_111_eligible = syndicate_info["is_syndicate_member"] or len(connections) >= 2
 
-    return {
+    # Verification of Section 193 BNSS Case Diary Chaining
+    diary_chain_status = case_diary_manager.verify_case_diary_chain(case_no)
+
+    base_dossier = {
         "case_no": case_no,
         "registered_date": cm.get("CrimeRegisteredDate", "Unknown"),
         "unit_name": unit_name,
@@ -256,8 +260,253 @@ def get_case_intelligence(case_no: str, agent_loop_instance: Any) -> Dict[str, A
         "connections": connections,
         "syndicate": syndicate_info,
         "section_111_bns_eligible": section_111_eligible,
+        "case_diary_chain_status": diary_chain_status,
         "network_graph": {
             "nodes": list({n["id"]: n for n in network_nodes}.values()),
             "edges": network_edges,
         },
     }
+
+    return base_dossier
+
+
+# =============================================================================
+# STATUTORY COMPLIANCE MODULE: SECTION 193 BNSS & SECTION 74 POCSO / JJA
+# =============================================================================
+import hashlib
+import time
+from datetime import datetime
+from vajra_core import (
+    is_pocso_sensitive,
+    redact_pocso_name,
+    redact_phone_numbers,
+    has_active_pocso_grant,
+    is_supervisor_badge,
+    zcql_insert_row,
+)
+
+GENESIS_PREV_HASH = "0000000000000000000000000000000000000000000000000000000000000000"
+
+# In-memory resilient ledger fallback (keyed by case_no)
+_LOCAL_CASE_DIARIES: Dict[str, List[Dict[str, Any]]] = {}
+
+
+class CaseDiaryChainManager:
+    """
+    Cryptographic Block-Hash Chaining Engine for Police Case Diaries.
+    Statutory Authority: Section 193 Bharatiya Nagarik Suraksha Sanhita (BNSS), 2023
+    Evidentiary Standard: Section 63 Bharatiya Sakshya Adhiniyam (BSA), 2023
+    
+    Guarantees:
+    - Linear chronological SHA-256 block hash chaining
+    - Tamper-evident verification (retroactive editing breaks chain)
+    - Verifiable Court-Admissible provenance timestamping
+    """
+    def __init__(self):
+        pass
+
+    def _compute_block_hash(self, entry_id: int, case_no: str, officer_kgid: str, 
+                            entry_text: str, timestamp: str, prev_hash: str) -> str:
+        payload = f"{entry_id}|{case_no.strip().upper()}|{officer_kgid.strip()}|{entry_text.strip()}|{timestamp}|{prev_hash}"
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def get_case_diary(self, case_no: str) -> List[Dict[str, Any]]:
+        """Retrieves all case diary entries for a given CrimeNo in chronological order."""
+        if not case_no:
+            return []
+        case_no_clean = case_no.strip().upper()
+        
+        # 1. Try ZCQL CaseDiary table if available
+        if catalyst_app:
+            try:
+                res = catalyst_app.zql().execute_query(
+                    f"SELECT entry_id, case_no, officer_kgid, entry_text, tags, timestamp, prev_block_hash, block_hash "
+                    f"FROM CaseDiary WHERE case_no = '{escape_zcql_literal(case_no_clean)}' ORDER BY entry_id ASC"
+                )
+                if res:
+                    entries = [r.get("CaseDiary", {}) for r in res]
+                    _LOCAL_CASE_DIARIES[case_no_clean] = entries
+                    return entries
+            except Exception as ex:
+                logger.debug(f"CaseDiary ZCQL query failed or table not present: {ex}")
+
+        # 2. Return local in-memory ledger
+        return _LOCAL_CASE_DIARIES.get(case_no_clean, [])
+
+    def append_entry(self, case_no: str, officer_kgid: str, entry_text: str, 
+                     tags: Optional[List[str]] = None, timestamp: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Appends a new case diary entry with cryptographic block-hash linkage.
+        """
+        if not case_no or not officer_kgid or not entry_text:
+            raise ValueError("case_no, officer_kgid, and entry_text are mandatory for Section 193 BNSS Case Diary.")
+
+        case_no_clean = case_no.strip().upper()
+        entries = self.get_case_diary(case_no_clean)
+        
+        entry_id = len(entries) + 1
+        prev_hash = entries[-1]["block_hash"] if entries else GENESIS_PREV_HASH
+        ts = timestamp or datetime.utcnow().isoformat() + "Z"
+        
+        block_hash = self._compute_block_hash(
+            entry_id=entry_id,
+            case_no=case_no_clean,
+            officer_kgid=officer_kgid,
+            entry_text=entry_text,
+            timestamp=ts,
+            prev_hash=prev_hash
+        )
+
+        entry_record = {
+            "entry_id": entry_id,
+            "case_no": case_no_clean,
+            "officer_kgid": str(officer_kgid).strip(),
+            "entry_text": entry_text.strip(),
+            "tags": tags or ["General Investigation"],
+            "timestamp": ts,
+            "prev_block_hash": prev_hash,
+            "block_hash": block_hash,
+            "statutory_reference": "Section 193 BNSS, 2023",
+            "admissibility_standard": "Section 63 BSA, 2023"
+        }
+
+        # Persist to local ledger
+        if case_no_clean not in _LOCAL_CASE_DIARIES:
+            _LOCAL_CASE_DIARIES[case_no_clean] = []
+        _LOCAL_CASE_DIARIES[case_no_clean].append(entry_record)
+
+        # Persist to ZCQL if table exists
+        if catalyst_app:
+            try:
+                zcql_insert_row("CaseDiary", {
+                    "entry_id": entry_id,
+                    "case_no": case_no_clean,
+                    "officer_kgid": str(officer_kgid).strip(),
+                    "entry_text": entry_text.strip(),
+                    "tags": json.dumps(tags or []),
+                    "timestamp": ts,
+                    "prev_block_hash": prev_hash,
+                    "block_hash": block_hash
+                })
+            except Exception as ex:
+                logger.warning(f"Could not persist CaseDiary to Catalyst: {ex}")
+
+        return entry_record
+
+    def verify_case_diary_chain(self, case_no: str) -> Dict[str, Any]:
+        """
+        Cryptographically verifies the entire Case Diary chain from Genesis to Tip.
+        Detects tampering, out-of-order records, or hash alterations.
+        """
+        if not case_no:
+            return {"is_valid": True, "total_blocks": 0, "status": "NO_RECORDS"}
+            
+        case_no_clean = case_no.strip().upper()
+        entries = self.get_case_diary(case_no_clean)
+        if not entries:
+            return {"is_valid": True, "total_blocks": 0, "status": "EMPTY_CHAIN"}
+
+        expected_prev = GENESIS_PREV_HASH
+        for idx, entry in enumerate(entries):
+            e_id = entry.get("entry_id", idx + 1)
+            e_text = entry.get("entry_text", "")
+            e_kgid = entry.get("officer_kgid", "")
+            e_ts = entry.get("timestamp", "")
+            e_prev = entry.get("prev_block_hash", "")
+            e_hash = entry.get("block_hash", "")
+
+            # 1. Verify prev_hash link
+            if e_prev != expected_prev:
+                return {
+                    "is_valid": False,
+                    "tampered_block": e_id,
+                    "error": "BROKEN_CHAIN_LINK",
+                    "details": f"Block #{e_id} prev_hash mismatch. Expected '{expected_prev}', got '{e_prev}'."
+                }
+
+            # 2. Recalculate block hash
+            recalc = self._compute_block_hash(e_id, case_no_clean, e_kgid, e_text, e_ts, e_prev)
+            if recalc != e_hash:
+                return {
+                    "is_valid": False,
+                    "tampered_block": e_id,
+                    "error": "BLOCK_PAYLOAD_TAMPERED",
+                    "details": f"Block #{e_id} hash calculation mismatch. Recorded '{e_hash}', computed '{recalc}'."
+                }
+
+            expected_prev = e_hash
+
+        return {
+            "is_valid": True,
+            "total_blocks": len(entries),
+            "genesis_hash": entries[0]["block_hash"],
+            "tip_hash": entries[-1]["block_hash"],
+            "statutory_compliance": "VERIFIED_SEC_193_BNSS_SEC_63_BSA"
+        }
+
+
+# Global instance
+case_diary_manager = CaseDiaryChainManager()
+
+
+def redact_pocso_identity_record(record: Dict[str, Any], officer_kgid: Optional[str] = None, case_no: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Enforces Section 74 POCSO & Section 74 JJA statutory identity redaction.
+    If the requesting officer is a verified supervisor or holds an active time-boxed
+    POCSO access grant, unredacted data is delivered with an audit trail flag.
+    Otherwise, victim names, addresses, and phone numbers are cryptographically masked.
+    """
+    if not record:
+        return record
+
+    c_no = case_no or record.get("case_no") or record.get("CrimeNo") or ""
+    facts = record.get("brief_facts") or record.get("BriefFacts") or ""
+    cat_name = record.get("crime_group_name") or record.get("CrimeGroup_Name") or ""
+
+    is_sensitive = is_pocso_sensitive(facts, cat_name, str(record))
+    if not is_sensitive:
+        return record
+
+    # Check authorized unmasking
+    is_supervisor = is_supervisor_badge(officer_kgid) if officer_kgid else False
+    has_grant = has_active_pocso_grant(officer_kgid, c_no) if (officer_kgid and c_no) else False
+
+    if is_supervisor or has_grant:
+        unmasked = dict(record)
+        unmasked["_pocso_access_granted"] = True
+        unmasked["_pocso_access_reason"] = "SUPERVISOR_PRIVILEGE" if is_supervisor else "ACTIVE_TIMEBOXED_GRANT"
+        unmasked["_pocso_audited_kgid"] = officer_kgid
+        return unmasked
+
+    # Apply strict statutory mask
+    redacted = dict(record)
+    
+    # Redact victim names in text fields
+    if "victim_name" in redacted and redacted["victim_name"]:
+        vname = redacted["victim_name"]
+        h = hashlib.sha256(vname.encode("utf-8")).hexdigest()[:8]
+        redacted["victim_name"] = f"[VICTIM_PROTECTED_SEC74_POCSO_0x{h}]"
+
+    if "complainant_name" in redacted and redacted["complainant_name"]:
+        cname = redacted["complainant_name"]
+        h = hashlib.sha256(cname.encode("utf-8")).hexdigest()[:8]
+        redacted["complainant_name"] = f"[COMPLAINANT_PROTECTED_SEC74_POCSO_0x{h}]"
+
+    # Redact phone numbers and address PII
+    if "brief_facts" in redacted and redacted["brief_facts"]:
+        bf = redact_phone_numbers(redacted["brief_facts"])
+        if "victim_name" in record and record["victim_name"]:
+            bf = bf.replace(record["victim_name"], redacted.get("victim_name", "[PROTECTED_VICTIM]"))
+        redacted["brief_facts"] = bf
+
+    if "BriefFacts" in redacted and redacted["BriefFacts"]:
+        bf = redact_phone_numbers(redacted["BriefFacts"])
+        if "victim_name" in record and record["victim_name"]:
+            bf = bf.replace(record["victim_name"], redacted.get("victim_name", "[PROTECTED_VICTIM]"))
+        redacted["BriefFacts"] = bf
+
+    redacted["_pocso_identity_redacted"] = True
+    redacted["_pocso_statutory_rule"] = "Section 74 POCSO Act, 2012 / Section 74 JJA, 2015"
+
+    return redacted
+

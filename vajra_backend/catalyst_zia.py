@@ -108,3 +108,79 @@ def compare_faces(source_bytes: bytes, query_bytes: bytes) -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"Zia face comparison unavailable: {e}")
         return {"status": "unavailable", "match_confidence": None}
+
+
+import re
+import requests
+import os
+from vajra_core import get_quickml_access_token
+
+# Regex pattern targeting characters that trigger Zia Translate HTTP 400 PATTERN_NOT_MATCHED:
+# '*', '#', '%', '(', ')', '+', and markdown backticks/bullets
+_ZIA_UNSAFE_CHARS_PATTERN = re.compile(r"[\*#%\(\)\+`~\[\]_]")
+
+
+def sanitize_for_zia_translate(text: str) -> str:
+    """
+    Strips '*', '#', '%', '()', '+', control characters, and markdown tokens before sending text
+    to Zia Translate endpoint, preventing HTTP 400 PATTERN_NOT_MATCHED crashes.
+    """
+    if not text:
+        return ""
+    # Strip non-printable/control characters
+    clean = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
+    # Replace percent signs with words to preserve semantic meaning
+    clean = clean.replace("%", " percent ")
+    # Replace plus signs with words
+    clean = clean.replace("+", " plus ")
+    # Strip remaining unsafe punctuation
+    clean = _ZIA_UNSAFE_CHARS_PATTERN.sub(" ", clean)
+    # Collapse multiple whitespace
+    return re.sub(r"\s+", " ", clean).strip()
+
+
+def translate_text(text: str, src_lang: str = "en", tgt_lang: str = "kn", org_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Sanitized fast translation via Zia Text Translation API.
+    Guarantees pre-sanitization to prevent HTTP 400 errors.
+    """
+    if not text or not text.strip():
+        return {"status": "success", "translated_text": text}
+
+    sanitized = sanitize_for_zia_translate(text)
+    if not sanitized:
+        return {"status": "success", "translated_text": text}
+
+    token = get_quickml_access_token()
+    if not token:
+        return {"status": "unavailable", "translated_text": text, "reason": "No OAuth token"}
+
+    region = os.getenv("CATALYST_REGION", "IN")
+    domain = "in" if region == "IN" else "com"
+    target_org = org_id or os.getenv("CATALYST_ORG_ID") or os.getenv("CATALYST_PROJECT_KEY") or "60074806366"
+    url = f"https://api.catalyst.zoho.{domain}/quickml/api/v1/models/zia/translate"
+    
+    headers = {
+        "Authorization": f"Zoho-oauthtoken {token}",
+        "CATALYST-ORG": target_org,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "text": sanitized,
+        "src_lang": src_lang,
+        "tgt_lang": tgt_lang
+    }
+
+    try:
+        res = requests.post(url, headers=headers, json=payload, timeout=15)
+        if res.status_code == 200:
+            data = res.json()
+            translated = data.get("translated_text")
+            if data.get("status") == "success" and translated:
+                return {"status": "success", "translated_text": translated}
+        logger.warning(f"Zia Translate declined ({res.status_code}): {res.text[:200]}")
+        return {"status": "unavailable", "translated_text": text, "reason": res.text[:200]}
+    except Exception as e:
+        logger.warning(f"Zia Translate network failure: {e}")
+        return {"status": "unavailable", "translated_text": text, "reason": str(e)}
+

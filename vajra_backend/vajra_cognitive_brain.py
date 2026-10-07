@@ -174,7 +174,25 @@ class CognitiveBrainMixin:
             return {"tool": tool_name, "parameters": params}
         except Exception as e:
             logger.warning(f"Cognitive Brain _route_semantic failed (non-fatal): {e}")
-            return None
+
+        # Perplexity-Style Vector Search Fallback:
+        # If no deterministic exemplar matched and the query describes a modus operandi or crime narrative,
+        # query semantic vector memory to retrieve matching CCTNS FIRs
+        try:
+            if len(query.split()) >= 3 and any(ck in q_low for ck in ("murder", "theft", "knife", "robbery", "weapon", "burglary", "assault", "killed", "stolen", "extortion", "attack", "snatched", "gang", "dead", "accused", "victim")):
+                from vajra_core import VajraSemanticMemory
+                from agent_loop import semantic_memory
+                recalled = semantic_memory.recall_context(query, top_k=1)
+                if recalled and recalled[0].get("score", 0.0) >= 0.25:
+                    top_match = recalled[0]
+                    fir_id = top_match.get("fir_id")
+                    if fir_id and fir_id != "MOCK":
+                        return {"tool": "query_case", "parameters": {"case_no": fir_id, "vague_search": query}}
+                    return {"tool": "resolve_vague_query", "parameters": {"query": query}}
+        except Exception as ex:
+            logger.warning(f"Semantic vector memory recall fallback failed: {ex}")
+
+        return None
 
     # ---- 2. RELATIONSHIP UNDERSTANDING -----------------------------------
 

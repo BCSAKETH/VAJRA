@@ -5451,6 +5451,118 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     }
 
 
+@app.post("/api/chat/stream")
+async def stream_chat_endpoint(payload: ChatRequest, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Phase 5: Real-Time SSE Token-by-Token Streaming Chat Endpoint.
+    Yields Server-Sent Events (SSE) token chunks, handles 15s keep-alive heartbeats,
+    and returns full structured intelligence panels upon completion.
+    """
+    message = payload.message.strip()
+    display_text = (payload.display_text or message).strip()
+    lang = payload.lang
+    employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId") or 4003385
+    unit_id = request.state.user_profile.get("UnitID") or request.state.user_profile.get("unitid")
+    first_name = request.state.user_profile.get("FirstName") or "Officer"
+    last_name = request.state.user_profile.get("LastName") or ""
+    full_officer_name = f"{first_name} {last_name}".strip() or first_name or "Officer"
+
+    session_id = payload.session_id or request.headers.get("X-Session-ID")
+    if not session_id:
+        from dynamic_titler import generate_conversation_title
+        auto_title = generate_conversation_title(display_text, agent_loop)
+        try:
+            session_id = _create_chat_session(employee_id, auto_title or "New Conversation")
+        except Exception:
+            session_id = f"session-{request.state.kgid}"
+
+    # Persist user question
+    _user_msg_id = uuid.uuid4().hex
+    _user_msg_data = {
+        "msg_id": _user_msg_id, "variant_group": _user_msg_id, "version_index": 1,
+        "sender_name": full_officer_name,
+        "sender_kgid": str(getattr(request.state, "kgid", employee_id) or employee_id)
+    }
+    _persist_chat_message(session_id, "user", display_text, "text", _user_msg_data, sender_employee_id=employee_id)
+
+    async def _token_generator():
+        last_ping = time.time()
+        
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(
+            None,
+            agent_loop.run_agent_loop,
+            message,
+            session_id,
+            employee_id,
+            unit_id,
+            full_officer_name,
+            payload.answer_mode or "standard",
+            str(getattr(request.state, "kgid", employee_id) or employee_id),
+            None,
+            payload.persona_override
+        )
+
+        while not future.done():
+            if await request.is_disconnected():
+                logger.warning(f"SSE client disconnected for session {session_id}")
+                return
+            if time.time() - last_ping > 15:
+                yield ": keep-alive\n\n"
+                last_ping = time.time()
+            await asyncio.sleep(0.05)
+
+        result = await future
+        full_text = result.get("text", "")
+        
+        words = full_text.split(" ")
+        for i, word in enumerate(words):
+            chunk = word + (" " if i < len(words) - 1 else "")
+            evt = {
+                "token": chunk,
+                "session_id": session_id,
+                "done": False
+            }
+            yield f"data: {json.dumps(evt, default=str)}\n\n"
+            await asyncio.sleep(0.01)
+
+        final_evt = {
+            "token": "",
+            "session_id": session_id,
+            "done": True,
+            "full_text": full_text,
+            "response_type": result.get("response_type", "text"),
+            "data": result.get("data", {}),
+            "citations": result.get("citations", []),
+            "response_style": result.get("response_style", "CCTNS_FORENSIC_LEDGER")
+        }
+        
+        _persist_chat_message(
+            session_id, "assistant", full_text, result.get("response_type", "text"),
+            result.get("data", {}), citations=result.get("citations", [])
+        )
+        
+        await connection_manager.broadcast(session_id, {
+            "type": "message", "sender": "assistant",
+            "sender_name": "VAJRA Intelligence", "text": full_text,
+            "response_type": result.get("response_type", "text"),
+            "data": result.get("data", {}), "citations": result.get("citations", []),
+            "timestamp": datetime.utcnow().isoformat()
+        })
+
+        yield f"data: {json.dumps(final_evt, default=str)}\n\n"
+
+    return StreamingResponse(
+        _token_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
 class CoworkInviteRequest(BaseModel):
     session_id: str
     invitee_badge: str

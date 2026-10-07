@@ -2,6 +2,7 @@ fastapi>=0.100.0
 uvicorn>=0.20.0
 zcatalyst_sdk>=1.4.0
 requests>=2.31.0
+httpx>=0.27.0
 websockets>=12.0
 scikit-learn>=1.4.0
 xgboost==2.0.3

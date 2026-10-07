@@ -16,7 +16,7 @@ from vajra_core import catalyst_app, VajraGraphRAG, VajraSemanticMemory, MOBehav
     has_active_pocso_grant, create_pocso_request, find_active_pocso_request, _compute_mo_vector, \
     start_zql_log, get_zql_log, escape_zcql_literal, get_cached_syndicate_clusters, \
     _district_for_accused  # C.8, F.12: shared 3-hop district resolution
-from session_memory import VajraSessionMemory
+from session_memory import VajraSessionMemory, dual_memory, DualTierMemoryManager
 from catalyst_llm import CatalystLLM
 from catalyst_qwen import CatalystQwen
 from catalyst_rag import CatalystRAG
@@ -26,13 +26,26 @@ from crime_heads_118_map import ALL_118_CRIME_HEADS_MAP
 
 logger = logging.getLogger(__name__)
 
-session_memory = VajraSessionMemory()
+session_memory = dual_memory
 graph_rag = VajraGraphRAG()
 semantic_memory = VajraSemanticMemory()
 catalyst_rag = CatalystRAG()
 
 _real_districts_cache: Optional[List[str]] = None
 _AUDIT_LOG_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="audit_pool")
+_ML_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="vajra_ml_pool")
+
+
+def _run_ml_predict_proba(model, X):
+    """Offloads CPU-bound XGBoost predict_proba to a dedicated threadpool."""
+    future = _ML_EXECUTOR.submit(model.predict_proba, X)
+    return future.result()
+
+
+def _run_ml_shap_values(explainer, X):
+    """Offloads CPU-bound SHAP tree calculations to a dedicated threadpool."""
+    future = _ML_EXECUTOR.submit(explainer, X)
+    return future.result()
 
 # Short-TTL cache for expensive full-table aggregate computations (crime-type
 # distribution, priority concerns). Those GROUP BY queries over the whole
@@ -1294,6 +1307,69 @@ class VajraAgentLoop(CognitiveBrainMixin):
         for pat, repl in self._SUSPECT_TYPO_MAP.items():
             q = re.sub(pat, repl, q)
         return q
+
+    def _strip_salutations(self, text: str) -> Tuple[str, bool]:
+        """
+        Salience Stripping ("Hi" fix):
+        Strips leading conversational greetings/salutations ("Good morning", "Hi copilot", "Namaskara")
+        if substantive operational inquiry follows (e.g. "show cases in Belagavi", "analyze suspect Imran").
+        Returns (cleaned_query, has_operational_intent).
+        """
+        if not text:
+            return ("", False)
+        
+        raw_clean = text.strip()
+        
+        # Check if entire query is a standalone greeting / sign-off / check-in
+        lower_raw = re.sub(r'[@\-_.,!?#]', ' ', raw_clean.lower()).strip()
+        lower_raw = re.sub(r'\s+', ' ', lower_raw)
+        
+        pure_greetings = {
+            "hi", "hello", "hey", "namaskara", "namaste", "vanakkam", "pranam", "pranamalu",
+            "good morning", "good afternoon", "good evening", "good day", "good night",
+            "hi vajra", "hello vajra", "hey vajra", "vajra hi", "vajra hello", "vajra hey",
+            "bye", "goodbye", "bye bye", "cya", "thanks", "thank you", "roger", "copy", "ok", "okay",
+            "how are you", "who are you", "what are you", "what can you do", "help", "how can you help",
+            "menu", "status", "ನಮಸ್ಕಾರ", "ಹಲೋ", "ಹಾಯ್", "ಶುಭೋದಯ", "ಶುಭ ಸಂಜೆ", "ಧನ್ಯವಾದ"
+        }
+        if lower_raw in pure_greetings:
+            return (raw_clean, False)
+            
+        # Regex pattern matching leading English & Kannada greeting prefixes
+        prefix_pattern = re.compile(
+            r'^(?:'
+            r'h+[eaiou]*[ylo]+|h+e+k+l+|h+a+i+|'
+            r'g+o+o+d+\s*(?:m+o+r+n+i+n+g+|e+v+e+n+i+n+g+|d+a+y+|a+f+t+e+r+n+o+o+n+)|'
+            r's+u+p+|y+o+|h+o+l+a+|w+a+s+s+u+p+|h+o+w+d+y+|'
+            r'namaskara|namaskaram|namaste|vanakkam|pranam|pranamalu|'
+            r'ನಮಸ್ಕಾರ|ಹಲೋ|ಹಾಯ್|ಶುಭೋದಯ|ಶುಭ ಸಂಜೆ|'
+            r'hi\s+vajra|hello\s+vajra|hey\s+vajra|dear\s+vajra|dear\s+copilot|copilot|vajra|'
+            r'sir|madam|officer'
+            r')[\s,!:;.\-–—]+',
+            re.IGNORECASE
+        )
+        
+        # Strip repeated leading greeting phrases
+        cleaned = raw_clean
+        while True:
+            m = prefix_pattern.match(cleaned)
+            if m:
+                cleaned = cleaned[m.end():].strip()
+            else:
+                break
+                
+        # If remaining text is empty or too short, it was purely a greeting
+        if len(cleaned) < 3:
+            return (raw_clean, False)
+            
+        # Check if remaining text is purely another greeting / signoff
+        lower_rem = re.sub(r'[@\-_.,!?#]', ' ', cleaned.lower()).strip()
+        lower_rem = re.sub(r'\s+', ' ', lower_rem)
+        if lower_rem in pure_greetings:
+            return (raw_clean, False)
+            
+        # Operational intent confirmed!
+        return (cleaned, True)
 
     _KNOWN_CRIME_GROUPS = [
         "MURDER", "SEXUAL OFFENCES", "ASSAULT", "ATTEMPT TO MURDER", "MOTOR VEHICLE THEFT",
@@ -3472,6 +3548,26 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # `query` (with headers) still goes to the LLM history unchanged.
         officer_query = re.sub(r'^\s*(?:\[Context:[^\]]*\]\s*)+', '', query, flags=re.DOTALL)
 
+        # Macro-Memory Context-Aware Persona Injection (Officer Profile & State)
+        officer_prof = {}
+        if officer_badge:
+            try:
+                officer_prof = session_memory.get_officer_profile(officer_badge)
+            except Exception:
+                officer_prof = {}
+        resolved_officer_name = officer_prof.get("name") or officer_name or "Colleague"
+        resolved_station = officer_prof.get("home_station") or "KSP Station"
+        resolved_district = officer_prof.get("district") or "Karnataka State"
+        resolved_rank = officer_prof.get("role_tier") or "Investigating Officer"
+
+        # Salience Stripping ("Hi" fix): strip greeting prefixes if operational intent exists
+        operational_query, has_operational_intent = self._strip_salutations(officer_query)
+        if has_operational_intent:
+            routing_query = operational_query
+            officer_query = operational_query
+        else:
+            routing_query = officer_query
+
         # KSP Response Tailor (Finals-part 3.md Section 48): classify once on
         # the officer's own clean text (not the injected context headers) and
         # thread the resulting directive into the main answer-generation call
@@ -3497,14 +3593,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # analytical intents on Kannada script directly. routing_query stays the
         # officer's original text so every existing parser is byte-for-byte
         # unchanged for English.
-        routing_query = officer_query
         _is_kn = bool(re.search(r'[\u0C80-\u0CFF]', query or routing_query))
 
         # GREETINGS, CIVILITY & SIGN-OFF FAST-PATH (0ms, Zero-Network):
-        # Greetings ("hi", "hello"), Farewells ("bye", "goodbye"), and Courtesies ("thanks", "roger that")
-        # match NO database entity and require zero DB/LLM calls.
-        # Intercepting them immediately guarantees <1ms response time, saves 5+ DB queries per turn,
-        # and prevents contextual rewrites from mangling conversational phrases (e.g. "roger that").
+        # Triggered ONLY if query is purely conversational with NO operational intent!
         _norm_greet = re.sub(r'[@\-_.,!?#]', ' ', routing_query.lower()).strip()
         _norm_greet = re.sub(r'\s+', ' ', _norm_greet)
         _single_collapsed = re.sub(r'(.)\1+', r'\1', _norm_greet)
@@ -3527,11 +3619,11 @@ class VajraAgentLoop(CognitiveBrainMixin):
         }
 
         # Conversational check-ins / small talk / greetings (e.g. "how are you vajra", "hor are vajra after along time", "hi", "helllooooo")
-        _is_conversational = _is_kannada_greeting or _is_english_greeting or bool(re.search(
+        _is_conversational = not has_operational_intent and (_is_kannada_greeting or _is_english_greeting or bool(re.search(
             r'\b(h+[oau]+r+\s+(are|r)|how\s+(are|r)\s+(you|u|vajra|things|it)|hows\s+it\s+going|how\s+do\s+you\s+do|after\s+(a\s+)?long\s+time|long\s+time|back\s+again|are\s+you\s+(there|online|active|ready|working)|what\s+is\s+vajra|who\s+are\s+you|tell\s+me\s+about\s+yourself|what\s+do\s+you\s+think)\b',
             _norm_greet,
             re.IGNORECASE
-        ))
+        )))
 
         if _is_conversational:
             chat_context = session_memory.get_session_context(session_id)
@@ -3540,7 +3632,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
             # Formulate human officer colleague persona with zero tools for sub-second generation
             sys_prompt = (
                 f"You are VAJRA, the official AI Crime Intelligence Copilot for the Karnataka State Police (KSP), "
-                f"speaking as an experienced, sharp, and trusted police intelligence colleague to Officer {officer_name or 'Colleague'}.\n\n"
+                f"speaking as an experienced, sharp, and trusted police intelligence colleague to Officer {resolved_officer_name} "
+                f"({resolved_rank}, {resolved_station}, {resolved_district}).\n\n"
                 "CONVERSATIONAL DIRECTIVES:\n"
                 "1. HUMAN COLLEAGUE VOICE: Speak naturally, warmly, and respectfully like a fellow police officer on duty. "
                 "Never sound like a robot, IVR system, or text generator. NEVER say 'Status is normalized', 'Inputs verified', 'Systems running', or dump bulleted capability menus.\n"
@@ -5311,7 +5404,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 'FIR_YEAR', 'month_sin', 'month_cos', 'day_sin', 'day_cos',
                 'VICTIM COUNT', 'Accused Count', 'victim_to_accused_ratio'
             ])
-            risk = float(self.xgboost_model.predict_proba(X)[0][1])
+            risk = float(_run_ml_predict_proba(self.xgboost_model, X)[0][1])
             if self.risk_calibrator is not None:
                 try:
                     risk = float(self.risk_calibrator.predict([risk])[0])
@@ -9500,7 +9593,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
             if self.xgboost_model:
                 try:
-                    risk_score = float(self.xgboost_model.predict_proba(X)[0][1])
+                    risk_score = float(_run_ml_predict_proba(self.xgboost_model, X)[0][1])
                     # Apply isotonic calibration so the reported % matches the real
                     # conviction rate (SHAP below still explains the raw booster).
                     if self.risk_calibrator is not None:
@@ -9513,7 +9606,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             
             if self.shap_explainer:
                 try:
-                    shap_vals = self.shap_explainer(X)
+                    shap_vals = _run_ml_shap_values(self.shap_explainer, X)
                     # Officer-friendly labels (same column ORDER as the trained model)
                     # -- the raw feature names ("Day Cyclic Cos", "Precinct Unit") read
                     # as engineering jargon on a police screen.

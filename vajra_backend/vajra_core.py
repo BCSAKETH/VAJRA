@@ -229,6 +229,9 @@ except Exception as e:
     catalyst_app = None
 
 
+import asyncio
+import httpx
+
 def _zcql_escape_value(v) -> str:
     if v is None:
         return "NULL"
@@ -236,36 +239,163 @@ def _zcql_escape_value(v) -> str:
         return "true" if v else "false"
     if isinstance(v, (int, float)):
         return str(v)
-    s = str(v).replace("'", "''").replace("\r", "")
+    s = str(v).replace("\\", "\\\\").replace("'", "''").replace("\r", "").replace("\x00", "")
     return f"'{s}'"
 
 
 def escape_zcql_literal(v: Any) -> str:
     """
-    Escapes a value for safe interpolation INSIDE a ZCQL string literal the
-    caller has already wrapped in single quotes -- e.g.
-    f"WHERE session_id = '{escape_zcql_literal(session_id)}'" (Vajra Plan
-    04-09-26, pentest V7: ZCQL Query Injection Risk).
-
-    Distinct from _zcql_escape_value above (which wraps a value for an
-    INSERT/UPDATE VALUES list, quotes included, with type-specific NULL/
-    bool/number handling) -- this one is for the far more common pattern in
-    this codebase: a raw f-string building a WHERE clause. Doubles embedded
-    single quotes (ZCQL's own escape convention, same as standard SQL) and
-    strips CR/LF to block line-injection into the query string.
-
-    Path/body parameters like `session_id` flow into dozens of these
-    f-strings unescaped elsewhere in this codebase -- most call sites are
-    low-risk in practice (an ownership check gates access before the value
-    is ever used, or the value is JWT-derived/regex-validated upstream),
-    but "probably fine because something else usually blocks it" is exactly
-    the reasoning V7 flags as a real gap. Apply this wherever a
-    caller-controllable string reaches a WHERE clause, even when another
-    layer likely already covers it.
+    Sanitizes string inputs for safe interpolation inside ZCQL queries.
+    Blocks SQL injection by escaping single quotes, backslashes, linebreaks,
+    and null bytes.
     """
     if v is None:
         return ""
-    return str(v).replace("'", "''").replace("\r", "").replace("\n", " ")
+    s = str(v)
+    # Strip null bytes and control characters
+    s = s.replace("\x00", "").replace("\r", "").replace("\n", " ")
+    # Escape backslashes and single quotes
+    return s.replace("\\", "\\\\").replace("'", "''")
+
+
+class AsyncZCQLEngine:
+    """
+    High-throughput Asynchronous ZCQL Engine for Zoho Catalyst AppSail.
+    Features:
+    - Connection-pooled async HTTP queries via httpx.AsyncClient
+    - Automatic token caching & self-healing refresh on 401
+    - Keysetted pagination (ROWID > last_rowid) to automatically bypass ZCQL's 300-row limit
+    - Parallel multi-table async_gather_joins() using asyncio.gather()
+    - Thread-safe provenance query logging
+    """
+    def __init__(self, timeout: float = 35.0):
+        self.project_id = os.getenv("CATALYST_PROJECT_ID", "50212000000025002")
+        self.url = f"https://api.catalyst.zoho.in/baas/v1/project/{self.project_id}/query"
+        self.timeout = timeout
+        self._client: Optional[httpx.AsyncClient] = None
+
+    async def get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(self.timeout, connect=10.0),
+                limits=httpx.Limits(max_keepalive_connections=50, max_connections=100)
+            )
+        return self._client
+
+    async def execute_query(self, query: str) -> List[Dict[str, Any]]:
+        logger.info(f"[AsyncZCQL] Query: {query}")
+        try:
+            _log = getattr(_zql_query_log, "queries", None)
+            if _log is not None:
+                _log.append(query)
+        except Exception:
+            pass
+
+        token = get_cached_access_token()
+        headers = {
+            "Authorization": f"Zoho-oauthtoken {token}",
+            "Content-Type": "application/json",
+            "X-Catalyst-Environment": "Development",
+            "environment": "Development"
+        }
+        client = await self.get_client()
+        try:
+            res = await client.post(self.url, headers=headers, json={"query": query})
+        except Exception as e:
+            logger.warning(f"[AsyncZCQL] Network error: {e}")
+            raise e
+
+        if res.status_code == 401:
+            logger.warning("[AsyncZCQL] 401 token expired, forcing refresh and retrying...")
+            fresh_token = get_cached_access_token(force_refresh=True)
+            if fresh_token:
+                headers["Authorization"] = f"Zoho-oauthtoken {fresh_token}"
+                res = await client.post(self.url, headers=headers, json={"query": query})
+
+        if res.status_code != 200:
+            raise Exception(f"Async ZCQL query failed: {res.status_code} - {res.text}")
+
+        return res.json().get("data", [])
+
+    async def execute_paginated_query(
+        self,
+        base_query: str,
+        table_name: str,
+        key_col: str = "ROWID",
+        page_size: int = 300,
+        max_rows: int = 5000
+    ) -> List[Dict[str, Any]]:
+        """
+        Bypasses ZCQL's 300-row limit using ROWID keyset pagination.
+        Accumulates rows in pages of 300 until exhausted or max_rows reached.
+        """
+        all_rows: List[Dict[str, Any]] = []
+        last_key = 0
+        
+        # Clean base query: strip trailing ORDER BY and LIMIT
+        q_upper = base_query.upper()
+        order_idx = q_upper.rfind("ORDER BY")
+        clean_base = base_query[:order_idx].strip() if order_idx != -1 else base_query.strip()
+        limit_idx = clean_base.upper().rfind("LIMIT")
+        if limit_idx != -1:
+            clean_base = clean_base[:limit_idx].strip()
+
+        has_where = "WHERE" in clean_base.upper()
+
+        while len(all_rows) < max_rows:
+            clause = f"AND {key_col} > {last_key}" if has_where else f"WHERE {key_col} > {last_key}"
+            page_query = f"{clean_base} {clause} ORDER BY {key_col} ASC LIMIT {page_size}"
+            
+            page_data = await self.execute_query(page_query)
+            if not page_data:
+                break
+                
+            all_rows.extend(page_data)
+            if len(page_data) < page_size:
+                break
+                
+            # Extract last row's key
+            last_record = page_data[-1]
+            table_dict = last_record.get(table_name, last_record)
+            if key_col in table_dict:
+                last_key = table_dict[key_col]
+            elif "ROWID" in table_dict:
+                last_key = table_dict["ROWID"]
+            else:
+                break
+
+        return all_rows[:max_rows]
+
+    async def async_gather_joins(self, queries: Dict[str, str]) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Executes parallel multi-table lookups via asyncio.gather(),
+        returning a map of alias -> result list.
+        """
+        keys = list(queries.keys())
+        tasks = [self.execute_query(queries[k]) for k in keys]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        output = {}
+        for k, res in zip(keys, results):
+            if isinstance(res, Exception):
+                logger.error(f"[AsyncZCQL Gather] Error in query '{k}': {res}")
+                output[k] = []
+            else:
+                output[k] = res
+        return output
+
+    async def async_insert_row(self, table_name: str, row: Dict[str, Any]) -> None:
+        cols = ", ".join(row.keys())
+        vals = ", ".join(_zcql_escape_value(v) for v in row.values())
+        await self.execute_query(f"INSERT INTO {table_name} ({cols}) VALUES ({vals})")
+
+    async def close(self):
+        if self._client and not self._client.is_closed:
+            await self._client.aclose()
+
+
+# Global async ZCQL engine instance
+async_zcql = AsyncZCQLEngine()
 
 
 def zcql_insert_row(table_name: str, row: Dict[str, Any]) -> None:

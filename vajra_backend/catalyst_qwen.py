@@ -55,7 +55,7 @@ class CatalystQwen:
     def is_configured(self) -> bool:
         return bool(self.endpoint_url)
 
-    def _call(self, prompt: str, images_b64: List[str]) -> Optional[str]:
+    def _call(self, prompt: str, images_b64: Optional[List[str]] = None) -> Optional[str]:
         """
         Shared request path for every method below. CONFIRMED LIVE
         (2026-09-17) against the recreated endpoint's real contract: true
@@ -64,11 +64,10 @@ class CatalystQwen:
         STRING (not a real multipart array/file part -- a repeated "images"
         field 400s with JSON_PARSE_ERROR) and "prompt" as a plain text
         field. Also requires the "Environment" header GLM's endpoint needs
-        (see catalyst_llm.py). Only these two fields are accepted --
-        temperature/top_k/top_p/max_tokens are no longer per-request; they're
-        fixed by this endpoint's bound Saved Configuration in the console.
-        Returns the raw response text, or None on any failure (never a
-        fabricated analysis).
+        (see catalyst_llm.py).
+        
+        RESILIENCE FIX: Auto-injects a 1x1 blank Base64 PNG if images_b64 is empty
+        or None to prevent QuickML endpoint HTTP 500 ("Problem in the input image").
         """
         if not self.is_configured():
             return None
@@ -82,19 +81,15 @@ class CatalystQwen:
         }
         if self.endpoint_key:
             headers["x-quickml-endpoint-key"] = self.endpoint_key
-        # requests sets the correct multipart boundary automatically when
-        # given `files=` -- do NOT set Content-Type manually here, it must
-        # include that boundary parameter or the server can't parse it.
+
+        # Resilience guard: Ensure at least one image exists (1x1 blank PNG) to prevent HTTP 500
+        safe_images = images_b64 if (images_b64 and len(images_b64) > 0) else [_BLANK_PNG_B64]
+
         files = [
-            ("images", (None, json.dumps(images_b64))),
+            ("images", (None, json.dumps(safe_images))),
             ("prompt", (None, prompt)),
         ]
         try:
-            # 90s, matching catalyst_llm.py's own per-attempt ceiling (same
-            # request, same reasoning) -- this is the fallback used both for
-            # tool-selection (when GLM is down) and translation (the last of
-            # three tiers, after Zia and GLM), so a tight timeout here
-            # cascades a single slow-but-working call into a full failure.
             res = requests.post(self.endpoint_url, headers=headers, files=files, timeout=90)
             if res.status_code == 200:
                 data = res.json()
@@ -118,7 +113,11 @@ class CatalystQwen:
                 "text": "Attachment analysis is not available -- the Qwen vision service has not been deployed/configured yet."
             }
 
-        images_b64 = [base64.b64encode(b).decode("utf-8") for b in image_bytes_list[:3]]
+        if image_bytes_list:
+            images_b64 = [base64.b64encode(b).decode("utf-8") for b in image_bytes_list[:3]]
+        else:
+            images_b64 = [_BLANK_PNG_B64]
+
         prompt = instruction or (
             "Extract and describe all investigatively relevant content from this evidence "
             "attachment: any text (OCR), identifiable objects, people, and context. Be concise "

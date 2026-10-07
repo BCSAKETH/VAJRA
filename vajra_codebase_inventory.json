@@ -1,0 +1,1020 @@
+{
+  "total_files": 169,
+  "total_lines": 129182,
+  "files": [
+    {
+      "path": ".\\.claude\\settings.local.json",
+      "name": "settings.local.json",
+      "lines": 16,
+      "size_bytes": 458
+    },
+    {
+      "path": ".\\.vscode\\settings.json",
+      "name": "settings.json",
+      "lines": 3,
+      "size_bytes": 40
+    },
+    {
+      "path": ".\\LLM Internet Search Mechanics.md",
+      "name": "LLM Internet Search Mechanics.md",
+      "lines": 249,
+      "size_bytes": 48137
+    },
+    {
+      "path": ".\\README.md",
+      "name": "README.md",
+      "lines": 681,
+      "size_bytes": 44867
+    },
+    {
+      "path": ".\\VAJRA_2.0_MASTER_REPORT.md",
+      "name": "VAJRA_2.0_MASTER_REPORT.md",
+      "lines": 562,
+      "size_bytes": 39036
+    },
+    {
+      "path": ".\\catalyst.json",
+      "name": "catalyst.json",
+      "lines": 29,
+      "size_bytes": 483
+    },
+    {
+      "path": ".\\client\\assets\\index-chCrxy-P.css",
+      "name": "index-chCrxy-P.css",
+      "lines": 1,
+      "size_bytes": 132790
+    },
+    {
+      "path": ".\\client\\client-package.json",
+      "name": "client-package.json",
+      "lines": 5,
+      "size_bytes": 77
+    },
+    {
+      "path": ".\\client\\index.html",
+      "name": "index.html",
+      "lines": 15,
+      "size_bytes": 783
+    },
+    {
+      "path": ".\\docs\\ANTIGRAVITY_BUILD_PROMPT.md",
+      "name": "ANTIGRAVITY_BUILD_PROMPT.md",
+      "lines": 126,
+      "size_bytes": 17704
+    },
+    {
+      "path": ".\\docs\\BUILD_BACKLOG.md",
+      "name": "BUILD_BACKLOG.md",
+      "lines": 94,
+      "size_bytes": 14054
+    },
+    {
+      "path": ".\\docs\\FRONTEND_CHANGES.md",
+      "name": "FRONTEND_CHANGES.md",
+      "lines": 106,
+      "size_bytes": 8970
+    },
+    {
+      "path": ".\\docs\\GOD_PROMAX_CRIME_AI_RESEARCH_BLUEPRINT.md",
+      "name": "GOD_PROMAX_CRIME_AI_RESEARCH_BLUEPRINT.md",
+      "lines": 161,
+      "size_bytes": 13828
+    },
+    {
+      "path": ".\\docs\\PLAN_MASTER_BUILD_QUEUE.md",
+      "name": "PLAN_MASTER_BUILD_QUEUE.md",
+      "lines": 7386,
+      "size_bytes": 465227
+    },
+    {
+      "path": ".\\docs\\PLAN_REVIEW_AND_UPGRADE.md",
+      "name": "PLAN_REVIEW_AND_UPGRADE.md",
+      "lines": 96,
+      "size_bytes": 15620
+    },
+    {
+      "path": ".\\docs\\PLAN_cognitive_brain_god_tier.md",
+      "name": "PLAN_cognitive_brain_god_tier.md",
+      "lines": 441,
+      "size_bytes": 25758
+    },
+    {
+      "path": ".\\docs\\PLAN_time_hex_syndicate.md",
+      "name": "PLAN_time_hex_syndicate.md",
+      "lines": 201,
+      "size_bytes": 13214
+    },
+    {
+      "path": ".\\docs\\SCALE_AND_JOBS_DESIGN.md",
+      "name": "SCALE_AND_JOBS_DESIGN.md",
+      "lines": 91,
+      "size_bytes": 9002
+    },
+    {
+      "path": ".\\docs\\SCHEMA.md",
+      "name": "SCHEMA.md",
+      "lines": 316,
+      "size_bytes": 13835
+    },
+    {
+      "path": ".\\docs\\SESSION_HANDOFF_2026-09-15.md",
+      "name": "SESSION_HANDOFF_2026-09-15.md",
+      "lines": 454,
+      "size_bytes": 28169
+    },
+    {
+      "path": ".\\docs\\VAJRA_Catalyst_Migration_Blueprint.md",
+      "name": "VAJRA_Catalyst_Migration_Blueprint.md",
+      "lines": 82,
+      "size_bytes": 3015
+    },
+    {
+      "path": ".\\docs\\VAJRA_God_ProMax_Research_and_Upgrade_Vision.md",
+      "name": "VAJRA_God_ProMax_Research_and_Upgrade_Vision.md",
+      "lines": 249,
+      "size_bytes": 17107
+    },
+    {
+      "path": ".\\docs\\VAJRA_Phase0_AuditReport.md",
+      "name": "VAJRA_Phase0_AuditReport.md",
+      "lines": 102,
+      "size_bytes": 10882
+    },
+    {
+      "path": ".\\docs\\VAJRA_Requirements_Architecture.md",
+      "name": "VAJRA_Requirements_Architecture.md",
+      "lines": 251,
+      "size_bytes": 31207
+    },
+    {
+      "path": ".\\docs\\VAJRA_Security_Requirements_Crosscheck.md",
+      "name": "VAJRA_Security_Requirements_Crosscheck.md",
+      "lines": 210,
+      "size_bytes": 17462
+    },
+    {
+      "path": ".\\docs\\god_tier_police_ux_and_capabilities_masterplan.md",
+      "name": "god_tier_police_ux_and_capabilities_masterplan.md",
+      "lines": 7824,
+      "size_bytes": 653921
+    },
+    {
+      "path": ".\\docs\\vajra_master_loop_prompt.md",
+      "name": "vajra_master_loop_prompt.md",
+      "lines": 318,
+      "size_bytes": 19737
+    },
+    {
+      "path": ".\\docs\\vajra_police_problems_ps_research_and_master_integration_plan.md",
+      "name": "vajra_police_problems_ps_research_and_master_integration_plan.md",
+      "lines": 3326,
+      "size_bytes": 291900
+    },
+    {
+      "path": ".\\index.html",
+      "name": "index.html",
+      "lines": 14,
+      "size_bytes": 683
+    },
+    {
+      "path": ".\\metadata.json",
+      "name": "metadata.json",
+      "lines": 10,
+      "size_bytes": 275
+    },
+    {
+      "path": ".\\package-lock.json",
+      "name": "package-lock.json",
+      "lines": 4776,
+      "size_bytes": 172167
+    },
+    {
+      "path": ".\\package.json",
+      "name": "package.json",
+      "lines": 43,
+      "size_bytes": 1230
+    },
+    {
+      "path": ".\\public\\client-package.json",
+      "name": "client-package.json",
+      "lines": 5,
+      "size_bytes": 77
+    },
+    {
+      "path": ".\\scratch\\chat.md",
+      "name": "chat.md",
+      "lines": 382,
+      "size_bytes": 30895
+    },
+    {
+      "path": ".\\scratch\\comprehensive_preformats_scan.py",
+      "name": "comprehensive_preformats_scan.py",
+      "lines": 72,
+      "size_bytes": 3196
+    },
+    {
+      "path": ".\\scratch\\create_full_preformats_inventory.py",
+      "name": "create_full_preformats_inventory.py",
+      "lines": 60,
+      "size_bytes": 2189
+    },
+    {
+      "path": ".\\scratch\\deep_flaws_inventory.json",
+      "name": "deep_flaws_inventory.json",
+      "lines": 1562,
+      "size_bytes": 58898
+    },
+    {
+      "path": ".\\scratch\\detect_deep_flaws.py",
+      "name": "detect_deep_flaws.py",
+      "lines": 97,
+      "size_bytes": 3753
+    },
+    {
+      "path": ".\\scratch\\preformats_full_inventory.json",
+      "name": "preformats_full_inventory.json",
+      "lines": 330,
+      "size_bytes": 11025
+    },
+    {
+      "path": ".\\scratch\\preformats_inventory.json",
+      "name": "preformats_inventory.json",
+      "lines": 136,
+      "size_bytes": 4824
+    },
+    {
+      "path": ".\\scratch\\scan_all_files_preformats.py",
+      "name": "scan_all_files_preformats.py",
+      "lines": 45,
+      "size_bytes": 1711
+    },
+    {
+      "path": ".\\scratch\\scan_preformats.py",
+      "name": "scan_preformats.py",
+      "lines": 72,
+      "size_bytes": 2952
+    },
+    {
+      "path": ".\\server.ts",
+      "name": "server.ts",
+      "lines": 120,
+      "size_bytes": 4565
+    },
+    {
+      "path": ".\\src\\App.tsx",
+      "name": "App.tsx",
+      "lines": 198,
+      "size_bytes": 9324
+    },
+    {
+      "path": ".\\src\\AppContext.tsx",
+      "name": "AppContext.tsx",
+      "lines": 858,
+      "size_bytes": 34658
+    },
+    {
+      "path": ".\\src\\assets\\karnataka-districts.json",
+      "name": "karnataka-districts.json",
+      "lines": 23749,
+      "size_bytes": 873357
+    },
+    {
+      "path": ".\\src\\components\\AppletPanel.tsx",
+      "name": "AppletPanel.tsx",
+      "lines": 319,
+      "size_bytes": 12240
+    },
+    {
+      "path": ".\\src\\components\\ApprovalsCard.tsx",
+      "name": "ApprovalsCard.tsx",
+      "lines": 55,
+      "size_bytes": 2949
+    },
+    {
+      "path": ".\\src\\components\\CaseBoard.tsx",
+      "name": "CaseBoard.tsx",
+      "lines": 86,
+      "size_bytes": 5422
+    },
+    {
+      "path": ".\\src\\components\\CaseChipStrip.tsx",
+      "name": "CaseChipStrip.tsx",
+      "lines": 55,
+      "size_bytes": 1849
+    },
+    {
+      "path": ".\\src\\components\\CaseDiary.tsx",
+      "name": "CaseDiary.tsx",
+      "lines": 100,
+      "size_bytes": 4806
+    },
+    {
+      "path": ".\\src\\components\\ChangePasswordModal.tsx",
+      "name": "ChangePasswordModal.tsx",
+      "lines": 219,
+      "size_bytes": 10367
+    },
+    {
+      "path": ".\\src\\components\\ChatBubble.tsx",
+      "name": "ChatBubble.tsx",
+      "lines": 2259,
+      "size_bytes": 120692
+    },
+    {
+      "path": ".\\src\\components\\ChatInput.tsx",
+      "name": "ChatInput.tsx",
+      "lines": 608,
+      "size_bytes": 30001
+    },
+    {
+      "path": ".\\src\\components\\ComparisonDeltaHUD.tsx",
+      "name": "ComparisonDeltaHUD.tsx",
+      "lines": 73,
+      "size_bytes": 3464
+    },
+    {
+      "path": ".\\src\\components\\CoworkInvitationsPanel.tsx",
+      "name": "CoworkInvitationsPanel.tsx",
+      "lines": 111,
+      "size_bytes": 4673
+    },
+    {
+      "path": ".\\src\\components\\DeviceConflictModal.tsx",
+      "name": "DeviceConflictModal.tsx",
+      "lines": 187,
+      "size_bytes": 9921
+    },
+    {
+      "path": ".\\src\\components\\DistrictDemographicPanel.tsx",
+      "name": "DistrictDemographicPanel.tsx",
+      "lines": 228,
+      "size_bytes": 12440
+    },
+    {
+      "path": ".\\src\\components\\DistrictFIRPanel.tsx",
+      "name": "DistrictFIRPanel.tsx",
+      "lines": 479,
+      "size_bytes": 27344
+    },
+    {
+      "path": ".\\src\\components\\DistrictSpatialAnalystPanel.tsx",
+      "name": "DistrictSpatialAnalystPanel.tsx",
+      "lines": 624,
+      "size_bytes": 35327
+    },
+    {
+      "path": ".\\src\\components\\ErrorBoundary.tsx",
+      "name": "ErrorBoundary.tsx",
+      "lines": 78,
+      "size_bytes": 2958
+    },
+    {
+      "path": ".\\src\\components\\ExpandedOverlay.tsx",
+      "name": "ExpandedOverlay.tsx",
+      "lines": 2030,
+      "size_bytes": 136853
+    },
+    {
+      "path": ".\\src\\components\\FilterSortPanel.tsx",
+      "name": "FilterSortPanel.tsx",
+      "lines": 180,
+      "size_bytes": 8300
+    },
+    {
+      "path": ".\\src\\components\\FocusLossCurtain.tsx",
+      "name": "FocusLossCurtain.tsx",
+      "lines": 93,
+      "size_bytes": 5194
+    },
+    {
+      "path": ".\\src\\components\\GreetingHeader.tsx",
+      "name": "GreetingHeader.tsx",
+      "lines": 63,
+      "size_bytes": 2890
+    },
+    {
+      "path": ".\\src\\components\\GroupedSessionList.tsx",
+      "name": "GroupedSessionList.tsx",
+      "lines": 1028,
+      "size_bytes": 51416
+    },
+    {
+      "path": ".\\src\\components\\InlineWidget.tsx",
+      "name": "InlineWidget.tsx",
+      "lines": 916,
+      "size_bytes": 56532
+    },
+    {
+      "path": ".\\src\\components\\InvestigationBrowser.tsx",
+      "name": "InvestigationBrowser.tsx",
+      "lines": 260,
+      "size_bytes": 13282
+    },
+    {
+      "path": ".\\src\\components\\MainLayout.tsx",
+      "name": "MainLayout.tsx",
+      "lines": 163,
+      "size_bytes": 8462
+    },
+    {
+      "path": ".\\src\\components\\MyCasesNetworkModal.tsx",
+      "name": "MyCasesNetworkModal.tsx",
+      "lines": 103,
+      "size_bytes": 5718
+    },
+    {
+      "path": ".\\src\\components\\NetworkGraph.tsx",
+      "name": "NetworkGraph.tsx",
+      "lines": 699,
+      "size_bytes": 35618
+    },
+    {
+      "path": ".\\src\\components\\NewInvestigationModal.tsx",
+      "name": "NewInvestigationModal.tsx",
+      "lines": 167,
+      "size_bytes": 7292
+    },
+    {
+      "path": ".\\src\\components\\NotificationBellPanel.tsx",
+      "name": "NotificationBellPanel.tsx",
+      "lines": 263,
+      "size_bytes": 12547
+    },
+    {
+      "path": ".\\src\\components\\OSINTCard.tsx",
+      "name": "OSINTCard.tsx",
+      "lines": 153,
+      "size_bytes": 7225
+    },
+    {
+      "path": ".\\src\\components\\OffenderTimelineStrip.tsx",
+      "name": "OffenderTimelineStrip.tsx",
+      "lines": 63,
+      "size_bytes": 2866
+    },
+    {
+      "path": ".\\src\\components\\Panel.tsx",
+      "name": "Panel.tsx",
+      "lines": 39,
+      "size_bytes": 1712
+    },
+    {
+      "path": ".\\src\\components\\PersonaSelectorBadge.tsx",
+      "name": "PersonaSelectorBadge.tsx",
+      "lines": 89,
+      "size_bytes": 5092
+    },
+    {
+      "path": ".\\src\\components\\PersonnelGovernancePanel.tsx",
+      "name": "PersonnelGovernancePanel.tsx",
+      "lines": 849,
+      "size_bytes": 41923
+    },
+    {
+      "path": ".\\src\\components\\PoliceStationSelectorModal.tsx",
+      "name": "PoliceStationSelectorModal.tsx",
+      "lines": 177,
+      "size_bytes": 8352
+    },
+    {
+      "path": ".\\src\\components\\ProportionalWidthWireframe.tsx",
+      "name": "ProportionalWidthWireframe.tsx",
+      "lines": 119,
+      "size_bytes": 5416
+    },
+    {
+      "path": ".\\src\\components\\ReasonCollectionModal.tsx",
+      "name": "ReasonCollectionModal.tsx",
+      "lines": 160,
+      "size_bytes": 6760
+    },
+    {
+      "path": ".\\src\\components\\RemoteEvictionModal.tsx",
+      "name": "RemoteEvictionModal.tsx",
+      "lines": 170,
+      "size_bytes": 9303
+    },
+    {
+      "path": ".\\src\\components\\SessionTimeoutGuard.tsx",
+      "name": "SessionTimeoutGuard.tsx",
+      "lines": 190,
+      "size_bytes": 10352
+    },
+    {
+      "path": ".\\src\\components\\SettingsModal.tsx",
+      "name": "SettingsModal.tsx",
+      "lines": 124,
+      "size_bytes": 5122
+    },
+    {
+      "path": ".\\src\\components\\SupervisorApprovalReviewModal.tsx",
+      "name": "SupervisorApprovalReviewModal.tsx",
+      "lines": 247,
+      "size_bytes": 12899
+    },
+    {
+      "path": ".\\src\\components\\TacticalClarificationModal.tsx",
+      "name": "TacticalClarificationModal.tsx",
+      "lines": 668,
+      "size_bytes": 27817
+    },
+    {
+      "path": ".\\src\\components\\TaskChecklist.tsx",
+      "name": "TaskChecklist.tsx",
+      "lines": 315,
+      "size_bytes": 16160
+    },
+    {
+      "path": ".\\src\\components\\ToastContainer.tsx",
+      "name": "ToastContainer.tsx",
+      "lines": 92,
+      "size_bytes": 4052
+    },
+    {
+      "path": ".\\src\\components\\TwoPersonApprovalModal.tsx",
+      "name": "TwoPersonApprovalModal.tsx",
+      "lines": 195,
+      "size_bytes": 8055
+    },
+    {
+      "path": ".\\src\\components\\UnifiedSidebar.tsx",
+      "name": "UnifiedSidebar.tsx",
+      "lines": 416,
+      "size_bytes": 21781
+    },
+    {
+      "path": ".\\src\\components\\UniversalPoliceIntelCard.tsx",
+      "name": "UniversalPoliceIntelCard.tsx",
+      "lines": 1044,
+      "size_bytes": 53198
+    },
+    {
+      "path": ".\\src\\components\\UnrecognizedLoginWarningModal.tsx",
+      "name": "UnrecognizedLoginWarningModal.tsx",
+      "lines": 257,
+      "size_bytes": 13496
+    },
+    {
+      "path": ".\\src\\components\\VajraLogo.tsx",
+      "name": "VajraLogo.tsx",
+      "lines": 233,
+      "size_bytes": 9792
+    },
+    {
+      "path": ".\\src\\components\\VajraVakMascot.tsx",
+      "name": "VajraVakMascot.tsx",
+      "lines": 235,
+      "size_bytes": 10902
+    },
+    {
+      "path": ".\\src\\components\\WatermarkOverlay.tsx",
+      "name": "WatermarkOverlay.tsx",
+      "lines": 105,
+      "size_bytes": 4339
+    },
+    {
+      "path": ".\\src\\config.ts",
+      "name": "config.ts",
+      "lines": 3,
+      "size_bytes": 330
+    },
+    {
+      "path": ".\\src\\i18n.ts",
+      "name": "i18n.ts",
+      "lines": 474,
+      "size_bytes": 31643
+    },
+    {
+      "path": ".\\src\\index.css",
+      "name": "index.css",
+      "lines": 290,
+      "size_bytes": 10276
+    },
+    {
+      "path": ".\\src\\lib\\basemap.ts",
+      "name": "basemap.ts",
+      "lines": 40,
+      "size_bytes": 1449
+    },
+    {
+      "path": ".\\src\\lib\\designTokens.ts",
+      "name": "designTokens.ts",
+      "lines": 67,
+      "size_bytes": 3214
+    },
+    {
+      "path": ".\\src\\lib\\useClickOutside.ts",
+      "name": "useClickOutside.ts",
+      "lines": 35,
+      "size_bytes": 1688
+    },
+    {
+      "path": ".\\src\\lib\\widgetExport.ts",
+      "name": "widgetExport.ts",
+      "lines": 107,
+      "size_bytes": 4676
+    },
+    {
+      "path": ".\\src\\main.tsx",
+      "name": "main.tsx",
+      "lines": 23,
+      "size_bytes": 916
+    },
+    {
+      "path": ".\\src\\mockData.ts",
+      "name": "mockData.ts",
+      "lines": 71,
+      "size_bytes": 1572
+    },
+    {
+      "path": ".\\src\\screens\\AIChatScreen.tsx",
+      "name": "AIChatScreen.tsx",
+      "lines": 2412,
+      "size_bytes": 133522
+    },
+    {
+      "path": ".\\src\\screens\\AllChatsScreen.tsx",
+      "name": "AllChatsScreen.tsx",
+      "lines": 125,
+      "size_bytes": 6651
+    },
+    {
+      "path": ".\\src\\screens\\DistrictDashboardScreen.tsx",
+      "name": "DistrictDashboardScreen.tsx",
+      "lines": 1863,
+      "size_bytes": 114616
+    },
+    {
+      "path": ".\\src\\screens\\InvestigationsScreen.tsx",
+      "name": "InvestigationsScreen.tsx",
+      "lines": 141,
+      "size_bytes": 6731
+    },
+    {
+      "path": ".\\src\\screens\\LoginScreen.tsx",
+      "name": "LoginScreen.tsx",
+      "lines": 274,
+      "size_bytes": 11613
+    },
+    {
+      "path": ".\\src\\screens\\SettingsScreen.tsx",
+      "name": "SettingsScreen.tsx",
+      "lines": 1034,
+      "size_bytes": 60111
+    },
+    {
+      "path": ".\\src\\screens\\SupervisorDashboardScreen.tsx",
+      "name": "SupervisorDashboardScreen.tsx",
+      "lines": 1957,
+      "size_bytes": 111936
+    },
+    {
+      "path": ".\\src\\speech.d.ts",
+      "name": "speech.d.ts",
+      "lines": 46,
+      "size_bytes": 1352
+    },
+    {
+      "path": ".\\src\\types\\mascot.ts",
+      "name": "mascot.ts",
+      "lines": 95,
+      "size_bytes": 4348
+    },
+    {
+      "path": ".\\src\\vite-env.d.ts",
+      "name": "vite-env.d.ts",
+      "lines": 1,
+      "size_bytes": 38
+    },
+    {
+      "path": ".\\tsconfig.json",
+      "name": "tsconfig.json",
+      "lines": 27,
+      "size_bytes": 539
+    },
+    {
+      "path": ".\\vajra_backend\\agent_loop.py",
+      "name": "agent_loop.py",
+      "lines": 14679,
+      "size_bytes": 962454
+    },
+    {
+      "path": ".\\vajra_backend\\app-config.json",
+      "name": "app-config.json",
+      "lines": 6,
+      "size_bytes": 107
+    },
+    {
+      "path": ".\\vajra_backend\\av_analysis.py",
+      "name": "av_analysis.py",
+      "lines": 271,
+      "size_bytes": 11521
+    },
+    {
+      "path": ".\\vajra_backend\\calibrate_risk_model.py",
+      "name": "calibrate_risk_model.py",
+      "lines": 206,
+      "size_bytes": 9085
+    },
+    {
+      "path": ".\\vajra_backend\\case_intelligence.py",
+      "name": "case_intelligence.py",
+      "lines": 263,
+      "size_bytes": 13316
+    },
+    {
+      "path": ".\\vajra_backend\\catalyst_llm.py",
+      "name": "catalyst_llm.py",
+      "lines": 598,
+      "size_bytes": 38919
+    },
+    {
+      "path": ".\\vajra_backend\\catalyst_qwen.py",
+      "name": "catalyst_qwen.py",
+      "lines": 272,
+      "size_bytes": 14540
+    },
+    {
+      "path": ".\\vajra_backend\\catalyst_rag.py",
+      "name": "catalyst_rag.py",
+      "lines": 115,
+      "size_bytes": 4754
+    },
+    {
+      "path": ".\\vajra_backend\\catalyst_runtime_config.json",
+      "name": "catalyst_runtime_config.json",
+      "lines": 24,
+      "size_bytes": 2019
+    },
+    {
+      "path": ".\\vajra_backend\\catalyst_smartbrowz.py",
+      "name": "catalyst_smartbrowz.py",
+      "lines": 1534,
+      "size_bytes": 69103
+    },
+    {
+      "path": ".\\vajra_backend\\catalyst_speech.py",
+      "name": "catalyst_speech.py",
+      "lines": 611,
+      "size_bytes": 27809
+    },
+    {
+      "path": ".\\vajra_backend\\catalyst_stratus.py",
+      "name": "catalyst_stratus.py",
+      "lines": 55,
+      "size_bytes": 2439
+    },
+    {
+      "path": ".\\vajra_backend\\catalyst_zia.py",
+      "name": "catalyst_zia.py",
+      "lines": 110,
+      "size_bytes": 5445
+    },
+    {
+      "path": ".\\vajra_backend\\cowork_feed.py",
+      "name": "cowork_feed.py",
+      "lines": 65,
+      "size_bytes": 3011
+    },
+    {
+      "path": ".\\vajra_backend\\crime_heads_118_map.py",
+      "name": "crime_heads_118_map.py",
+      "lines": 125,
+      "size_bytes": 14635
+    },
+    {
+      "path": ".\\vajra_backend\\data\\entity_alias_store.json",
+      "name": "entity_alias_store.json",
+      "lines": 10,
+      "size_bytes": 339
+    },
+    {
+      "path": ".\\vajra_backend\\data\\gold_tool_exemplars.json",
+      "name": "gold_tool_exemplars.json",
+      "lines": 94,
+      "size_bytes": 2473
+    },
+    {
+      "path": ".\\vajra_backend\\data\\tool_bandit_weights.json",
+      "name": "tool_bandit_weights.json",
+      "lines": 1,
+      "size_bytes": 2
+    },
+    {
+      "path": ".\\vajra_backend\\dynamic_titler.py",
+      "name": "dynamic_titler.py",
+      "lines": 141,
+      "size_bytes": 6828
+    },
+    {
+      "path": ".\\vajra_backend\\functions\\ai_turn_worker\\catalyst-config.json",
+      "name": "catalyst-config.json",
+      "lines": 7,
+      "size_bytes": 109
+    },
+    {
+      "path": ".\\vajra_backend\\functions\\ai_turn_worker\\function.json",
+      "name": "function.json",
+      "lines": 7,
+      "size_bytes": 126
+    },
+    {
+      "path": ".\\vajra_backend\\functions\\ai_turn_worker\\index.py",
+      "name": "index.py",
+      "lines": 192,
+      "size_bytes": 8634
+    },
+    {
+      "path": ".\\vajra_backend\\functions\\case_insert_signal\\catalyst-config.json",
+      "name": "catalyst-config.json",
+      "lines": 11,
+      "size_bytes": 175
+    },
+    {
+      "path": ".\\vajra_backend\\functions\\case_insert_signal\\function.json",
+      "name": "function.json",
+      "lines": 5,
+      "size_bytes": 101
+    },
+    {
+      "path": ".\\vajra_backend\\functions\\case_insert_signal\\index.py",
+      "name": "index.py",
+      "lines": 106,
+      "size_bytes": 5426
+    },
+    {
+      "path": ".\\vajra_backend\\functions\\osint_radar\\catalyst-config.json",
+      "name": "catalyst-config.json",
+      "lines": 11,
+      "size_bytes": 155
+    },
+    {
+      "path": ".\\vajra_backend\\functions\\osint_radar\\function.json",
+      "name": "function.json",
+      "lines": 5,
+      "size_bytes": 89
+    },
+    {
+      "path": ".\\vajra_backend\\functions\\osint_radar\\index.py",
+      "name": "index.py",
+      "lines": 215,
+      "size_bytes": 9852
+    },
+    {
+      "path": ".\\vajra_backend\\functions\\proactive_alerts\\catalyst-config.json",
+      "name": "catalyst-config.json",
+      "lines": 11,
+      "size_bytes": 171
+    },
+    {
+      "path": ".\\vajra_backend\\functions\\proactive_alerts\\function.json",
+      "name": "function.json",
+      "lines": 5,
+      "size_bytes": 94
+    },
+    {
+      "path": ".\\vajra_backend\\functions\\proactive_alerts\\index.py",
+      "name": "index.py",
+      "lines": 516,
+      "size_bytes": 26489
+    },
+    {
+      "path": ".\\vajra_backend\\internet_signals.py",
+      "name": "internet_signals.py",
+      "lines": 849,
+      "size_bytes": 41235
+    },
+    {
+      "path": ".\\vajra_backend\\ksp_plot_engine.py",
+      "name": "ksp_plot_engine.py",
+      "lines": 212,
+      "size_bytes": 10261
+    },
+    {
+      "path": ".\\vajra_backend\\ksp_pnlg_engine.py",
+      "name": "ksp_pnlg_engine.py",
+      "lines": 829,
+      "size_bytes": 56186
+    },
+    {
+      "path": ".\\vajra_backend\\ksp_response_tailor.py",
+      "name": "ksp_response_tailor.py",
+      "lines": 190,
+      "size_bytes": 8894
+    },
+    {
+      "path": ".\\vajra_backend\\main.py",
+      "name": "main.py",
+      "lines": 12692,
+      "size_bytes": 674520
+    },
+    {
+      "path": ".\\vajra_backend\\mascot_engine.py",
+      "name": "mascot_engine.py",
+      "lines": 52,
+      "size_bytes": 2013
+    },
+    {
+      "path": ".\\vajra_backend\\officer_governance.py",
+      "name": "officer_governance.py",
+      "lines": 889,
+      "size_bytes": 38518
+    },
+    {
+      "path": ".\\vajra_backend\\pdf_utils.py",
+      "name": "pdf_utils.py",
+      "lines": 51,
+      "size_bytes": 2849
+    },
+    {
+      "path": ".\\vajra_backend\\progress_tracker.py",
+      "name": "progress_tracker.py",
+      "lines": 72,
+      "size_bytes": 3075
+    },
+    {
+      "path": ".\\vajra_backend\\scratch_test_crimehead_counts.py",
+      "name": "scratch_test_crimehead_counts.py",
+      "lines": 35,
+      "size_bytes": 1974
+    },
+    {
+      "path": ".\\vajra_backend\\session_manager.py",
+      "name": "session_manager.py",
+      "lines": 323,
+      "size_bytes": 12937
+    },
+    {
+      "path": ".\\vajra_backend\\session_memory.py",
+      "name": "session_memory.py",
+      "lines": 105,
+      "size_bytes": 4552
+    },
+    {
+      "path": ".\\vajra_backend\\spatiotemporal_forecast.py",
+      "name": "spatiotemporal_forecast.py",
+      "lines": 256,
+      "size_bytes": 12841
+    },
+    {
+      "path": ".\\vajra_backend\\start.py",
+      "name": "start.py",
+      "lines": 13,
+      "size_bytes": 722
+    },
+    {
+      "path": ".\\vajra_backend\\technical_osint.py",
+      "name": "technical_osint.py",
+      "lines": 251,
+      "size_bytes": 14416
+    },
+    {
+      "path": ".\\vajra_backend\\tool_training_optimizer.py",
+      "name": "tool_training_optimizer.py",
+      "lines": 363,
+      "size_bytes": 14030
+    },
+    {
+      "path": ".\\vajra_backend\\train_risk_model.py",
+      "name": "train_risk_model.py",
+      "lines": 209,
+      "size_bytes": 10517
+    },
+    {
+      "path": ".\\vajra_backend\\train_risk_model_v2.py",
+      "name": "train_risk_model_v2.py",
+      "lines": 310,
+      "size_bytes": 16057
+    },
+    {
+      "path": ".\\vajra_backend\\vajra_cognitive_brain.py",
+      "name": "vajra_cognitive_brain.py",
+      "lines": 2112,
+      "size_bytes": 142539
+    },
+    {
+      "path": ".\\vajra_backend\\vajra_core.py",
+      "name": "vajra_core.py",
+      "lines": 2831,
+      "size_bytes": 148546
+    },
+    {
+      "path": ".\\vajra_backend\\viral_trend_radar.py",
+      "name": "viral_trend_radar.py",
+      "lines": 171,
+      "size_bytes": 9829
+    },
+    {
+      "path": ".\\vajra_tools_rag_master.md",
+      "name": "vajra_tools_rag_master.md",
+      "lines": 3675,
+      "size_bytes": 174588
+    },
+    {
+      "path": ".\\vite.config.ts",
+      "name": "vite.config.ts",
+      "lines": 26,
+      "size_bytes": 791
+    }
+  ]
+}
