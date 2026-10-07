@@ -1703,8 +1703,36 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
               </div>
               <div className="overflow-y-auto space-y-3 max-h-[360px] pr-1">
                 {(data.matches || []).length === 0 ? (
-                  <div className="bg-stone-900/40 border border-stone-850 p-4 rounded-xl text-center text-stone-400 text-xs">
-                    {lang === "en" ? "No similar cases matching this pattern found in the local registry." : "ಯಾವುದೇ ಸಮಾನ ಪ್ರಕರಣಗಳು ಕಂಡುಬಂದಿಲ್ಲ."}
+                  <div className="bg-stone-900/60 border border-stone-850 p-5 rounded-xl text-center space-y-3">
+                    <div className="flex items-center justify-center gap-2 text-amber-400">
+                      <Fingerprint className="w-5 h-5 opacity-70" />
+                      <span className="font-mono text-xs font-bold uppercase tracking-wider">
+                        {lang === "en" ? "No Direct MO Vector Matches Found" : "ಯಾವುದೇ ನೇರ MO ವೆಕ್ಟರ್ ಹೊಂದಾಣಿಕೆಗಳು ಕಂಡುಬಂದಿಲ್ಲ"}
+                      </span>
+                    </div>
+                    <p className="text-xs text-stone-450 max-w-md mx-auto">
+                      {lang === "en"
+                        ? `The CCTNS semantic vector engine (≥75% Cosine Threshold) did not return exact incident matches for '${data.suspect || data.pattern || data.query || "this pattern"}'. You can broaden your search by district, check statutory deadlines, or inspect recent station FIRs.`
+                        : `CCTNS ಸೆಮ್ಯಾಂಟಿಕ್ ವೆಕ್ಟರ್ ಎಂಜಿನ್ ಈ ಮಾದರಿಗೆ ನೇರ ಹೊಂದಾಣಿಕೆಯನ್ನು ನೀಡಿಲ್ಲ. ದಯವಿಟ್ಟು ಜಿಲ್ಲಾ ಮಟ್ಟದಲ್ಲಿ ಅಥವಾ ಠಾಣೆಯ ಸಕ್ರಿಯ ಪ್ರಕರಣಗಳನ್ನು ಪರಿಶೀಲಿಸಿ.`}
+                    </p>
+                    {onFollowUpQuery && (
+                      <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                        <button
+                          type="button"
+                          onClick={() => onFollowUpQuery("What cases are pending on our radar today?")}
+                          className="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-rose-500/15 border border-rose-500/30 text-rose-300 hover:bg-rose-500/25 transition-all cursor-pointer"
+                        >
+                          {lang === "en" ? "⏱️ Statutory Remand Radar" : "⏱️ ಶಾಸನಬದ್ಧ ರಿಮಾಂಡ್ ರಾಡಾರ್"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onFollowUpQuery("Review Critical Cases")}
+                          className="px-3 py-1.5 rounded-lg text-[11px] font-bold bg-amber-500/15 border border-amber-500/30 text-amber-300 hover:bg-amber-500/25 transition-all cursor-pointer"
+                        >
+                          {lang === "en" ? "⚖️ Chargesheet Readiness Audit" : "⚖️ ಆರೋಪಪಟ್ಟಿ ಸಿದ್ಧತೆ"}
+                        </button>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   (data.matches || []).map((m: any, idx: number) => (

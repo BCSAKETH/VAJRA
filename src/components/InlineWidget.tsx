@@ -632,6 +632,42 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                 <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "Case Records" : "ಪ್ರಕರಣ ದಾಖಲೆಗಳು"}</span>
               </>
             )}
+            {effectiveType === "statutory_deadline_radar" && (
+              <>
+                <Clock className="w-4 h-4 text-rose-400" />
+                <span className="text-xs font-bold text-rose-400 tracking-wider uppercase font-mono">{lang === "en" ? "Statutory Remand & Default Bail Radar" : "ಶಾಸನಬದ್ಧ ರಿಮಾಂಡ್ ಮತ್ತು ಡೀಫಾಲ್ಟ್ ಜಾಮೀನು ರಾಡಾರ್"}</span>
+              </>
+            )}
+            {effectiveType === "chargesheet_ready_grid" && (
+              <>
+                <Scale className="w-4 h-4 text-amber-400" />
+                <span className="text-xs font-bold text-amber-400 tracking-wider uppercase font-mono">{lang === "en" ? "Chargesheet Readiness & Court Audit" : "ಆರೋಪಪಟ್ಟಿ ಸಿದ್ಧತೆ ಮತ್ತು ನ್ಯಾಯಾಲಯ ಪರಿಶೀಲನೆ"}</span>
+              </>
+            )}
+            {effectiveType === "dossier" && (
+              <>
+                <ShieldAlert className="w-4 h-4 text-[#C79A4E]" />
+                <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Comprehensive Investigation Dossier" : "ಸಮಗ್ರ ತನಿಖಾ ಡಾಜಿಯರ್"}</span>
+              </>
+            )}
+            {effectiveType === "case_status_badge" && (
+              <>
+                <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                <span className="text-xs font-bold text-emerald-400 tracking-wider uppercase font-mono">{lang === "en" ? "Investigation Lifecycle Status" : "ತನಿಖಾ ಪ್ರಗತಿ ಸ್ಥಿತಿ"}</span>
+              </>
+            )}
+            {effectiveType === "diary_entry_card" && (
+              <>
+                <Clock className="w-4 h-4 text-[#C79A4E]" />
+                <span className="text-xs font-bold text-[#C79A4E] tracking-wider uppercase font-mono">{lang === "en" ? "Section 193 BNSS Case Diary Ledger" : "ಸೆಕ್ಷನ್ 193 BNSS ಕೇಸ್ ಡೈರಿ ದಾಖಲೆ"}</span>
+              </>
+            )}
+            {effectiveType === "prison_release_radar" && (
+              <>
+                <ShieldAlert className="w-4 h-4 text-rose-400" />
+                <span className="text-xs font-bold text-rose-400 tracking-wider uppercase font-mono">{lang === "en" ? "Prison Release & Parole Radar" : "ಜೈಲು ಬಿಡುಗಡೆ ಮತ್ತು ಪೆರೋಲ್ ಕಣ್ಗಾವಲು"}</span>
+              </>
+            )}
           </div>
 
           {/* Right action group: Explain + Maximize buttons */}

@@ -21,14 +21,44 @@ export interface UniversalPoliceIntelCardProps {
 export const getTacticalMeta = (type: string, data?: any, lang: "en" | "kn" = "en") => {
   const t = (type || "").toLowerCase();
 
-  if (t.includes("bail_countdown") || t.includes("default_bail")) {
+  if (t.includes("bail_countdown") || t.includes("default_bail") || t.includes("statutory_deadline") || t.includes("remand_radar")) {
     return {
-      title: lang === "en" ? "Section 187 BNSS Default Bail Countdown" : "ಸೆಕ್ಷನ್ 187 BNSS ಡೀಫಾಲ್ಟ್ ಜಾಮೀನು ಕೌಂಟ್‌ಡೌನ್",
-      statute: "§ 187(3) BNSS 2023",
-      category: "STATUTORY TIMELINE",
+      title: lang === "en" ? "Section 187 BNSS Statutory Remand & Default Bail Radar" : "ಸೆಕ್ಷನ್ 187 BNSS ಶಾಸನಬದ್ಧ ರಿಮಾಂಡ್ ಮತ್ತು ಡೀಫಾಲ್ಟ್ ಜಾಮೀನು ರಾಡಾರ್",
+      statute: "§ 187 BNSS 2023",
+      category: "STATUTORY DEADLINE RADAR",
       icon: Clock,
       badgeColor: "bg-rose-500/20 text-rose-300 border-rose-500/40",
       accent: "#EF4444"
+    };
+  }
+  if (t.includes("chargesheet_ready") || t.includes("ready_grid")) {
+    return {
+      title: lang === "en" ? "Section 193 BNSS Chargesheet Readiness & Court Audit" : "ಸೆಕ್ಷನ್ 193 BNSS ಆರೋಪಪಟ್ಟಿ ಸಿದ್ಧತೆ ಮತ್ತು ನ್ಯಾಯಾಲಯ ಪರಿಶೀಲನೆ",
+      statute: "§ 193 BNSS 2023",
+      category: "PROSECUTION PIPELINE",
+      icon: Scale,
+      badgeColor: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+      accent: "#F59E0B"
+    };
+  }
+  if (t.includes("dossier") || t.includes("full_report")) {
+    return {
+      title: lang === "en" ? "Comprehensive Police Investigation Dossier" : "ಸಮಗ್ರ ಪೊಲೀಸ್ ತನಿಖಾ ಡಾಜಿಯರ್",
+      statute: "CCTNS Grounded • § 63 BSA 2023",
+      category: "MASTER INTELLIGENCE DOSSIER",
+      icon: ShieldAlert,
+      badgeColor: "bg-[#C79A4E]/20 text-[#E4C590] border-[#C79A4E]/40",
+      accent: "#C79A4E"
+    };
+  }
+  if (t.includes("mo_match") || t.includes("modus_operandi")) {
+    return {
+      title: lang === "en" ? "Modus Operandi Behavior Profile & Vector Matches" : "ಅಪರಾಧ ವಿಧಾನ (MO) ವರ್ತನೆಯ ಪ್ರೊಫೈಲ್ ಮತ್ತು ವೆಕ್ಟರ್ ಹೊಂದಾಣಿಕೆಗಳು",
+      statute: "CCTNS MO Vector Engine",
+      category: "BEHAVIORAL FORENSICS",
+      icon: Fingerprint,
+      badgeColor: "bg-amber-500/20 text-amber-300 border-amber-500/40",
+      accent: "#F59E0B"
     };
   }
   if (t.includes("ipc_bns") || t.includes("concordance")) {
