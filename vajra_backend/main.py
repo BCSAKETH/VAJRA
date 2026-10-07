@@ -1,13 +1,19 @@
 import sys as _sys
 import os as _os
-# Catalyst's AppSail runtime executes main.py directly regardless of the
-# configured "Startup Command" (confirmed live -- start.py, which was meant
-# to do this same sys.path setup before handing off to main.py, never
-# actually got invoked). Vendored Linux dependencies live in vendor/ next to
-# this file; without this, every import below fails since nothing is
-# pip-installed in the runtime container itself.
-if _os.name != 'nt':
-    _sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "vendor"))
+
+_base_dir = _os.path.dirname(_os.path.abspath(__file__))
+_os.chdir(_base_dir)
+
+_vendor_dir = _os.path.join(_base_dir, "vendor")
+if _os.name != 'nt' and _os.path.exists(_vendor_dir):
+    if _vendor_dir not in _sys.path:
+        _sys.path.insert(0, _vendor_dir)
+    _cur_pypath = _os.environ.get("PYTHONPATH", "")
+    if _vendor_dir not in _cur_pypath:
+        _os.environ["PYTHONPATH"] = _vendor_dir + (_os.pathsep + _cur_pypath if _cur_pypath else "")
+
+if _base_dir not in _sys.path:
+    _sys.path.insert(0, _base_dir)
 
 from dotenv import load_dotenv
 import json as _json
@@ -578,6 +584,18 @@ def _record_login_failure(badge_no: str) -> None:
 def _clear_login_attempts(badge_no: str) -> None:
     with _LOGIN_LOCK:
         _login_attempts.pop(badge_no, None)
+
+
+@app.get("/")
+@app.get("/health")
+@app.get("/api/health")
+async def health_check():
+    return {
+        "status": "healthy",
+        "service": "VAJRA 2.0 Backend",
+        "timestamp": datetime.utcnow().isoformat(),
+        "environment": "Catalyst AppSail"
+    }
 
 
 @app.post("/api/auth/login")

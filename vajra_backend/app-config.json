@@ -1,5 +1,5 @@
 {
-  "command": "python3 start.py",
+  "command": "python3 main.py",
   "stack": "python_3_12",
   "build_path": ".",
   "memory": 2048
