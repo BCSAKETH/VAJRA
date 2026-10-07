@@ -131,21 +131,29 @@ app.include_router(officer_governance.router)
 # Robust OPTIONS Preflight & Non-Duplicating CORS Middleware
 @app.middleware("http")
 async def custom_cors_and_options_handler(request: Request, call_next):
+    origin = request.headers.get("origin", "")
+    is_catalyst_domain = any(dom in origin for dom in ["catalystserverless.in", "catalystappsail.in", "zoho.com", "zoho.in"])
+
     if request.method == "OPTIONS":
-        return Response(
-            status_code=200,
-            headers={
-                "Access-Control-Allow-Origin": "*",
-                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
-                "Access-Control-Allow-Headers": "*",
-                "Access-Control-Allow-Credentials": "true",
-            }
-        )
+        headers = {
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Allow-Credentials": "true",
+        }
+        if not is_catalyst_domain:
+            headers["Access-Control-Allow-Origin"] = origin if origin else "*"
+        return Response(status_code=200, headers=headers)
+
     response = await call_next(request)
-    if "access-control-allow-origin" not in response.headers:
-        response.headers["Access-Control-Allow-Origin"] = "*"
+    
+    # In Catalyst AppSail Cloud, Zoho Gateway Server (ZGS) automatically injects Access-Control-Allow-Origin
+    # for registered Catalyst client domains (*.catalystserverless.in). Adding it here causes duplicate headers.
+    if not is_catalyst_domain and "access-control-allow-origin" not in response.headers:
+        response.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
         response.headers["Access-Control-Allow-Headers"] = "*"
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+
     return response
 
 
