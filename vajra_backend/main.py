@@ -199,14 +199,10 @@ graph_rag = VajraGraphRAG()
 semantic_memory = VajraSemanticMemory()
 agent_loop = VajraAgentLoop(dbscan_model=dbscan_model, xgboost_model=xgboost_risk_model, shap_explainer=shap_explainer, label_encoders=label_encoders, risk_calibrator=risk_calibrator)
 
-# --- TTS Cache Pre-Warming ---
-# Pre-synthesize common Kannada/English police phrases in a non-blocking
-# background thread so the officer's first TTS click plays instantly from
-# cache. Daemon thread ensures it doesn't block FastAPI startup or delay
-# the first request.
-import threading as _threading
+# --- TTS Cache Pre-Warming (Background Delayed) ---
 def _startup_prewarm_tts():
     try:
+        time.sleep(20)
         from catalyst_speech import prewarm_tts_cache
         prewarm_tts_cache()
     except Exception as e:
@@ -12856,4 +12852,4 @@ if __name__ == "__main__":
     port_str = os.getenv("X_ZOHO_CATALYST_LISTEN_PORT") or os.getenv("PORT") or "8000"
     port = int(port_str)
     print(f"[STARTUP] Launching VAJRA AppSail Server on 0.0.0.0:{port}", flush=True)
-    uvicorn.run("main:app", host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
+    uvicorn.run(app, host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
