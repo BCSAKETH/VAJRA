@@ -706,7 +706,9 @@ export const AIChatScreen: React.FC = () => {
         if (raw.length > baselineCount) {
           const loaded = mapSessionMessages(turnSessionId, raw);
           sessionMessagesCacheRef.current.set(turnSessionId, loaded);
-          if (activeSessionIdRef.current === turnSessionId) {
+          if (activeSessionIdRef.current === turnSessionId || activeSessionIdRef.current === null) {
+            activeSessionIdRef.current = turnSessionId;
+            setActiveSessionId(turnSessionId);
             setChatMessages(loaded);
             setLiveEmergencyActive(loaded[loaded.length - 1]?.personaEmergency === true);
           }
@@ -744,7 +746,9 @@ export const AIChatScreen: React.FC = () => {
         if (raw.length > baselineCount) {
           const loaded = mapSessionMessages(turnSessionId, raw);
           sessionMessagesCacheRef.current.set(turnSessionId, loaded);
-          if (activeSessionIdRef.current === turnSessionId) {
+          if (activeSessionIdRef.current === turnSessionId || activeSessionIdRef.current === null) {
+            activeSessionIdRef.current = turnSessionId;
+            setActiveSessionId(turnSessionId);
             setChatMessages(loaded);
             setLiveEmergencyActive(loaded[loaded.length - 1]?.personaEmergency === true);
           }
@@ -1053,6 +1057,7 @@ export const AIChatScreen: React.FC = () => {
         pendingKey = data.session_id;
         markPending(pendingKey);
         if (activeSessionIdRef.current === sendSessionId) {
+          activeSessionIdRef.current = data.session_id;
           setActiveSessionId(data.session_id);
           // If the officer picked "Cowork" mode before sending the first
           // message, the session now exists -- prompt for who to invite.
@@ -1120,16 +1125,14 @@ export const AIChatScreen: React.FC = () => {
     } finally {
       // The single clear point for every path (pending-poll, immediate
       // answer, and error) -- unconditional and keyed by pendingKey, not
-      // gated on which chat happens to be on screen right now. That
-      // gating was exactly the bug: switching chats while a reply was in
-      // flight meant this line never ran, leaving the composer locked
-      // everywhere until a page refresh.
+      // gated on which chat happens to be on screen right now.
       clearPending(pendingKey);
+      clearPending("__new__");
+      if (turnSessionId) clearPending(turnSessionId);
       tickerAbortRef.current?.abort();
       setTickerMessage("");
-      if (activeSessionIdRef.current === sendSessionId) {
-        setThinkingType("standard");
-      }
+      setThinkingSeconds(0);
+      setThinkingType("standard");
     }
   }, [isThinking, isUploadingAttachments, lang, addToast, setIsAuthenticated, chatMode, appendMessageForTurn, pollForPendingReply, markPending, clearPending, answerMode]);
 
