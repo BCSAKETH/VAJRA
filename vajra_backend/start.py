@@ -28,10 +28,9 @@ if os.path.exists(_cfg_path):
 
 # 3. Import app and launch uvicorn
 import uvicorn
-from main import app
 
 if __name__ == "__main__":
     port_str = os.getenv("X_ZOHO_CATALYST_LISTEN_PORT") or os.getenv("PORT") or "8000"
     port = int(port_str)
-    print(f"[STARTUP] Launching VAJRA AppSail Server on 0.0.0.0:{port}")
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    print(f"[STARTUP] Launching VAJRA AppSail Server on 0.0.0.0:{port}", flush=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=port, proxy_headers=True, forwarded_allow_ips="*")
