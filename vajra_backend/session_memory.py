@@ -430,6 +430,14 @@ class DualTierMemoryManager:
         return ctx
 
 
+    # Backward compatibility aliases on DualTierMemoryManager
+    def get_session_context(self, session_id: str) -> Dict[str, Any]:
+        return self.get_micro_context(session_id)
+
+    def update_session_context(self, session_id: str, context: Dict[str, Any]) -> None:
+        self.update_micro_context(session_id, context)
+
+
 # =============================================================================
 # BACKWARD COMPATIBILITY ALIAS
 # =============================================================================
@@ -438,13 +446,11 @@ class VajraSessionMemory(DualTierMemoryManager):
     Direct drop-in replacement maintaining 100% backward compatibility
     with existing codebase call sites.
     """
-    def get_session_context(self, session_id: str) -> Dict[str, Any]:
-        return self.get_micro_context(session_id)
-
-    def update_session_context(self, session_id: str, context: Dict[str, Any]):
-        return self.update_micro_context(session_id, context)
+    pass
 
 
 # Export global singleton instance
-dual_memory = DualTierMemoryManager()
+dual_memory = VajraSessionMemory()
+session_memory = dual_memory
+
 
