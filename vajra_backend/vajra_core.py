@@ -2264,101 +2264,112 @@ class VajraGraphRAG:
 class VajraSemanticMemory:
     """
     Vector search index. Ingests narratives and computes cosine similarities.
-    On startup, attempts to fetch real incident reports from Zoho Catalyst to index!
+    Uses lazy initialization so module import and AppSail container startup
+    are instant (0.001s), preventing healthcheck timeouts.
     """
     def __init__(self, data_path: str = "synthetic_fir_data.json"):
-        t_start = time.time()
+        self.data_path = data_path
         self.documents: List[str] = []
         self.fir_metadata: List[Dict[str, Any]] = []
-        
-        # Load from live database first
-        if catalyst_app:
-            try:
-                # Fetch all units first to avoid N+1 query overhead
-                unit_map = {}
-                try:
-                    all_units = catalyst_app.zql().execute_query("SELECT UnitID, UnitName FROM Unit")
-                    for ur in all_units:
-                        u_data = ur.get("Unit", {})
-                        u_id = u_data.get("UnitID")
-                        u_name = u_data.get("UnitName")
-                        if u_id:
-                            unit_map[int(u_id)] = u_name
-                except Exception as ex:
-                    logger.warning(f"Could not pre-fetch Unit table: {ex}")
-
-                # Fetch up to 250 case master brief facts to index via ZQL
-                zql_query = """
-                    SELECT CrimeNo, BriefFacts, PoliceStationID 
-                    FROM CaseMaster 
-                    LIMIT 250
-                """
-                res = catalyst_app.zql().execute_query(zql_query)
-                if res:
-                    for r in res:
-                        cm_data = r.get("CaseMaster", {})
-                        facts = cm_data.get("BriefFacts") or "No narrative summary recorded."
-                        crime_no = cm_data.get("CrimeNo")
-                        station_id = cm_data.get("PoliceStationID")
-                        
-                        unit_name = "Unknown PS"
-                        if station_id and int(station_id) in unit_map:
-                            unit_name = unit_map[int(station_id)]
-                                
-                        self.documents.append(facts)
-                        self.fir_metadata.append({
-                            "fir_id": crime_no,
-                            "station": unit_name,
-                            "crime_type": "Grounded Database Record",
-                            "suspect": "Grounded suspect trace"
-                        })
-                    logger.info(f"VajraSemanticMemory: Indexed {len(self.documents)} live database case briefs.")
-            except Exception as e:
-                logger.error(f"Failed to fetch live case briefs from Zoho Catalyst via ZQL: {e}")
-                import traceback
-                traceback.print_exc()
-
-        # Load synthetic documents if database index is empty
-        if not self.documents:
-            if os.path.exists(data_path):
-                try:
-                    with open(data_path, 'r', encoding='utf-8') as f:
-                        records = json.load(f)
-                    for r in records:
-                        self.documents.append(f"{r.get('narrative_english')} | {r.get('narrative_kannada')}")
-                        self.fir_metadata.append({
-                            "fir_id": r.get("fir_id"),
-                            "station": r.get("station"),
-                            "crime_type": r.get("crime_type"),
-                            "suspect": r.get("suspect_name")
-                        })
-                    logger.info(f"VajraSemanticMemory: Loaded {len(self.documents)} fallback synthetic logs.")
-                except Exception as e:
-                    logger.error(f"Failed to load fallback index: {e}")
-                    
-        if not self.documents:
-            self.documents = ["No reports index compiled."]
-            self.fir_metadata = [{"fir_id": "MOCK", "station": "Mock PS", "crime_type": "None", "suspect": "None"}]
-
-        # Set up similarity vectorizer
+        self.indexed = False
         self.use_transformer = False
-        if SENTENCE_TRANSFORMERS_AVAILABLE:
-            try:
-                self.transformer = SentenceTransformer('all-MiniLM-L6-v2')
-                self.doc_embeddings = self.transformer.encode(self.documents, show_progress_bar=False)
-                self.use_transformer = True
-                logger.info("SentenceTransformer embeddings generated successfully.")
-            except Exception as e:
-                logger.warning(f"SentenceTransformer load failure: {e}. Reverting to TF-IDF.")
+        self.tfidf_vectorizer = None
+        self.tfidf_matrix = None
+        self._lock = threading.Lock()
+
+    def _ensure_indexed(self) -> None:
+        if self.indexed:
+            return
+        with self._lock:
+            if self.indexed:
+                return
+            t_start = time.time()
+            # Load from live database first
+            if catalyst_app:
+                try:
+                    unit_map = {}
+                    try:
+                        all_units = catalyst_app.zql().execute_query("SELECT UnitID, UnitName FROM Unit")
+                        for ur in all_units:
+                            u_data = ur.get("Unit", {})
+                            u_id = u_data.get("UnitID")
+                            u_name = u_data.get("UnitName")
+                            if u_id:
+                                unit_map[int(u_id)] = u_name
+                    except Exception as ex:
+                        logger.warning(f"Could not pre-fetch Unit table: {ex}")
+
+                    zql_query = """
+                        SELECT CrimeNo, BriefFacts, PoliceStationID 
+                        FROM CaseMaster 
+                        LIMIT 250
+                    """
+                    res = catalyst_app.zql().execute_query(zql_query)
+                    if res:
+                        for r in res:
+                            cm_data = r.get("CaseMaster", {})
+                            facts = cm_data.get("BriefFacts") or "No narrative summary recorded."
+                            crime_no = cm_data.get("CrimeNo")
+                            station_id = cm_data.get("PoliceStationID")
+                            
+                            unit_name = "Unknown PS"
+                            if station_id and int(station_id) in unit_map:
+                                unit_name = unit_map[int(station_id)]
+                                    
+                            self.documents.append(facts)
+                            self.fir_metadata.append({
+                                "fir_id": crime_no,
+                                "station": unit_name,
+                                "crime_type": "Grounded Database Record",
+                                "suspect": "Grounded suspect trace"
+                            })
+                        logger.info(f"VajraSemanticMemory: Indexed {len(self.documents)} live database case briefs.")
+                except Exception as e:
+                    logger.warning(f"Failed to fetch live case briefs from Zoho Catalyst via ZQL: {e}")
+
+            # Load synthetic documents if database index is empty
+            if not self.documents:
+                data_file = self.data_path if os.path.exists(self.data_path) else os.path.join(os.path.dirname(__file__), self.data_path)
+                if os.path.exists(data_file):
+                    try:
+                        with open(data_file, 'r', encoding='utf-8') as f:
+                            records = json.load(f)
+                        for r in records:
+                            self.documents.append(f"{r.get('narrative_english')} | {r.get('narrative_kannada')}")
+                            self.fir_metadata.append({
+                                "fir_id": r.get("fir_id"),
+                                "station": r.get("station"),
+                                "crime_type": r.get("crime_type"),
+                                "suspect": r.get("suspect_name")
+                            })
+                        logger.info(f"VajraSemanticMemory: Loaded {len(self.documents)} fallback synthetic logs.")
+                    except Exception as e:
+                        logger.warning(f"Failed to load fallback index: {e}")
+                        
+            if not self.documents:
+                self.documents = ["No reports index compiled."]
+                self.fir_metadata = [{"fir_id": "MOCK", "station": "Mock PS", "crime_type": "None", "suspect": "None"}]
+
+            # Set up similarity vectorizer
+            if SENTENCE_TRANSFORMERS_AVAILABLE:
+                try:
+                    self.transformer = SentenceTransformer('all-MiniLM-L6-v2')
+                    self.doc_embeddings = self.transformer.encode(self.documents, show_progress_bar=False)
+                    self.use_transformer = True
+                    logger.info("SentenceTransformer embeddings generated successfully.")
+                except Exception as e:
+                    logger.warning(f"SentenceTransformer load failure: {e}. Reverting to TF-IDF.")
+                    
+            if not self.use_transformer:
+                self.tfidf_vectorizer = TfidfVectorizer(stop_words='english')
+                self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(self.documents)
                 
-        if not self.use_transformer:
-            self.tfidf_vectorizer = TfidfVectorizer(stop_words='english')
-            self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(self.documents)
-            
-        t_end = time.time()
-        logger.info(f"VajraSemanticMemory: Initialization took {t_end - t_start:.4f} seconds.")
+            self.indexed = True
+            t_end = time.time()
+            logger.info(f"VajraSemanticMemory: Lazy initialization took {t_end - t_start:.4f} seconds.")
 
     def recall_context(self, query: str, top_k: int = 1) -> List[Dict[str, Any]]:
+        self._ensure_indexed()
         if not self.documents or self.documents[0] == "No reports index compiled.":
             return []
 
