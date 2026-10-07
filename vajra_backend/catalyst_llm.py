@@ -387,7 +387,7 @@ class CatalystLLM:
             logger.info("Catalyst LLM endpoint recently confirmed down (in-process cooldown) -- skipping to fallback.")
             _last_failure_reason = "skipped_cooldown_from_recent_failure"
         else:
-            _req_timeout = 42
+            _req_timeout = int(os.getenv("CATALYST_LLM_TIMEOUT", "95"))
             for attempt, delay in enumerate([0]):
                 if delay:
                     time.sleep(delay)
@@ -585,7 +585,7 @@ class CatalystLLM:
         payload = {"query": query}
 
         try:
-            res = requests.post(self.rag_endpoint_url, headers=headers, json=payload, timeout=40)
+            res = requests.post(self.rag_endpoint_url, headers=headers, json=payload, timeout=75)
             if res.status_code == 200:
                 data = res.json()
                 if data.get("status") == "success":
