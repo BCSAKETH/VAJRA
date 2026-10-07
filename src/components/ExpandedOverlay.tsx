@@ -1678,10 +1678,10 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
           )}
 
           {type === "mo_match" && (
-            <div className="h-full flex flex-col gap-6">
-              <div className="bg-stone-900/25 border border-stone-850 p-4 rounded-xl">
+            <div className="flex flex-col gap-4 max-h-[480px]">
+              <div className="bg-stone-900/40 border border-stone-850 p-3.5 rounded-xl">
                 <h4 className="font-black text-stone-100 text-sm">
-                  {lang === "en" ? `Modus Operandi Behavior Profile (${data.suspect})` : `ಕಾರ್ಯವಿಧಾನ ವರ್ತನೆಯ ಪ್ರೊಫೈಲ್ (${data.suspect})`}
+                  {lang === "en" ? `Modus Operandi Behavior Profile (${data.suspect || data.pattern || data.query || "MO Match"})` : `ಕಾರ್ಯವಿಧಾನ ವರ್ತನೆಯ ಪ್ರೊಫೈಲ್ (${data.suspect || data.pattern || data.query || "MO ಹೊಂದಾಣಿಕೆ"})`}
                   {data.engine_mode && data.engine_mode.startsWith("Reference Simulation") && (
                     <span className="ml-2 text-amber-500 normal-case font-normal text-[10px]">{lang === "en" ? "(simulated reference set — no live case data available)" : "(ಸಿಮ್ಯುಲೇಟೆಡ್ ಉಲ್ಲೇಖ ಸೆಟ್ — ನೈಜ ಪ್ರಕರಣ ಡೇಟಾ ಲಭ್ಯವಿಲ್ಲ)"}</span>
                   )}
@@ -1701,70 +1701,79 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                   </div>
                 )}
               </div>
-              <div className="flex-1 overflow-y-auto space-y-3">
-                {(data.matches || []).map((m: any, idx: number) => (
-                  <div key={idx} className="bg-stone-900/60 border border-stone-850 p-4 rounded-xl flex flex-col gap-3 hover:border-[#C79A4E]/40 transition-all">
-                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-                      <div className="space-y-1 flex-1">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="text-xs font-black text-stone-100">{lang === "en" ? "Suspect:" : "ಶಂಕಿತ:"} {m.suspect || (lang === "en" ? "Unknown" : "ಅಜ್ಞಾತ")}</span>
-                          <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold bg-amber-500/15 border border-amber-500/30 text-amber-300">
-                            {m.statutory_clock || "§187 BNSS: Investigation Active"}
-                          </span>
-                        </div>
-                        <p className="text-xs text-stone-400 font-mono">
-                          {lang === "en" ? "Incident ID:" : "ಘಟನೆ ID:"} <strong className="text-stone-200">{m.case_id}</strong> | {lang === "en" ? "Precinct:" : "ಠಾಣೆ:"} {m.station} | {m.registered_date || "2026-02-14"}
-                        </p>
-                        <p className="text-[11px] text-stone-300 italic mt-1 font-mono leading-relaxed">
-                          MO: {m.mo_signature || m.signature_narrative || (lang === "en" ? "No narrative details" : "ವಿವರಣೆ ಲಭ್ಯವಿಲ್ಲ")}
-                        </p>
-                        {m.getaway_vector && (
-                          <div className="flex items-center gap-1.5 text-[10px] font-mono text-stone-400 mt-1">
-                            <span className="text-amber-400 font-bold">⚡ Vector:</span> {m.getaway_vector}
-                          </div>
-                        )}
-                      </div>
-                      <div className="shrink-0 text-right w-full sm:w-auto">
-                        <div className="text-xs font-bold text-amber-500 mb-1">{Math.round((m.similarity_score || 0.84) * 100)}% {lang === "en" ? "Cosine Match" : "ಹೊಂದಾಣಿಕೆ ದರ"}</div>
-                        <div className="w-32 bg-stone-850 h-1.5 rounded-full overflow-hidden">
-                          <div className="bg-amber-500 h-full" style={{ width: `${(m.similarity_score || 0.84) * 100}%` }} />
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* 1-Click Connected Actions for Officers */}
-                    <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-stone-800/80">
-                      <button
-                        type="button"
-                        onClick={() => onFollowUpQuery ? onFollowUpQuery(`Add case diary entry for ${m.case_id} recording MO similarity match with pattern`) : null}
-                        className="px-2 py-1 rounded-md text-[10px] font-mono font-bold bg-[#C79A4E]/15 hover:bg-[#C79A4E]/25 border border-[#C79A4E]/30 text-[#C79A4E] transition-all cursor-pointer"
-                      >
-                        📝 + Case Diary §193
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onFollowUpQuery ? onFollowUpQuery(`Show graph network connections for suspect ${m.suspect || m.case_id}`) : null}
-                        className="px-2 py-1 rounded-md text-[10px] font-mono font-bold bg-stone-800 hover:bg-stone-750 border border-stone-700 text-stone-300 transition-all cursor-pointer"
-                      >
-                        🕸️ Syndicate Graph
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onFollowUpQuery ? onFollowUpQuery(`Check default bail countdown for case ${m.case_id}`) : null}
-                        className="px-2 py-1 rounded-md text-[10px] font-mono font-bold bg-stone-800 hover:bg-stone-750 border border-stone-700 text-stone-300 transition-all cursor-pointer"
-                      >
-                        ⚖️ §187 Bail Clock
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onFollowUpQuery ? onFollowUpQuery(`Generate section 63 BSA electronic evidence certificate for case ${m.case_id}`) : null}
-                        className="px-2 py-1 rounded-md text-[10px] font-mono font-bold bg-stone-800 hover:bg-stone-750 border border-stone-700 text-stone-300 transition-all cursor-pointer"
-                      >
-                        🔐 §63 BSA Cert
-                      </button>
-                    </div>
+              <div className="overflow-y-auto space-y-3 max-h-[360px] pr-1">
+                {(data.matches || []).length === 0 ? (
+                  <div className="bg-stone-900/40 border border-stone-850 p-4 rounded-xl text-center text-stone-400 text-xs">
+                    {lang === "en" ? "No similar cases matching this pattern found in the local registry." : "ಯಾವುದೇ ಸಮಾನ ಪ್ರಕರಣಗಳು ಕಂಡುಬಂದಿಲ್ಲ."}
                   </div>
-                ))}
+                ) : (
+                  (data.matches || []).map((m: any, idx: number) => (
+                    <div key={idx} className="bg-stone-900/60 border border-stone-850 p-3.5 rounded-xl flex flex-col gap-2.5 hover:border-[#C79A4E]/40 transition-all">
+                      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
+                        <div className="space-y-1 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs font-black text-stone-100">{lang === "en" ? "Case ID:" : "ಪ್ರಕರಣ ID:"} <strong className="text-amber-400 font-mono">{m.case_id}</strong></span>
+                            {m.suspect && m.suspect !== "Unknown" && (
+                              <span className="text-xs text-stone-300">({m.suspect})</span>
+                            )}
+                            <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold bg-amber-500/15 border border-amber-500/30 text-amber-300">
+                              {m.statutory_clock || "§187 BNSS: Investigation Active"}
+                            </span>
+                          </div>
+                          <p className="text-xs text-stone-400 font-mono">
+                            {lang === "en" ? "Precinct:" : "ಠಾಣೆ:"} <span className="text-stone-200">{m.station}</span> | {m.registered_date || "2026-02-14"} {m.bns_sections ? `| ${m.bns_sections}` : ""}
+                          </p>
+                          <p className="text-[11px] text-stone-300 italic mt-1 font-mono leading-relaxed">
+                            MO: {m.mo_signature || m.signature_narrative || (lang === "en" ? "No narrative details" : "ವಿವರಣೆ ಲಭ್ಯವಿಲ್ಲ")}
+                          </p>
+                          {m.getaway_vector && (
+                            <div className="flex items-center gap-1.5 text-[10px] font-mono text-stone-400 mt-1">
+                              <span className="text-amber-400 font-bold">⚡ Vector:</span> {m.getaway_vector}
+                            </div>
+                          )}
+                        </div>
+                        <div className="shrink-0 text-right w-full sm:w-auto">
+                          <div className="text-xs font-bold text-amber-500 mb-1">{Math.round((m.similarity_score || 0.84) * 100)}% {lang === "en" ? "Cosine Match" : "ಹೊಂದಾಣಿಕೆ ದರ"}</div>
+                          <div className="w-32 bg-stone-850 h-1.5 rounded-full overflow-hidden">
+                            <div className="bg-amber-500 h-full" style={{ width: `${Math.round((m.similarity_score || 0.84) * 100)}%` }} />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 1-Click Connected Actions for Officers */}
+                      <div className="flex flex-wrap items-center gap-1.5 pt-2 border-t border-stone-800/80">
+                        <button
+                          type="button"
+                          onClick={() => onFollowUpQuery ? onFollowUpQuery(`Add case diary entry for ${m.case_id} recording MO similarity match with pattern`) : null}
+                          className="px-2 py-1 rounded-md text-[10px] font-mono font-bold bg-[#C79A4E]/15 hover:bg-[#C79A4E]/25 border border-[#C79A4E]/30 text-[#C79A4E] transition-all cursor-pointer"
+                        >
+                          📝 + Case Diary §193
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onFollowUpQuery ? onFollowUpQuery(`Show details for case ${m.case_id}`) : null}
+                          className="px-2 py-1 rounded-md text-[10px] font-mono font-bold bg-stone-800 hover:bg-stone-750 border border-stone-700 text-stone-300 transition-all cursor-pointer"
+                        >
+                          📁 Case Details
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onFollowUpQuery ? onFollowUpQuery(`Check default bail countdown for case ${m.case_id}`) : null}
+                          className="px-2 py-1 rounded-md text-[10px] font-mono font-bold bg-stone-800 hover:bg-stone-750 border border-stone-700 text-stone-300 transition-all cursor-pointer"
+                        >
+                          ⚖️ §187 Bail Clock
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onFollowUpQuery ? onFollowUpQuery(`Generate section 63 BSA electronic evidence certificate for case ${m.case_id}`) : null}
+                          className="px-2 py-1 rounded-md text-[10px] font-mono font-bold bg-stone-800 hover:bg-stone-750 border border-stone-700 text-stone-300 transition-all cursor-pointer"
+                        >
+                          🔐 §63 BSA Cert
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           )}

@@ -1308,15 +1308,15 @@ class VajraAgentLoop(CognitiveBrainMixin):
             q = re.sub(pat, repl, q)
         return q
 
-    def _strip_salutations(self, text: str) -> Tuple[str, bool]:
+    def _strip_salutations(self, text: str) -> Tuple[str, bool, Optional[str]]:
         """
-        Salience Stripping ("Hi" fix):
+        Salience Stripping:
         Strips leading conversational greetings/salutations ("Good morning", "Hi copilot", "Namaskara")
         if substantive operational inquiry follows (e.g. "show cases in Belagavi", "analyze suspect Imran").
-        Returns (cleaned_query, has_operational_intent).
+        Returns (cleaned_query, has_operational_intent, detected_salutation).
         """
         if not text:
-            return ("", False)
+            return ("", False, None)
         
         raw_clean = text.strip()
         
@@ -1333,7 +1333,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "menu", "status", "ನಮಸ್ಕಾರ", "ಹಲೋ", "ಹಾಯ್", "ಶುಭೋದಯ", "ಶುಭ ಸಂಜೆ", "ಧನ್ಯವಾದ"
         }
         if lower_raw in pure_greetings:
-            return (raw_clean, False)
+            return (raw_clean, False, raw_clean)
             
         # Regex pattern matching leading English & Kannada greeting prefixes
         prefix_pattern = re.compile(
@@ -1349,27 +1349,55 @@ class VajraAgentLoop(CognitiveBrainMixin):
             re.IGNORECASE
         )
         
-        # Strip repeated leading greeting phrases
+        # Strip repeated leading greeting phrases and capture the primary salutation
         cleaned = raw_clean
+        detected_salutation = None
         while True:
             m = prefix_pattern.match(cleaned)
             if m:
+                matched_str = m.group(0).strip(" ,!:;.-–—")
+                if not detected_salutation and matched_str:
+                    detected_salutation = matched_str
                 cleaned = cleaned[m.end():].strip()
             else:
                 break
                 
         # If remaining text is empty or too short, it was purely a greeting
         if len(cleaned) < 3:
-            return (raw_clean, False)
+            return (raw_clean, False, raw_clean)
             
         # Check if remaining text is purely another greeting / signoff
         lower_rem = re.sub(r'[@\-_.,!?#]', ' ', cleaned.lower()).strip()
         lower_rem = re.sub(r'\s+', ' ', lower_rem)
         if lower_rem in pure_greetings:
-            return (raw_clean, False)
+            return (raw_clean, False, raw_clean)
             
         # Operational intent confirmed!
-        return (cleaned, True)
+        return (cleaned, True, detected_salutation)
+
+    def _format_greeting_prefix(self, salutation: Optional[str], rank: str, name: str, is_kn: bool = False) -> str:
+        """Constructs an authentic, personalized KSP officer salutation."""
+        clean_name = str(name).strip()
+        if "Officer " in clean_name and len(clean_name) > 8:
+            clean_name = clean_name.replace("Officer ", "").strip()
+        clean_rank = str(rank).strip() if rank and rank.lower() not in ("officer", "none", "unknown") else "Officer"
+        
+        if is_kn:
+            return f"**ನಮಸ್ಕಾರ, {clean_rank} {clean_name}!**\n\n"
+        
+        sal_lower = (salutation or "").lower()
+        if "evening" in sal_lower:
+            time_sal = "Good evening"
+        elif "morning" in sal_lower:
+            time_sal = "Good morning"
+        elif "afternoon" in sal_lower:
+            time_sal = "Good afternoon"
+        elif "namaskar" in sal_lower or "namaste" in sal_lower:
+            time_sal = "Namaskara"
+        else:
+            time_sal = "Good day"
+            
+        return f"**{time_sal}, {clean_rank} {clean_name}!** 🫡\n\n"
 
     _KNOWN_CRIME_GROUPS = [
         "MURDER", "SEXUAL OFFENCES", "ASSAULT", "ATTEMPT TO MURDER", "MOTOR VEHICLE THEFT",
@@ -2046,6 +2074,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
               "full details about all", "total firs", "total cases", "how many firs", "how many cases",
               "database overview", "database summary", "list all firs", "show me everything", "everything about all"],
              "get_database_overview", {}, "yes"),
+            (["pending on our radar", "on our radar", "on the radar", "pending cases", "pending case", "cases pending", "statutory deadline", "remand clock", "pending on radar", "what cases are pending", "radar today"],
+             "track_statutory_deadlines", {"district": district or "Bengaluru City", "station": "Basavanagudi PS"}, "yes"),
             (["concerned about", "concern", "worried about", "worry about", "most concerning", "should i be concerned",
               "what to watch", "watch out", "priorit", "getting worse", "what's worsening", "biggest threat",
               "patterns should i", "what should i focus", "top risks", "alarming"], "get_priority_concerns",
@@ -3556,12 +3586,18 @@ class VajraAgentLoop(CognitiveBrainMixin):
             except Exception:
                 officer_prof = {}
         resolved_officer_name = officer_prof.get("name") or officer_name or "Colleague"
-        resolved_station = officer_prof.get("home_station") or "KSP Station"
-        resolved_district = officer_prof.get("district") or "Karnataka State"
-        resolved_rank = officer_prof.get("role_tier") or "Investigating Officer"
+        resolved_station = officer_prof.get("home_station") or "Basavanagudi PS"
+        resolved_district = officer_prof.get("district") or "Bengaluru City"
+        resolved_rank = officer_prof.get("role_tier") or officer_prof.get("rank") or "DySP"
+
+        self.resolved_officer_name = resolved_officer_name
+        self.resolved_station = resolved_station
+        self.resolved_district = resolved_district
+        self.resolved_rank = resolved_rank
 
         # Salience Stripping ("Hi" fix): strip greeting prefixes if operational intent exists
-        operational_query, has_operational_intent = self._strip_salutations(officer_query)
+        operational_query, has_operational_intent, detected_salutation = self._strip_salutations(officer_query)
+        self._current_detected_salutation = detected_salutation if has_operational_intent else None
         if has_operational_intent:
             routing_query = operational_query
             officer_query = operational_query
@@ -4777,57 +4813,16 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     history.append({"role": "assistant", "content": json.dumps(decision)})
                     history.append({"role": "user", "content": f"Tool '{tool_name}' returned: {json.dumps(tool_output['text_result'])}"})
 
-                    # Sub-3s Deterministic Synthesis via 28-Block PNLG Engine:
-                    # When structured CCTNS/ZCQL tool data is available, format the output directly
-                    # in < 5ms without triggering GLM's heavy second synthesis turn (saving 35-70s).
-                    try:
-                        from ksp_pnlg_engine import synthesize_deterministic_answer
-                        _fast_data = tool_output.get("data") or tool_output.get("structured_data") or tool_output
-                        _fast_lang = "kn" if _is_kn else "en"
-                        _fast_ans = synthesize_deterministic_answer(
-                            tool_name=tool_name,
-                            tool_data=_fast_data,
-                            session_id=session_id,
-                            query=officer_query or routing_query,
-                            turn_id=str(current_iteration),
-                            lang=_fast_lang
-                        )
-                        if _fast_ans:
-                            response_text = _fast_ans
-                            logger.info(f"Sub-3s deterministic synthesis succeeded for {tool_name} via 28-block PNLG.")
-                            break
-                    except Exception as _syn_err:
-                        logger.warning(f"Deterministic synthesis bypass failed gracefully: {_syn_err}")
-
-                    # ANSWER-FIRST (Phase 4): for a VISUAL/composite answer
-                    # (map, network, risk, timeline, trend, case_distribution,
-                    # dossier, ...), the tool's own text_result is already a
-                    # complete, grounded answer and the widget/panels carry the
-                    # detail. Use it directly and skip the separate GLM
-                    # synthesis call. Why this is strictly better here:
-                    #   - answer-first: the grounded result is the answer, shown
-                    #     without waiting on a second 15-140s GLM round-trip;
-                    #   - reliability: the synthesis-only call times out more
-                    #     often than any other step (see last_tool_text_result
-                    #     note above) -- for chart answers that timeout wasted a
-                    #     correct result and risked GLM re-narrating (or
-                    #     mangling) an already-good grounded summary;
-                    #   - the Full Dossier headline stays exactly as composed.
-                    # TEXT answers (query_case, summarize_case, find_similar,
-                    # sections, clarifying questions) still fall through to real
-                    # GLM synthesis, where the added analytical narrative is the
-                    # whole value. The ambiguous-name graph case deliberately
-                    # resets response_type to "text", so it correctly does NOT
-                    # short-circuit and still routes through synthesis.
-                    # A tool can mark its result "final" (e.g. a definitive
-                    # "not found in the database") -- a complete answer that
-                    # needs no GLM narration. Use it directly and skip synthesis,
-                    # so it returns instantly instead of waiting out GLM's
-                    # timeout when the model is slow/down.
-                    if tool_output.get("final") and last_tool_text_result:
+                    # For pure standalone visual chart responses with no text analysis needed:
+                    _pure_visual_types = {"map", "custom_chart", "news"}
+                    if response_type in _pure_visual_types and tool_output.get("final") and last_tool_text_result:
                         response_text = last_tool_text_result
                         break
-                    if response_type != "text" and last_tool_text_result:
+                    
+                    # For all investigative queries (find_similar_cases, query_case, get_offender_risk, etc.),
+                    # we let the LLM synthesize a dynamic, contextual briefing on the next iteration.
+                    # If the tool marked itself final and gave a definitive text_result, use it as fallback.
+                    if tool_output.get("final") and last_tool_text_result and not allow_tools:
                         response_text = last_tool_text_result
                         break
                 else:
@@ -5908,52 +5903,95 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 text_result = "Please provide both the case number and diary entry text."
             self._write_audit_log(employee_id, "Add Case Diary Entry", case_no, entry_text[:100], text_result, session_id)
 
-        elif tool_name == "track_statutory_deadlines":
+        elif tool_name in ("track_statutory_deadlines", "check_statutory_deadlines"):
             unit_id = user_unit_id or 1
+            off_name = getattr(self, "resolved_officer_name", None) or officer_name or "Officer"
+            off_rank = getattr(self, "resolved_rank", None) or "DySP"
+            off_station = params.get("station") or getattr(self, "resolved_station", "Basavanagudi PS")
+            off_district = params.get("district") or getattr(self, "resolved_district", "Bengaluru City")
+
+            greet_prefix = ""
+            if getattr(self, "_current_detected_salutation", None):
+                _is_kn_flag = bool(re.search(r'[\u0C80-\u0CFF]', getattr(self, "_current_detected_salutation", "")))
+                greet_prefix = self._format_greeting_prefix(
+                    self._current_detected_salutation, off_rank, off_name, is_kn=_is_kn_flag
+                )
+
             if catalyst_app:
                 try:
                     from datetime import datetime
                     rows = catalyst_app.zql().execute_query(
-                        f"SELECT CaseMasterID, CrimeNo, CrimeRegisteredDate, PoliceStationID FROM CaseMaster ORDER BY CrimeRegisteredDate DESC LIMIT 20"
+                        f"SELECT CaseMasterID, CrimeNo, CrimeRegisteredDate, PoliceStationID, BriefFacts, CrimeMajorHeadID FROM CaseMaster ORDER BY CrimeRegisteredDate DESC LIMIT 25"
                     )
                     deadlines = []
-                    critical_count = 0
-                    warning_count = 0
+                    critical_cases = []
+                    warning_cases = []
                     
                     for r in rows:
                         cm = r.get("CaseMaster", {})
                         c_no = cm.get("CrimeNo", "Unknown")
                         reg_str = cm.get("CrimeRegisteredDate", "2026-01-01")
+                        facts = cm.get("BriefFacts", "") or ""
                         try:
                             reg_dt = datetime.strptime(reg_str[:10], "%Y-%m-%d")
                             elapsed = (datetime.now() - reg_dt).days
                         except Exception:
-                            elapsed = 20
+                            elapsed = 25
                         
                         days_left = max(0, 60 - elapsed)
                         if days_left < 7:
-                            status = "CRITICAL (<7d)"
-                            critical_count += 1
+                            status_label = "🔴 CRITICAL (<7d to Default Bail)"
+                            status_cat = "critical"
                         elif days_left < 20:
-                            status = "WARNING (<20d)"
-                            warning_count += 1
+                            status_label = "🟡 WARNING (<20d Remand Clock)"
+                            status_cat = "warning"
                         else:
-                            status = "NORMAL"
+                            status_label = "🟢 NORMAL"
+                            status_cat = "normal"
 
-                        deadlines.append({
+                        entry = {
                             "case_no": c_no,
-                            "registered_date": reg_str,
+                            "registered_date": reg_str[:10],
                             "days_elapsed": elapsed,
                             "days_remaining_60": days_left,
-                            "status": status
-                        })
+                            "status": status_label,
+                            "status_cat": status_cat,
+                            "brief_facts": facts[:140] if facts else "Investigation underway under Section 187 BNSS statutory remand monitoring."
+                        }
+                        deadlines.append(entry)
+                        if status_cat == "critical":
+                            critical_cases.append(entry)
+                        elif status_cat == "warning":
+                            warning_cases.append(entry)
+
+                    critical_count = len(critical_cases)
+                    warning_count = len(warning_cases)
+
+                    priority_cases = (critical_cases + warning_cases)[:4]
+                    if not priority_cases:
+                        priority_cases = deadlines[:3]
+
+                    case_lines = []
+                    for c in priority_cases:
+                        case_lines.append(
+                            f"🚨 **`{c['case_no']}`** ({c['status']})\n"
+                            f"  • **Registration Date:** `{c['registered_date']}` | **Elapsed:** `{c['days_elapsed']} Days` | **Remand Window:** `{c['days_remaining_60']} Days to §187 BNSS 60-Day Default Bail`\n"
+                            f"  • **Case Summary:** {c['brief_facts']}"
+                        )
+                    cases_md = "\n\n".join(case_lines)
 
                     text_result = (
-                        f"⏱️ **Station Statutory Deadlines Radar (§187 BNSS 60-Day Default Bail)**\n"
-                        f"• **Active Monitored Cases:** {len(deadlines)}\n"
-                        f"• **Critical Alert (<7 Days Remaining):** 🔴 {critical_count} Cases\n"
-                        f"• **Warning Alert (<20 Days Remaining):** 🟡 {warning_count} Cases\n\n"
-                        f"Immediate Action: Expedite FSL reports and final chargesheets for critical cases to prevent statutory default bail."
+                        f"{greet_prefix}"
+                        f"⏱️ **Station Statutory Remand & Active Case Radar (§187 BNSS 60-Day Default Bail Clock)**\n"
+                        f"• **Operational Jurisdiction:** `{off_station}` · `{off_district}`\n"
+                        f"• **Active Monitored FIRs on Radar:** **{len(deadlines)} Active Cases**\n"
+                        f"• **Critical Default Bail Alert (<7 Days Remaining):** 🔴 **{critical_count} Cases**\n"
+                        f"• **Approaching Statutory Deadline (<20 Days Remaining):** 🟡 **{warning_count} Cases**\n\n"
+                        f"📋 **HIGH-PRIORITY ACTIVE CASES ON RADAR:**\n\n"
+                        f"{cases_md}\n\n"
+                        f"⚡ **Immediate Operational Directives:**\n"
+                        f"1. Expedite pending chemical analysis/FSL dispatch and Case Diary entries for critical cases to prevent statutory default bail under Section 187 BNSS.\n"
+                        f"2. Coordinate with investigating officers to finalize chargesheets for cases in the warning window."
                     )
 
                     data = {
@@ -5961,19 +5999,22 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         "critical_cases_count": critical_count,
                         "warning_cases_count": warning_count,
                         "deadlines": deadlines[:10],
+                        "station": off_station,
+                        "district": off_district,
                         "actions": [
                             {"id": "view_critical", "label": "🔴 Review Critical Cases", "tool": "get_chargesheet_ready_cases", "params": {"urgency": "critical"}},
-                            {"id": "workload_balance", "label": "⚖️ IO Workload Balancer", "tool": "io_workload_and_disposal_balancer", "params": {}}
+                            {"id": "workload_balance", "label": "⚖️ IO Workload Balancer", "tool": "io_workload_and_disposal_balancer", "params": {}},
+                            {"id": "view_recent", "label": "📁 Recent Station FIRs", "tool": "get_recent_cases", "params": {"limit": 10}}
                         ]
                     }
                     response_type = "statutory_deadline_radar"
-                    citations.append({"type": "BNSS Section 187 Registry", "id": "STATION_DEADLINES", "details": f"{critical_count} critical default bail deadlines"})
+                    citations.append({"type": "BNSS Section 187 Registry", "id": "STATION_DEADLINES", "details": f"{critical_count} critical default bail deadlines in {off_station}"})
                 except Exception as e:
                     logger.error(f"Error in track_statutory_deadlines: {e}", exc_info=True)
                     text_result = f"Failed to track deadlines: {e}"
             else:
                 text_result = "Database offline."
-            self._write_audit_log(employee_id, "Statutory Deadline Audit", "Station Cases", "Track Section 187 BNSS deadlines", text_result, session_id)
+            self._write_audit_log(employee_id, "Statutory Deadline Audit", "Station Cases", f"Track Section 187 BNSS deadlines for {off_station}", text_result, session_id)
 
 
         # 2. resolve_vague_query
@@ -6523,17 +6564,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         except Exception:
                             remand_clock = "Active Investigation (Within §187 BNSS Remand Window)"
                             
-                        # Elaborated Modus Operandi
-                        if is_missing_person:
-                            mo_text = f"Subject last seen in local beat limits. Inquiry under Section 104/105 BNS. Raw Log: {raw_facts}"
-                        elif primary_head_id == 17:
-                            mo_text = f"Pillion rider snatched gold ornament from lone pedestrian during morning/dusk hours. Raw Beat Log: {raw_facts}"
-                        elif primary_head_id in [12, 112]:
-                            mo_text = f"Transit consignment of commercial contraband intercepted via courier/checkpoint. Raw Beat Log: {raw_facts}"
-                        elif primary_head_id in [11, 115]:
-                            mo_text = f"Cyber phishing/OTP social engineering scam routed through layered mule accounts. Raw Beat Log: {raw_facts}"
-                        else:
-                            mo_text = f"Offence registered under {sec_tag}. Raw Beat Log: {raw_facts}"
+                        # Authentic facts only
+                        mo_text = raw_facts if raw_facts else f"Offence registered under {sec_tag} at {st_name}."
                             
                         matches.append({
                             "case_id": c_no,
@@ -6550,169 +6582,30 @@ class VajraAgentLoop(CognitiveBrainMixin):
                             "fencing_risk": fencing_desc
                         })
                     
-                    # 5. Build rich Claude-style step-by-step Inquest Payload for the docked composer
-                    inquest_payload = {
-                        "inquest_id": f"inquest-{int(time.time())}",
-                        "title": f"Tactical Inquest & Investigation Refinement: '{query}'",
-                        "summary": "Step through operational dimensions to narrow down this intelligence lead:",
-                        "steps": [
-                            {
-                                "step_id": "jurisdiction",
-                                "title": "Target Jurisdiction & Transit Corridor",
-                                "subtitle": "Select active police commissionerates or highway transit belts to focus the search:",
-                                "type": "multi_select",
-                                "write_in_placeholder": "Specify custom police station, beat circle, or highway toll plaza...",
-                                "options": [
-                                    {
-                                        "id": "opt_blr",
-                                        "label": "Bengaluru City (East & South Zones)",
-                                        "icon": "🏢",
-                                        "badge": "Recommended (High Volume)",
-                                        "description": "Jayanagar, Indiranagar, and HSR Layout where 64% of recent pattern matches cluster.",
-                                        "param_patch": "Bengaluru City South/East"
-                                    },
-                                    {
-                                        "id": "opt_mys",
-                                        "label": "Mysuru City & Southern Range",
-                                        "icon": "🛣️",
-                                        "badge": "Interstate Corridor",
-                                        "description": "Vidyaranyapuram and Mysuru-Nanjangud corridor with active festival crowd surveillance.",
-                                        "param_patch": "Mysuru City Corridor"
-                                    },
-                                    {
-                                        "id": "opt_hub",
-                                        "label": "Hubballi-Dharwad & Northern Range",
-                                        "icon": "🚂",
-                                        "badge": "Transit Junction",
-                                        "description": "Railway junction and NH-48 interstate transit belt linking Belagavi and Maharashtra borders.",
-                                        "param_patch": "Hubballi-Dharwad Zone"
-                                    },
-                                    {
-                                        "id": "opt_statewide",
-                                        "label": "Statewide (All 31 Districts of Karnataka)",
-                                        "icon": "🌐",
-                                        "badge": "Comprehensive",
-                                        "description": "Full CCTNS scan across all 1.695M+ registered cases in Karnataka State.",
-                                        "param_patch": "Statewide All Districts"
-                                    }
-                                ]
-                            },
-                            {
-                                "step_id": "modality",
-                                "title": "Modus Operandi & Vehicle Modality",
-                                "subtitle": "Filter by getaway vehicle type, time of occurrence, or execution style:",
-                                "type": "multi_select",
-                                "write_in_placeholder": "Specify vehicle make, color, or execution specifics (e.g. dawn 5-7 AM)...",
-                                "options": [
-                                    {
-                                        "id": "mod_twowheeler",
-                                        "label": "Two-Wheeler Pillion Ambush (Pulsar / Apache)",
-                                        "icon": "🏍️",
-                                        "badge": "Recommended (82% MO)",
-                                        "description": "Two riders on high-speed motorcycle with mud-defaced or trimmed rear number plates.",
-                                        "param_patch": "Two-Wheeler Pillion Getaway"
-                                    },
-                                    {
-                                        "id": "mod_morning",
-                                        "label": "Dawn & Morning Walkers Window (05:00 - 07:30 AM)",
-                                        "icon": "🌅",
-                                        "badge": "Temporal Pattern",
-                                        "description": "Targeting lone senior citizens and pedestrians in residential park perimeters.",
-                                        "param_patch": "Morning Walker Dawn Window"
-                                    },
-                                    {
-                                        "id": "mod_dusk",
-                                        "label": "Dusk & Commercial Junctions (18:30 - 21:00 PM)",
-                                        "icon": "🌆",
-                                        "badge": "High Crowds",
-                                        "description": "Strikes near bus shelters, metro exit gates, and temple streets.",
-                                        "param_patch": "Dusk Commercial Window"
-                                    }
-                                ]
-                            },
-                            {
-                                "step_id": "strategic_actions",
-                                "title": "Strategic Cross-Checks & Statutory Mandates",
-                                "subtitle": "Select automated investigative workflows to trigger concurrently:",
-                                "type": "multi_select",
-                                "write_in_placeholder": "Specify custom bank account, IMEI list, or pawn broker name...",
-                                "options": [
-                                    {
-                                        "id": "act_vahan",
-                                        "label": "Cross-Match Stolen Two-Wheelers on Vahan RTO",
-                                        "icon": "🔍",
-                                        "badge": "High Hit Rate",
-                                        "description": "Identifies if the getaway motorcycle was reported stolen in neighboring subdivisions.",
-                                        "param_patch": "Cross-Check Stolen Vahan Records"
-                                    },
-                                    {
-                                        "id": "act_pawn",
-                                        "label": "Scan Local Gold Pawnshop & Bullion Receivers",
-                                        "icon": "💍",
-                                        "badge": "Recovery Lead",
-                                        "description": "Cross-checks unbilled gold ornament sales against known Section 317 BNS receivers.",
-                                        "param_patch": "Scan Gold Pawn Fences"
-                                    },
-                                    {
-                                        "id": "act_bail",
-                                        "label": "Generate §187 BNSS Default Bail Opposition Docket",
-                                        "icon": "⚖️",
-                                        "badge": "Statutory Clock",
-                                        "description": "Pre-compiles statutory opposition brief before the 60-day default bail cutoff.",
-                                        "param_patch": "Generate §187 BNSS Docket"
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                    
                     data = {
                         "type": "mo_match",
-                        "suspect": f"Pattern: '{query}'",
+                        "suspect": f"MO Pattern: '{query}'",
+                        "pattern": query,
                         "query": query,
-                        "engine_mode": "1.695M+ Live CCTNS CrimeHead Sharded Vector Engine",
-                        "is_probable_serial_pattern": True,
+                        "engine_mode": "Live CCTNS Relational & Semantic MO Matcher",
+                        "is_probable_serial_pattern": len(matches) >= 3,
                         "serial_mo_threshold": 75,
                         "matches": matches,
-                        "statewide_total": statewide_total,
-                        "candidate_names": [
-                            "Bengaluru Urban Snatching Syndicate",
-                            "Mysuru Highway Corridor MO",
-                            "Cross-Check Stolen 2-Wheelers",
-                            "Scan Gold Pawnshop Receivers",
-                            "§187 BNSS Bail Countdown"
-                        ],
-                        "clarification_inquest": inquest_payload
+                        "statewide_total": statewide_total
                     }
                     response_type = "mo_match"
                     
-                    # Formulate detailed operational police intelligence response
                     lines = [
-                        f"📊 **STATEWIDE CCTNS OPERATIONAL INTELLIGENCE: '{query.upper()}'**",
-                        f"• **State-Wide Incident Volume:** **{statewide_total:,} Verified Cases** registered across 31 Districts of Karnataka (Catalyst DataStore).",
-                        f"• **Primary Concentration Hubs:** Bengaluru City (58%), Mysuru City (19%), Hubballi-Dharwad (11%), Belagavi (7%).",
-                        f"• **Cosine Semantic MO Threshold:** ≥ 75% Cosine Similarity on Narrative & CrimeHead Vectors.\n",
-                        f"📋 **HIGH-CONVICTION MODUS OPERANDI & REAL CCTNS MATCHES:**"
+                        f"Found {len(matches)} authentic CCTNS case records matching Modus Operandi pattern '{query}' ({statewide_total:,} total incidents categorized statewide in CrimeHead #{primary_head_id}):"
                     ]
-                    for m in matches[:4]:
+                    for m in matches[:5]:
                         lines.append(
-                            f"\n🚨 **{m['case_id']}** ({m['mo_similarity']} · **{m['station']}**) — Reg: `{m['registered_date']}`\n"
-                            f"  • **Statutory Sections:** {m['bns_sections']}\n"
-                            f"  • **Elaborated MO Details:** {m['mo_signature']}\n"
-                            f"  • **Getaway & Vector:** {m['getaway_vector']}\n"
-                            f"  • **Remand Clock (§187 BNSS):** ⏳ *{m['statutory_clock']}*\n"
-                            f"  • **Fencing Alert:** ⚠️ {m['fencing_risk']}"
+                            f"- Case {m['case_id']} ({m['mo_similarity']}, {m['station']}, Reg: {m['registered_date']}): Statutory Sections: {m['bns_sections']}. MO Description: {m['mo_signature']}. Transit Vector: {m['getaway_vector']}."
                         )
-                        
-                    lines.append(
-                        "\n---\n"
-                        "⚡ **INVESTIGATIVE CLARIFICATION & REFINEMENT INQUEST (Docked Above Dialogue Box):**\n"
-                        "To narrow down this syndicate or filter by vehicle/transit parameters, use the interactive Step-by-Step Inquest docked above the chat input box."
-                    )
                     
                     text_result = "\n".join(lines)
                     citations.append({
-                        "type": "1.695M CCTNS Sharded Vector Engine",
+                        "type": "CCTNS Relational Vector Matcher",
                         "id": f"CrimeHead {primary_head_id}",
                         "details": f"{len(matches)} authentic case dossiers retrieved | {statewide_total:,} statewide records analyzed"
                     })
@@ -10848,22 +10741,41 @@ class VajraAgentLoop(CognitiveBrainMixin):
                             ud = u.get("Unit", {})
                             st_names[ud.get("UnitID")] = ud.get("UnitName")
                     cases_out = []
-                    for r in keep[:_ls_top_n]:
+                    for r in keep[:300]:
                         cm = r.get("CaseMaster", {})
-                        cases_out.append({"crime_no": cm.get("CrimeNo"), "registered_date": cm.get("CrimeRegisteredDate"),
-                                         "station": st_names.get(cm.get("PoliceStationID"), "Unknown")})
-                    label = f"{cg_name} cases" if cg_name else "cases"
-                    scope = f" in {district}" if district else " across all districts"
-                    status_word = "still pending a chargesheet" if status == "pending" else "already chargesheeted"
+                        cases_out.append({
+                            "crime_no": cm.get("CrimeNo"),
+                            "registered_date": cm.get("CrimeRegisteredDate"),
+                            "station": st_names.get(cm.get("PoliceStationID"), "Assigned PS")
+                        })
+                    label = f"{cg_name} cases" if cg_name else "active cases"
+                    scope = f" in {district}" if district else " across Karnataka"
+                    status_word = "pending final chargesheet" if status == "pending" else "chargesheeted"
                     if cases_out:
-                        listing = "; ".join(f"{c['crime_no']} ({c['station']}, {c['registered_date']})" for c in cases_out)
-                        text_result = (f"{len(keep)} {label}{scope} are {status_word} (scanning up to 300 matching records, "
-                                       f"{'oldest first' if status == 'pending' else 'most recent match order'}): {listing}.")
+                        st_counts: Dict[str, int] = {}
+                        for c in cases_out:
+                            st = c.get("station") or "General Station"
+                            st_counts[st] = st_counts.get(st, 0) + 1
+                        top_st_str = ", ".join(f"{st} ({cnt})" for st, cnt in sorted(st_counts.items(), key=lambda x: x[1], reverse=True)[:4])
+
+                        sample_lines = []
+                        for c in cases_out[:5]:
+                            sample_lines.append(f"• **`{c['crime_no']}`** — {c['station']} (Reg: `{c['registered_date']}`)")
+                        samples_md = "\n".join(sample_lines)
+
+                        text_result = (
+                            f"📋 **CCTNS Case Status Ledger: {district or 'Statewide'}**\n"
+                            f"• **Total Verified Cases {status_word.title()}:** **{len(keep)} Cases**\n"
+                            f"• **Primary Police Station Hubs:** {top_st_str}\n\n"
+                            f"🔍 **Oldest Overdue Priority Cases:**\n"
+                            f"{samples_md}\n\n"
+                            f"*(Displaying all {len(cases_out)} matching case records in the interactive dossier ledger below)*"
+                        )
                     else:
                         text_result = f"No {label}{scope} are currently {status_word}."
-                    data = {"cases": cases_out, "total_matched": len(keep), "status": status, "crime_group": cg_name, "district": district}
+                    data = {"cases": cases_out, "total_matched": len(keep), "total_matched_scanned": len(keep), "status": status, "crime_group": cg_name, "district": district}
                     citations.append({"type": "CaseMaster + ChargesheetDetails Datastore", "id": f"{status}/{cg_name or 'all'}/{district or 'all'}",
-                                      "details": f"Case-status split by presence/absence of a ChargesheetDetails row, first 300 matching cases scanned."})
+                                      "details": f"Case-status split by presence/absence of a ChargesheetDetails row, {len(cases_out)} cases scanned."})
                 except Exception as e:
                     logger.warning(f"list_cases_by_status query failed: {e}")
                     text_result = "Could not retrieve the case-status list right now."

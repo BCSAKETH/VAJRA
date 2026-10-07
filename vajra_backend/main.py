@@ -5499,7 +5499,7 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     # load ever needs it, but isn't the fix for any single turn's own speed.
     _ai_task = asyncio.create_task(_run_ai_turn_and_persist(
         session_id, message, lang, employee_id, unit_id, payload.client_msg_id,
-        officer_name=first_name, officer_badge=request.state.kgid,
+        officer_name=full_officer_name, officer_badge=request.state.kgid,
         answer_mode=(payload.answer_mode or "standard"),
         variant_data=_assistant_variant_data,
         persona_override=payload.persona_override,

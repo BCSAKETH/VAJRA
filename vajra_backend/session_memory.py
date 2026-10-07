@@ -322,18 +322,17 @@ class DualTierMemoryManager:
 
         try:
             emp_res = catalyst_app.zql().execute_query(
-                f"SELECT EmployeeID, KGID, FirstName, LastName, UnitID, RankID, DesignationID, RoleTier, Email "
+                f"SELECT EmployeeID, KGID, FirstName, UnitID, RankID, DesignationID, Email "
                 f"FROM Employee WHERE KGID = '{escape_zcql_literal(clean_kgid)}' LIMIT 1"
             )
             if emp_res:
                 emp = emp_res[0].get("Employee", {})
                 first = emp.get("FirstName") or ""
-                last = emp.get("LastName") or ""
-                profile["officer_name"] = f"{first} {last}".strip() or f"Officer {clean_kgid}"
+                profile["officer_name"] = first.strip() or f"Officer {clean_kgid}"
                 profile["unit_id"] = emp.get("UnitID")
                 profile["rank_id"] = emp.get("RankID")
                 profile["designation_id"] = emp.get("DesignationID")
-                profile["role_tier"] = emp.get("RoleTier") or "officer"
+                profile["role_tier"] = "officer"
                 profile["email"] = emp.get("Email")
 
                 # Resolve Unit & District Names
@@ -351,6 +350,15 @@ class DualTierMemoryManager:
                             )
                             if d_res:
                                 profile["district"] = d_res[0].get("District", {}).get("DistrictName", "Karnataka")
+
+                # Resolve Rank Name
+                if profile["rank_id"]:
+                    r_res = catalyst_app.zql().execute_query(
+                        f"SELECT RankName FROM Rank WHERE RankID = {profile['rank_id']} LIMIT 1"
+                    )
+                    if r_res:
+                        profile["rank"] = r_res[0].get("Rank", {}).get("RankName") or "Officer"
+                        profile["rank_name"] = profile["rank"]
 
             self.update_macro_profile(clean_kgid, profile)
         except Exception as e:

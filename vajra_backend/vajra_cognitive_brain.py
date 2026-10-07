@@ -1704,6 +1704,13 @@ class CognitiveBrainMixin:
                     if t:
                         target_name = t
                         break
+        _NON_SUBJECT_TERMS = {
+            "our radar", "the radar", "radar", "pending cases", "pending case", "cases pending",
+            "cases", "today", "yesterday", "this week", "this month", "bengaluru", "bangalore",
+            "karnataka", "hotspots", "crime", "crimes", "patrol", "beat", "fir", "firs",
+            "chargesheet", "chargesheets", "remand", "status", "overview", "summary", "report",
+            "statutory", "all", "what cases", "which cases"
+        }
         if not target_name:
             import re
             m = re.search(r"\b(?:on|for|suspect|about|investigation\s+on)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)", query, re.IGNORECASE)
@@ -1711,19 +1718,32 @@ class CognitiveBrainMixin:
                 extracted = m.group(1).strip()
                 if extracted.lower().startswith("on "):
                     extracted = extracted[3:].strip()
-                target_name = extracted.title()
+                ext_low = extracted.lower()
+                if ext_low not in _NON_SUBJECT_TERMS and not any(term in ext_low for term in ("radar", "pending", "today", "case", "station", "district", "city")):
+                    target_name = extracted.title()
 
-        title_subject = target_name.upper() if target_name else "TARGET SUBJECT"
+        is_suspect_dossier = bool(target_name)
+        title_subject = target_name.upper() if target_name else "ACTIVE OPERATIONAL RADAR"
         age_str = f"Age: {data_payload.get('age')} • " if data_payload.get("age") else ""
 
-        lines = [
-            f"# 📜 COMPREHENSIVE INVESTIGATION DOSSIER: {title_subject}",
-            f"**Subject:** {target_name or 'Identified Target'} • {age_str}**State Registry:** Karnataka CCTNS Accused Registry • **Investigation Classification:** High-Priority Multi-Jurisdictional Inquest",
-            "",
-            "---",
-            "",
-            "### 📋 Executive Intelligence Briefing",
-        ]
+        if is_suspect_dossier:
+            lines = [
+                f"# 📜 COMPREHENSIVE INVESTIGATION DOSSIER: {title_subject}",
+                f"**Subject:** {target_name} • {age_str}**State Registry:** Karnataka CCTNS Accused Registry • **Investigation Classification:** High-Priority Multi-Jurisdictional Inquest",
+                "",
+                "---",
+                "",
+                "### 📋 Executive Intelligence Briefing",
+            ]
+        else:
+            lines = [
+                f"# 📜 OPERATIONAL INTELLIGENCE DOSSIER: {title_subject}",
+                f"**Operational Scope:** Karnataka State CCTNS Registry • **Classification:** Statutory Remand & Active Case Disposal Docket",
+                "",
+                "---",
+                "",
+                "### 📋 Executive Intelligence Briefing",
+            ]
 
         # Build dynamic executive summary from gathered facets
         summary_sentences = []
@@ -1746,13 +1766,18 @@ class CognitiveBrainMixin:
         txns = data_payload.get("financial_transactions") or []
         if txns:
             summary_sentences.append(f"Financial forensic inquest traced **{len(txns)} linked transaction node(s)**.")
-        else:
+        elif is_suspect_dossier:
             summary_sentences.append("Direct banking records show no indexed suspicious mule accounts under primary name; cross-jurisdictional financial inquiries remain active.")
+
+        cases = data_payload.get("cases") or []
+        tot_matched = data_payload.get("total_matched") or len(cases)
+        if tot_matched and not is_suspect_dossier:
+            summary_sentences.append(f"Statewide CCTNS active registry scan identifies **{tot_matched} pending case files** requiring statutory review and chargesheet disposal.")
 
         if summary_sentences:
             lines.append(" ".join(summary_sentences))
         else:
-            lines.append(f"Comprehensive multi-capability intelligence synthesis compiled for {target_name or 'target entity'}.")
+            lines.append(f"Comprehensive multi-capability intelligence synthesis compiled for operational review.")
 
         lines.append("")
         lines.append("---")
