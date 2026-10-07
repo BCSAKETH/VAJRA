@@ -36,6 +36,8 @@ if _os.path.exists(_cfg_path):
         pass
 
 import os
+import sys
+import threading as _threading
 import re
 import json
 import time
@@ -136,22 +138,56 @@ app.include_router(officer_governance.router)
 
 # Load serialized ML artifacts
 risk_calibrator = None
+dbscan_model = None
+xgboost_risk_model = None
+shap_explainer = None
+label_encoders = None
+
 try:
-    dbscan_model = joblib.load("dbscan_hotspots.joblib")
-    xgboost_risk_model = joblib.load("xgboost_risk_model.joblib")
-    import shap
-    shap_explainer = shap.TreeExplainer(xgboost_risk_model, feature_perturbation='tree_path_dependent')
-    label_encoders = joblib.load("label_encoders.joblib")
-    # Isotonic calibrator applied ON TOP of the raw XGBoost probability so the
-    # officer-facing risk % reflects the real conviction rate (measured ECE
-    # 16% -> ~0%, Brier 0.21 -> 0.18). SHAP still explains the untouched booster.
-    # Optional: if absent, scores are the raw (uncalibrated) model output.
-    try:
-        risk_calibrator = joblib.load("isotonic_calibrator.joblib")
-        logger.info("Loaded isotonic risk calibrator.")
-    except Exception:
-        risk_calibrator = None
-    logger.info("Successfully loaded God Pro Max ML models and dynamically initialized SHAP TreeExplainer.")
+    if os.path.exists("dbscan_hotspots.joblib"):
+        dbscan_model = joblib.load("dbscan_hotspots.joblib")
+    if os.path.exists("xgboost_risk_model.joblib"):
+        xgboost_risk_model = joblib.load("xgboost_risk_model.joblib")
+    if os.path.exists("label_encoders.joblib"):
+        label_encoders = joblib.load("label_encoders.joblib")
+    if os.path.exists("isotonic_calibrator.joblib"):
+        try:
+            risk_calibrator = joblib.load("isotonic_calibrator.joblib")
+            logger.info("Loaded isotonic risk calibrator.")
+        except Exception:
+            risk_calibrator = None
+
+    class _LazyShapExplainer:
+        def __init__(self, model):
+            self.model = model
+            self._explainer = None
+            self._lock = _threading.Lock()
+
+        def _get(self):
+            if self._explainer is None and self.model is not None:
+                with self._lock:
+                    if self._explainer is None:
+                        try:
+                            import shap
+                            self._explainer = shap.TreeExplainer(self.model, feature_perturbation='tree_path_dependent')
+                            logger.info("Lazy SHAP TreeExplainer initialized successfully.")
+                        except Exception as ex:
+                            logger.warning(f"Lazy SHAP explainer init failed: {ex}")
+            return self._explainer
+
+        def __call__(self, *args, **kwargs):
+            exp = self._get()
+            return exp(*args, **kwargs) if exp else None
+
+        def shap_values(self, *args, **kwargs):
+            exp = self._get()
+            return exp.shap_values(*args, **kwargs) if exp else None
+
+        def __bool__(self):
+            return self.model is not None
+
+    shap_explainer = _LazyShapExplainer(xgboost_risk_model) if xgboost_risk_model else None
+    logger.info("Successfully configured ML models and lazy SHAP TreeExplainer.")
 except Exception as e:
     logger.critical(f"Critical failure loading ML models: {e}. FastAPI starting with fallback prediction.")
     dbscan_model, xgboost_risk_model, shap_explainer, label_encoders, risk_calibrator = None, None, None, None, None
