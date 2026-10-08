@@ -470,18 +470,55 @@ async def process_officer_query_stream(
     
     # Fast civility response if no operational intent exists
     if not has_operational_intent:
-        greeting_text = (
-            f"ನಮಸ್ಕಾರ ಅಧಿಕಾರಿಗಳೇ (KGID: {kgid}). ವಜ್ರ 2.0 ಸಿದ್ಧವಾಗಿದೆ. ತನಿಖಾ ವಿವರಗಳನ್ನು ತಿಳಿಸಿ."
-            if lang == "kn" else
-            f"Greetings Officer (KGID: {kgid}). VAJRA 2.0 Forensic Intelligence active. How may I assist your investigation?"
-        )
-        for w in greeting_text.split(" "):
-            yield {"token": w + " ", "done": False}
-            await asyncio.sleep(0.01)
+        # Load Omnipresent Context
+        micro_mem = dual_memory.get_micro_context(session_id)
+        macro_mem = dual_memory.get_macro_profile(kgid)
+        
+        officer_name = macro_mem.get("name", "Officer")
+        rank = macro_mem.get("rank", "Investigator")
+        station = macro_mem.get("station", "Headquarters")
+        
+        active_suspect = micro_mem.get("last_offender_id") or (micro_mem.get("active_suspects", [None])[-1] if micro_mem.get("active_suspects") else None)
+        active_case = micro_mem.get("active_case_id")
+        
+        # Calculate Exact Temporal Awareness (No hardcoded shifts)
+        from datetime import datetime
+        import pytz
+        ist = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist)
+        exact_time_str = now.strftime('%I:%M %p')
+
+        # The "God Level" Witty Prompt Envelope
+        system_prompt = f"""You are VAJRA, the elite cognitive AI Copilot of the Karnataka State Police.
+The officer just greeted you with: '{raw_query}'
+
+AMBIENT CONTEXT:
+- Officer: {rank} {officer_name}
+- Station: {station}
+- Actual Current Time: {exact_time_str} IST
+- Active Case in memory: {active_case or 'None'}
+- Active Suspect in memory: {active_suspect or 'None'}
+
+DIRECTIVES:
+1. Cross-reference their greeting with the Actual Current Time. If they say "Good morning" at night (or vice versa), playfully call them out, make a witty remark about long shifts, lack of sleep, or too much coffee, and correct them.
+2. If the time matches their greeting, greet them sharply by rank and name.
+3. If they have an active case/suspect, PREDICT the next logical investigative step (e.g., "Are we ready to pull the CDRs for [Suspect]?"). If memory is empty, ask for their tactical priority.
+4. Tone: You have a dry, sharp, and highly intelligent sense of humor. Act like a trusted, elite human colleague. Keep it concise (2-3 sentences maximum)."""
+
+        # Instantiate LLM and stream the dynamic synthesis instantly
+        from catalyst_llm import CatalystLLM
+        fast_llm = CatalystLLM()
+        
+        full_greeting = ""
+        async for chunk in fast_llm.stream_synthesis(system_prompt, lang=lang):
+            full_greeting += chunk
+            yield {"token": chunk, "done": False}
+            await asyncio.sleep(0.005)
+            
         yield {
             "token": "",
             "done": True,
-            "full_text": greeting_text,
+            "full_text": full_greeting,
             "response_type": "text",
             "data": {},
             "citations": []

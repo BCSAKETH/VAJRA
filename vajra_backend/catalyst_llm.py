@@ -596,3 +596,40 @@ class CatalystLLM:
         except Exception as e:
             logger.error(f"Error querying QuickML RAG endpoint: {e}")
             return {"success": False, "error": str(e)}
+
+    async def stream_synthesis(self, prompt: str, lang: str = "en"):
+        """
+        Executes synthesis using QuickML LLM chat and yields token chunks asynchronously.
+        """
+        import asyncio
+        loop = asyncio.get_running_loop() if asyncio.get_event_loop().is_running() else asyncio.get_event_loop()
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            res = await loop.run_in_executor(
+                None,
+                lambda: self.chat(messages, tools=None, use_agent_system_prompt=False, max_tokens=1000)
+            )
+            text = ""
+            if isinstance(res, dict) and "choices" in res and res["choices"]:
+                content = res["choices"][0].get("message", {}).get("content", "")
+                if "</think>" in content:
+                    content = content.split("</think>")[-1].strip()
+                text = content
+            elif isinstance(res, dict) and "text_response" in res:
+                text = res["text_response"]
+        except Exception as e:
+            logger.warning(f"Error in stream_synthesis: {e}")
+            text = ""
+
+        if not text:
+            text = (
+                "ನಮಸ್ಕಾರ ಅಧಿಕಾರಿಗಳೇ. ವಜ್ರ 2.0 ಸಿದ್ಧವಾಗಿದೆ. ತನಿಖಾ ನಿರ್ದೇಶನವನ್ನು ತಿಳಿಸಿ."
+                if lang == "kn" else
+                "Greetings Officer. VAJRA 2.0 Cognitive Intelligence Copilot active. What is your tactical priority?"
+            )
+
+        words = text.split(" ")
+        for idx, w in enumerate(words):
+            chunk = w + (" " if idx < len(words) - 1 else "")
+            yield chunk
+            await asyncio.sleep(0.005)
