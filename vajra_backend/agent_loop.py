@@ -19,6 +19,7 @@ import time
 import copy
 import hashlib
 import asyncio
+import pytz
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Tuple, Optional, Callable, AsyncGenerator, Union
@@ -453,11 +454,6 @@ async def process_officer_query_stream(
     
     # Fast civility response if no operational intent exists
     if not has_operational_intent:
-        from datetime import datetime
-        import pytz
-        import json
-        import asyncio
-        
         micro_mem = dual_memory.get_micro_context(session_id)
         macro_mem = dual_memory.get_macro_profile(kgid)
         
@@ -584,8 +580,13 @@ def _strip_salutations_helper(text: str) -> Tuple[str, bool, Optional[str]]:
         return ("", False, None)
     
     raw = text.strip()
+    # Strip any leading [Context: ...] context injection blocks before checking for greetings
+    clean_target = re.sub(r'^\[Context:[^\]]*\]\s*', '', raw, flags=re.IGNORECASE).strip()
+    if not clean_target:
+        return ("", False, None)
+        
     # Normalize punctuation
-    low = re.sub(r'[@\-_.,!?#]', ' ', raw.lower()).strip()
+    low = re.sub(r'[@\-_.,!?#]', ' ', clean_target.lower()).strip()
     low = re.sub(r'\s+', ' ', low)
     
     # Aggressively remove conversational fluff from the evaluation string
@@ -596,15 +597,15 @@ def _strip_salutations_helper(text: str) -> Tuple[str, bool, Optional[str]]:
     
     # If the remaining string is less than 3 characters, it's pure conversation
     if len(intent_check_str) < 3:
-        return (raw, False, raw)
+        return (clean_target, False, clean_target)
         
-    # Otherwise, it has operational intent. We return the original query 
+    # Otherwise, it has operational intent. We return the query 
     # (minus leading exact greetings) for the LLM to process.
     prefix_pattern = re.compile(
         r'^(?:h+[eaiou]*[ylo]+|g+o+o+d+\s*(?:m+o+r+n+i+n+g+|e+v+e+n+i+n+g+|d+a+y+|a+f+t+e+r+n+o+o+n+)|namaskara|namaste|hi\s+vajra|hello\s+vajra|hey\s+vajra)[\s,!:;.\-–—]+',
         re.IGNORECASE
     )
-    cleaned = raw
+    cleaned = clean_target
     detected_sal = None
     m = prefix_pattern.match(cleaned)
     if m:
@@ -664,17 +665,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
             return last_chunk or {}
 
         try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _run())
-                    res = future.result()
-            else:
-                res = loop.run_until_complete(_run())
-        except Exception as ex:
-            logger.warning(f"Error in execution fabric: {ex}, running fallback")
             res = asyncio.run(_run())
+        except Exception as ex:
+            logger.error(f"Error in execution fabric run_agent_loop: {ex}")
+            res = {}
 
         return {
             "text": res.get("full_text", "Intelligence report generated."),
