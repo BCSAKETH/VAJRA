@@ -168,24 +168,7 @@ try:
         logger.info("Initializing Zoho Catalyst SDK with no arguments (Fallback).")
         catalyst_app = zcatalyst_sdk.initialize_app()
     
-    # Monkeypatch execute_query with self-healing token refresh & retry on 401
-    def patched_execute_query(self, query: str):
-        logger.info(f"Patched ZCQL query: {query}")
-        # Court-Admissible Provenance HUD (implementation_plan.md #7): every
-        # real ZCQL SQL string executed during a turn is logged here, into a
-        # PER-THREAD list -- this is the ONE existing choke point every ZCQL
-        # call in the whole app already passes through (already patched here
-        # for token refresh), so this closes the "exact SQL query executed"
-        # gap without touching any of the hundreds of individual call sites.
-        # Thread-local, not global: AppSail runs each turn on its own
-        # worker thread (run_in_threadpool), so this never leaks one
-        # officer's queries into another's concurrent turn.
-        try:
-            _log = getattr(_zql_query_log, "queries", None)
-            if _log is not None:
-                _log.append(query)
-        except Exception:
-            pass
+    def _execute_http_sync(self, query: str):
         token = get_cached_access_token()
         if not token:
             try:
@@ -203,7 +186,7 @@ try:
             "X-Catalyst-Environment": "Development",
             "environment": "Development"
         }
-        res = requests.post(url, headers=headers, json={"query": query})
+        res = requests.post(url, headers=headers, json={"query": query}, timeout=35)
         
         # Self-healing: if token expired or invalid, force refresh once and retry
         if res.status_code == 401:
@@ -211,13 +194,37 @@ try:
             fresh_token = get_cached_access_token(force_refresh=True)
             if fresh_token:
                 headers["Authorization"] = f"Zoho-oauthtoken {fresh_token}"
-                res = requests.post(url, headers=headers, json={"query": query})
+                res = requests.post(url, headers=headers, json={"query": query}, timeout=35)
                 
         logger.info(f"Patched ZCQL response status: {res.status_code}")
         if res.status_code != 200:
             raise Exception(f"ZCQL query failed: {res.status_code} - {res.text}")
         return res.json().get("data", [])
+
+    # Monkeypatch execute_query with self-healing token refresh & loop-safe execution
+    def patched_execute_query(self, query: str):
+        logger.info(f"Patched ZCQL query: {query}")
+        try:
+            _log = getattr(_zql_query_log, "queries", None)
+            if _log is not None:
+                _log.append(query)
+        except Exception:
+            pass
+
+        # If called from an active asyncio event loop thread, isolate execution to avoid event-loop stalls
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                    future = pool.submit(self._execute_http_sync, query)
+                    return future.result()
+        except RuntimeError:
+            pass
+
+        return self._execute_http_sync(query)
         
+    Zcql._execute_http_sync = _execute_http_sync
     Zcql.execute_query = patched_execute_query
     
     # Add alias zql to CatalystApp for compatibility
@@ -399,6 +406,16 @@ class AsyncZCQLEngine:
 
 # Global async ZCQL engine instance
 async_zcql = AsyncZCQLEngine()
+
+
+async def execute_async_query(query: str) -> List[Dict[str, Any]]:
+    """Unified async query entrypoint using AsyncZCQLEngine connection pool."""
+    return await async_zcql.execute_query(query)
+
+
+async def execute_parallel_queries(queries: Dict[str, str]) -> Dict[str, List[Dict[str, Any]]]:
+    """Unified parallel query entrypoint using AsyncZCQLEngine connection pool."""
+    return await async_zcql.async_gather_joins(queries)
 
 
 def zcql_insert_row(table_name: str, row: Dict[str, Any]) -> None:
