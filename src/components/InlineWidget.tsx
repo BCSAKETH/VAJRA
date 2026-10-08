@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, CircleMarker, Popup, useMap } from "react-leaf
 import L from "leaflet";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { Maximize2, ShieldAlert, ShieldCheck, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart, Newspaper, ExternalLink, Radio, ChevronDown, ChevronRight, Code2, Copy, Check, Sparkles, Download } from "lucide-react";
+import { Maximize2, ShieldAlert, ShieldCheck, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart, Newspaper, ExternalLink, Radio, ChevronDown, ChevronRight, Code2, Copy, Check, Sparkles, Download, Scale } from "lucide-react";
 import { ExpandedOverlay } from "./ExpandedOverlay";
 import { ErrorBoundary } from "./ErrorBoundary";
 

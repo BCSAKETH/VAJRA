@@ -986,6 +986,7 @@ export const AIChatScreen: React.FC = () => {
     // assigns one (see below), and cleared by pollForPendingReply / the
     // finally block regardless of which chat is on screen when that happens.
     markPending(sendSessionId ?? "__new__");
+    let turnSessionId: string | null = sendSessionId || null;
 
     try {
       const response = await fetch(`${API_BASE}/api/chat`, {
@@ -1035,7 +1036,7 @@ export const AIChatScreen: React.FC = () => {
       // Resolved id for THIS turn -- sendSessionId for an existing
       // conversation, or the id the backend just auto-created if this was
       // the first message of a brand new one.
-      const turnSessionId = sendSessionId || data.session_id || null;
+      turnSessionId = sendSessionId || data.session_id || null;
       if (turnSessionId) {
         streamTicker(turnSessionId);
       }
