@@ -588,10 +588,12 @@ class VajraAgentLoop(CognitiveBrainMixin):
     Production VajraAgentLoop bridge connecting endpoints to the Semantic Execution Fabric.
     Preserves all core utility functions (hotspot clustering, case resolution, audit logging).
     """
-    def __init__(self, dbscan_model=None, xgboost_model=None, shap_explainer=None, llm=None):
+    def __init__(self, dbscan_model=None, xgboost_model=None, shap_explainer=None, label_encoders=None, risk_calibrator=None, llm=None, *args, **kwargs):
         self.dbscan_model = dbscan_model
         self.xgboost_model = xgboost_model
         self.shap_explainer = shap_explainer
+        self.label_encoders = label_encoders
+        self.risk_calibrator = risk_calibrator
         self.llm = llm or CatalystLLM()
         self.qwen = CatalystQwen()
         self.compiler = SemanticPlanCompiler(self.llm)
