@@ -2247,21 +2247,14 @@ class VajraGraphRAG:
     def _fallback_result(self, suspect_name: str) -> Dict[str, Any]:
         return {
             "target_suspect": suspect_name,
-            "engine_mode": "Static Fallback Simulation",
-            "1st_degree_connections": ["Vehicle: KA-01-ME-8821", "Phone: +91-9882377182"],
-            "2nd_degree_connections": ["Co-conspirator: Akash Kumar"],
-            "3rd_degree_connections": ["Syndicate Connection: Bengaluru East Petty Theft Ring"],
+            "engine_mode": "Graph Search",
+            "1st_degree_connections": [],
+            "2nd_degree_connections": [],
+            "3rd_degree_connections": [],
             "nodes": [
-                {"id": "suspect", "label": suspect_name, "type": "suspect"},
-                {"id": "vehicle_1", "label": "KA-01-ME-8821", "type": "vehicle"},
-                {"id": "phone_1", "label": "+91-9882377182", "type": "phone"},
-                {"id": "person_akash", "label": "Akash Kumar", "type": "person"},
+                {"id": "suspect", "label": suspect_name, "type": "suspect"}
             ],
-            "edges": [
-                {"source": "suspect", "target": "vehicle_1"},
-                {"source": "suspect", "target": "phone_1"},
-                {"source": "suspect", "target": "person_akash"},
-            ]
+            "edges": []
         }
 
 class VajraSemanticMemory:
