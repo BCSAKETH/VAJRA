@@ -5558,71 +5558,63 @@ async def stream_chat_endpoint(payload: ChatRequest, request: Request, location_
     _persist_chat_message(session_id, "user", display_text, "text", _user_msg_data, sender_employee_id=employee_id)
 
     async def _token_generator():
-        last_ping = time.time()
+        from agent_loop import process_officer_query_stream
+        import json
+        from datetime import datetime
         
-        loop = asyncio.get_running_loop()
-        future = loop.run_in_executor(
-            None,
-            agent_loop.run_agent_loop,
-            message,
-            session_id,
-            employee_id,
-            unit_id,
-            full_officer_name,
-            payload.answer_mode or "standard",
-            str(getattr(request.state, "kgid", employee_id) or employee_id),
-            None,
-            payload.persona_override
-        )
-
-        while not future.done():
-            if await request.is_disconnected():
-                logger.warning(f"SSE client disconnected for session {session_id}")
-                return
-            if time.time() - last_ping > 15:
-                yield ": keep-alive\n\n"
-                last_ping = time.time()
-            await asyncio.sleep(0.05)
-
-        result = await future
-        full_text = result.get("text", "")
+        kgid_val = str(getattr(request.state, "kgid", employee_id) or employee_id)
         
-        words = full_text.split(" ")
-        for i, word in enumerate(words):
-            chunk = word + (" " if i < len(words) - 1 else "")
-            evt = {
-                "token": chunk,
-                "session_id": session_id,
-                "done": False
-            }
-            yield f"data: {json.dumps(evt, default=str)}\n\n"
-            await asyncio.sleep(0.01)
-
-        final_evt = {
-            "token": "",
-            "session_id": session_id,
-            "done": True,
-            "full_text": full_text,
-            "response_type": result.get("response_type", "text"),
-            "data": result.get("data", {}),
-            "citations": result.get("citations", []),
-            "response_style": result.get("response_style", "CCTNS_FORENSIC_LEDGER")
-        }
-        
-        _persist_chat_message(
-            session_id, "assistant", full_text, result.get("response_type", "text"),
-            result.get("data", {}), citations=result.get("citations", [])
-        )
-        
-        await connection_manager.broadcast(session_id, {
-            "type": "message", "sender": "assistant",
-            "sender_name": "VAJRA Intelligence", "text": full_text,
-            "response_type": result.get("response_type", "text"),
-            "data": result.get("data", {}), "citations": result.get("citations", []),
-            "timestamp": datetime.utcnow().isoformat()
-        })
-
-        yield f"data: {json.dumps(final_evt, default=str)}\n\n"
+        try:
+            # DIRECT ASYNC CONSUMPTION - No thread blocking!
+            # Tokens stream instantly from the LLM to the client.
+            async for sse_chunk in process_officer_query_stream(
+                query=message,
+                session_id=session_id,
+                kgid=kgid_val,
+                answer_mode=payload.answer_mode or "standard",
+                persona_override=payload.persona_override,
+                lang=lang
+            ):
+                # 1. Yield the SSE chunk directly to the frontend immediately
+                yield sse_chunk
+                
+                # 2. Intercept the final payload to persist to the DB and broadcast
+                if '"done": true' in sse_chunk.lower() or '"done":true' in sse_chunk.lower():
+                    try:
+                        # Strip "data: " prefix to parse JSON for database logging
+                        json_str = sse_chunk.replace("data: ", "").strip()
+                        final_evt = json.loads(json_str)
+                        
+                        full_text = final_evt.get("full_text", "")
+                        resp_type = final_evt.get("response_type", "text")
+                        data_dict = final_evt.get("data", {})
+                        citations = final_evt.get("citations", [])
+                        
+                        # Save to Catalyst Data Store
+                        _persist_chat_message(
+                            session_id, "assistant", full_text, resp_type,
+                            data_dict, citations=citations
+                        )
+                        
+                        # Broadcast to multi-officer room (WebSockets)
+                        await connection_manager.broadcast(session_id, {
+                            "type": "message", "sender": "assistant",
+                            "sender_name": "VAJRA Intelligence", "text": full_text,
+                            "response_type": resp_type,
+                            "data": data_dict, "citations": citations,
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                    except Exception as parse_err:
+                        logger.error(f"Error persisting final SSE chunk: {parse_err}")
+                        
+        except Exception as e:
+            logger.error(f"Stream generation failed: {e}")
+            err_payload = json.dumps({
+                "token": "", "done": True, 
+                "full_text": "Connection to cognitive core interrupted.", 
+                "response_type": "text", "data": {}, "citations": []
+            })
+            yield f"data: {err_payload}\n\n"
 
     return StreamingResponse(
         _token_generator(),
