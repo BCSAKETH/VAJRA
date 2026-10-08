@@ -349,60 +349,36 @@ async def execute_graph_traversal(root_entity: str, hops: int = 2) -> Dict[str, 
     }
 
 
-async def synthesize_grounded_dossier(
-    raw_data: Dict[str, Any],
-    mode: str,
-    officer_context: Dict[str, Any],
-    original_query: str = ""
-) -> AsyncGenerator[Dict[str, Any], None]:
-    """
-    PRIMITIVE 4: Grounded Dossier Synthesis (Real LLM Integration)
-    Takes raw JSON from primitives, forces GLM-4.7 to ground its answer strictly in the data,
-    and streams the response.
-    """
+async def synthesize_grounded_dossier(raw_data: Dict[str, Any], mode: str, officer_context: Dict[str, Any], original_query: str = "") -> AsyncGenerator[Dict[str, Any], None]:
+    from catalyst_llm import CatalystLLM
+    from datetime import datetime
+    import pytz
+    import json
+    import asyncio
+    
     officer_name = officer_context.get("officer_name", "Officer")
     rank = officer_context.get("rank", "Investigator")
     lang = officer_context.get("lang", "en")
-    
-    # Calculate Exact Temporal Awareness for the prompt
-    from datetime import datetime
-    import pytz
-    ist = pytz.timezone('Asia/Kolkata')
-    exact_time_str = datetime.now(ist).strftime('%I:%M %p')
+    exact_time_str = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%I:%M %p')
 
-    # Build the strict context payload
     data_payload = json.dumps({
         "vector_search": raw_data.get("vector_search", []),
         "relational_pushdown": raw_data.get("relational_pushdown", []),
         "graph_traversal": raw_data.get("graph_traversal", {})
     }, default=str)
 
-    # Determine depth based on mode
-    depth_instruction = (
-        "Keep it concise, high-density, and tactical (max 3 bullets). No fluff." 
-        if mode == "standard" else 
-        "Provide a comprehensive, 360-degree forensic dossier with formal headers (e.g., ### 📋 Primary Case Records)."
-    )
+    depth_instruction = "Keep it concise and tactical (max 3 bullets). No fluff." if mode == "standard" else "Provide a comprehensive, 360-degree forensic dossier with formal headers."
 
     system_prompt = f"""You are VAJRA, the elite cognitive AI Copilot of the Karnataka State Police.
 The officer's original query was: '{original_query}'
-
-AMBIENT CONTEXT:
-- Officer: {rank} {officer_name}
-- Actual Time: {exact_time_str} IST
-
+AMBIENT CONTEXT: Officer {rank} {officer_name} | Actual Time: {exact_time_str} IST
 STRICT DIRECTIVES:
-1. If the officer greeted you, respond to the greeting naturally (and playfully correct them if their greeting contradicts the actual time).
+1. If the officer greeted you, respond naturally to it before giving data.
 2. {depth_instruction}
-3. FACTUAL QUARANTINE: You MUST base your response ONLY on the following JSON data. Do not invent names, FIRs, or metrics. If the JSON is empty, state clearly that no records exist in CCTNS.
+3. FACTUAL QUARANTINE: Base your response ONLY on the following JSON. Do not invent names or FIRs. If empty, state no records exist.
+JSON DATA: {data_payload}"""
 
-JSON DATA:
-{data_payload}
-"""
-
-    from catalyst_llm import CatalystLLM
     llm = CatalystLLM()
-    
     full_text = ""
     async for chunk in llm.stream_synthesis(system_prompt, lang=lang):
         full_text += chunk
@@ -410,18 +386,8 @@ JSON DATA:
         await asyncio.sleep(0.005)
 
     yield {
-        "token": "",
-        "done": True,
-        "full_text": full_text,
-        "response_type": "mo_suspect_matches" if raw_data.get("vector_search") else "standard",
-        "data": {
-            "mode": mode,
-            "raw_data_refs": raw_data
-        },
-        "citations": [
-            {"type": "CCTNS CaseMaster Database", "id": "STATEWIDE_RECORDS", "status": "VERIFIED"},
-            {"type": "Section 193 BNSS Forensic Ledger", "id": "CHAIN_AUTHENTICATED", "status": "COMPLIANT"}
-        ]
+        "token": "", "done": True, "full_text": full_text,
+        "response_type": "standard", "data": {"mode": mode, "raw_data_refs": raw_data}, "citations": []
     }
 
 
@@ -452,60 +418,37 @@ async def process_officer_query_stream(
     
     # Fast civility response if no operational intent exists
     if not has_operational_intent:
-        # Load Omnipresent Context
+        from datetime import datetime
+        import pytz
+        from catalyst_llm import CatalystLLM
+        import asyncio
+        
         micro_mem = dual_memory.get_micro_context(session_id)
         macro_mem = dual_memory.get_macro_profile(kgid)
         
         officer_name = macro_mem.get("name", "Officer")
         rank = macro_mem.get("rank", "Investigator")
         station = macro_mem.get("station", "Headquarters")
-        
-        active_suspect = micro_mem.get("last_offender_id") or (micro_mem.get("active_suspects", [None])[-1] if micro_mem.get("active_suspects") else None)
+        active_suspect = micro_mem.get("last_offender_id")
         active_case = micro_mem.get("active_case_id")
-        
-        # Calculate Exact Temporal Awareness (No hardcoded shifts)
-        from datetime import datetime
-        import pytz
-        ist = pytz.timezone('Asia/Kolkata')
-        now = datetime.now(ist)
-        exact_time_str = now.strftime('%I:%M %p')
+        exact_time_str = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%I:%M %p')
 
-        # The "God Level" Witty Prompt Envelope
-        system_prompt = f"""You are VAJRA, the elite cognitive AI Copilot of the Karnataka State Police.
-The officer just greeted you with: '{raw_query}'
-
-AMBIENT CONTEXT:
-- Officer: {rank} {officer_name}
-- Station: {station}
-- Actual Current Time: {exact_time_str} IST
-- Active Case in memory: {active_case or 'None'}
-- Active Suspect in memory: {active_suspect or 'None'}
-
+        system_prompt = f"""You are VAJRA, the elite AI Copilot of the Karnataka State Police. The officer typed: '{raw_query}'
+CONTEXT: Officer {rank} {officer_name} | Station: {station} | Time: {exact_time_str} IST | Active Case: {active_case or 'None'}
 DIRECTIVES:
-1. Cross-reference their greeting with the Actual Current Time. If they say "Good morning" at night (or vice versa), playfully call them out, make a witty remark about long shifts, lack of sleep, or too much coffee, and correct them.
-2. If the time matches their greeting, greet them sharply by rank and name.
-3. If they have an active case/suspect, PREDICT the next logical investigative step (e.g., "Are we ready to pull the CDRs for [Suspect]?"). If memory is empty, ask for their tactical priority.
-4. Tone: You have a dry, sharp, and highly intelligent sense of humor. Act like a trusted, elite human colleague. Keep it concise (2-3 sentences maximum)."""
+1. Cross-reference their greeting with the Actual Current Time. If they say "Good morning" at night (or vice versa), playfully call them out with dry humor.
+2. If time matches, greet them sharply by rank and name.
+3. If they have an active case/suspect, PREDICT the next logical step. If empty, ask for their priority. Keep it to 2-3 sentences max."""
 
-        # Instantiate LLM and stream the dynamic synthesis instantly
-        from catalyst_llm import CatalystLLM
         fast_llm = CatalystLLM()
-        
         full_greeting = ""
         async for chunk in fast_llm.stream_synthesis(system_prompt, lang=lang):
             full_greeting += chunk
             yield {"token": chunk, "done": False}
             await asyncio.sleep(0.005)
             
-        yield {
-            "token": "",
-            "done": True,
-            "full_text": full_greeting,
-            "response_type": "text",
-            "data": {},
-            "citations": []
-        }
-        return
+        yield {"token": "", "done": True, "full_text": full_greeting, "response_type": "text", "data": {}, "citations": []}
+        return  # CRITICAL: Do not remove this return statement!
 
     # 2. Dual-Tier Memory Injection & Topic Shift
     dual_memory.shift_context_topic(session_id, cleaned_query)
