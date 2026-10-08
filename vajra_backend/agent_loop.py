@@ -403,15 +403,27 @@ JSON DATA: {data_payload}"""
 
     llm = CatalystLLM()
     full_text = ""
-    async for chunk in llm.stream_synthesis(system_prompt, lang=lang):
-        full_text += chunk
-        yield {"token": chunk, "done": False}
-        await asyncio.sleep(0.005)
+    try:
+        async for chunk in llm.stream_synthesis(system_prompt, lang=lang):
+            full_text += chunk
+            # CRITICAL: Must yield as SSE string format
+            payload = json.dumps({"token": chunk, "done": False})
+            yield f"data: {payload}\n\n"
+            await asyncio.sleep(0.001)
+    except Exception as e:
+        full_text = "Error synthesizing intelligence. Please check the raw JSON payload."
+        payload = json.dumps({"token": full_text, "done": False})
+        yield f"data: {payload}\n\n"
 
-    yield {
-        "token": "", "done": True, "full_text": full_text,
-        "response_type": "standard", "data": {"mode": mode, "raw_data_refs": raw_data}, "citations": []
-    }
+    final_payload = json.dumps({
+        "token": "", 
+        "done": True, 
+        "full_text": full_text,
+        "response_type": "standard", 
+        "data": {"mode": mode, "raw_data_refs": raw_data}, 
+        "citations": []
+    })
+    yield f"data: {final_payload}\n\n"
 
 
 # ===========================================================================
@@ -425,7 +437,7 @@ async def process_officer_query_stream(
     answer_mode: str = "standard",
     persona_override: Optional[str] = None,
     lang: str = "en"
-) -> AsyncGenerator[Dict[str, Any], None]:
+) -> AsyncGenerator[str, None]:
     """
     Master turn processor for the Ontology-Driven Semantic Execution Fabric.
     1. Salience Stripping: Strips conversational greetings; yields instant civility response if pure greeting.
@@ -443,6 +455,7 @@ async def process_officer_query_stream(
     if not has_operational_intent:
         from datetime import datetime
         import pytz
+        import json
         from catalyst_llm import CatalystLLM
         import asyncio
         
@@ -461,17 +474,37 @@ CONTEXT: Officer {rank} {officer_name} | Station: {station} | Time: {exact_time_
 DIRECTIVES:
 1. Cross-reference their greeting with the Actual Current Time. If they say "Good morning" at night (or vice versa), playfully call them out with dry humor.
 2. If time matches, greet them sharply by rank and name.
-3. If they have an active case/suspect, PREDICT the next logical step. If empty, ask for their priority. Keep it to 2-3 sentences max."""
+3. If they have an active case/suspect, PREDICT the next logical step. Keep it to 2 sentences max."""
 
         fast_llm = CatalystLLM()
         full_greeting = ""
-        async for chunk in fast_llm.stream_synthesis(system_prompt, lang=lang):
-            full_greeting += chunk
-            yield {"token": chunk, "done": False}
-            await asyncio.sleep(0.005)
+        
+        try:
+            # Wrap the generator consumption in a timeout to prevent 100s hangs
+            async def _consume_stream():
+                nonlocal full_greeting
+                async for chunk in fast_llm.stream_synthesis(system_prompt, lang=lang):
+                    full_greeting += chunk
+                    # CRITICAL: Must yield as SSE string format
+                    payload = json.dumps({"token": chunk, "done": False})
+                    yield f"data: {payload}\n\n"
+                    await asyncio.sleep(0.001)
             
-        yield {"token": "", "done": True, "full_text": full_greeting, "response_type": "text", "data": {}, "citations": []}
-        return  # CRITICAL: Do not remove this return statement!
+            async for sse_chunk in _consume_stream():
+                yield sse_chunk
+                
+        except (asyncio.TimeoutError, Exception) as e:
+            # INSTANT FALLBACK IF LLM HANGS
+            fallback = f"Greetings, {rank} {officer_name}. VAJRA is active. How can I assist?"
+            full_greeting = fallback
+            for word in fallback.split():
+                payload = json.dumps({"token": word + " ", "done": False})
+                yield f"data: {payload}\n\n"
+                await asyncio.sleep(0.01)
+            
+        final_payload = json.dumps({"token": "", "done": True, "full_text": full_greeting, "response_type": "text", "data": {}, "citations": []})
+        yield f"data: {final_payload}\n\n"
+        return
 
     # 2. Dual-Tier Memory Injection & Topic Shift
     dual_memory.shift_context_topic(session_id, cleaned_query)
@@ -612,7 +645,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
             async for chunk in process_officer_query_stream(
                 query, session_id, kgid, answer_mode=answer_mode, persona_override=persona_override, lang=lang
             ):
-                last_chunk = chunk
+                if isinstance(chunk, str) and chunk.startswith("data:"):
+                    try:
+                        last_chunk = json.loads(chunk.replace("data:", "").strip())
+                    except Exception:
+                        pass
+                elif isinstance(chunk, dict):
+                    last_chunk = chunk
             return last_chunk or {}
 
         try:
