@@ -602,34 +602,47 @@ class CatalystLLM:
         Executes synthesis using QuickML LLM chat and yields token chunks asynchronously.
         """
         import asyncio
-        loop = asyncio.get_running_loop() if asyncio.get_event_loop().is_running() else asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         messages = [{"role": "user", "content": prompt}]
         try:
             res = await loop.run_in_executor(
                 None,
-                lambda: self.chat(messages, tools=None, use_agent_system_prompt=False, max_tokens=1000)
+                lambda: self.chat(messages, tools=None, use_agent_system_prompt=False, max_tokens=1500)
             )
-            text = ""
-            if isinstance(res, dict) and "choices" in res and res["choices"]:
-                content = res["choices"][0].get("message", {}).get("content", "")
+        except Exception as e:
+            logger.warning(f"Error in stream_synthesis run_in_executor: {e}")
+            res = {"error": str(e)}
+
+        text = ""
+        # Robust parsing to catch errors, unexpected keys, and standard payloads
+        if isinstance(res, dict):
+            if "error" in res:
+                text = f"[QuickML Backend Error]: {res['error']}"
+            elif "choices" in res and len(res["choices"]) > 0:
+                content = res.get("choices")[0].get("message", {}).get("content", "")
                 if "</think>" in content:
                     content = content.split("</think>")[-1].strip()
                 text = content
-            elif isinstance(res, dict) and "text_response" in res:
-                text = res["text_response"]
-        except Exception as e:
-            logger.warning(f"Error in stream_synthesis: {e}")
-            text = ""
+            elif "text_response" in res:
+                text = res.get("text_response")
+            elif "message" in res:
+                text = res.get("message")
+            elif "data" in res:
+                text = str(res.get("data"))
+            else:
+                # If structure is totally unrecognized, stringify it so we can debug it
+                text = str(res)
+        elif isinstance(res, str):
+            text = res
+        else:
+            text = str(res)
 
-        if not text:
-            text = (
-                "ನಮಸ್ಕಾರ ಅಧಿಕಾರಿಗಳೇ. ವಜ್ರ 2.0 ಸಿದ್ಧವಾಗಿದೆ. ತನಿಖಾ ನಿರ್ದೇಶನವನ್ನು ತಿಳಿಸಿ."
-                if lang == "kn" else
-                "Greetings Officer. VAJRA 2.0 Cognitive Intelligence Copilot active. What is your tactical priority?"
-            )
+        # Failsafe if completely empty
+        if not text or str(text).strip() == "":
+            text = "[System Alert]: QuickML returned an empty response payload. Please verify Catalyst project tokens."
 
-        words = text.split(" ")
-        for idx, w in enumerate(words):
-            chunk = w + (" " if idx < len(words) - 1 else "")
-            yield chunk
-            await asyncio.sleep(0.005)
+        # Yield tokens for the SSE consumer
+        words = str(text).split(" ")
+        for i, word in enumerate(words):
+            yield word + (" " if i < len(words) - 1 else "")
+            await asyncio.sleep(0.01)
