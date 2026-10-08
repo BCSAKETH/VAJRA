@@ -2423,6 +2423,21 @@ class VajraSemanticMemory:
             })
         return results
 
+    def query_similar_cases(self, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """Dense similarity search returning standardized case objects."""
+        matches = self.recall_context(query, top_k=limit)
+        results = []
+        for m in matches:
+            results.append({
+                "CrimeNo": m.get("fir_id") or "CR-2026-00000",
+                "CaseMasterID": m.get("fir_id"),
+                "BriefFacts": m.get("recalled_narrative", ""),
+                "UnitName": m.get("station", "Karnataka PS"),
+                "similarity": m.get("confidence_score", 0.85)
+            })
+        return results
+
+
 
 # ---- C.8: Syndicate Radar, real Louvain community detection ----
 # Lives HERE, not in main.py (where the plan first drafted it) or

@@ -352,89 +352,71 @@ async def execute_graph_traversal(root_entity: str, hops: int = 2) -> Dict[str, 
 async def synthesize_grounded_dossier(
     raw_data: Dict[str, Any],
     mode: str,
-    officer_context: Dict[str, Any]
+    officer_context: Dict[str, Any],
+    original_query: str = ""
 ) -> AsyncGenerator[Dict[str, Any], None]:
     """
-    PRIMITIVE 4: Grounded Dossier Synthesis
-    Synthesizes multi-primitive evidence into structured, court-admissible forensic intelligence.
-    Supports mode == 'standard' (concise tactical HUD) and mode == 'full_dossier' (comprehensive legal ledger).
-    Yields SSE token chunks in real-time.
+    PRIMITIVE 4: Grounded Dossier Synthesis (Real LLM Integration)
+    Takes raw JSON from primitives, forces GLM-4.7 to ground its answer strictly in the data,
+    and streams the response.
     """
-    vector_results = raw_data.get("vector_search", [])
-    relational_results = raw_data.get("relational_pushdown", [])
-    graph_results = raw_data.get("graph_traversal", {})
-    
     officer_name = officer_context.get("officer_name", "Officer")
     rank = officer_context.get("rank", "Investigator")
-    query = raw_data.get("query", "")
     lang = officer_context.get("lang", "en")
-
-    # Build Structured Markdown Dossier
-    sections = []
     
-    if lang == "kn":
-        sections.append(f"**ಕರ್ನಾಟಕ ರಾಜ್ಯ ಪೊಲೀಸ್ - ವಜ್ರ ವಿಧಿವಿಜ್ಞಾನ ವರದಿ**\n\nಅಧಿಕಾರಿಗಳೇ ({rank} {officer_name}), ನಿಮ್ಮ ತನಿಖಾ ಪ್ರಶ್ನೆಗೆ ಲಭ್ಯವಿರುವ ಸಿ.ಸಿ.ಟಿ.ಎನ್.ಎಸ್ (CCTNS) ದತ್ತಾಂಶ ವಿಶ್ಲೇಷಣೆ:")
-    else:
-        sections.append(f"**KARNATAKA STATE POLICE - CCTNS FORENSIC DOSSIER**\n\nOfficer {officer_name} ({rank}), dynamic intelligence records compiled from live CCTNS database:")
+    # Calculate Exact Temporal Awareness for the prompt
+    from datetime import datetime
+    import pytz
+    ist = pytz.timezone('Asia/Kolkata')
+    exact_time_str = datetime.now(ist).strftime('%I:%M %p')
 
-    # Relational Matches
-    if relational_results:
-        sections.append("\n### 📋 Primary Case Records")
-        for r in relational_results[:3]:
-            c_no = r.get("CrimeNo", "N/A")
-            facts = r.get("BriefFacts", "No details recorded.")
-            dt = r.get("CrimeRegisteredDate", "N/A")
-            sections.append(f"- **Case {c_no}** (Registered: {dt}): {facts}")
+    # Build the strict context payload
+    data_payload = json.dumps({
+        "vector_search": raw_data.get("vector_search", []),
+        "relational_pushdown": raw_data.get("relational_pushdown", []),
+        "graph_traversal": raw_data.get("graph_traversal", {})
+    }, default=str)
 
-    # Vector Matches
-    if vector_results:
-        sections.append(f"\n### 🔍 Modus Operandi & Semantic Similarity Matches ({len(vector_results)} cases)")
-        for v in vector_results:
-            sections.append(
-                f"- **Case {v['case_no']}** ({int(v['similarity_score'] * 100)}% Match, {v['police_station']}, Reg: {v['registration_date']}):\n"
-                f"  * **MO Pattern:** {v['brief_facts']}\n"
-                f"  * **Transit Vector:** {v['transit_vector']}"
-            )
+    # Determine depth based on mode
+    depth_instruction = (
+        "Keep it concise, high-density, and tactical (max 3 bullets). No fluff." 
+        if mode == "standard" else 
+        "Provide a comprehensive, 360-degree forensic dossier with formal headers (e.g., ### 📋 Primary Case Records)."
+    )
 
-    # Graph Associates
-    if graph_results.get("co_accused") or graph_results.get("vehicles"):
-        sections.append("\n### 🕸️ Syndicate Co-Offending & Asset Network")
-        if graph_results.get("co_accused"):
-            co_list = ", ".join([c["name"] for c in graph_results["co_accused"]])
-            sections.append(f"- **Identified Co-Offenders:** {co_list}")
-        if graph_results.get("vehicles"):
-            v_list = ", ".join(graph_results["vehicles"])
-            sections.append(f"- **Linked Vehicles / Assets:** {v_list}")
+    system_prompt = f"""You are VAJRA, the elite cognitive AI Copilot of the Karnataka State Police.
+The officer's original query was: '{original_query}'
 
-    # Embed Visual UI Tag
-    if graph_results.get("nodes") and len(graph_results["nodes"]) > 1:
-        sections.append("\n[GRAPH-HUB]")
-    elif vector_results:
-        sections.append("\n[GEO-MAP]")
+AMBIENT CONTEXT:
+- Officer: {rank} {officer_name}
+- Actual Time: {exact_time_str} IST
 
-    full_text = "\n".join(sections)
+STRICT DIRECTIVES:
+1. If the officer greeted you, respond to the greeting naturally (and playfully correct them if their greeting contradicts the actual time).
+2. {depth_instruction}
+3. FACTUAL QUARANTINE: You MUST base your response ONLY on the following JSON data. Do not invent names, FIRs, or metrics. If the JSON is empty, state clearly that no records exist in CCTNS.
+
+JSON DATA:
+{data_payload}
+"""
+
+    from catalyst_llm import CatalystLLM
+    llm = CatalystLLM()
     
-    # Stream token chunks
-    words = full_text.split(" ")
-    for idx, word in enumerate(words):
-        chunk = word + (" " if idx < len(words) - 1 else "")
-        yield {
-            "token": chunk,
-            "done": False
-        }
-        await asyncio.sleep(0.01)
+    full_text = ""
+    async for chunk in llm.stream_synthesis(system_prompt, lang=lang):
+        full_text += chunk
+        yield {"token": chunk, "done": False}
+        await asyncio.sleep(0.005)
 
-    # Yield final structured completion event
     yield {
         "token": "",
         "done": True,
         "full_text": full_text,
-        "response_type": "mo_suspect_matches" if vector_results else "standard",
+        "response_type": "mo_suspect_matches" if raw_data.get("vector_search") else "standard",
         "data": {
-            "vector_search": vector_results,
-            "relational_pushdown": relational_results,
-            "graph_traversal": graph_results,
-            "mode": mode
+            "mode": mode,
+            "raw_data_refs": raw_data
         },
         "citations": [
             {"type": "CCTNS CaseMaster Database", "id": "STATEWIDE_RECORDS", "status": "VERIFIED"},
@@ -573,7 +555,12 @@ DIRECTIVES:
             raw_data[k] = res
 
     # 5. Synthesize Grounded Dossier & Stream Response
-    async for chunk in synthesize_grounded_dossier(raw_data, mode=plan["synthesis"]["mode"], officer_context=officer_ctx):
+    async for chunk in synthesize_grounded_dossier(
+        raw_data, 
+        mode=plan["synthesis"]["mode"], 
+        officer_context=officer_ctx,
+        original_query=raw_query
+    ):
         yield chunk
 
 
