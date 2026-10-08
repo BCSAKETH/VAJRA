@@ -456,7 +456,6 @@ async def process_officer_query_stream(
         from datetime import datetime
         import pytz
         import json
-        from catalyst_llm import CatalystLLM
         import asyncio
         
         micro_mem = dual_memory.get_micro_context(session_id)
@@ -467,42 +466,52 @@ async def process_officer_query_stream(
         station = macro_mem.get("station", "Headquarters")
         active_suspect = micro_mem.get("last_offender_id")
         active_case = micro_mem.get("active_case_id")
-        exact_time_str = datetime.now(pytz.timezone('Asia/Kolkata')).strftime('%I:%M %p')
-
-        system_prompt = f"""You are VAJRA, the elite AI Copilot of the Karnataka State Police. The officer typed: '{raw_query}'
-CONTEXT: Officer {rank} {officer_name} | Station: {station} | Time: {exact_time_str} IST | Active Case: {active_case or 'None'}
-DIRECTIVES:
-1. Cross-reference their greeting with the Actual Current Time. If they say "Good morning" at night (or vice versa), playfully call them out with dry humor.
-2. If time matches, greet them sharply by rank and name.
-3. If they have an active case/suspect, PREDICT the next logical step. Keep it to 2 sentences max."""
-
-        fast_llm = CatalystLLM()
-        full_greeting = ""
         
-        try:
-            # Wrap the generator consumption in a timeout to prevent 100s hangs
-            async def _consume_stream():
-                nonlocal full_greeting
-                async for chunk in fast_llm.stream_synthesis(system_prompt, lang=lang):
-                    full_greeting += chunk
-                    # CRITICAL: Must yield as SSE string format
-                    payload = json.dumps({"token": chunk, "done": False})
-                    yield f"data: {payload}\n\n"
-                    await asyncio.sleep(0.001)
+        ist = pytz.timezone('Asia/Kolkata')
+        now = datetime.now(ist)
+        exact_time = now.strftime('%I:%M %p')
+        hour = now.hour
+        
+        # Determine temporal validity against the user's greeting
+        low_q = raw_query.lower()
+        witty_remark = ""
+        
+        if "good morning" in low_q and hour >= 12:
+            witty_remark = f"Good morning? It's {exact_time} in the afternoon/evening, {rank}. Long shift or need another coffee? "
+        elif ("good evening" in low_q or "good night" in low_q) and hour < 17:
+            witty_remark = f"Checking the clock, {rank}—it's only {exact_time}. Wrapping up the day early? "
+        elif "bro" in low_q or "dude" in low_q:
+            witty_remark = f"Officer protocol noted, {rank} {officer_name}. "
+        else:
+            greeting_period = "Good morning" if 5 <= hour < 12 else ("Good afternoon" if 12 <= hour < 17 else "Good evening")
+            witty_remark = f"{greeting_period}, {rank} {officer_name}. "
+
+        # Next-step prediction from memory
+        if active_suspect:
+            proactive_step = f"Active context locked on suspect {active_suspect}. Shall we pull asset links or CDR trails?"
+        elif active_case:
+            proactive_step = f"Dossier active for case {active_case}. Ready for evidence review or bail audit."
+        else:
+            proactive_step = f"VAJRA 2.0 active at {station}. What case, syndicate, or vehicle plate are we tracing?"
+
+        full_greeting = f"{witty_remark}{proactive_step}"
+        
+        # Stream instantly with zero network delay
+        words = full_greeting.split(" ")
+        for i, word in enumerate(words):
+            chunk = word + (" " if i < len(words) - 1 else "")
+            payload = json.dumps({"token": chunk, "done": False})
+            yield f"data: {payload}\n\n"
+            await asyncio.sleep(0.015)
             
-            async for sse_chunk in _consume_stream():
-                yield sse_chunk
-                
-        except (asyncio.TimeoutError, Exception) as e:
-            # INSTANT FALLBACK IF LLM HANGS
-            fallback = f"Greetings, {rank} {officer_name}. VAJRA is active. How can I assist?"
-            full_greeting = fallback
-            for word in fallback.split():
-                payload = json.dumps({"token": word + " ", "done": False})
-                yield f"data: {payload}\n\n"
-                await asyncio.sleep(0.01)
-            
-        final_payload = json.dumps({"token": "", "done": True, "full_text": full_greeting, "response_type": "text", "data": {}, "citations": []})
+        final_payload = json.dumps({
+            "token": "",
+            "done": True,
+            "full_text": full_greeting,
+            "response_type": "text",
+            "data": {},
+            "citations": []
+        })
         yield f"data: {final_payload}\n\n"
         return
 

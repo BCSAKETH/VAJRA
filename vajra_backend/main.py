@@ -5560,61 +5560,78 @@ async def stream_chat_endpoint(payload: ChatRequest, request: Request, location_
     async def _token_generator():
         from agent_loop import process_officer_query_stream
         import json
+        import asyncio
         from datetime import datetime
-        
+
         kgid_val = str(getattr(request.state, "kgid", employee_id) or employee_id)
         
+        # Send an immediate connection confirmation so the gateway sees active data
+        yield ": ping\n\n"
+
+        queue = asyncio.Queue()
+        stream_finished = asyncio.Event()
+
+        async def _produce_stream():
+            try:
+                async for chunk in process_officer_query_stream(
+                    query=message,
+                    session_id=session_id,
+                    kgid=kgid_val,
+                    answer_mode=payload.answer_mode or "standard",
+                    persona_override=payload.persona_override,
+                    lang=lang
+                ):
+                    await queue.put(chunk)
+            except Exception as ex:
+                logger.error(f"Error in process_officer_query_stream: {ex}")
+                err_payload = json.dumps({
+                    "token": "", "done": True,
+                    "full_text": f"Operational error: {str(ex)}",
+                    "response_type": "text", "data": {}, "citations": []
+                })
+                await queue.put(f"data: {err_payload}\n\n")
+            finally:
+                stream_finished.set()
+
+        producer_task = asyncio.create_task(_produce_stream())
+
         try:
-            # DIRECT ASYNC CONSUMPTION - No thread blocking!
-            # Tokens stream instantly from the LLM to the client.
-            async for sse_chunk in process_officer_query_stream(
-                query=message,
-                session_id=session_id,
-                kgid=kgid_val,
-                answer_mode=payload.answer_mode or "standard",
-                persona_override=payload.persona_override,
-                lang=lang
-            ):
-                # 1. Yield the SSE chunk directly to the frontend immediately
-                yield sse_chunk
-                
-                # 2. Intercept the final payload to persist to the DB and broadcast
-                if '"done": true' in sse_chunk.lower() or '"done":true' in sse_chunk.lower():
-                    try:
-                        # Strip "data: " prefix to parse JSON for database logging
-                        json_str = sse_chunk.replace("data: ", "").strip()
-                        final_evt = json.loads(json_str)
-                        
-                        full_text = final_evt.get("full_text", "")
-                        resp_type = final_evt.get("response_type", "text")
-                        data_dict = final_evt.get("data", {})
-                        citations = final_evt.get("citations", [])
-                        
-                        # Save to Catalyst Data Store
-                        _persist_chat_message(
-                            session_id, "assistant", full_text, resp_type,
-                            data_dict, citations=citations
-                        )
-                        
-                        # Broadcast to multi-officer room (WebSockets)
-                        await connection_manager.broadcast(session_id, {
-                            "type": "message", "sender": "assistant",
-                            "sender_name": "VAJRA Intelligence", "text": full_text,
-                            "response_type": resp_type,
-                            "data": data_dict, "citations": citations,
-                            "timestamp": datetime.utcnow().isoformat()
-                        })
-                    except Exception as parse_err:
-                        logger.error(f"Error persisting final SSE chunk: {parse_err}")
-                        
-        except Exception as e:
-            logger.error(f"Stream generation failed: {e}")
-            err_payload = json.dumps({
-                "token": "", "done": True, 
-                "full_text": "Connection to cognitive core interrupted.", 
-                "response_type": "text", "data": {}, "citations": []
-            })
-            yield f"data: {err_payload}\n\n"
+            while not stream_finished.is_set() or not queue.empty():
+                try:
+                    # Wait up to 5s for the next token chunk
+                    chunk = await asyncio.wait_for(queue.get(), timeout=5.0)
+                    yield chunk
+
+                    # Intercept the final payload for persistence and broadcasting
+                    if '"done": true' in chunk.lower() or '"done":true' in chunk.lower():
+                        try:
+                            json_str = chunk.replace("data: ", "").strip()
+                            final_evt = json.loads(json_str)
+                            full_text = final_evt.get("full_text", "")
+                            resp_type = final_evt.get("response_type", "text")
+                            data_dict = final_evt.get("data", {})
+                            citations = final_evt.get("citations", [])
+
+                            _persist_chat_message(
+                                session_id, "assistant", full_text, resp_type,
+                                data_dict, citations=citations
+                            )
+
+                            await connection_manager.broadcast(session_id, {
+                                "type": "message", "sender": "assistant",
+                                "sender_name": "VAJRA Intelligence", "text": full_text,
+                                "response_type": resp_type,
+                                "data": data_dict, "citations": citations,
+                                "timestamp": datetime.utcnow().isoformat()
+                            })
+                        except Exception as parse_err:
+                            logger.error(f"Error persisting final chunk: {parse_err}")
+                except asyncio.TimeoutError:
+                    # Keep-alive heartbeat keeps the AppSail gateway socket open during QuickML processing
+                    yield ": keep-alive\n\n"
+
+        finally:
+            producer_task.cancel()
 
     return StreamingResponse(
         _token_generator(),
