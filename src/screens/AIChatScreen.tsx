@@ -600,8 +600,15 @@ export const AIChatScreen: React.FC = () => {
                   continue;
                 }
                 setChatMessages((prev) => {
+                  // Prevent duplicates if the message was already added optimistically or rendered from HTTP
+                  const isDuplicate = prev.some((m, idx) => {
+                    if (idx < prev.length - 8) return false;
+                    return m.sender === payload.sender && m.text === payload.text;
+                  });
+                  if (isDuplicate) return prev;
+
                   const newMsg: ChatMessage = {
-                    id: `sse-${Date.now()}-${Math.random()}`,
+                    id: `sse-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
                     // §9.8 fix: same "system" preservation as mapSessionMessages above.
                     sender: payload.sender === "user" ? "user" : payload.sender === "system" ? "system" : "assistant",
                     text: payload.text,
@@ -664,12 +671,19 @@ export const AIChatScreen: React.FC = () => {
   // either conversation's cache) or appeared in the wrong thread.
   const appendMessageForTurn = useCallback((msg: ChatMessage, turnSessionId: string | null) => {
     if (activeSessionIdRef.current === turnSessionId) {
-      setChatMessages((prev) => [...prev, msg]);
+      setChatMessages((prev) => {
+        if (prev.some((m) => m.id === msg.id || (m.sender === msg.sender && m.text === msg.text))) {
+          return prev;
+        }
+        return [...prev, msg];
+      });
       return;
     }
     if (turnSessionId) {
       const existing = sessionMessagesCacheRef.current.get(turnSessionId) || [];
-      sessionMessagesCacheRef.current.set(turnSessionId, [...existing, msg]);
+      if (!existing.some((m) => m.id === msg.id || (m.sender === msg.sender && m.text === msg.text))) {
+        sessionMessagesCacheRef.current.set(turnSessionId, [...existing, msg]);
+      }
     }
   }, []);
 

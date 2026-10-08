@@ -5241,7 +5241,8 @@ async def cowork_message_stream(session_id: str, request: Request, location_cont
     cowork_feed.cleanup_stale()
 
     async def _gen():
-        since = 0
+        # Initialize `since` to current feed count so past messages already loaded in UI are not replayed
+        _, since = cowork_feed.get_since(session_id, 0)
         deadline = time.time() + 300  # bounded ceiling; frontend reconnects on close
         last_activity = time.time()
         while time.time() < deadline:
