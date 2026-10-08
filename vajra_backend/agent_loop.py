@@ -487,7 +487,13 @@ DIRECTIVES:
             tasks.append(execute_graph_traversal(prim.get("root_entity", cleaned_query), hops=prim.get("hops", 2)))
             task_keys.append("graph_traversal")
 
-    results = await asyncio.gather(*tasks, return_exceptions=True)
+    # STRICT 10-SECOND TIMEOUT TO PREVENT UI HANGS
+    try:
+        results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=10.0)
+    except asyncio.TimeoutError:
+        logger.error("[SemanticFabric] Execution primitives timed out after 10 seconds.")
+        results = [Exception("Database timeout")] * len(tasks)
+
     raw_data = {"query": cleaned_query}
     
     for k, res in zip(task_keys, results):
@@ -508,41 +514,38 @@ DIRECTIVES:
 
 
 def _strip_salutations_helper(text: str) -> Tuple[str, bool, Optional[str]]:
-    """Strips greetings and determines if substantive operational intent exists."""
+    """Strips greetings and casual fluff. Determines if operational intent exists."""
     if not text:
         return ("", False, None)
     
     raw = text.strip()
+    # Normalize punctuation
     low = re.sub(r'[@\-_.,!?#]', ' ', raw.lower()).strip()
     low = re.sub(r'\s+', ' ', low)
     
-    pure_greetings = {
-        "hi", "hello", "hey", "namaskara", "namaste", "vanakkam", "pranam", "pranamalu",
-        "good morning", "good afternoon", "good evening", "good day", "good night",
-        "hi vajra", "hello vajra", "hey vajra", "vajra hi", "vajra hello", "vajra hey",
-        "bye", "goodbye", "thanks", "thank you", "roger", "copy", "ok", "okay",
-        "status", "ನಮಸ್ಕಾರ", "ಹಲೋ", "ಹಾಯ್", "ಶುಭೋದಯ", "ಶುಭ ಸಂಜೆ", "ಧನ್ಯವಾದ"
-    }
-    if low in pure_greetings:
+    # Aggressively remove conversational fluff from the evaluation string
+    fluff_pattern = re.compile(r'\b(bro|dude|mate|man|boss|how are you|how is it going|whats up|what\'s up|good morning|good evening|good afternoon|good day|good night|hi|hello|hey|vajra|sir|madam|officer|thanks|thank you|namaskara|namaste)\b', re.IGNORECASE)
+    
+    # Remove all fluff words to see if anything operational is left
+    intent_check_str = fluff_pattern.sub('', low).strip()
+    
+    # If the remaining string is less than 3 characters, it's pure conversation
+    if len(intent_check_str) < 3:
         return (raw, False, raw)
         
+    # Otherwise, it has operational intent. We return the original query 
+    # (minus leading exact greetings) for the LLM to process.
     prefix_pattern = re.compile(
-        r'^(?:h+[eaiou]*[ylo]+|g+o+o+d+\s*(?:m+o+r+n+i+n+g+|e+v+e+n+i+n+g+|d+a+y+|a+f+t+e+r+n+o+o+n+)|namaskara|namaste|ನಮಸ್ಕಾರ|ಹಲೋ|ಹಾಯ್|ಶುಭೋದಯ|hi\s+vajra|hello\s+vajra|hey\s+vajra|sir|madam|officer)[\s,!:;.\-–—]+',
+        r'^(?:h+[eaiou]*[ylo]+|g+o+o+d+\s*(?:m+o+r+n+i+n+g+|e+v+e+n+i+n+g+|d+a+y+|a+f+t+e+r+n+o+o+n+)|namaskara|namaste|hi\s+vajra|hello\s+vajra|hey\s+vajra)[\s,!:;.\-–—]+',
         re.IGNORECASE
     )
     cleaned = raw
     detected_sal = None
-    while True:
-        m = prefix_pattern.match(cleaned)
-        if m:
-            if not detected_sal:
-                detected_sal = m.group(0).strip(" ,!:;.-–—")
-            cleaned = cleaned[m.end():].strip()
-        else:
-            break
-            
-    if len(cleaned) < 3:
-        return (raw, False, raw)
+    m = prefix_pattern.match(cleaned)
+    if m:
+        detected_sal = m.group(0).strip(" ,!:;.-–—")
+        cleaned = cleaned[m.end():].strip()
+        
     return (cleaned, True, detected_sal)
 
 
