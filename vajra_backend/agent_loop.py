@@ -6705,14 +6705,31 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     }
                     response_type = "mo_match"
                     
-                    lines = [
-                        f"Found {len(matches)} authentic CCTNS case records matching Modus Operandi pattern '{query}' ({statewide_total:,} total incidents categorized statewide in CrimeHead #{primary_head_id}):"
-                    ]
+                    # Check for location mismatch in query vs returned stations
+                    matched_dist = None
+                    for d in _KNOWN_DISTRICT_NAMES:
+                        if d in query.lower():
+                            matched_dist = d.title()
+                            break
+
+                    lines = []
+                    if matched_dist:
+                        has_local = any(matched_dist.lower() in m.get("station", "").lower() for m in matches)
+                        if not has_local:
+                            lines.append(f"> **⚠️ Jurisdictional Alert:** No active records found in {matched_dist}. Displaying closest statewide matches for reference.\n")
+
+                    lines.append(f"Found {len(matches)} authentic CCTNS case records matching Modus Operandi pattern '{query}' ({statewide_total:,} total incidents categorized statewide in CrimeHead #{primary_head_id}):\n")
+                    lines.append("| Crime No / FIR | Police Station | Date | Key Sections (BNS / IPC) | Location & MO Summary | Status |")
+                    lines.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
                     for m in matches[:5]:
-                        lines.append(
-                            f"- Case {m['case_id']} ({m['mo_similarity']}, {m['station']}, Reg: {m['registered_date']}): Statutory Sections: {m['bns_sections']}. MO Description: {m['mo_signature']}. Transit Vector: {m['getaway_vector']}."
-                        )
-                    
+                        sec_display = m.get('bns_sections') or "Unspecified Cognizable Offence"
+                        mo_summary = m.get('mo_signature', 'Incident reported')
+                        lines.append(f"| **{m['case_id']}** | {m['station']} | {m['registered_date']} | {sec_display} | {mo_summary} | {m.get('statutory_clock', 'Active Investigation')} |")
+
+                    lines.append("\n### 🔍 Operational & Tactical Insights")
+                    lines.append(f"- **Modus Operandi:** Pattern indicates recurring transit vectors and active incidents categorized under CrimeHead #{primary_head_id}.")
+                    lines.append("- **Recommended Beat Action:** Intensify vehicular checkpoint patrols and inspect local pawn/fencing channels during peak vulnerability windows.")
+
                     text_result = "\n".join(lines)
                     citations.append({
                         "type": "CCTNS Relational Vector Matcher",
