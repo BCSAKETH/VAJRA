@@ -707,10 +707,12 @@ export const AIChatScreen: React.FC = () => {
     // UNAVAILABLE" on a query that was still genuinely working -- the SAME
     // query then completed correctly moments later, proving the backend
     // never actually failed, only the frontend's patience ran out first.
-    // 70 attempts (~210s) puts real margin above the documented worst case.
-    const maxAttempts = 70;
+    const maxAttempts = 90;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      // Adaptive progressive polling: check rapidly (350ms -> 600ms -> 1000ms) for fast answers/greetings,
+      // then settle to 2000ms for deep analytical queries. Eliminates the artificial 6-10s UI display lag.
+      const delay = attempt === 0 ? 350 : attempt === 1 ? 600 : attempt === 2 ? 1000 : attempt === 3 ? 1500 : 2000;
+      await new Promise((resolve) => setTimeout(resolve, delay));
       try {
         const res = await fetch(`${API_BASE}/api/sessions/${turnSessionId}/messages`, {
           headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
