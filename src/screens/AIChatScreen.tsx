@@ -719,7 +719,9 @@ export const AIChatScreen: React.FC = () => {
         });
         if (!res.ok) continue;
         const raw = await res.json();
-        if (raw.length > baselineCount) {
+        const lastMsg = raw[raw.length - 1];
+        const isAssistantDone = lastMsg && (lastMsg.sender === "assistant" || lastMsg.sender === "system");
+        if (raw.length > baselineCount || isAssistantDone) {
           const loaded = mapSessionMessages(turnSessionId, raw);
           sessionMessagesCacheRef.current.set(turnSessionId, loaded);
           if (activeSessionIdRef.current === turnSessionId || activeSessionIdRef.current === null) {
@@ -1085,16 +1087,25 @@ export const AIChatScreen: React.FC = () => {
       }
 
       if (data.pending) {
-        // The real answer isn't back yet -- it's still running server-side.
-        // Fetch the current message count as a baseline, then poll until it
-        // grows (see pollForPendingReply above). isThinking deliberately
-        // stays true across this whole await -- the `finally` below only
-        // fires once the poll resolves (success or gives-up timeout).
+        // The real answer is running or may have already landed in the database (fast-path).
+        // Check baseline messages: if assistant reply is already present, render immediately!
         const baselineRes = await fetch(`${API_BASE}/api/sessions/${turnSessionId}/messages`, {
           headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
         });
         const baselineRaw = baselineRes.ok ? await baselineRes.json() : [];
-        await pollForPendingReply(turnSessionId, baselineRaw.length);
+        const lastMsg = baselineRaw[baselineRaw.length - 1];
+        if (lastMsg && (lastMsg.sender === "assistant" || lastMsg.sender === "system")) {
+          const loaded = mapSessionMessages(turnSessionId, baselineRaw);
+          sessionMessagesCacheRef.current.set(turnSessionId, loaded);
+          if (activeSessionIdRef.current === turnSessionId || activeSessionIdRef.current === null) {
+            activeSessionIdRef.current = turnSessionId;
+            setActiveSessionId(turnSessionId);
+            setChatMessages(loaded);
+            setLiveEmergencyActive(loaded[loaded.length - 1]?.personaEmergency === true);
+          }
+        } else {
+          await pollForPendingReply(turnSessionId, baselineRaw.length);
+        }
         tickerAbortRef.current?.abort();
         setTickerMessage("");
       } else if (data.ai_invoked !== false) {
