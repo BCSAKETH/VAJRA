@@ -405,7 +405,7 @@ class CatalystLLM:
             logger.info("Catalyst LLM endpoint recently confirmed down (in-process cooldown) -- skipping to fallback.")
             _last_failure_reason = "skipped_cooldown_from_recent_failure"
         else:
-            _req_timeout = int(os.getenv("CATALYST_LLM_TIMEOUT", "95"))
+            _req_timeout = int(os.getenv("CATALYST_LLM_TIMEOUT", "28"))
             for attempt, delay in enumerate([0]):
                 if delay:
                     time.sleep(delay)
@@ -441,10 +441,17 @@ class CatalystLLM:
                         _mark_endpoint_down(_DEFINITIVE_COOLDOWN_SECONDS)
                         break
 
-                    if res.status_code == 429 or res.status_code >= 500:
-                        logger.warning(f"Catalyst LLM transient error {res.status_code}, retrying: {res.text[:200]}")
+                    if res.status_code == 429:
+                        logger.warning(f"Catalyst LLM rate limited (429): {res.text[:200]}")
                         _last_failure_reason = f"http_{res.status_code}: {res.text[:150]}"
-                        continue
+                        _mark_endpoint_down(_TRANSIENT_COOLDOWN_SECONDS)
+                        break
+
+                    if res.status_code >= 500:
+                        logger.warning(f"Catalyst LLM server error ({res.status_code}): {res.text[:200]}")
+                        _last_failure_reason = f"http_{res.status_code}: {res.text[:150]}"
+                        _mark_endpoint_down(_TRANSIENT_COOLDOWN_SECONDS)
+                        break
 
                     # Any other 4xx (e.g. 400 Bad Request / Length) is query-specific,
                     # NOT an endpoint outage. Do NOT mark down the endpoint for all queries!
@@ -452,9 +459,10 @@ class CatalystLLM:
                     _last_failure_reason = f"http_{res.status_code}: {res.text[:150]}"
                     break
                 except requests.exceptions.Timeout:
-                    logger.warning(f"Catalyst LLM request timed out (attempt {attempt + 1}), retrying.")
+                    logger.warning(f"Catalyst LLM request timed out ({_req_timeout}s).")
                     _last_failure_reason = f"timeout_{_req_timeout}s"
-                    continue
+                    _mark_endpoint_down(_TRANSIENT_COOLDOWN_SECONDS)
+                    break
                 except Exception as e:
                     logger.error(f"Error calling Catalyst LLM Serving: {e}")
                     _last_failure_reason = f"exception: {type(e).__name__}: {str(e)[:150]}"
