@@ -5558,80 +5558,71 @@ async def stream_chat_endpoint(payload: ChatRequest, request: Request, location_
     _persist_chat_message(session_id, "user", display_text, "text", _user_msg_data, sender_employee_id=employee_id)
 
     async def _token_generator():
-        from agent_loop import process_officer_query_stream
-        import json
-        import asyncio
-        from datetime import datetime
-
-        kgid_val = str(getattr(request.state, "kgid", employee_id) or employee_id)
+        last_ping = time.time()
         
-        # Send an immediate connection confirmation so the gateway sees active data
-        yield ": ping\n\n"
+        loop = asyncio.get_running_loop()
+        future = loop.run_in_executor(
+            None,
+            agent_loop.run_agent_loop,
+            message,
+            session_id,
+            employee_id,
+            unit_id,
+            full_officer_name,
+            payload.answer_mode or "standard",
+            str(getattr(request.state, "kgid", employee_id) or employee_id),
+            None,
+            payload.persona_override
+        )
 
-        queue = asyncio.Queue()
-        stream_finished = asyncio.Event()
+        while not future.done():
+            if await request.is_disconnected():
+                logger.warning(f"SSE client disconnected for session {session_id}")
+                return
+            if time.time() - last_ping > 15:
+                yield ": keep-alive\n\n"
+                last_ping = time.time()
+            await asyncio.sleep(0.05)
 
-        async def _produce_stream():
-            try:
-                async for chunk in process_officer_query_stream(
-                    query=message,
-                    session_id=session_id,
-                    kgid=kgid_val,
-                    answer_mode=payload.answer_mode or "standard",
-                    persona_override=payload.persona_override,
-                    lang=lang
-                ):
-                    await queue.put(chunk)
-            except Exception as ex:
-                logger.error(f"Error in process_officer_query_stream: {ex}")
-                err_payload = json.dumps({
-                    "token": "", "done": True,
-                    "full_text": f"Operational error: {str(ex)}",
-                    "response_type": "text", "data": {}, "citations": []
-                })
-                await queue.put(f"data: {err_payload}\n\n")
-            finally:
-                stream_finished.set()
+        result = await future
+        full_text = result.get("text", "")
+        
+        words = full_text.split(" ")
+        for i, word in enumerate(words):
+            chunk = word + (" " if i < len(words) - 1 else "")
+            evt = {
+                "token": chunk,
+                "session_id": session_id,
+                "done": False
+            }
+            yield f"data: {json.dumps(evt, default=str)}\n\n"
+            await asyncio.sleep(0.01)
 
-        producer_task = asyncio.create_task(_produce_stream())
+        final_evt = {
+            "token": "",
+            "session_id": session_id,
+            "done": True,
+            "full_text": full_text,
+            "response_type": result.get("response_type", "text"),
+            "data": result.get("data", {}),
+            "citations": result.get("citations", []),
+            "response_style": result.get("response_style", "CCTNS_FORENSIC_LEDGER")
+        }
+        
+        _persist_chat_message(
+            session_id, "assistant", full_text, result.get("response_type", "text"),
+            result.get("data", {}), citations=result.get("citations", [])
+        )
+        
+        await connection_manager.broadcast(session_id, {
+            "type": "message", "sender": "assistant",
+            "sender_name": "VAJRA Intelligence", "text": full_text,
+            "response_type": result.get("response_type", "text"),
+            "data": result.get("data", {}), "citations": result.get("citations", []),
+            "timestamp": datetime.utcnow().isoformat()
+        })
 
-        try:
-            while not stream_finished.is_set() or not queue.empty():
-                try:
-                    # Wait up to 5s for the next token chunk
-                    chunk = await asyncio.wait_for(queue.get(), timeout=5.0)
-                    yield chunk
-
-                    # Intercept the final payload for persistence and broadcasting
-                    if '"done": true' in chunk.lower() or '"done":true' in chunk.lower():
-                        try:
-                            json_str = chunk.replace("data: ", "").strip()
-                            final_evt = json.loads(json_str)
-                            full_text = final_evt.get("full_text", "")
-                            resp_type = final_evt.get("response_type", "text")
-                            data_dict = final_evt.get("data", {})
-                            citations = final_evt.get("citations", [])
-
-                            _persist_chat_message(
-                                session_id, "assistant", full_text, resp_type,
-                                data_dict, citations=citations
-                            )
-
-                            await connection_manager.broadcast(session_id, {
-                                "type": "message", "sender": "assistant",
-                                "sender_name": "VAJRA Intelligence", "text": full_text,
-                                "response_type": resp_type,
-                                "data": data_dict, "citations": citations,
-                                "timestamp": datetime.utcnow().isoformat()
-                            })
-                        except Exception as parse_err:
-                            logger.error(f"Error persisting final chunk: {parse_err}")
-                except asyncio.TimeoutError:
-                    # Keep-alive heartbeat keeps the AppSail gateway socket open during QuickML processing
-                    yield ": keep-alive\n\n"
-
-        finally:
-            producer_task.cancel()
+        yield f"data: {json.dumps(final_evt, default=str)}\n\n"
 
     return StreamingResponse(
         _token_generator(),
