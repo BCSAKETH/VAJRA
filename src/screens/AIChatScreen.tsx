@@ -707,17 +707,21 @@ export const AIChatScreen: React.FC = () => {
     // UNAVAILABLE" on a query that was still genuinely working -- the SAME
     // query then completed correctly moments later, proving the backend
     // never actually failed, only the frontend's patience ran out first.
-    // 70 attempts (~210s) puts real margin above the documented worst case.
-    const maxAttempts = 70;
+    const maxAttempts = 90;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 3000));
+      // Adaptive progressive polling: check rapidly (350ms -> 600ms -> 1000ms) for fast answers/greetings,
+      // then settle to 2000ms for deep analytical queries. Eliminates the artificial 6-10s UI display lag.
+      const delay = attempt === 0 ? 350 : attempt === 1 ? 600 : attempt === 2 ? 1000 : attempt === 3 ? 1500 : 2000;
+      await new Promise((resolve) => setTimeout(resolve, delay));
       try {
         const res = await fetch(`${API_BASE}/api/sessions/${turnSessionId}/messages`, {
           headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
         });
         if (!res.ok) continue;
         const raw = await res.json();
-        if (raw.length > baselineCount) {
+        const lastMsg = raw[raw.length - 1];
+        const isAssistantDone = lastMsg && (lastMsg.sender === "assistant" || lastMsg.sender === "system");
+        if (raw.length > baselineCount || isAssistantDone) {
           const loaded = mapSessionMessages(turnSessionId, raw);
           sessionMessagesCacheRef.current.set(turnSessionId, loaded);
           if (activeSessionIdRef.current === turnSessionId || activeSessionIdRef.current === null) {
@@ -1083,16 +1087,25 @@ export const AIChatScreen: React.FC = () => {
       }
 
       if (data.pending) {
-        // The real answer isn't back yet -- it's still running server-side.
-        // Fetch the current message count as a baseline, then poll until it
-        // grows (see pollForPendingReply above). isThinking deliberately
-        // stays true across this whole await -- the `finally` below only
-        // fires once the poll resolves (success or gives-up timeout).
+        // The real answer is running or may have already landed in the database (fast-path).
+        // Check baseline messages: if assistant reply is already present, render immediately!
         const baselineRes = await fetch(`${API_BASE}/api/sessions/${turnSessionId}/messages`, {
           headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
         });
         const baselineRaw = baselineRes.ok ? await baselineRes.json() : [];
-        await pollForPendingReply(turnSessionId, baselineRaw.length);
+        const lastMsg = baselineRaw[baselineRaw.length - 1];
+        if (lastMsg && (lastMsg.sender === "assistant" || lastMsg.sender === "system")) {
+          const loaded = mapSessionMessages(turnSessionId, baselineRaw);
+          sessionMessagesCacheRef.current.set(turnSessionId, loaded);
+          if (activeSessionIdRef.current === turnSessionId || activeSessionIdRef.current === null) {
+            activeSessionIdRef.current = turnSessionId;
+            setActiveSessionId(turnSessionId);
+            setChatMessages(loaded);
+            setLiveEmergencyActive(loaded[loaded.length - 1]?.personaEmergency === true);
+          }
+        } else {
+          await pollForPendingReply(turnSessionId, baselineRaw.length);
+        }
         tickerAbortRef.current?.abort();
         setTickerMessage("");
       } else if (data.ai_invoked !== false) {

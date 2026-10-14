@@ -264,7 +264,16 @@ class CatalystLLM:
                 "- Write like a sharp, disciplined Senior Karnataka Police Intelligence Colleague, not a subservient chatbot or a generic form letter.\n"
                 "- Plain, direct, authoritative sentences. Cut all throat-clearing filler ('Certainly!', 'I would be happy to help...', 'Based on the available data, it appears that...'). Lead with the operative finding immediately.\n"
                 "- High factual density with structured icon headers and bold-key bullets. State findings plainly and with confidence; state genuine gaps or empty results just as simply.\n"
-                "- Where naturally fitting, end with a concrete investigative next step or recommendation, the way an experienced colleague would. "
+                "- Where naturally fitting, end with a concrete investigative next step or recommendation, the way an experienced colleague would.\n\n"
+                "CRITICAL PRESENTATION & GROUNDING RULES:\n"
+                "1. GEOGRAPHIC GROUNDING: Cross-check the user's requested location against the provided JSON records. If the user asks for a specific district (e.g., 'Bellary') but the database records are from elsewhere, you MUST start your response with a bold warning block quote:\n"
+                "   > **⚠️ Jurisdictional Alert:** No active records found in [Requested Location]. Displaying closest statewide matches for reference.\n\n"
+                "2. EXECUTIVE TABLE FORMAT: NEVER output case records as a dense wall of text. You MUST format multiple cases into a clean Markdown Table with these exact headers:\n"
+                "   | Crime No / FIR | Police Station | Date | Key Sections (BNS / IPC) | Location & MO Summary | Status |\n\n"
+                "3. STRICT FACTUAL ADHERENCE: Do NOT fabricate or repeat boilerplate BNS sections (like §111 BNS) unless explicitly stated in the JSON. If the exact sections are unknown, write 'Unspecified Cognizable Offence'. Never hallucinate dates or transit vectors.\n\n"
+                "4. ACTIONABLE INSIGHTS: Conclude every case retrieval response with a '### 🔍 Operational & Tactical Insights' section containing exactly 2 bullet points:\n"
+                "   - Modus Operandi summary.\n"
+                "   - Recommended beat action or jurisdictional alert.\n\n"
                 # Confirmed live: an attachment-analysis result followed by
                 # "add this to records" / "register this case" / "file this"
                 # made the model try to invent a write-style tool call that
@@ -323,6 +332,15 @@ class CatalystLLM:
                 "a conviction-risk score, POCSO/juvenile-sensitive case, victim, or violent/financial-crime finding "
                 "always stays plain and serious; the finding carries the weight, not the delivery. "
                 "DELIVERY & DENSITY: Be authoritative, structured, and dense. Deliver findings across 3-4 structured icon-headed sections. Limit length to 400 words without conversational filler so the briefing is rapidly actionable. "
+                "\n\nCRITICAL PRESENTATION & GROUNDING RULES:\n"
+                "1. GEOGRAPHIC GROUNDING: Cross-check the user's requested location against the provided JSON records. If the user asks for a specific district (e.g., 'Bellary') but the database records are from elsewhere, you MUST start your response with a bold warning block quote:\n"
+                "   > **⚠️ Jurisdictional Alert:** No active records found in [Requested Location]. Displaying closest statewide matches for reference.\n\n"
+                "2. EXECUTIVE TABLE FORMAT: NEVER output case records as a dense wall of text. You MUST format multiple cases into a clean Markdown Table with these exact headers:\n"
+                "   | Crime No / FIR | Police Station | Date | Key Sections (BNS / IPC) | Location & MO Summary | Status |\n\n"
+                "3. STRICT FACTUAL ADHERENCE: Do NOT fabricate or repeat boilerplate BNS sections (like §111 BNS) unless explicitly stated in the JSON. If the exact sections are unknown, write 'Unspecified Cognizable Offence'. Never hallucinate dates or transit vectors.\n\n"
+                "4. ACTIONABLE INSIGHTS: Conclude every case retrieval response with a '### 🔍 Operational & Tactical Insights' section containing exactly 2 bullet points:\n"
+                "   - Modus Operandi summary.\n"
+                "   - Recommended beat action or jurisdictional alert.\n\n"
                 "Respond with JSON containing only a 'text_response' field with your answer."
             )
 
@@ -387,7 +405,7 @@ class CatalystLLM:
             logger.info("Catalyst LLM endpoint recently confirmed down (in-process cooldown) -- skipping to fallback.")
             _last_failure_reason = "skipped_cooldown_from_recent_failure"
         else:
-            _req_timeout = int(os.getenv("CATALYST_LLM_TIMEOUT", "95"))
+            _req_timeout = int(os.getenv("CATALYST_LLM_TIMEOUT", "28"))
             for attempt, delay in enumerate([0]):
                 if delay:
                     time.sleep(delay)
@@ -423,10 +441,17 @@ class CatalystLLM:
                         _mark_endpoint_down(_DEFINITIVE_COOLDOWN_SECONDS)
                         break
 
-                    if res.status_code == 429 or res.status_code >= 500:
-                        logger.warning(f"Catalyst LLM transient error {res.status_code}, retrying: {res.text[:200]}")
+                    if res.status_code == 429:
+                        logger.warning(f"Catalyst LLM rate limited (429): {res.text[:200]}")
                         _last_failure_reason = f"http_{res.status_code}: {res.text[:150]}"
-                        continue
+                        _mark_endpoint_down(_TRANSIENT_COOLDOWN_SECONDS)
+                        break
+
+                    if res.status_code >= 500:
+                        logger.warning(f"Catalyst LLM server error ({res.status_code}): {res.text[:200]}")
+                        _last_failure_reason = f"http_{res.status_code}: {res.text[:150]}"
+                        _mark_endpoint_down(_TRANSIENT_COOLDOWN_SECONDS)
+                        break
 
                     # Any other 4xx (e.g. 400 Bad Request / Length) is query-specific,
                     # NOT an endpoint outage. Do NOT mark down the endpoint for all queries!
@@ -434,9 +459,10 @@ class CatalystLLM:
                     _last_failure_reason = f"http_{res.status_code}: {res.text[:150]}"
                     break
                 except requests.exceptions.Timeout:
-                    logger.warning(f"Catalyst LLM request timed out (attempt {attempt + 1}), retrying.")
+                    logger.warning(f"Catalyst LLM request timed out ({_req_timeout}s).")
                     _last_failure_reason = f"timeout_{_req_timeout}s"
-                    continue
+                    _mark_endpoint_down(_TRANSIENT_COOLDOWN_SECONDS)
+                    break
                 except Exception as e:
                     logger.error(f"Error calling Catalyst LLM Serving: {e}")
                     _last_failure_reason = f"exception: {type(e).__name__}: {str(e)[:150]}"
