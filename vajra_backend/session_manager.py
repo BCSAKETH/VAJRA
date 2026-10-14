@@ -20,7 +20,7 @@ _SESSION_LOCK = threading.RLock()
 
 SESSION_SECRET = os.getenv("SESSION_SECRET", "vajra_ksp_session_secret_2026")
 SESSION_TTL_SECONDS = 86400        # 24 Hours absolute max token life
-HEARTBEAT_TIMEOUT_SECONDS = 45     # 45s heartbeat window (ghost session detection)
+HEARTBEAT_TIMEOUT_SECONDS = 180    # 180s heartbeat window (3 mins grace for slow queries / network jitter)
 GRACE_PERIOD_SECONDS = 15          # 15s tab-close / refresh grace window
 
 
@@ -245,7 +245,12 @@ def is_session_alive(kgid: str, jti: str) -> bool:
             return True
         if record.jti != jti:
             return False
-        return record.is_alive()
+        alive = record.is_alive()
+        if alive:
+            # Active authenticated API traffic refreshes the liveness timer
+            record.last_heartbeat = time.time()
+            record.is_pending_close = False
+        return alive
 
 
 def clear_active_session(kgid: str) -> None:
