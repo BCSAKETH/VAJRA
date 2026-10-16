@@ -10,3 +10,9 @@ cache/
 cache/**
 scratch/
 scratch/**
+**/tests/**
+**/tests
+**/test/**
+**/test
+*.bak*
+*.new*

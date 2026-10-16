@@ -157,61 +157,37 @@ async def custom_cors_and_options_handler(request: Request, call_next):
     return response
 
 
-# Load serialized ML artifacts
+# Step 8.9 (Master Gate V7): Grounded Public Safety & Operational Threat Index (PSOTI)
+from threat_scoring_engine import ThreatScoringEngine
+threat_engine = ThreatScoringEngine()
+
+# Lazy / Deprecated ML references preserved for legacy fallback without blocking startup
 risk_calibrator = None
 dbscan_model = None
 xgboost_risk_model = None
 shap_explainer = None
 label_encoders = None
 
-try:
-    if os.path.exists("dbscan_hotspots.joblib"):
-        dbscan_model = joblib.load("dbscan_hotspots.joblib")
-    if os.path.exists("xgboost_risk_model.joblib"):
-        xgboost_risk_model = joblib.load("xgboost_risk_model.joblib")
-    if os.path.exists("label_encoders.joblib"):
-        label_encoders = joblib.load("label_encoders.joblib")
-    if os.path.exists("isotonic_calibrator.joblib"):
-        try:
-            risk_calibrator = joblib.load("isotonic_calibrator.joblib")
-            logger.info("Loaded isotonic risk calibrator.")
-        except Exception:
-            risk_calibrator = None
+# Background worker to populate legacy artifacts asynchronously without delaying port bind
+def _async_load_legacy_ml():
+    global dbscan_model, xgboost_risk_model, label_encoders, risk_calibrator, shap_explainer
+    try:
+        if os.path.exists("dbscan_hotspots.joblib"):
+            dbscan_model = joblib.load("dbscan_hotspots.joblib")
+        if os.path.exists("xgboost_risk_model.joblib"):
+            xgboost_risk_model = joblib.load("xgboost_risk_model.joblib")
+        if os.path.exists("label_encoders.joblib"):
+            label_encoders = joblib.load("label_encoders.joblib")
+        if os.path.exists("isotonic_calibrator.joblib"):
+            try:
+                risk_calibrator = joblib.load("isotonic_calibrator.joblib")
+            except Exception:
+                pass
+        logger.info("Legacy ML background artifact cache ready.")
+    except Exception as ex:
+        logger.warning(f"Legacy ML background load notice: {ex}")
 
-    class _LazyShapExplainer:
-        def __init__(self, model):
-            self.model = model
-            self._explainer = None
-            self._lock = _threading.Lock()
-
-        def _get(self):
-            if self._explainer is None and self.model is not None:
-                with self._lock:
-                    if self._explainer is None:
-                        try:
-                            import shap
-                            self._explainer = shap.TreeExplainer(self.model, feature_perturbation='tree_path_dependent')
-                            logger.info("Lazy SHAP TreeExplainer initialized successfully.")
-                        except Exception as ex:
-                            logger.warning(f"Lazy SHAP explainer init failed: {ex}")
-            return self._explainer
-
-        def __call__(self, *args, **kwargs):
-            exp = self._get()
-            return exp(*args, **kwargs) if exp else None
-
-        def shap_values(self, *args, **kwargs):
-            exp = self._get()
-            return exp.shap_values(*args, **kwargs) if exp else None
-
-        def __bool__(self):
-            return self.model is not None
-
-    shap_explainer = _LazyShapExplainer(xgboost_risk_model) if xgboost_risk_model else None
-    logger.info("Successfully configured ML models and lazy SHAP TreeExplainer.")
-except Exception as e:
-    logger.critical(f"Critical failure loading ML models: {e}. FastAPI starting with fallback prediction.")
-    dbscan_model, xgboost_risk_model, shap_explainer, label_encoders, risk_calibrator = None, None, None, None, None
+_threading.Thread(target=_async_load_legacy_ml, daemon=True, name="legacy-ml-bg").start()
 
 # Initialize Core Services
 security_firewall = VajraSecurityFirewall()
@@ -400,87 +376,18 @@ async def analyze_case(
         # 3. MO similarity profiling
         behavioral_matches = mo_profiler.find_matches(np.array(payload.mo_vector), top_k=3)
         
-        # 4. XGBoost Recidivism/Conviction Risk Forecasting
-        risk_score = 0.0
-        shap_values_dict = {}
-        
-        if xgboost_risk_model and label_encoders:
-            try:
-                dist_encoded = label_encoders['District_Name'].transform([payload.district_name])[0]
-            except Exception:
-                dist_encoded = 0
-                
-            try:
-                unit_encoded = label_encoders['UnitName'].transform([payload.unit_name])[0]
-            except Exception:
-                unit_encoded = 0
-                
-            try:
-                group_encoded = label_encoders['CrimeGroup_Name'].transform([payload.crime_group_name])[0]
-            except Exception:
-                group_encoded = 0
-                
-            try:
-                type_encoded = label_encoders['FIR_Type'].transform([payload.fir_type])[0]
-            except Exception:
-                type_encoded = 0
-
-            month_sin = np.sin(2 * np.pi * payload.fir_month / 12.0)
-            month_cos = np.cos(2 * np.pi * payload.fir_month / 12.0)
-            day_sin = np.sin(2 * np.pi * payload.fir_day / 31.0)
-            day_cos = np.cos(2 * np.pi * payload.fir_day / 31.0)
-            
-            ratio = payload.victim_count / (payload.accused_count + 1.0)
-            
-            features = pd.DataFrame([{
-                "District_Name_encoded": dist_encoded,
-                "UnitName_encoded": unit_encoded,
-                "CrimeGroup_Name_encoded": group_encoded,
-                "FIR_Type_encoded": type_encoded,
-                "FIR_YEAR": payload.fir_year,
-                "month_sin": month_sin,
-                "month_cos": month_cos,
-                "day_sin": day_sin,
-                "day_cos": day_cos,
-                "VICTIM COUNT": payload.victim_count,
-                "Accused Count": payload.accused_count,
-                "victim_to_accused_ratio": ratio
-            }])
-            
-            probabilities = xgboost_risk_model.predict_proba(features)[0]
-            risk_score = float(probabilities[1])
-            # Isotonic calibration on top of the raw probability (SHAP below still
-            # explains the untouched booster).
-            if risk_calibrator is not None:
-                try:
-                    risk_score = float(risk_calibrator.predict([risk_score])[0])
-                except Exception:
-                    pass
-
-            if shap_explainer:
-                shap_res = shap_explainer(features)
-                feature_names = features.columns.tolist()
-                shap_values_dict = {
-                    name: float(val) for name, val in zip(feature_names, shap_res.values[0])
-                }
-        else:
-            # High-fidelity mock fallback if models fail loading
-            risk_score = 0.35 + (payload.accused_count * 0.1) - (payload.victim_count * 0.05)
-            risk_score = min(max(risk_score, 0.05), 0.95)
-            shap_values_dict = {
-                "District_Name_encoded": 0.02,
-                "UnitName_encoded": -0.01,
-                "CrimeGroup_Name_encoded": 0.08,
-                "FIR_Type_encoded": 0.12,
-                "FIR_YEAR": -0.03,
-                "month_sin": -0.02,
-                "month_cos": 0.01,
-                "day_sin": 0.01,
-                "day_cos": -0.01,
-                "VICTIM COUNT": -0.04,
-                "Accused Count": 0.18,
-                "victim_to_accused_ratio": -0.05
-            }
+        # 4. Grounded Public Safety & Operational Threat Index (PSOTI) (Step 8.9 / Gate V7)
+        suspect_target = getattr(payload, "suspect_name", None) or "Accused Subject"
+        psoti_result = ThreatScoringEngine.evaluate_suspect_threat(
+            suspect_name=suspect_target,
+            district_name=payload.district_name
+        )
+        composite_score = psoti_result.get("psoti_score", 35) / 100.0
+        threat_tier = psoti_result.get("threat_tier", "MODERATE THREAT")
+        shap_values_dict = {
+            f.get("name", "Factor"): float(f.get("impactPct", 0)) / 100.0
+            for f in psoti_result.get("evidentiary_factors", [])
+        }
 
         return {
             "status": "success",
@@ -492,9 +399,10 @@ async def analyze_case(
             "graph_rag_network": criminal_network,
             "modus_operandi_matches": behavioral_matches,
             "explainable_risk_score": {
-                "reoffending_probability": round(risk_score, 4),
-                "risk_rating": "HIGH" if risk_score > 0.7 else "MEDIUM" if risk_score > 0.35 else "LOW",
-                "shap_feature_importance": shap_values_dict
+                "reoffending_probability": round(composite_score, 4),
+                "risk_rating": threat_tier,
+                "shap_feature_importance": shap_values_dict,
+                "psoti_assessment": psoti_result
             }
         }
     except Exception as e:

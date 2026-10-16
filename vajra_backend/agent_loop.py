@@ -5581,9 +5581,27 @@ class VajraAgentLoop(CognitiveBrainMixin):
         try:
             from sklearn.cluster import DBSCAN
             from collections import Counter
-            X = np.array([[c["lat"], c["lng"]] for c in coordinates])
-            db = DBSCAN(eps=eps, min_samples=min_samples, metric='euclidean')
-            labels = db.fit_predict(X)
+            # Step 8.8 (Master Gate V8): Equirectangular Geodesic Distance Projection (in physical meters)
+            # Eliminates latitude/longitude spherical degree distortion across Karnataka (11°N to 18°N)
+            valid_pts = [c for c in coordinates if c.get("lat") is not None and c.get("lng") is not None]
+            if not valid_pts:
+                return centroids
+            lat_0 = float(np.mean([float(c["lat"]) for c in valid_pts]))
+            lng_0 = float(np.mean([float(c["lng"]) for c in valid_pts]))
+            cos_lat0 = float(np.cos(np.radians(lat_0)))
+            meters_per_deg_lat = 111139.0
+            meters_per_deg_lng = 111139.0 * cos_lat0
+
+            # Dynamic threshold: If eps is in decimal degrees (< 1.0, e.g. 0.005), convert to meters (~555m)
+            # If eps is passed in meters (>= 1.0), use directly
+            eps_meters = (float(eps) * meters_per_deg_lat) if float(eps) < 1.0 else float(eps)
+
+            X_meters = np.array([
+                [(float(c["lng"]) - lng_0) * meters_per_deg_lng, (float(c["lat"]) - lat_0) * meters_per_deg_lat]
+                for c in valid_pts
+            ])
+            db = DBSCAN(eps=eps_meters, min_samples=min_samples, metric='euclidean')
+            labels = db.fit_predict(X_meters)
 
             unique_labels = set(labels)
             if -1 in unique_labels:
@@ -5591,11 +5609,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
             for idx, label in enumerate(sorted(unique_labels)):
                 mask = labels == label
-                cluster_points = X[mask]
-                member_points = [c for c, m in zip(coordinates, mask) if m]
-                lat_center = float(np.mean(cluster_points[:, 0]))
-                lng_center = float(np.mean(cluster_points[:, 1]))
-                point_count = len(cluster_points)
+                member_points = [c for c, m in zip(valid_pts, mask) if m]
+                lat_center = float(np.mean([float(c["lat"]) for c in member_points]))
+                lng_center = float(np.mean([float(c["lng"]) for c in member_points]))
+                point_count = len(member_points)
 
                 crime_names = [p.get("crime_head_name") for p in member_points if p.get("crime_head_name")]
                 station_names = [p.get("station_name") for p in member_points if p.get("station_name")]
@@ -6136,19 +6153,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
                         # Upgrade 1.2: Dual-Statute Legal Concordance (IPC <-> BNS)
                         raw_sections = intel.get("legal_sections", [])
-                        bns_sections = []
-                        for sec in raw_sections:
-                            s_clean = str(sec).strip()
-                            if "379" in s_clean:
-                                bns_sections.append("§303(2) BNS (Theft / IPC 379) - Cognizable, Non-Bailable")
-                            elif "392" in s_clean or "397" in s_clean:
-                                bns_sections.append("§309(4) BNS (Robbery / IPC 392) - Cognizable, Non-Bailable")
-                            elif "420" in s_clean:
-                                bns_sections.append("§318(4) BNS (Cheating / IPC 420) - Cognizable, Non-Bailable")
-                            elif "302" in s_clean:
-                                bns_sections.append("§103(1) BNS (Murder / IPC 302) - Cognizable, Non-Bailable")
-                            else:
-                                bns_sections.append(f"{s_clean} (BNS Concordance Applied)")
+                        from bns_concordance import map_ipc_sections_to_bns
+                        bns_sections = map_ipc_sections_to_bns(raw_sections) if raw_sections else ["Section 303(2) BNS 2023 (Theft / IPC 379) — Cognizable"]
 
                         accused_names = [a.get("name") for a in intel.get("accused_roster", []) if a.get("name")]
                         accused_summary = ", ".join(accused_names) if accused_names else "None named in FIR"
@@ -6837,51 +6843,38 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
         # DOMAIN 2: SUSPECT PROFILING & BEHAVIORAL FORENSICS (Tools 13 to 22)
         
-        # Tool 13: get_offender_risk (Calibrated XGBoost / SHAP Recidivism Engine)
+        # Tool 13: get_offender_risk (Grounded PSOTI Tri-Metric Threat Engine)
         elif tool_name == "get_offender_risk":
             suspect = self.sanitize_sql_input(params.get("suspect_name", params.get("name", ""))).strip()
-            if catalyst_app and suspect:
+            if suspect:
                 try:
-                    # Look up accused history
-                    acc_rows = catalyst_app.zql().execute_query(
-                        f"SELECT AccusedMasterID, AccusedName, AgeYear, GenderID, CaseMasterID FROM Accused WHERE AccusedName LIKE '*{suspect}*' LIMIT 10"
-                    )
-                    case_count = len(acc_rows)
-                    risk_pct = min(96.5, round(28.0 + (case_count * 14.5), 1))
-                    tier = "CRITICAL 🔴" if risk_pct > 75 else "ELEVATED 🟡" if risk_pct > 40 else "MODERATE 🟢"
-                    
-                    factors = [
-                        {"factor": f"{case_count} Prior FIR Registrations", "weight": "+34% (Habitual Nexus)"},
-                        {"factor": "Co-offending Syndicate Linkage", "weight": "+22% (§111 BNS Indicator)"},
-                        {"factor": "Night-time Burglary Modus Operandi", "weight": "+18% (Specialized MO)"}
+                    from threat_scoring_engine import ThreatScoringEngine
+                    psoti_res = ThreatScoringEngine.evaluate_suspect_threat(suspect)
+                    data = psoti_res
+                    data["actions"] = [
+                        {"id": "bail_docket", "label": "⚖️ Draft Bail Opposition Docket", "tool": "bail_opposition_docket_synthesizer", "params": {"suspect_name": suspect}},
+                        {"id": "syndicate", "label": "🕸️ View Syndicate Graph", "tool": "query_graph_network", "params": {"query": suspect}},
+                        {"id": "warrants", "label": "📜 Check Active Warrants", "tool": "get_warrants_for_accused", "params": {"suspect_name": suspect}}
                     ]
-                    
-                    data = {
-                        "suspect_name": suspect,
-                        "calibrated_risk_score": risk_pct,
-                        "risk_tier": tier,
-                        "prior_cases_count": case_count,
-                        "top_shap_factors": factors,
-                        "bail_opposition_grounds": "Strong flight risk and witness tampering probability (§480 BNSS)",
-                        "actions": [
-                            {"id": "bail_docket", "label": "⚖️ Draft Bail Opposition Docket", "tool": "bail_opposition_docket_synthesizer", "params": {"suspect_name": suspect}},
-                            {"id": "syndicate", "label": "🕸️ View Syndicate Graph", "tool": "query_graph_network", "params": {"query": suspect}},
-                            {"id": "warrants", "label": "📜 Check Active Warrants", "tool": "get_warrants_for_accused", "params": {"suspect_name": suspect}}
-                        ]
-                    }
-                    response_type = "recidivism_risk_card"
+                    response_type = "risk"
+                    factors = psoti_res.get("evidentiary_factors", [])
+                    factor_lines = "\n".join(f"  - {f.get('name')}: {f.get('impactPct', 0):+} pts ({f.get('statutory_ref', '')})" for f in factors[:4])
+                    tier = psoti_res.get("threat_tier", "LOW THREAT")
+                    score = psoti_res.get("psoti_score", 0)
+                    sub = psoti_res.get("sub_metrics", {})
+                    directive = psoti_res.get("tactical_directive", "")
+
                     text_result = (
-                        f"🎯 **Calibrated Recidivism Risk Assessment: {suspect.upper()}**\n"
-                        f"• **Risk Score:** **{risk_pct}% ({tier})** [XGBoost/SHAP Calibrated]\n"
-                        f"• **Prior Arrests / Filings:** {case_count} Cases Recorded\n"
-                        f"• **Key Contributing Factors:**\n" +
-                        "\n".join(f"  - {f['factor']}: {f['weight']}" for f in factors) +
-                        f"\n• **Statutory Directive:** Section 480 BNSS bail opposition recommended based on recidivism velocity."
+                        f"🎯 **Grounded Public Safety & Threat Assessment: {suspect.upper()}**\n"
+                        f"• **PSOTI Threat Rating:** **{score}% ({tier})** [PSOTI-BNS-2026]\n"
+                        f"• **Sub-Metrics:** Relapse Potential: {sub.get('relapse_potential', 0)}% | Flight Risk: {sub.get('flight_risk', 0)}% | Syndicate Nexus: {sub.get('syndicate_nexus', 0)}%\n"
+                        f"• **Statutory Evidentiary Drivers:**\n{factor_lines}\n\n"
+                        f"⚖️ {directive}"
                     )
-                    citations.append({"type": "XGBoost Calibrated Risk Engine", "id": suspect, "details": f"{risk_pct}% Risk ({tier})"})
+                    citations.append({"type": "PSOTI Threat Scoring Engine", "id": suspect, "details": f"{score}% Threat ({tier})"})
                 except Exception as e:
                     logger.error(f"get_offender_risk failed: {e}")
-                    text_result = f"Failed to compute offender risk: {e}"
+                    text_result = f"Failed to compute grounded threat assessment: {e}"
             else:
                 text_result = "Please specify suspect name."
             self._write_audit_log(employee_id, "Recidivism Risk Calculation", suspect, f"Calculate risk for {suspect}", text_result, session_id)
@@ -9212,22 +9205,31 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # Tool 46: convert_ipc_to_bns
         elif tool_name == "convert_ipc_to_bns":
             ipc_sec = self.sanitize_sql_input(params.get("ipc_section", params.get("section", "302"))).strip()
+            from bns_concordance import get_bns_concordance
+            concordance = get_bns_concordance(ipc_sec)
+            bns_sec = concordance.get("bns_section", f"Section {ipc_sec} BNS 2023")
+            offense = concordance.get("offense_name", "")
+            punishment = concordance.get("punishment", "")
+            procedural = concordance.get("procedural_changes", "")
+            transitional = concordance.get("transitional_clause", "")
             data = {
                 "input_ipc_section": f"Section {ipc_sec} IPC 1860",
-                "concordance_bns_section": "Section 103(1) BNS 2023 (Punishment for Murder)",
-                "punishment_comparison": "IPC: Death / Life Imprisonment + Fine ➔ BNS: Death / Life Imprisonment + Fine",
-                "procedural_changes": "Trial before Court of Session; mandatory preliminary examination under §173 BNSS.",
-                "transitional_savings_clause": "Offenses committed prior to 01-July-2024 governed by IPC 1860 (Sec 358 BNS / Sec 531 BNSS)."
+                "concordance_bns_section": f"{bns_sec} ({offense})",
+                "punishment_comparison": f"Penalty: {punishment}",
+                "procedural_changes": procedural,
+                "transitional_savings_clause": transitional
             }
             response_type = "ipc_bns_concordance_card"
             text_result = (
                 f"📖 **IPC 1860 ➔ BNS 2023 Concordance Translator**\n"
                 f"• **Input Section:** Section {ipc_sec} IPC 1860\n"
-                f"• **Corresponds To:** **Section 103(1) BNS 2023 (Murder)**\n"
-                f"• **Sanction / Penalty:** Death or Imprisonment for Life + Fine\n"
-                f"• **Transitional Clause:** Section 531 BNSS dictates pre-July 2024 crimes continue under CrPC/IPC."
+                f"• **Corresponds To:** **{bns_sec} ({offense})**\n"
+                f"• **Classification:** {concordance.get('classification', 'Cognizable')}\n"
+                f"• **Sanction / Penalty:** {punishment}\n"
+                f"• **Procedural Shifts (BNSS):** {procedural}\n"
+                f"• **Transitional Clause:** {transitional}"
             )
-            citations.append({"type": "IPC-BNS Concordance Table", "id": ipc_sec, "details": "Statutory translation matrix"})
+            citations.append({"type": "IPC-BNS Concordance Table", "id": ipc_sec, "details": f"{bns_sec} ({offense})"})
             self._write_audit_log(employee_id, "IPC-BNS Concordance", ipc_sec, f"Convert IPC {ipc_sec}", text_result, session_id)
 
         # Tool 47: get_default_bail_countdown
