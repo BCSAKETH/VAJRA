@@ -1852,41 +1852,46 @@ class VajraGraphRAG:
                 # pass it raw) are covered -- an apostrophe surname (D'Souza) would
                 # otherwise break the query or allow injection.
                 _sn = str(suspect_name).replace("'", "''")
-                accused_query = f"SELECT AccusedName, CaseMasterID FROM Accused WHERE AccusedName LIKE '*{_sn}*'"
+                accused_query = f"SELECT AccusedMasterID, AccusedName, AgeYear, GenderID, CaseMasterID FROM Accused WHERE AccusedName LIKE '*{_sn}*' LIMIT 50"
                 accused_res = catalyst_app.zql().execute_query(accused_query)
 
                 if accused_res:
-                    # Confirmed live: a common first name ("ramesh") fuzzy-
-                    # matched ~15 genuinely different real people across the
-                    # database, and every one of their cases got merged into
-                    # a single fake "syndicate" -- a ~50-case, dozens-of-
-                    # co-accused network presented as if it belonged to one
-                    # suspect. LIKE '*x*' matching multiple DISTINCT accused
-                    # names is a name collision, not one prolific offender.
-                    # Prefer an exact (case-insensitive) match among the
-                    # candidates if one exists; otherwise this is genuinely
-                    # ambiguous and must say so rather than silently
-                    # presenting a fabricated combined network.
-                    distinct_names = {}
+                    # 4-Point Disambiguation (Track 6 / Step 8.6 / Master Gate V6):
+                    # Group matches by distinct individual profiles (Name, Age) rather than
+                    # merging unrelated people with common first names into a fake syndicate.
+                    candidate_profiles = {}
                     for r in accused_res:
                         a = r.get("Accused", {})
-                        name = a.get("AccusedName")
+                        name = (a.get("AccusedName") or "").strip()
+                        age = a.get("AgeYear")
                         cid = a.get("CaseMasterID")
                         if name and cid:
-                            distinct_names.setdefault(name, []).append(cid)
+                            pkey = (name.lower(), str(age) if age else "Unknown")
+                            if pkey not in candidate_profiles:
+                                candidate_profiles[pkey] = {
+                                    "name": name,
+                                    "age": age,
+                                    "case_ids": []
+                                }
+                            candidate_profiles[pkey]["case_ids"].append(cid)
 
-                    if len(distinct_names) > 1:
-                        exact = next((n for n in distinct_names if n.lower() == suspect_name.lower()), None)
-                        if exact:
-                            case_ids = distinct_names[exact]
-                            suspect_name = exact
+                    if len(candidate_profiles) > 1:
+                        # Check for exact single full-name match
+                        exact = [p for p in candidate_profiles.values() if p["name"].lower() == suspect_name.lower()]
+                        if len(exact) == 1:
+                            case_ids = exact[0]["case_ids"]
+                            suspect_name = exact[0]["name"]
                         else:
-                            other_names = sorted(n for n in distinct_names if n.lower() != suspect_name.lower())
+                            other_names = [f"{p['name']} (Age: {p['age'] or 'N/A'}, {len(p['case_ids'])} cases)" for p in candidate_profiles.values()]
                             return {
                                 "target_suspect": suspect_name,
-                                "engine_mode": "Ambiguous Name Match",
+                                "engine_mode": "Disambiguation Required",
                                 "ambiguous_match": True,
                                 "candidate_names": other_names[:10],
+                                "candidate_profiles": [
+                                    {"name": p["name"], "age": p["age"], "case_count": len(p["case_ids"])}
+                                    for p in candidate_profiles.values()
+                                ][:10],
                                 "1st_degree_connections": [],
                                 "2nd_degree_connections": [],
                                 "3rd_degree_connections": [],
@@ -1895,7 +1900,9 @@ class VajraGraphRAG:
                                 "case_ids": []
                             }
                     else:
-                        case_ids = list(distinct_names.values())[0] if distinct_names else []
+                        case_ids = list(candidate_profiles.values())[0]["case_ids"] if candidate_profiles else []
+                        if candidate_profiles:
+                            suspect_name = list(candidate_profiles.values())[0]["name"]
 
                     if not case_ids:
                         return self._fallback_result(suspect_name)
@@ -1960,49 +1967,50 @@ class VajraGraphRAG:
                         logger.warning(f"Could not batch-fetch Unit names for network trace: {ex}")
 
                     linked_cases = []
-                    # Structured graph data for a real node-link diagram, built
-                    # alongside the existing human-readable strings (kept for
-                    # backward compat with any caller still reading them) --
-                    # the suspect is the root, cases are 1st-degree nodes,
-                    # co-accused sharing those cases are 2nd-degree nodes.
-                    # F.1: "layer" tags every node/edge with which of the
-                    # combined-view toggle groups it belongs to (co_accused /
-                    # financial / phone_vehicle) -- kept SEPARATE from "type"
-                    # (which stays on the existing color/legend vocabulary
-                    # NetworkGraph.tsx already renders: suspect/case/person/
-                    # phone/vehicle/financial_account) so toggling a layer
-                    # on/off never changes how a node is colored.
                     nodes = [{"id": "suspect", "label": suspect_name, "type": "suspect", "layer": "co_accused"}]
                     edges = []
+                    case_node_map = {}
                     for c in cases_res:
                         cm_data = c.get("CaseMaster", {})
+                        cm_id = cm_data.get("CaseMasterID")
                         crime_no = cm_data.get("CrimeNo")
                         station_id = cm_data.get("PoliceStationID")
                         unit_name = unit_name_map.get(str(station_id), "Unknown PS") if station_id else "Unknown PS"
                         linked_cases.append(f"{crime_no} ({unit_name})")
 
                         case_node_id = f"case_{crime_no}"
+                        if cm_id is not None:
+                            case_node_map[str(cm_id)] = case_node_id
+                            try:
+                                case_node_map[int(cm_id)] = case_node_id
+                            except (ValueError, TypeError):
+                                pass
                         nodes.append({"id": case_node_id, "label": crime_no, "sublabel": unit_name, "type": "case", "layer": "co_accused"})
                         edges.append({"source": "suspect", "target": case_node_id, "layer": "co_accused"})
 
                     for co in co_accused_names:
                         co_node_id = f"person_{co}"
                         nodes.append({"id": co_node_id, "label": co, "type": "person", "layer": "co_accused", "hop": 1})
-                        # F.4: real shared-case COUNT between the suspect and
-                        # this specific co-accused (not every case the
-                        # suspect has -- only the ones this person actually
-                        # co-appears in, per co_case_ids built above).
-                        # F.5: "first seen" = the earliest of those shared
-                        # cases' real CrimeRegisteredDate -- both derived from
-                        # data already fetched, no new query/storage.
                         shared_ids = list(dict.fromkeys(co_case_ids.get(co, [])))
                         shared_dates = [case_date_by_id[cid2] for cid2 in shared_ids if cid2 in case_date_by_id]
-                        # Link each co-accused to the first case node (best-effort;
-                        # a precise per-case link would need the co-accused's own
-                        # CaseMasterID carried through from the co_query above)
-                        if len(nodes) > 1:
+                        # Step 8.5 FIX: Connect co-accused edges STRICTLY to the genuine case nodes they co-appear in!
+                        linked_any = False
+                        for cid2 in shared_ids:
+                            target_case_node = case_node_map.get(str(cid2)) or case_node_map.get(cid2)
+                            if target_case_node:
+                                edges.append({
+                                    "source": target_case_node,
+                                    "target": co_node_id,
+                                    "layer": "co_accused",
+                                    "weight": 1,
+                                    "first_seen": case_date_by_id.get(cid2),
+                                })
+                                linked_any = True
+                        if not linked_any and len(nodes) > 1:
                             edges.append({
-                                "source": nodes[1]["id"], "target": co_node_id, "layer": "co_accused",
+                                "source": nodes[1]["id"],
+                                "target": co_node_id,
+                                "layer": "co_accused",
                                 "weight": len(shared_ids) or 1,
                                 "first_seen": min(shared_dates) if shared_dates else None,
                             })

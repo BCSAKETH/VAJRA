@@ -7352,40 +7352,91 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
         # Tool 21: get_accused_associates
         elif tool_name == "get_accused_associates":
-            suspect = self.sanitize_sql_input(params.get("suspect_name", params.get("name", ""))).strip()
+            raw_target = self.sanitize_sql_input(params.get("suspect_name", params.get("name", params.get("case_no", "")))).strip()
+            clean_m = re.search(r'\b(CR|FIR)[-_ ]?\d+[-_ ]?\d*\b|\b\d{1,6}/\d{2,4}\b', raw_target, re.IGNORECASE)
+            suspect = raw_target
+            if clean_m and catalyst_app:
+                c_no = clean_m.group(0).strip()
+                try:
+                    cm_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID FROM CaseMaster WHERE CrimeNo = '{c_no}' LIMIT 1")
+                    if cm_res:
+                        cid = cm_res[0].get("CaseMaster", {}).get("CaseMasterID")
+                        acc_res = catalyst_app.zql().execute_query(f"SELECT AccusedName FROM Accused WHERE CaseMasterID = {cid} LIMIT 1")
+                        if acc_res:
+                            suspect = acc_res[0].get("Accused", {}).get("AccusedName") or raw_target
+                except Exception:
+                    pass
+
             if catalyst_app and suspect:
                 try:
                     acc_rows = catalyst_app.zql().execute_query(
-                        f"SELECT AccusedMasterID, AccusedName, CaseMasterID FROM Accused WHERE AccusedName LIKE '*{suspect}*' LIMIT 15"
+                        f"SELECT AccusedMasterID, AccusedName, AgeYear, CaseMasterID FROM Accused WHERE AccusedName LIKE '*{suspect}*' LIMIT 50"
                     )
-                    case_ids = [str(r.get("Accused", r).get("CaseMasterID")) for r in acc_rows if r.get("Accused", r).get("CaseMasterID")]
-                    associates = {}
-                    if case_ids:
-                        co_rows = catalyst_app.zql().execute_query(
-                            f"SELECT AccusedName, CaseMasterID FROM Accused WHERE CaseMasterID IN ({','.join(case_ids[:10])}) LIMIT 50"
+                    
+                    # 4-Point Disambiguation for associates
+                    candidate_profiles = {}
+                    for r in acc_rows:
+                        a = r.get("Accused", r)
+                        name = (a.get("AccusedName") or "").strip()
+                        age = a.get("AgeYear")
+                        cid = a.get("CaseMasterID")
+                        if name and cid:
+                            pkey = (name.lower(), str(age) if age else "Unknown")
+                            if pkey not in candidate_profiles:
+                                candidate_profiles[pkey] = {"name": name, "age": age, "case_ids": []}
+                            candidate_profiles[pkey]["case_ids"].append(str(cid))
+
+                    if len(candidate_profiles) > 1 and not any(p["name"].lower() == suspect.lower() for p in candidate_profiles.values()):
+                        cands = [f"{p['name']} (Age: {p['age'] or 'N/A'}, {len(p['case_ids'])} cases)" for p in candidate_profiles.values()]
+                        response_type = "disambiguation_card"
+                        data = {
+                            "suspect_name": suspect,
+                            "ambiguous_match": True,
+                            "candidate_names": cands[:10],
+                            "co_accused_links": []
+                        }
+                        text_result = (
+                            f"⚠️ **Identity Disambiguation Required: '{suspect}'**\n\n"
+                            f"The query matches **{len(cands)} distinct individuals** in CCTNS datastore:\n"
+                            + "\n".join(f"• **{c}**" for c in cands[:6]) + "\n\n"
+                            f"💡 **Investigative Direction:** Please provide the full name or specific case to inspect co-accused associates."
                         )
-                        for r in co_rows:
-                            acc = r.get("Accused", r)
-                            name = acc.get("AccusedName")
-                            if name and suspect.lower() not in str(name).lower():
-                                associates[name] = associates.get(name, 0) + 1
-                    
-                    assoc_list = [{"name": k, "shared_cases": v, "role": "Co-Accused / Syndicate Associate"} for k, v in associates.items()]
-                    assoc_list.sort(key=lambda x: x["shared_cases"], reverse=True)
-                    
-                    data = {
-                        "suspect_name": suspect,
-                        "co_accused_links": assoc_list[:10],
-                        "total_associates_identified": len(assoc_list)
-                    }
-                    response_type = "associates_card"
-                    assoc_lines = "\n".join(f"• **{a['name']}:** Linked in {a['shared_cases']} shared FIR(s) | Role: Co-Offender" for a in assoc_list[:6]) if assoc_list else "• No co-accused recorded on same FIRs in current database."
-                    text_result = (
-                        f"👥 **Co-Accused Syndicate Associates: {suspect.upper()}**\n"
-                        f"{assoc_lines}\n"
-                        f"• **Coordinated Directive:** Issue notices to appear under Section 35 BNSS to examine common syndicate hierarchy."
-                    )
-                    citations.append({"type": "Co-Offending Link Engine", "id": suspect, "details": f"{len(assoc_list)} co-accused associates"})
+                    else:
+                        # Exact or single match
+                        exact_p = next((p for p in candidate_profiles.values() if p["name"].lower() == suspect.lower()), None)
+                        if exact_p:
+                            case_ids = exact_p["case_ids"]
+                            suspect = exact_p["name"]
+                        else:
+                            case_ids = list(candidate_profiles.values())[0]["case_ids"] if candidate_profiles else []
+
+                        associates = {}
+                        if case_ids:
+                            co_rows = catalyst_app.zql().execute_query(
+                                f"SELECT AccusedName, CaseMasterID FROM Accused WHERE CaseMasterID IN ({','.join(case_ids[:10])}) LIMIT 50"
+                            )
+                            for r in co_rows:
+                                acc = r.get("Accused", r)
+                                name = acc.get("AccusedName")
+                                if name and suspect.lower() not in str(name).lower():
+                                    associates[name] = associates.get(name, 0) + 1
+                        
+                        assoc_list = [{"name": k, "shared_cases": v, "role": "Co-Accused / Syndicate Associate"} for k, v in associates.items()]
+                        assoc_list.sort(key=lambda x: x["shared_cases"], reverse=True)
+                        
+                        data = {
+                            "suspect_name": suspect,
+                            "co_accused_links": assoc_list[:10],
+                            "total_associates_identified": len(assoc_list)
+                        }
+                        response_type = "associates_card"
+                        assoc_lines = "\n".join(f"• **{a['name']}:** Linked in {a['shared_cases']} shared FIR(s) | Role: Co-Offender" for a in assoc_list[:6]) if assoc_list else "• No co-accused recorded on same FIRs in current database."
+                        text_result = (
+                            f"👥 **Co-Accused Syndicate Associates: {suspect.upper()}**\n"
+                            f"{assoc_lines}\n"
+                            f"• **Coordinated Directive:** Issue notices to appear under Section 35 BNSS to examine common syndicate hierarchy."
+                        )
+                        citations.append({"type": "Co-Offending Link Engine", "id": suspect, "details": f"{len(assoc_list)} co-accused associates"})
                 except Exception as e:
                     logger.error(f"get_accused_associates failed: {e}")
                     text_result = f"Failed to retrieve associates: {e}"
@@ -7499,16 +7550,22 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
         # 5. query_graph_network
         elif tool_name == "query_graph_network":
-            suspect = self.sanitize_sql_input(params.get("suspect_name", ""))
+            raw_target = self.sanitize_sql_input(params.get("suspect_name", params.get("case_no", params.get("query", "")))).strip()
+            clean_m = re.search(r'\b(CR|FIR)[-_ ]?\d+[-_ ]?\d*\b|\b\d{1,6}/\d{2,4}\b', raw_target, re.IGNORECASE)
+            suspect = raw_target
+            if clean_m and catalyst_app:
+                c_no = clean_m.group(0).strip()
+                try:
+                    cm_res = catalyst_app.zql().execute_query(f"SELECT CaseMasterID FROM CaseMaster WHERE CrimeNo = '{c_no}' LIMIT 1")
+                    if cm_res:
+                        cid = cm_res[0].get("CaseMaster", {}).get("CaseMasterID")
+                        acc_res = catalyst_app.zql().execute_query(f"SELECT AccusedName FROM Accused WHERE CaseMasterID = {cid} LIMIT 1")
+                        if acc_res:
+                            suspect = acc_res[0].get("Accused", {}).get("AccusedName") or raw_target
+                except Exception:
+                    pass
+
             response_type = "network"
-            # F.1/F.33: which layer(s) the combined view opens with checked
-            # ON -- pre-computed by the router from the officer's actual
-            # query text (Loophole L2 still applies: the frontend toggle bar
-            # stays fully interactive regardless, so a wrong guess here only
-            # costs one click). Falls back to co-accused-only when called
-            # without a query-derived hint (e.g. generate_full_report's
-            # internal sub-call, or the LLM tool-calling path, which doesn't
-            # pass this param).
             requested_layers = params.get("requested_layers") or ["co_accused"]
             network_info = graph_rag.get_criminal_network(suspect)
 
@@ -7588,15 +7645,15 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 # people and their cases got silently merged into one fake
                 # "syndicate" of ~50 unrelated cases. Say plainly that the
                 # name is ambiguous instead of fabricating a combined network.
-                response_type = "text"
+                response_type = "disambiguation_card"
                 candidates = network_info.get("candidate_names", [])
                 text_result = (
-                    f"'{suspect}' matches multiple different people in the database, not one suspect "
-                    f"(found {len(candidates)}+ others with this name or a name containing it: "
-                    f"{', '.join(candidates[:5])}{'...' if len(candidates) > 5 else ''}). "
-                    f"Please provide a fuller name (e.g. full first and last name) to trace a specific person's network."
+                    f"⚠️ **Identity Disambiguation Required: '{suspect}'**\n\n"
+                    f"The query matches **{len(candidates)} distinct individuals** in CCTNS datastore across different age profiles and police circles:\n"
+                    + "\n".join(f"• **{c}**" for c in candidates[:6]) + "\n\n"
+                    f"💡 **Investigative Direction:** Please provide the full first and last name (e.g. 'Vedika Ramesh') to trace a specific suspect's network without cross-linkage."
                 )
-                citations.append({"type": "GraphRAG Syndicate Map", "id": suspect, "details": "Name matched multiple distinct accused records -- ambiguous, not traced"})
+                citations.append({"type": "GraphRAG Syndicate Map", "id": suspect, "details": "Name matched multiple distinct accused records -- disambiguation required"})
             else:
                 hub = network_info.get("hub") or {}
                 hub_label = hub.get("label") or suspect
