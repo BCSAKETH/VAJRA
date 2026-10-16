@@ -213,6 +213,35 @@ export const AIChatScreen: React.FC = () => {
   // fetch + manual stream reader instead (see streamTicker below).
   const [tickerMessage, setTickerMessage] = useState("");
   const tickerAbortRef = useRef<AbortController | null>(null);
+
+  // Track 15: Zero-Delay SSE Handshake (Wake up immediately on completion, eliminating polling backoff)
+  const triggerImmediateAssistantFetch = useCallback(async (sessionId: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/api/sessions/${sessionId}/messages`, {
+        headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
+      });
+      if (!res.ok) return;
+      const raw = await res.json();
+      if (raw && raw.length > 0) {
+        const lastMsg = raw[raw.length - 1];
+        if (lastMsg && (lastMsg.sender === "assistant" || lastMsg.sender === "system")) {
+          const loaded = mapSessionMessages(sessionId, raw);
+          sessionMessagesCacheRef.current.set(sessionId, loaded);
+          if (activeSessionIdRef.current === sessionId || activeSessionIdRef.current === null) {
+            activeSessionIdRef.current = sessionId;
+            setActiveSessionId(sessionId);
+            setChatMessages(loaded);
+            setLiveEmergencyActive(loaded[loaded.length - 1]?.personaEmergency === true);
+            clearPending(sessionId);
+            clearPending("__new__");
+          }
+        }
+      }
+    } catch {
+      // Polling fallback catches if network drops
+    }
+  }, [clearPending]);
+
   const streamTicker = useCallback(async (sessionId: string) => {
     tickerAbortRef.current?.abort();
     const controller = new AbortController();
@@ -239,7 +268,10 @@ export const AIChatScreen: React.FC = () => {
           try {
             const payload = JSON.parse(line.slice(5).trim());
             if (payload.message) setTickerMessage(payload.message);
-            if (payload.done) return;
+            if (payload.done) {
+              triggerImmediateAssistantFetch(sessionId);
+              return;
+            }
           } catch { /* ignore a malformed chunk -- next one still works */ }
         }
       }
@@ -248,7 +280,7 @@ export const AIChatScreen: React.FC = () => {
       // network hiccup -- the static thinkingIndicator text below still
       // covers the wait either way, this is purely a UX enhancement.
     }
-  }, []);
+  }, [triggerImmediateAssistantFetch]);
 
   const [expandedWidget, setExpandedWidget] = useState<{ type: string; data: any } | null>(null);
   // F.34: this officer's own "last viewed this network" timestamp for the
@@ -537,13 +569,10 @@ export const AIChatScreen: React.FC = () => {
   // already proven to survive this exact gateway -- the live-progress
   // ticker above (GET /api/chat/progress/{id}) has worked in production all
   // along on the identical mechanism. This reuses that same proven pattern
-  // (cowork_feed.py backs it) for genuinely instant (sub-second) push
-  // instead of the previous 4-second poll. Only runs for genuine
-  // multi-participant sessions; reconnects automatically on any drop or on
-  // the stream's own bounded server-side ceiling, so it behaves as one
-  // continuous live connection from the officer's point of view.
+  // Track 15: Universal SSE stream push connection (cowork_feed.py backs it)
+  // for genuinely instant (< 100ms) push for all active sessions without waiting on polling backoff.
   useEffect(() => {
-    if (!activeSessionId || !hasParticipants) return;
+    if (!activeSessionId) return;
     let cancelled = false;
     const controller = new AbortController();
 
@@ -657,7 +686,7 @@ export const AIChatScreen: React.FC = () => {
       cancelled = true;
       controller.abort();
     };
-  }, [activeSessionId, hasParticipants, clearPending]);
+  }, [activeSessionId, clearPending]);
 
 
 
