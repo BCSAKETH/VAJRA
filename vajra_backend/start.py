@@ -1,3 +1,6 @@
+import os
+import sys
+
 # 1. Ensure vendored Linux dependencies are on sys.path and PYTHONPATH
 vendor_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vendor")
 if os.path.exists(vendor_dir):
