@@ -268,7 +268,7 @@ def record_auth_audit_log(kgid: str, action_type: str, details: str, ip_address:
     for authentication lifecycle events (LOGIN, LOGOUT, TAB_CLOSE, EVICTION, REPORT).
     """
     try:
-        from vajra_core import catalyst_app, zcql_insert_row, escape_zcql_literal
+        from vajra_core import catalyst_app, zcql_insert_row, escape_zcql_literal, _AUDIT_LOG_LOCK
         if not catalyst_app:
             return
 
@@ -285,44 +285,46 @@ def record_auth_audit_log(kgid: str, action_type: str, details: str, ip_address:
         except Exception:
             pass
 
-        logged_at = datetime.utcnow().isoformat()
-        base_row = {
-            "employee_id": emp_id,
-            "action_type": action_type[:50],
-            "target_entity": f"AUTH_SESSION_{kgid}"[:200],
-            "query_text": f"IP: {ip_address or '10.14.22.84'}"[:500],
-            "response_summary": details[:200],
-            "session_id": f"auth_{kgid}_{int(time.time())}",
-            "logged_at": logged_at,
-            "kgid": str(kgid)
-        }
+        # Track 9 (BSA 2023 §63): Acquire process-wide mutex to guarantee strictly linear Merkle hash chain
+        with _AUDIT_LOG_LOCK:
+            logged_at = datetime.utcnow().isoformat()
+            base_row = {
+                "employee_id": emp_id,
+                "action_type": action_type[:50],
+                "target_entity": f"AUTH_SESSION_{kgid}"[:200],
+                "query_text": f"IP: {ip_address or '10.14.22.84'}"[:500],
+                "response_summary": details[:200],
+                "session_id": f"auth_{kgid}_{int(time.time())}",
+                "logged_at": logged_at,
+                "kgid": str(kgid)
+            }
 
-        prev_hash = "0000000000000000000000000000000000000000000000000000000000000000"
-        try:
-            last_res = catalyst_app.zql().execute_query("SELECT row_hash FROM AuditLog ORDER BY logged_at DESC LIMIT 1")
-            if last_res:
-                prev_hash = last_res[0].get("AuditLog", {}).get("row_hash") or prev_hash
-        except Exception:
-            pass
-
-        serialized_content = f"{emp_id}|{action_type}|{base_row['target_entity']}|{base_row['query_text'][:100]}|{details[:100]}|{base_row['session_id']}|{logged_at}"
-        row_hash = hashlib.sha256((prev_hash + serialized_content).encode('utf-8')).hexdigest()
-        hash_fields = {"prev_hash": prev_hash, "row_hash": row_hash}
-
-        base_row_no_kgid = {k: v for k, v in base_row.items() if k != "kgid"}
-        attempts = [
-            {**base_row, **hash_fields},
-            {**base_row_no_kgid, **hash_fields},
-            dict(base_row),
-            dict(base_row_no_kgid)
-        ]
-
-        for attempt in attempts:
+            prev_hash = "0000000000000000000000000000000000000000000000000000000000000000"
             try:
-                zcql_insert_row("AuditLog", attempt)
-                logger.info(f"Auth audit log written successfully: {action_type} for KGID {kgid} (EmpID: {emp_id})")
-                return
+                last_res = catalyst_app.zql().execute_query("SELECT row_hash FROM AuditLog ORDER BY logged_at DESC LIMIT 1")
+                if last_res:
+                    prev_hash = last_res[0].get("AuditLog", {}).get("row_hash") or prev_hash
             except Exception:
-                continue
+                pass
+
+            serialized_content = f"{emp_id}|{action_type}|{base_row['target_entity']}|{base_row['query_text'][:100]}|{details[:100]}|{base_row['session_id']}|{logged_at}"
+            row_hash = hashlib.sha256((prev_hash + serialized_content).encode('utf-8')).hexdigest()
+            hash_fields = {"prev_hash": prev_hash, "row_hash": row_hash}
+
+            base_row_no_kgid = {k: v for k, v in base_row.items() if k != "kgid"}
+            attempts = [
+                {**base_row, **hash_fields},
+                {**base_row_no_kgid, **hash_fields},
+                dict(base_row),
+                dict(base_row_no_kgid)
+            ]
+
+            for attempt in attempts:
+                try:
+                    zcql_insert_row("AuditLog", attempt)
+                    logger.info(f"Auth audit log written successfully: {action_type} for KGID {kgid} (EmpID: {emp_id})")
+                    return
+                except Exception:
+                    continue
     except Exception as e:
         logger.error(f"Failed to record auth audit log for KGID {kgid}: {e}")

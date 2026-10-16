@@ -50,6 +50,13 @@ logger = logging.getLogger(__name__)
 # AppSail worker thread) never see each other's queries.
 _zql_query_log = threading.local()
 
+# Track 9 (BSA 2023 §63): Process-wide audit log lock guaranteeing strictly linear Merkle hash chain without sibling forks
+_AUDIT_LOG_LOCK = threading.Lock()
+
+# Persistent shared threadpool for ZCQL execution to prevent per-query thread allocation churn
+import concurrent.futures
+_ZCQL_THREAD_POOL = concurrent.futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="zcql-worker")
+
 
 def start_zql_log() -> None:
     """Call once at the start of a turn to begin collecting the exact ZCQL
@@ -215,10 +222,8 @@ try:
         try:
             loop = asyncio.get_running_loop()
             if loop.is_running():
-                import concurrent.futures
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(self._execute_http_sync, query)
-                    return future.result()
+                future = _ZCQL_THREAD_POOL.submit(self._execute_http_sync, query)
+                return future.result()
         except RuntimeError:
             pass
 
