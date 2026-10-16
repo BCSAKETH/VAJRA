@@ -23,6 +23,7 @@ from that real shape -- no syndicate name/MO/hierarchy tier is invented for
 a signal the detector doesn't actually compute.
 """
 
+import re
 import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple, Set
@@ -55,7 +56,10 @@ def get_case_intelligence(case_no: str, agent_loop_instance: Any) -> Dict[str, A
     if not catalyst_app or not case_no:
         return {"error": "Database offline or invalid case number"}
 
-    case_no = case_no.strip()
+    case_no = str(case_no).strip()
+    m = re.search(r'\b(CR|FIR)[-_ ]?\d+[-_ ]?\d*\b|\b\d{1,6}/\d{2,4}\b', case_no, re.IGNORECASE)
+    if m:
+        case_no = m.group(0).strip()
     case_id = agent_loop_instance._resolve_case_no(case_no) if agent_loop_instance else None
     if case_id is None:
         return {"error": f"Case {case_no} not found"}
