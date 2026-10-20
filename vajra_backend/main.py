@@ -51,6 +51,23 @@ import ipaddress
 from urllib.parse import urlparse, urljoin
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
+# Defensive shim for NumPy 2.x wildcard testing imports looking for pd_NA
+try:
+    import numpy._core.tests._natype
+except Exception:
+    try:
+        import types
+        _mod_tests = types.ModuleType("numpy._core.tests")
+        _mod_natype = types.ModuleType("numpy._core.tests._natype")
+        class _NAType:
+            def __repr__(self): return "<NA>"
+        _mod_natype.pd_NA = _NAType()
+        _mod_tests._natype = _mod_natype
+        sys.modules["numpy._core.tests"] = _mod_tests
+        sys.modules["numpy._core.tests._natype"] = _mod_natype
+    except Exception:
+        pass
+
 import numpy as np
 import pandas as pd
 import joblib

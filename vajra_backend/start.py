@@ -54,6 +54,23 @@ port = int(port_str)
 app = None
 import_error_traceback = None
 
+# Defensive shim for NumPy 2.x wildcard testing imports looking for pd_NA
+try:
+    import numpy._core.tests._natype
+except Exception:
+    try:
+        import types
+        mod_tests = types.ModuleType("numpy._core.tests")
+        mod_natype = types.ModuleType("numpy._core.tests._natype")
+        class _NAType:
+            def __repr__(self): return "<NA>"
+        mod_natype.pd_NA = _NAType()
+        mod_tests._natype = mod_natype
+        sys.modules["numpy._core.tests"] = mod_tests
+        sys.modules["numpy._core.tests._natype"] = mod_natype
+    except Exception:
+        pass
+
 try:
     logger.info("[STARTUP] Importing main FastAPI application...")
     from main import app as _main_app
