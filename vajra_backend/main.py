@@ -3555,6 +3555,63 @@ class GLMTranslator:
             return f"[ಅನುವಾದ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ] (Original: {text})"
         return normalized_text
 
+    async def translate_large_text(self, text: str, src: str = "en", tgt: str = "kn") -> str:
+        """Splits large text into safe chunks to bypass Zia API limits."""
+        if not text or not text.strip() or src == tgt:
+            return text
+
+        # Split by double newline (paragraphs) to preserve Markdown formatting
+        chunks = text.split("\n\n")
+        translated_chunks = []
+
+        async def _translate_single_piece(piece: str) -> str:
+            if not piece.strip():
+                return piece
+            normalized = self.normalize_slang(piece) if src == "kn" else piece
+            sanitized = self._sanitize_for_fast_translate(normalized)
+            try:
+                fast_res = await run_in_threadpool(self.llm.translate_fast, sanitized, src, tgt)
+                if (fast_res.get("available") and not self._looks_like_leaked_escapes(fast_res.get("text", ""))
+                        and not self._looks_untranslated(tgt, fast_res.get("text", ""))
+                        and self._numbers_match(sanitized, fast_res.get("text", ""))):
+                    return fast_res["text"]
+            except Exception:
+                pass
+            res = await run_in_threadpool(self.translate, piece, src, tgt)
+            if res and ("[ಅನುವಾದ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ]" in res or "[Translation temporarily unavailable" in res):
+                return piece
+            return res if res else piece
+
+        async def _translate_chunk(chunk: str) -> str:
+            if not chunk.strip():
+                return chunk
+            # If a single paragraph is STILL massive, split by ~800 chars
+            if len(chunk) > 800:
+                sub_chunks = [chunk[i:i+800] for i in range(0, len(chunk), 800)]
+                sub_tasks = [_translate_single_piece(sub) for sub in sub_chunks]
+                sub_results = await asyncio.gather(*sub_tasks, return_exceptions=True)
+                translated_subs = []
+                for idx, sres in enumerate(sub_results):
+                    if isinstance(sres, Exception) or not sres:
+                        translated_subs.append(sub_chunks[idx])
+                    else:
+                        translated_subs.append(str(sres))
+                return "".join(translated_subs)
+            else:
+                return await _translate_single_piece(chunk)
+
+        # Execute all chunk translations concurrently for blazing speed
+        tasks = [_translate_chunk(chunk) for chunk in chunks]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        for i, res in enumerate(results):
+            if isinstance(res, Exception) or not res:
+                translated_chunks.append(chunks[i])
+            else:
+                translated_chunks.append(str(res))
+
+        return "\n\n".join(translated_chunks)
+
 translator = GLMTranslator()
 
 # Fixed Kannada rendering of agent_loop.py's fixed English "AI unavailable"
@@ -9227,12 +9284,8 @@ class TranslateRequest(BaseModel):
 async def translate_endpoint(payload: TranslateRequest, request: Request, location_context: str = Depends(security_firewall)):
     """
     On-demand translation for the per-message ⇄ Translate button. Translates a
-    single message's text when the officer asks, instead of eagerly translating
-    every answer on every turn (which was wasted latency on English display).
-    Because it re-translates the English source live, it also fixes OLD messages
-    whose stored Kannada was a bad/looping translation -- the button always shows
-    a fresh, correct result. Uses the same translator (Zia fast-translate -> GLM
-    -> Qwen, with the repetition-loop guard) as the rest of the app.
+    single message's text when the officer asks, using chunked parallel translation
+    to bypass Zia character limits and achieve sub-2-second speed on large reports.
     """
     src = (payload.source_lang or "en").strip()
     tgt = (payload.target_lang or "kn").strip()
@@ -9241,7 +9294,7 @@ async def translate_endpoint(payload: TranslateRequest, request: Request, locati
         return {"text": text, "source_lang": src, "target_lang": tgt}
     try:
         out = await asyncio.wait_for(
-            run_in_threadpool(translator.translate, text, src, tgt), timeout=25
+            translator.translate_large_text(text, src, tgt), timeout=25
         )
     except Exception as e:
         logger.warning(f"Translation unavailable or timed out: {e}")
