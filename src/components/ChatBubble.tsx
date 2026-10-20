@@ -489,6 +489,9 @@ const speakText = (text: string, lang: "en" | "kn" | "hi", onEnd: () => void, sp
   return "started";
 };
 
+// Global in-memory cache for translations: instant 0ms retrieval on re-toggle or across messages
+const GLOBAL_TRANSLATION_CACHE = new Map<string, string>();
+
 export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   message, lang, voicePersona, onExpandWidget, onRetry, onQuickReply, addToast, isLast,
   onEditMessage, onRetryVariant, totalVariants, activeVariantIndex, onCycleVariant, isReviewMode,
@@ -850,7 +853,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   const [liveKn, setLiveKn] = useState<string | null>(null);
   const [translating, setTranslating] = useState(false);
   const englishSource = isAI ? (message.textEn || message.text) : message.text;
-  const canTranslate = isAI && !message.isSimulated && !!(englishSource && englishSource.trim());
+  const canTranslate = isAI && !!(englishSource && englishSource.trim());
   // A message has REAL Kannada only if its stored textKn is genuinely Kannada
   // script and not just a copy of the English (English turns don't pre-compute
   // Kannada, so textKn == englishSource there).
@@ -859,9 +862,15 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   // Which language to actually show: the app-wide toggle, flipped by the ⇄ button.
   const effectiveLang: "en" | "kn" = !showTranslated ? lang : (lang === "en" ? "kn" : "en");
 
-  // Fetch a live Kannada translation of the English source once, cached in liveKn.
+  // Fetch a live Kannada translation of the English source once, cached in liveKn and global cache.
   const fetchKn = React.useCallback(async (): Promise<string | null> => {
     if (liveKn) return liveKn;
+    const cacheKey = `kn_${englishSource}`;
+    if (GLOBAL_TRANSLATION_CACHE.has(cacheKey)) {
+      const cached = GLOBAL_TRANSLATION_CACHE.get(cacheKey)!;
+      setLiveKn(cached);
+      return cached;
+    }
     if (translating || !canTranslate) return null;
     setTranslating(true);
     try {
@@ -873,12 +882,20 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
       if (res.ok) {
         const d = await res.json();
         const translated = d.text || englishSource;
+        GLOBAL_TRANSLATION_CACHE.set(cacheKey, translated);
         setLiveKn(translated);
         return translated;
       }
     } catch { /* silent -- officer still has the original */ } finally { setTranslating(false); }
     return null;
   }, [liveKn, translating, canTranslate, englishSource]);
+
+  // Pre-fetch in background on hover over translate button
+  const handlePreloadTranslate = React.useCallback(() => {
+    if (!hasRealKannada && !liveKn && canTranslate && !translating) {
+      void fetchKn();
+    }
+  }, [hasRealKannada, liveKn, canTranslate, translating, fetchKn]);
 
   // WHOLE-APP language switch: when the top-right toggle is on Kannada (or the ⇄
   // asks for Kannada) and this message has no real stored Kannada, translate it
@@ -894,9 +911,13 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     : (effectiveLang === "kn" ? kannadaText : englishSource);
 
   const handleTranslate = () => {
-    // The effect above fetches Kannada when needed; the button just flips which
-    // language this one message shows, independent of the app-wide toggle.
-    setShowTranslated((v) => !v);
+    setShowTranslated((v) => {
+      const next = !v;
+      if (next && !hasRealKannada && !liveKn && canTranslate) {
+        void fetchKn();
+      }
+      return next;
+    });
   };
   // Multiline answers are stored with the newline SQL-escaped to a literal
   // "\n" (two chars) on insert and never un-escaped on read, so they render
@@ -1634,7 +1655,17 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
               </div>
             </div>
           ) : isAI
-            ? <div className={`font-sans text-stone-200 ${sizeStyles.prose}`}>{renderRich(displayText, sizeStyles)}</div>
+            ? (
+              <div className={`font-sans text-stone-200 ${sizeStyles.prose}`}>
+                {translating && (
+                  <div className="flex items-center gap-1.5 mb-2 px-2 py-0.5 rounded bg-[#C79A4E]/10 border border-[#C79A4E]/20 text-[11px] text-[#C79A4E] font-medium animate-pulse w-fit">
+                    <Loader2 className="w-3 h-3 animate-spin text-[#C79A4E]" />
+                    <span>{lang === "en" ? "Translating to Kannada..." : "ಕನ್ನಡಕ್ಕೆ ನೇರ ಅನುವಾದಿಸಲಾಗುತ್ತಿದೆ..."}</span>
+                  </div>
+                )}
+                {renderRich(displayText, sizeStyles)}
+              </div>
+            )
             : <div className={`whitespace-pre-wrap font-sans text-stone-200 ${sizeStyles.userBubble}`}>{displayText}</div>}
 
           {/* Claude-style Step-by-Step Embedded Tactical Inquest & Clarification (No Popup Modal) */}
@@ -2062,6 +2093,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
           {canTranslate && (
             <button
               onClick={handleTranslate}
+              onMouseEnter={handlePreloadTranslate}
               disabled={translating}
               aria-pressed={showTranslated}
               title={

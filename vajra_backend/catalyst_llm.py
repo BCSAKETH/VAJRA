@@ -573,11 +573,21 @@ class CatalystLLM:
         }
         payload = {"text": text, "src_lang": source_lang, "tgt_lang": target_lang}
         try:
-            res = requests.post(url, headers=headers, json=payload, timeout=15)
+            res = requests.post(url, headers=headers, json=payload, timeout=10)
             if res.status_code == 200:
                 data = res.json()
-                translated = data.get("translated_text")
-                if data.get("status") == "success" and translated:
+                translated = None
+                if isinstance(data.get("translation"), list) and len(data["translation"]) > 0:
+                    translated = data["translation"][0].get("translate")
+                if not translated:
+                    translated = data.get("translated_text")
+                status_val = data.get("status")
+                is_ok = (
+                    status_val == "success" or
+                    (isinstance(status_val, dict) and (status_val.get("code") == 200 or status_val.get("message") == "success")) or
+                    (bool(translated and str(translated).strip()))
+                )
+                if is_ok and translated:
                     return {"available": True, "text": translated}
             logger.info(f"Zia fast-translate declined ({res.status_code}), falling back to GLM: {res.text[:200]}")
         except Exception as e:
