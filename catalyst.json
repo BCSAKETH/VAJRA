@@ -17,6 +17,7 @@
   "functions": {
     "targets": [
       "proactive_alerts",
+      "bnss_sentinel",
       "ai_turn_worker",
       "osint_radar",
       "case_insert_signal"

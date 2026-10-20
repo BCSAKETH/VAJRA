@@ -1,0 +1,2 @@
+requests
+zcatalyst-sdk>=2.0.0

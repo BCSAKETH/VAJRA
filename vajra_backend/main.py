@@ -4981,6 +4981,14 @@ async def _run_ai_turn_and_persist(
         persisted_data["_persona_manual"] = result.get("persona_manual", False)
         persisted_data["_persona_emergency"] = result.get("persona_emergency", False)
 
+    # Section 187 BNSS Default Bail Sentinel Mascot Trigger
+    if result.get("trigger_mascot_alert") or (result.get("data") or {}).get("trigger_mascot_alert"):
+        persisted_data["trigger_mascot_alert"] = True
+        persisted_data["mascot_priority"] = 100
+        persisted_data["mascot_state"] = "ALERT"
+        if (result.get("data") or {}).get("sentinel_alert"):
+            persisted_data["sentinel_alert"] = result["data"]["sentinel_alert"]
+
     # Court-admissible provenance (§65B Indian Evidence Act): a verifiable SHA-256
     # integrity hash over the grounded answer + its citations, plus the cited
     # record IDs and the authenticated operator. Any edit to the answer or its
@@ -5012,6 +5020,9 @@ async def _run_ai_turn_and_persist(
         "response_style_confidence": persisted_data.get("_response_style_confidence"),
         "persona_emergency": persisted_data.get("_persona_emergency", False),
         "persona_manual": persisted_data.get("_persona_manual", False),
+        "trigger_mascot_alert": persisted_data.get("trigger_mascot_alert", False),
+        "mascot_priority": persisted_data.get("mascot_priority", 0),
+        "mascot_state": persisted_data.get("mascot_state", "IDLE"),
         "data": persisted_data, "citations": result["citations"], "timestamp": datetime.utcnow().isoformat(),
         # Without these, an "AI unavailable" turn delivered via WebSocket
         # (every message from the 2nd one onward in a session) rendered as an
@@ -9232,9 +9243,10 @@ async def translate_endpoint(payload: TranslateRequest, request: Request, locati
         out = await asyncio.wait_for(
             run_in_threadpool(translator.translate, text, src, tgt), timeout=25
         )
-    except Exception:
-        raise HTTPException(status_code=502, detail="Translation is temporarily unavailable.")
-    return {"text": out, "source_lang": src, "target_lang": tgt}
+    except Exception as e:
+        logger.warning(f"Translation unavailable or timed out: {e}")
+        return {"text": text, "source_lang": src, "target_lang": tgt, "fallback": True}
+    return {"text": out or text, "source_lang": src, "target_lang": tgt}
 
 
 @app.post("/api/voice/stt")

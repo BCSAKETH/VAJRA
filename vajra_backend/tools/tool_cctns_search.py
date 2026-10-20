@@ -43,10 +43,13 @@ class CCTNSSearchTool(VajraTool):
 
         try:
             zcql_service = catalyst_app.zql()
-            if d_id:
-                funnel_query = f"SELECT CaseMasterID, CrimeNo, BriefFacts, CrimeRegisteredDate FROM CaseMaster WHERE DistrictID = {d_id} AND CrimeMajorHeadID = {h_id} ORDER BY CrimeRegisteredDate DESC LIMIT 50"
+            # Safely handle missing District IDs for general or statewide queries
+            if 'd_id' not in locals() or not d_id:
+                # If no district is specified, search statewide
+                funnel_query = f"SELECT CaseMasterID, CrimeNo, BriefFacts, CrimeRegisteredDate, PoliceStationID FROM CaseMaster WHERE CrimeMajorHeadID = {h_id} ORDER BY CrimeRegisteredDate DESC LIMIT 50"
             else:
-                funnel_query = f"SELECT CaseMasterID, CrimeNo, BriefFacts, CrimeRegisteredDate FROM CaseMaster WHERE CrimeMajorHeadID = {h_id} ORDER BY CrimeRegisteredDate DESC LIMIT 50"
+                # If district is specified, use the strict funnel
+                funnel_query = f"SELECT CaseMasterID, CrimeNo, BriefFacts, CrimeRegisteredDate, PoliceStationID FROM CaseMaster WHERE PoliceStationID IN (SELECT UnitID FROM Unit WHERE DistrictID = {d_id}) AND CrimeMajorHeadID = {h_id} ORDER BY CrimeRegisteredDate DESC LIMIT 50"
 
             case_rows = zcql_service.execute_query(funnel_query)
             matches = []

@@ -1334,8 +1334,83 @@ class VajraAgentLoop(CognitiveBrainMixin):
     # get_crime_trends) -- a fixed list here rather than a live query since
     # this is a last-resort, zero-dependency fallback: it needs to work even
     # if something else in the request pipeline is also struggling.
-    # Single words that look like a name (capitalized) but are command verbs,
-    # interrogatives, or domain nouns -- never a suspect. Guards entity extraction
+    def _check_active_sentinel_remand_alerts(
+        self,
+        user_unit_id: Optional[int] = None,
+        district_name: Optional[str] = None,
+        station_name: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """
+        Section 187 BNSS Remand Sentinel Query.
+        Queries VajraMemoryEntries for unread STATUTORY_REMAND_CRITICAL alerts assigned
+        to the officer's district or police station.
+        Falls back gracefully to ProactiveAlerts and local durable sentinel JSON cache.
+        """
+        alerts = []
+        # 1. Primary: live ZCQL query on VajraMemoryEntries
+        if catalyst_app:
+            try:
+                where_clauses = ["Category = 'STATUTORY_REMAND_CRITICAL'"]
+                if user_unit_id:
+                    where_clauses.append(f"AgentID = '{user_unit_id}'")
+                q = f"SELECT ROWID, Category, ContentText, SourceFIR, ProvenanceHash, AgentID, CreatedAt FROM VajraMemoryEntries WHERE {' AND '.join(where_clauses)} LIMIT 5"
+                rows = catalyst_app.zql().execute_query(q)
+                if rows:
+                    for r in rows:
+                        entry = r.get("VajraMemoryEntries", r)
+                        alerts.append(entry)
+            except Exception as e:
+                logger.debug(f"VajraMemoryEntries query skipped: {e}")
+
+        # 2. Resilient fallback: ProactiveAlerts datastore table
+        if not alerts and catalyst_app:
+            try:
+                where_pa = ["AlertType = 'STATUTORY_REMAND_CRITICAL'", "IsRead = false"]
+                if user_unit_id:
+                    where_pa.append(f"DistrictID = {user_unit_id}")
+                q_pa = f"SELECT ROWID, AlertType, AlertMessage, DistrictID, TriggerTime, Severity FROM ProactiveAlerts WHERE {' AND '.join(where_pa)} LIMIT 5"
+                rows_pa = catalyst_app.zql().execute_query(q_pa)
+                if not rows_pa and user_unit_id:
+                    # If specific unit has 0, check statewide critical remand alerts
+                    q_pa_all = "SELECT ROWID, AlertType, AlertMessage, DistrictID, TriggerTime, Severity FROM ProactiveAlerts WHERE AlertType = 'STATUTORY_REMAND_CRITICAL' AND IsRead = false LIMIT 5"
+                    rows_pa = catalyst_app.zql().execute_query(q_pa_all)
+                if rows_pa:
+                    for r in rows_pa:
+                        pa = r.get("ProactiveAlerts", r)
+                        alerts.append({
+                            "Category": "STATUTORY_REMAND_CRITICAL",
+                            "ContentText": pa.get("AlertMessage"),
+                            "SourceFIR": "",
+                            "ProvenanceHash": "",
+                            "AgentID": str(pa.get("DistrictID")),
+                            "CreatedAt": pa.get("TriggerTime")
+                        })
+            except Exception as e_pa:
+                logger.debug(f"ProactiveAlerts sentinel lookup skipped: {e_pa}")
+
+        # 3. Durable local cache fallback (sentinel_memory_entries.json)
+        if not alerts:
+            try:
+                local_mem = os.path.join(os.path.dirname(__file__), "data", "sentinel_memory_entries.json")
+                if os.path.exists(local_mem):
+                    with open(local_mem, "r", encoding="utf-8") as f:
+                        entries = json.load(f)
+                    matching = []
+                    for e in entries:
+                        if e.get("Category") == "STATUTORY_REMAND_CRITICAL":
+                            if user_unit_id and str(e.get("PoliceStationID")) == str(user_unit_id):
+                                matching.append(e)
+                            elif user_unit_id and str(e.get("AgentID")) == str(user_unit_id):
+                                matching.append(e)
+                    if not matching and entries:
+                        matching = [e for e in entries if e.get("Category") == "STATUTORY_REMAND_CRITICAL"]
+                    if matching:
+                        alerts = matching[-5:]
+            except Exception as e_mem:
+                logger.debug(f"Local sentinel memory fallback skipped: {e_mem}")
+
+        return alerts
+
     def _load_durable_history(self, session_id: str, limit: int = 250) -> List[Dict[str, str]]:
         """
         Loads the FULL real durable chat history for a session from the ZCQL
@@ -3963,6 +4038,28 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 result["data"] = data
         except Exception:
             pass
+
+        # Section 187 BNSS Sentinel / VAJRA-Vak Event Bus Flag Guarantee:
+        try:
+            if isinstance(result, dict):
+                has_mascot_alert = result.get("trigger_mascot_alert") or (result.get("data") or {}).get("trigger_mascot_alert")
+                if not has_mascot_alert:
+                    active_alerts = self._check_active_sentinel_remand_alerts(user_unit_id=user_unit_id)
+                    if active_alerts:
+                        has_mascot_alert = True
+                        if "data" not in result or not isinstance(result["data"], dict):
+                            result["data"] = {}
+                        result["data"]["sentinel_alert"] = active_alerts[0]
+
+                if has_mascot_alert:
+                    result["trigger_mascot_alert"] = True
+                    result["mascot_priority"] = 100
+                    result["mascot_state"] = "ALERT"
+                    if "data" in result and isinstance(result["data"], dict):
+                        result["data"]["trigger_mascot_alert"] = True
+        except Exception as e_sentinel:
+            logger.debug(f"Sentinel alert flag attach skipped: {e_sentinel}")
+
         return result
 
     def _run_agent_loop_inner(self, query: str, session_id: str, employee_id: int, user_unit_id: Optional[int] = None, officer_name: Optional[str] = None, answer_mode: str = "standard", officer_badge: Optional[str] = None, progress_cb: Optional[Callable[[str], None]] = None, persona_override: Optional[str] = None) -> Dict[str, Any]:
@@ -4020,6 +4117,45 @@ class VajraAgentLoop(CognitiveBrainMixin):
         self.resolved_district = resolved_district
         self.resolved_rank = resolved_rank
 
+        # =========================================================================
+        # TASK 2: SECTION 187 BNSS DEFAULT BAIL SENTINEL INTEGRATION
+        # =========================================================================
+        # 1. At the very beginning of LLM context assembly, query VajraMemoryEntries
+        #    for any unread STATUTORY_REMAND_CRITICAL alerts assigned to the current
+        #    officer's district/station.
+        sentinel_alerts = self._check_active_sentinel_remand_alerts(
+            user_unit_id=user_unit_id,
+            district_name=resolved_district,
+            station_name=resolved_station
+        )
+        trigger_mascot_alert = bool(sentinel_alerts)
+        sentinel_override_prompt = ""
+        active_sentinel_payload = {}
+        if trigger_mascot_alert:
+            active_alert = sentinel_alerts[0]
+            alert_msg = active_alert.get("ContentText") or active_alert.get("AlertMessage") or ""
+            alert_fir = active_alert.get("SourceFIR", "")
+            alert_hash = active_alert.get("ProvenanceHash", "")
+            sentinel_override_prompt = (
+                f"\n\n[PROACTIVE SYSTEM OVERRIDE: SECTION 187 BNSS REMAND NOTICE]\n"
+                f"{alert_msg}\n"
+                f"Statutory Mandate: Suspect is in judicial custody approaching default bail statutory ceiling under Section 187 BNSS. "
+                f"Action Required: File chargesheet immediately or petition for statutory custody extension under Sec 187(3) BNSS. "
+                f"Court-Admissible Provenance Hash (Section 63 BSA): {alert_hash}\n"
+            )
+            active_sentinel_payload = {
+                "category": "STATUTORY_REMAND_CRITICAL",
+                "alert": alert_msg,
+                "fir": alert_fir,
+                "provenance_hash": alert_hash,
+                "days_in_custody": active_alert.get("DaysInCustody"),
+                "statutory_limit": active_alert.get("StatutoryLimit"),
+                "days_remaining": active_alert.get("DaysRemaining"),
+                "mascot_state": "ALERT",
+                "mascot_priority": 100
+            }
+            logger.info(f"[BNSS_SENTINEL] Active remand deadline alert injected for unit {user_unit_id}: {alert_msg}")
+
         # Track 1: Dual-Gate Lexical Token-Budget & Domain Entity Guard
         is_pure_conversational, fast_path_type, detected_salutation = self.classify_hybrid_intent(officer_query)
         self._current_detected_salutation = detected_salutation if not is_pure_conversational else None
@@ -4041,6 +4177,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 detected_salutation=detected_salutation,
             )
             if fast_path_res:
+                if trigger_mascot_alert and isinstance(fast_path_res, dict):
+                    fast_path_res["trigger_mascot_alert"] = True
+                    fast_path_res["mascot_priority"] = 100
+                    fast_path_res["mascot_state"] = "ALERT"
+                    fast_path_res["data"] = dict(fast_path_res.get("data") or {})
+                    fast_path_res["data"]["trigger_mascot_alert"] = True
+                    fast_path_res["data"]["sentinel_alert"] = active_sentinel_payload
                 return fast_path_res
 
         # KSP Response Tailor (Finals-part 3.md Section 48): classify once on
@@ -4055,6 +4198,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
         except Exception as e:
             logger.warning(f"KSPResponseTailor classification failed (non-fatal): {e}")
             _style_directive = None
+
+        # Forcefully inject [PROACTIVE SYSTEM OVERRIDE] into LLM system prompt via style directive
+        if sentinel_override_prompt:
+            _style_directive = (_style_directive or "") + sentinel_override_prompt
 
         # Kannada (non-Latin) queries never match the English keyword router or the
         # Latin-only entity/district/crime parsers, so they fell through to GLM --
@@ -4505,7 +4652,9 @@ class VajraAgentLoop(CognitiveBrainMixin):
         if _att_history_note:
             history.append({"role": "assistant", "content": _att_history_note})
 
-        # Append user message
+        # Append user message with proactive sentinel override context if active
+        if sentinel_override_prompt:
+            history.append({"role": "system", "content": sentinel_override_prompt.strip()})
         history.append({"role": "user", "content": query})
         # Confirmed live: this was capping at the last 10 RAW entries, not 10
         # turns as the old comment claimed -- a tool-using turn appends 3-4
@@ -7145,6 +7294,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     q_l = query.lower()
                     
                     # 1. District / Station Entity Extraction from Query
+                    d_id = None
                     dist_filter_clause = ""
                     target_district_name = ""
                     for d_candidate in _KNOWN_DISTRICT_NAMES:
@@ -7194,10 +7344,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     
                     # 4. Fetch authentic top case records via ZCQL index funnel
                     h_id = primary_head_id
-                    if d_id:
-                        funnel_query = f"SELECT CaseMasterID, CrimeNo, BriefFacts FROM CaseMaster WHERE DistrictID = {d_id} AND CrimeMajorHeadID = {h_id} ORDER BY CrimeRegisteredDate DESC LIMIT 50"
+                    # Safely handle missing District IDs for general or statewide queries
+                    if 'd_id' not in locals() or not d_id:
+                        # If no district is specified, search statewide
+                        funnel_query = f"SELECT CaseMasterID, CrimeNo, BriefFacts, CrimeRegisteredDate, PoliceStationID FROM CaseMaster WHERE CrimeMajorHeadID = {h_id} ORDER BY CrimeRegisteredDate DESC LIMIT 50"
                     else:
-                        funnel_query = f"SELECT CaseMasterID, CrimeNo, BriefFacts FROM CaseMaster WHERE CrimeMajorHeadID = {h_id} ORDER BY CrimeRegisteredDate DESC LIMIT 50"
+                        # If district is specified, use the strict funnel
+                        funnel_query = f"SELECT CaseMasterID, CrimeNo, BriefFacts, CrimeRegisteredDate, PoliceStationID FROM CaseMaster WHERE PoliceStationID IN (SELECT UnitID FROM Unit WHERE DistrictID = {d_id}) AND CrimeMajorHeadID = {h_id} ORDER BY CrimeRegisteredDate DESC LIMIT 50"
                     case_rows = zcql_service.execute_query(funnel_query)
                     
                     # 5. Resolve actual station names from Unit table

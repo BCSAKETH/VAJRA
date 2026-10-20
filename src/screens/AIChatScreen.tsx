@@ -67,6 +67,9 @@ const mapSessionMessages = (sessionId: string, messages: any[]): ChatMessage[] =
     responseStyleConfidence: m.response_style_confidence,
     personaEmergency: m.persona_emergency,
     personaManual: m.persona_manual,
+    triggerMascotAlert: m.trigger_mascot_alert === true || m.data?.trigger_mascot_alert === true,
+    mascotPriority: m.mascot_priority ?? m.data?.mascot_priority,
+    mascotState: m.mascot_state ?? m.data?.mascot_state,
     // Conversation branching (edit/retry/variants) -- packed into data_json
     // server-side, no new columns. msgId is this message's own stable id;
     // variantGroup/versionIndex let the UI group alternate versions of the
@@ -759,14 +762,22 @@ export const AIChatScreen: React.FC = () => {
         const lastMsg = raw[raw.length - 1];
         const isAssistantDone = lastMsg && (lastMsg.sender === "assistant" || lastMsg.sender === "system");
         if (raw.length > baselineCount || isAssistantDone) {
-          vakBus.emit("result_ready");
           const loaded = mapSessionMessages(turnSessionId, raw);
+          const lastLoaded = loaded[loaded.length - 1];
+          if (lastLoaded?.triggerMascotAlert) {
+            vakBus.emit("critical_alert");
+          } else {
+            vakBus.emit("result_ready");
+          }
           sessionMessagesCacheRef.current.set(turnSessionId, loaded);
           if (activeSessionIdRef.current === turnSessionId || activeSessionIdRef.current === null) {
             activeSessionIdRef.current = turnSessionId;
             setActiveSessionId(turnSessionId);
             setChatMessages(loaded);
-            setLiveEmergencyActive(loaded[loaded.length - 1]?.personaEmergency === true);
+            setLiveEmergencyActive(lastLoaded?.personaEmergency === true);
+            if (lastLoaded?.triggerMascotAlert) {
+              vakBus.emit("critical_alert");
+            }
           }
           return;
         }
@@ -1469,6 +1480,10 @@ export const AIChatScreen: React.FC = () => {
       const loaded = mapSessionMessages(sessionId, messages);
       setChatMessages(loaded);
       setActiveSessionId(sessionId);
+      const lastMsg = loaded[loaded.length - 1];
+      if (lastMsg?.triggerMascotAlert) {
+        vakBus.emit("critical_alert");
+      }
     } catch (err) {
       if (requestId !== selectSessionRequestRef.current) return; // superseded
       console.error(err);

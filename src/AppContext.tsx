@@ -92,6 +92,9 @@ export interface ChatMessage {
   // manual PersonaSelectorBadge.tsx selection) -- drives the red HUD state.
   personaEmergency?: boolean;
   personaManual?: boolean;
+  triggerMascotAlert?: boolean;
+  mascotPriority?: number;
+  mascotState?: string;
   // Conversation branching (edit a past question / retry an answer): this
   // message's own stable id, plus the shared group id and 1-based version
   // number if it's one of several alternate versions of the same turn.
