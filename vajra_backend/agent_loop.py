@@ -5352,6 +5352,18 @@ class VajraAgentLoop(CognitiveBrainMixin):
                             clean_cno = _c_match.group(0).strip() if _c_match else routing_query
                             fallback_decision = {"tool": "query_case", "parameters": {"case_no": clean_cno}}
                             fallback_label = "CCTNS Case Record Lookup"
+                        elif entities.get("suspect"):
+                            s_name = entities["suspect"]
+                            prior_was_network = any(
+                                "network" in str(h.get("content", "")).lower() or "syndicate" in str(h.get("content", "")).lower()
+                                for h in history[-4:]
+                            )
+                            if prior_was_network:
+                                fallback_decision = {"tool": "syndicate_graph", "parameters": {"suspect_name": s_name}}
+                                fallback_label = "Criminal Syndicate Network Graph"
+                            else:
+                                fallback_decision = {"tool": "generate_full_report", "parameters": {"suspect_name": s_name}}
+                                fallback_label = "CCTNS Accused Dossier"
                         elif any(d.lower() in _q_low_fallback for d in ("bengaluru", "bangalore", "mysuru", "mysore", "belagavi", "belgaum", "mangaluru", "hubballi", "dharwad", "kalaburagi", "shivamogga")):
                             # District / City matches or breakdowns
                             matched_d = "Bengaluru Urban" if "bengalur" in _q_low_fallback or "bangalor" in _q_low_fallback else (
