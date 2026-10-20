@@ -14,6 +14,7 @@ import { InvestigationBrowser } from "../components/InvestigationBrowser";
 import { VajraLogo } from "../components/VajraLogo";
 import { OSINTCard } from "../components/OSINTCard";
 import { ApprovalsCard } from "../components/ApprovalsCard";
+import { vakBus } from "../services/vajraVakEventBus";
 import { Download, X, Users, FileText, Globe, Check, MoreVertical, ListChecks, BookText, Pin, ChevronDown, ChevronUp, ChevronRight, FolderOpen, Timer } from "lucide-react";
 
 // ExpandedOverlay pulls in Leaflet + Recharts directly (~250KB+ of the main
@@ -263,12 +264,19 @@ export const AIChatScreen: React.FC = () => {
         const chunks = buf.split("\n\n");
         buf = chunks.pop() || "";
         for (const chunk of chunks) {
+          if (chunk.includes("<think>")) vakBus.emit("ai_processing_started");
+          if (chunk.includes("TOOL_EXECUTED:")) vakBus.emit("retrieval_started");
           const line = chunk.split("\n").find((l) => l.startsWith("data:"));
           if (!line) continue;
           try {
             const payload = JSON.parse(line.slice(5).trim());
-            if (payload.message) setTickerMessage(payload.message);
+            if (payload.message) {
+              setTickerMessage(payload.message);
+              if (payload.message.includes("<think>")) vakBus.emit("ai_processing_started");
+              if (payload.message.includes("TOOL_EXECUTED:")) vakBus.emit("retrieval_started");
+            }
             if (payload.done) {
+              vakBus.emit("result_ready");
               triggerImmediateAssistantFetch(sessionId);
               return;
             }
@@ -751,6 +759,7 @@ export const AIChatScreen: React.FC = () => {
         const lastMsg = raw[raw.length - 1];
         const isAssistantDone = lastMsg && (lastMsg.sender === "assistant" || lastMsg.sender === "system");
         if (raw.length > baselineCount || isAssistantDone) {
+          vakBus.emit("result_ready");
           const loaded = mapSessionMessages(turnSessionId, raw);
           sessionMessagesCacheRef.current.set(turnSessionId, loaded);
           if (activeSessionIdRef.current === turnSessionId || activeSessionIdRef.current === null) {
@@ -936,6 +945,7 @@ export const AIChatScreen: React.FC = () => {
     if (isThinking || isUploadingAttachments) return;
     if (!textToSend.trim() && filesToSend.length === 0) return;
     setLiveEmergencyActive(false);
+    vakBus.emit("ai_processing_started");
 
     // The conversation this turn belongs to, fixed at send-time -- used
     // below to route the eventual reply correctly even if the officer

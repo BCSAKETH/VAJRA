@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { API_BASE } from "../config";
 import { MascotState } from "../types/mascot";
+import { vakBus } from "../services/vajraVakEventBus";
 
 interface VajraVakMascotProps {
   lang: "en" | "kn";
@@ -48,24 +49,38 @@ function usePrefersReducedMotion(): boolean {
 
 export const VajraVakMascot: React.FC<VajraVakMascotProps> = ({ lang, currentInput, isThinking, taskBadgeCount }) => {
   const reducedMotion = usePrefersReducedMotion();
-  // `state` is a pure function of isThinking/currentInput -- computed
-  // directly rather than held in its own useState synced by effects. An
-  // earlier version routed every transition through the full 16-state
-  // canInterrupt() gate (built for the complete animation_state_machine.json
-  // spec), but this perched-on-the-composer mascot only ever reaches 3 of
-  // those 16 states, and THINKING's own interruptibleBy list (["ALERT",
-  // "ERROR", "RESULT_READY"]) doesn't include PERCHED_IDLE/USER_FOCUS --
-  // nothing here ever dispatches those events, so canInterrupt("THINKING",
-  // "PERCHED_IDLE") always returned false and the mascot got stuck in
-  // THINKING (wing-sway/crawl idle animations permanently disabled) after
-  // the very first query. Full state-machine gating stays available in
-  // types/mascot.ts for when ALERT/SUCCESS/ERROR/etc. are actually wired
-  // to real events.
+  const [vakState, setVakState] = useState<MascotState>("PERCHED_IDLE");
+
+  useEffect(() => {
+    const unsubThink = vakBus.on("ai_processing_started", () => setVakState("THINKING"));
+    const unsubRetrieve = vakBus.on("retrieval_started", () => setVakState("THINKING_DEEP"));
+    const unsubAlert = vakBus.on("critical_alert", () => setVakState("ALERT"));
+    const unsubReady = vakBus.on("result_ready", () => setVakState("PERCHED_IDLE"));
+    return () => {
+      unsubThink();
+      unsubRetrieve();
+      unsubAlert();
+      unsubReady();
+    };
+  }, []);
+
   const state: MascotState = isThinking
     ? "THINKING"
+    : vakState !== "PERCHED_IDLE"
+    ? vakState
     : (currentInput || "").trim().length > 0
     ? "USER_FOCUS"
     : "PERCHED_IDLE";
+
+  const opticColor =
+    state === "ALERT"
+      ? "#EF4444"
+      : state === "THINKING_DEEP"
+      ? "#06B6D4"
+      : state === "THINKING"
+      ? "#F59E0B"
+      : "#C79A4E";
+
   const [isBlinking, setIsBlinking] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isHopping, setIsHopping] = useState(false);
@@ -122,9 +137,9 @@ export const VajraVakMascot: React.FC<VajraVakMascotProps> = ({ lang, currentInp
   const eyeOffset = useMemo(() => {
     // Elliptical socket clamping: eyes glance down (never past the socket
     // floor) while actively typing, otherwise centered.
-    const typing = (currentInput || "").trim().length > 0 && !isThinking;
+    const typing = (currentInput || "").trim().length > 0 && !isThinking && state === "USER_FOCUS";
     return typing ? { dx: 0, dy: 5 } : { dx: 0, dy: 0 };
-  }, [currentInput, isThinking]);
+  }, [currentInput, isThinking, state]);
 
   const handleClick = async () => {
     if (isSpeaking) return;
@@ -168,7 +183,7 @@ export const VajraVakMascot: React.FC<VajraVakMascotProps> = ({ lang, currentInp
       onClick={handleClick}
       role="button"
       aria-label={lang === "en" ? "Vajra-Vak, tap for a briefing" : "ವಜ್ರ-ವಾಕ್, ಒತ್ತಿ"}
-      title={quip || (lang === "en" ? "Vajra-Vak" : "ವಜ್ರ-ವಾಕ್")}
+      title={quip || (lang === "en" ? `Vajra-Vak (${state})` : `ವಜ್ರ-ವಾಕ್ (${state})`)}
     >
       <svg width="52" height="52" viewBox="0 0 200 200" className={reducedMotion ? "" : "drop-shadow-[0_2px_6px_rgba(0,0,0,0.4)]"}>
         {/* 03_tail_back */}
@@ -181,12 +196,12 @@ export const VajraVakMascot: React.FC<VajraVakMascotProps> = ({ lang, currentInp
         {/* 04/05 body */}
         <ellipse cx="100" cy="130" rx="52" ry="60" fill="#2B2926" stroke="#161412" strokeWidth="3" />
         {/* 33/34/35 chest plate + core, glow pulse */}
-        <circle cx="100" cy="140" r="16" fill="#161412" stroke="#C79A4E" strokeWidth="2" />
+        <circle cx="100" cy="140" r="16" fill="#161412" stroke={opticColor} strokeWidth="2" />
         <circle
           cx="100"
           cy="140"
           r="7"
-          fill="#C79A4E"
+          fill={opticColor}
           className={!reducedMotion ? "animate-[coreglow_2.4s_ease-in-out_infinite]" : ""}
         />
         {/* golden task-harvester badge, only when there's a real count > 0 */}
@@ -208,14 +223,14 @@ export const VajraVakMascot: React.FC<VajraVakMascotProps> = ({ lang, currentInp
         {/* 18-27 eye sockets, iris/pupil (clamped travel), eyelids (blink) */}
         {[{ cx: 82 }, { cx: 118 }].map((eye, i) => (
           <g key={i}>
-            <ellipse cx={eye.cx} cy="82" rx="16" ry="19" fill="#0C0B0A" stroke="#C79A4E" strokeWidth="1.5" />
+            <ellipse cx={eye.cx} cy="82" rx="16" ry="19" fill="#0C0B0A" stroke={opticColor} strokeWidth="1.5" />
             {!eyesClosed && (
               <>
-                <circle cx={eye.cx + eyeOffset.dx} cy={82 + eyeOffset.dy} r="10" fill="#C79A4E" />
+                <circle cx={eye.cx + eyeOffset.dx} cy={82 + eyeOffset.dy} r="10" fill={opticColor} />
                 <circle cx={eye.cx + eyeOffset.dx + 2} cy={80 + eyeOffset.dy} r="3.4" fill="#100E0C" />
               </>
             )}
-            {eyesClosed && <path d={`M${eye.cx - 12} 82 Q${eye.cx} 88 ${eye.cx + 12} 82`} stroke="#C79A4E" strokeWidth="3" fill="none" strokeLinecap="round" />}
+            {eyesClosed && <path d={`M${eye.cx - 12} 82 Q${eye.cx} 88 ${eye.cx + 12} 82`} stroke={opticColor} strokeWidth="3" fill="none" strokeLinecap="round" />}
           </g>
         ))}
         {/* 28/29 beak -- lip-flap synced to real speech events */}

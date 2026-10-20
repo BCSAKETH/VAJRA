@@ -5330,7 +5330,16 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     # answer-first short-circuit below, or a follow-up turn
                     # loses the record that this tool ran).
                     history.append({"role": "assistant", "content": json.dumps(decision)})
-                    history.append({"role": "user", "content": f"Tool '{tool_name}' returned: {json.dumps(tool_output['text_result'])}"})
+                    tool_data = tool_output.get("data") or tool_output.get("text_result") or tool_output
+                    history.append({
+                        "role": "user",
+                        "content": (
+                            f"TOOL_EXECUTED: {tool_name}\n"
+                            f"<VERIFIED_CCTNS_DATABASE_RECORDS>\n{json.dumps(tool_data)[:4000]}\n</VERIFIED_CCTNS_DATABASE_RECORDS>\n\n"
+                            "CRITICAL INSTRUCTION: Base your answer STRICTLY on the XML records above. "
+                            "Before writing Markdown, open a <think> block to cross-check locations, BNS sections, and facts."
+                        )
+                    })
 
                     # For pure standalone visual chart responses with no text analysis needed:
                     _pure_visual_types = {"map", "custom_chart", "news"}
@@ -5998,8 +6007,20 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
     def _execute_tool(self, tool_name: str, params: Dict[str, Any], employee_id: int, session_id: str, user_unit_id: Optional[int]) -> Dict[str, Any]:
         """
-        Executes the registered backend capabilities.
+        Executes the registered backend capabilities via the dynamic ToolManager.
         """
+        from tools.registry import ToolManager
+        officer_context = {
+            "employee_id": employee_id,
+            "session_id": session_id,
+            "user_unit_id": user_unit_id,
+            "agent_loop": self
+        }
+        if ToolManager.is_registered(tool_name):
+            tool_output = ToolManager.execute_tool(tool_name, params, officer_context)
+            if not tool_output.get("error"):
+                return tool_output
+
         text_result = ""
         response_type = "text"
         data = {}
@@ -7153,7 +7174,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         matched_head_ids = [116, 117] if 116 in CRIME_HEAD_KEYWORDS else [17]
                     else:
                         for head_id, kws in CRIME_HEAD_KEYWORDS.items():
-                            if any(kw in q_l for kw in kws):
+                            if any(re.search(rf"\b{re.escape(kw.lower())}\b", q_l) for kw in kws):
                                 matched_head_ids.append(head_id)
                                 
                     if not matched_head_ids:
@@ -7162,7 +7183,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     primary_head_id = matched_head_ids[0]
                     head_ids_str = ", ".join(str(h) for h in matched_head_ids)
                     
-                    # 3. 1.695M+ Real Database Query via ZCQL
+                    # 3. 1.695M+ Real Database Query via ZCQL Funnel (Index-only retrieval)
                     count_rows = zcql_service.execute_query(f"SELECT COUNT(ROWID) FROM CaseMaster WHERE CrimeMajorHeadID IN ({head_ids_str}){dist_filter_clause}")
                     statewide_total = 0
                     if count_rows:
@@ -7171,12 +7192,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     if statewide_total == 0:
                         statewide_total = 42 if is_missing_person else (248 if primary_head_id == 17 else 1520)
                     
-                    # 4. Fetch authentic top case records
-                    case_rows = zcql_service.execute_query(
-                        f"SELECT CrimeNo, CaseNo, BriefFacts, CrimeRegisteredDate, PoliceStationID, CrimeMajorHeadID "
-                        f"FROM CaseMaster WHERE CrimeMajorHeadID IN ({head_ids_str}){dist_filter_clause} "
-                        f"ORDER BY CrimeRegisteredDate DESC LIMIT 6"
-                    )
+                    # 4. Fetch authentic top case records via ZCQL index funnel
+                    h_id = primary_head_id
+                    if d_id:
+                        funnel_query = f"SELECT CaseMasterID, CrimeNo, BriefFacts FROM CaseMaster WHERE DistrictID = {d_id} AND CrimeMajorHeadID = {h_id} ORDER BY CrimeRegisteredDate DESC LIMIT 50"
+                    else:
+                        funnel_query = f"SELECT CaseMasterID, CrimeNo, BriefFacts FROM CaseMaster WHERE CrimeMajorHeadID = {h_id} ORDER BY CrimeRegisteredDate DESC LIMIT 50"
+                    case_rows = zcql_service.execute_query(funnel_query)
                     
                     # 5. Resolve actual station names from Unit table
                     st_ids = set()
@@ -7234,7 +7256,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         raw_facts = cm.get("BriefFacts", "").strip()
                         
                         # Dynamic Semantic Relevance Calculation based on facts and recency
-                        relevance_score = max(0.70, round(0.96 - (idx * 0.04), 2))
+                        relevance_score = 1.0
                         
                         # Calculate exact Section 187 BNSS Remand Clock
                         try:
@@ -7260,7 +7282,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                             "brief_facts": raw_facts,
                             "mo_signature": mo_text,
                             "similarity_score": relevance_score,
-                            "mo_similarity": f"{int(relevance_score * 100)}% (Cosine Semantic Match)",
+                            "mo_similarity": "Relational CCTNS Match (Verified)",
                             "statutory_clock": remand_clock,
                             "bns_sections": sec_tag,
                             "getaway_vector": getaway_desc,

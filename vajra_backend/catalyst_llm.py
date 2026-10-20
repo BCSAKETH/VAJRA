@@ -386,15 +386,15 @@ class CatalystLLM:
             if use_agent_system_prompt:
                 prompt_str = _build_budgeted_prompt(system_prompt, messages, max_chars=9500)
             else:
-                parts = []
-                for m in messages:
-                    role = (m.get("role") or "user").capitalize()
-                    parts.append(f"{role}: {m.get('content', '')}")
-                parts.append("Assistant:")
-                prompt_str = "\n\n".join(parts)
-                if len(prompt_str) > 9500:
-                    prompt_str = prompt_str[-9500:]
-            payload = {"prompt": prompt_str}
+                # Preserve System prompt (index 0), drop oldest chat turns safely
+                while len(str(messages)) > 9500 and len(messages) > 2:
+                    messages.pop(1) 
+                prompt_str = "\n\n".join([f"{m.get('role', 'user').capitalize()}: {m.get('content', '')}" for m in messages])
+            payload = {
+                "prompt": prompt_str,
+                "temperature": 0.1,
+                "top_p": 0.5
+            }
 
         # Skip the retry-with-backoff budget entirely if a recent call already
         # confirmed the endpoint down -- avoids every chat turn during a real
@@ -418,7 +418,7 @@ class CatalystLLM:
                         logger.info("Catalyst LLM Serving returned 200 OK.")
                         _resp = ""
                         if "choices" in data and data["choices"]:
-                            _resp = data["choices"][0].get("message", {}).get("content") or ""
+                            _resp = data["choices"][0]["message"]["content"]
                         elif "data" in data and data["data"]:
                             try:
                                 _resp = (data["data"][0] or {}).get("data") or ""
