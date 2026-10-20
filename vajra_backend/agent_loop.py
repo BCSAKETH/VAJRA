@@ -5364,6 +5364,12 @@ class VajraAgentLoop(CognitiveBrainMixin):
                             else:
                                 fallback_decision = {"tool": "find_similar_cases", "parameters": {"query": routing_query, "district": matched_d}}
                             fallback_label = "CCTNS District Intelligence Safety Net"
+                        elif any(s in _q_low_fallback for s in ("status report", "status", "overview", "update me", "latest things", "system status", "briefing", "summary")):
+                            fallback_decision = {"tool": "get_database_overview", "parameters": {}}
+                            fallback_label = "CCTNS Operational Status Overview"
+                        elif any(g in _q_low_fallback for g in ("hi", "hello", "awake", "sleeping", "good morning", "good evening", "bro", "nice", "keep it up")) and not any(k in _q_low_fallback for k in ("fir", "cr-", "crime", "accused", "suspect", "stolen", "murder", "theft", "snatch")):
+                            fallback_decision = {"tool": "get_database_overview", "parameters": {}}
+                            fallback_label = "Copilot Active Readiness"
                         else:
                             fallback_decision = {"tool": "find_similar_cases", "parameters": {"query": routing_query}}
                             fallback_label = "CCTNS Semantic Safety Net"

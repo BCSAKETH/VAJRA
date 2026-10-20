@@ -405,7 +405,7 @@ class CatalystLLM:
             logger.info("Catalyst LLM endpoint recently confirmed down (in-process cooldown) -- skipping to fallback.")
             _last_failure_reason = "skipped_cooldown_from_recent_failure"
         else:
-            _req_timeout = int(os.getenv("CATALYST_LLM_TIMEOUT", "28"))
+            _req_timeout = int(os.getenv("CATALYST_LLM_TIMEOUT", "45"))
             for attempt, delay in enumerate([0]):
                 if delay:
                     time.sleep(delay)
@@ -418,12 +418,15 @@ class CatalystLLM:
                         logger.info("Catalyst LLM Serving returned 200 OK.")
                         _resp = ""
                         if "choices" in data and data["choices"]:
-                            _resp = data["choices"][0]["message"]["content"]
+                            msg = data["choices"][0].get("message") or {}
+                            _resp = msg.get("content") or ""
                         elif "data" in data and data["data"]:
                             try:
                                 _resp = (data["data"][0] or {}).get("data") or ""
                             except (IndexError, AttributeError, TypeError):
                                 _resp = ""
+                        if not _resp:
+                            _resp = ""
                         if "</think>" in _resp:
                             _resp = _resp.split("</think>", 1)[-1].strip()
                         if _is_guardrail_refusal(_resp):
