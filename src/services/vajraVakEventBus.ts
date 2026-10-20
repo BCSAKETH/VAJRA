@@ -1,16 +1,38 @@
 /**
  * VAJRA-VAK Mascot Decoupled PubSub Event Bus
  * Connects backend streaming SSE events and chat pipeline states to the mascot.
+ * Fully compliant with the VAJRA-VAK Sentinel Owl Master Architecture.
  */
 
 export type VajraVakEvent =
+  | "app_loaded"
+  | "input_focused"
+  | "user_typing"
+  | "query_submitted"
   | "ai_processing_started"
   | "retrieval_started"
+  | "file_uploaded"
+  | "file_analysis_started"
+  | "map_analysis_started"
+  | "network_analysis_started"
   | "result_ready"
+  | "assistant_speaking"
+  | "operation_success"
+  | "operation_error"
   | "critical_alert"
-  | "operation_success";
+  | "page_changed"
+  | "idle_timeout"
+  | "user_returned";
 
-export type EventHandler = (payload?: any) => void;
+export interface MascotEventPayload {
+  caseNo?: string;
+  riskTier?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL";
+  anchorTarget?: "ANCHOR_PERCH" | "ANCHOR_MAP" | "ANCHOR_DOSSIER" | "ANCHOR_GRAPH" | string;
+  quipText?: string;
+  data?: any;
+}
+
+export type EventHandler = (payload?: MascotEventPayload) => void;
 
 export class VajraVakEventBus {
   private handlers: Map<VajraVakEvent, Set<EventHandler>> = new Map();
@@ -33,7 +55,7 @@ export class VajraVakEventBus {
     }
   }
 
-  emit(event: VajraVakEvent, payload?: any): void {
+  emit(event: VajraVakEvent, payload?: MascotEventPayload): void {
     const set = this.handlers.get(event);
     if (set) {
       set.forEach((handler) => {

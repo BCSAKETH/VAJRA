@@ -710,6 +710,21 @@ export const AIChatScreen: React.FC = () => {
   // that arrived after navigating away either vanished (never made it into
   // either conversation's cache) or appeared in the wrong thread.
   const appendMessageForTurn = useCallback((msg: ChatMessage, turnSessionId: string | null) => {
+    if (msg.sender === "assistant") {
+      vakBus.emit("result_ready");
+      if (msg.responseType === "network" || (msg.data && msg.data.nodes)) {
+        vakBus.emit("network_analysis_started", { anchorTarget: "ANCHOR_GRAPH" });
+      } else if (msg.responseType === "map" || (msg.data && msg.data.hotspots)) {
+        vakBus.emit("map_analysis_started", { anchorTarget: "ANCHOR_MAP" });
+      }
+      if (msg.data?.trigger_mascot_alert) {
+        if (msg.data?.mascot_state === "SUCCESS") {
+          vakBus.emit("operation_success");
+        } else {
+          vakBus.emit("critical_alert");
+        }
+      }
+    }
     if (activeSessionIdRef.current === turnSessionId) {
       setChatMessages((prev) => {
         if (prev.some((m) => m.id === msg.id || (m.sender === msg.sender && m.text === msg.text))) {
@@ -924,6 +939,7 @@ export const AIChatScreen: React.FC = () => {
   // doesn't exist yet -- badging is a nice-to-have, never worth blocking or
   // erroring the network view itself over.
   const openNetworkWidget = useCallback(async () => {
+    vakBus.emit("network_analysis_started", { anchorTarget: "ANCHOR_GRAPH" });
     const sid = activeSessionIdRef.current;
     if (!sid) { setNetworkNewSince(null); return; }
     const authHeader = { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` };
@@ -981,6 +997,7 @@ export const AIChatScreen: React.FC = () => {
       }
     } else if (filesToSend.length > 0) {
       setIsUploadingAttachments(true);
+      vakBus.emit("file_analysis_started");
       setUploadStatusLabel(
         lang === "en" ? "Uploading attachment... 0%" : "ಲಗತ್ತು ಅಪ್‌ಲೋಡ್ ಆಗುತ್ತಿದೆ... 0%"
       );

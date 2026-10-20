@@ -54,3 +54,4 @@ class RTOLookupTool(VajraTool):
 
 # Register with ToolManager
 ToolManager.register("resolve_rto_plate", RTOLookupTool())
+ToolManager.register("rto_lookup", RTOLookupTool())

@@ -24,6 +24,8 @@ from catalyst_rag import CatalystRAG
 from vajra_cognitive_brain import CognitiveBrainMixin
 from tool_training_optimizer import get_matching_tool_exemplars, resolve_entity_aliases, update_bandit_weights, get_tool_bandit_weight
 from crime_heads_118_map import ALL_118_CRIME_HEADS_MAP
+import tools
+from tools.registry import ToolManager
 
 logger = logging.getLogger(__name__)
 

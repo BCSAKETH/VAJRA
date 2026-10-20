@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 import { Mic, MicOff, Send, Paperclip, X, FileText, Image as ImageIcon, ChevronDown, Video, Users } from "lucide-react";
 import { API_BASE } from "../config";
 import { VajraVakMascot } from "./VajraVakMascot";
+import { vakBus } from "../services/vajraVakEventBus";
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 3;
@@ -166,6 +167,7 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
       return;
     }
     setPendingAttachments((prev) => [...prev, ...selected]);
+    vakBus.emit("file_uploaded");
   };
 
   const removeAttachment = (index: number) => {
@@ -394,6 +396,7 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
     const files = [...pendingAttachments];
     setInputVal("");
     setPendingAttachments([]);
+    vakBus.emit("query_submitted");
     onSend(text, files);
   };
 
@@ -479,7 +482,11 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
       <textarea
         ref={textareaRef}
         value={inputVal}
-        onChange={(e) => setInputVal(e.target.value)}
+        onFocus={() => vakBus.emit("input_focused")}
+        onChange={(e) => {
+          setInputVal(e.target.value);
+          vakBus.emit("user_typing");
+        }}
         onKeyDown={handleKeyDown}
         placeholder={
           lang === "en"
