@@ -103,7 +103,8 @@ export const ThinkingOrb = forwardRef<HTMLCanvasElement, ThinkingOrbProps>(funct
     if (!ctx) return;
 
     const { mode, speed: baseSpeed, opts } = resolvePreset(state, size);
-    const draw = MODE_DRAWS[mode];
+    const draw = MODE_DRAWS[mode] || MODE_DRAWS.orbits;
+    if (!draw) return;
     const effSpeed = baseSpeed * speed;
     const frame = (tSec: number) => {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);

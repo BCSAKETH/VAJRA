@@ -67,14 +67,25 @@ export function resolvePreset(state: OrbState, size: OrbSize): Resolved {
   const hit = cache.get(key);
   if (hit) return hit;
 
-  const mode = STATE_TO_MODE[state];
-  const preset = PRESETS[mode][size];
-  let opts: ModeOpts = { ...BASE_PROFILES[mode] };
-  if (preset.count !== 1) opts = scaleCounts(opts, preset.count);
-  if (preset.size !== 1) opts = scaleRadii(opts, preset.size);
-  if (preset.extra) opts = { ...opts, ...preset.extra };
+  const mode = STATE_TO_MODE[state] || 'orbits';
+  const modePresets = PRESETS[mode] || PRESETS.orbits;
+  
+  // Safe resolution for custom pixel sizes: snap to 20 or 64 base preset
+  const basePresetKey: 20 | 64 = size >= 42 ? 64 : 20;
+  const preset: Preset = (modePresets as any)[size] ?? modePresets[basePresetKey] ?? { speed: 2, count: 1, size: 1 };
+  
+  let opts: ModeOpts = { ...(BASE_PROFILES[mode] || BASE_PROFILES.orbits) };
+  if (preset && typeof preset.count === 'number' && preset.count !== 1) {
+    opts = scaleCounts(opts, preset.count);
+  }
+  if (preset && typeof preset.size === 'number' && preset.size !== 1) {
+    opts = scaleRadii(opts, preset.size);
+  }
+  if (preset && preset.extra) {
+    opts = { ...opts, ...preset.extra };
+  }
 
-  const resolved: Resolved = { mode, speed: preset.speed, opts };
+  const resolved: Resolved = { mode, speed: preset?.speed ?? 2, opts };
   cache.set(key, resolved);
   return resolved;
 }

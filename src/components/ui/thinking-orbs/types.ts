@@ -10,12 +10,10 @@
 export type OrbState = 'working' | 'searching' | 'solving' | 'listening' | 'composing' | 'shaping';
 
 /**
- * Rendered size in CSS pixels. Exactly two tuned presets ship:
- * 64 (chat-avatar scale) and 20 (inline-text scale). Each size carries
- * its own dot count, dot size and speed tuning — they are separate
- * designs, not a scale factor.
+ * Rendered size in CSS pixels. Two tuned presets ship (64 and 20),
+ * but any number is safely scaled and resolved without crashing.
  */
-export type OrbSize = 64 | 20;
+export type OrbSize = 64 | 20 | number;
 
 /**
  * Theme mode.

@@ -6,7 +6,7 @@ import { useInView, useMotionValue, useSpring } from "motion/react"
 import { cn } from "@/lib/utils"
 
 interface NumberTickerProps extends ComponentPropsWithoutRef<"span"> {
-  value: number
+  value: number | string
   startValue?: number
   direction?: "up" | "down"
   delay?: number
@@ -23,8 +23,9 @@ export function NumberTicker({
   decimalPlaces = 0,
   ...props
 }: NumberTickerProps) {
+  const numValue = typeof value === "number" ? (isNaN(value) ? 0 : value) : (Number(value) || 0);
   const ref = useRef<HTMLSpanElement>(null)
-  const motionValue = useMotionValue(direction === "down" ? value : startValue)
+  const motionValue = useMotionValue(direction === "down" ? numValue : startValue)
   const springValue = useSpring(motionValue, {
     damping: 60,
     stiffness: 100,
@@ -36,7 +37,7 @@ export function NumberTicker({
 
     if (isInView) {
       timer = setTimeout(() => {
-        motionValue.set(direction === "down" ? startValue : value)
+        motionValue.set(direction === "down" ? startValue : numValue)
       }, delay * 1000)
     }
 
@@ -45,7 +46,7 @@ export function NumberTicker({
         clearTimeout(timer)
       }
     }
-  }, [motionValue, isInView, delay, value, direction, startValue])
+  }, [motionValue, isInView, delay, numValue, direction, startValue])
 
   useEffect(
     () =>
