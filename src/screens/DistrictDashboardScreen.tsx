@@ -7,6 +7,7 @@ import { NumberTicker } from "../components/ui/number-ticker";
 import { BorderBeam } from "../components/ui/border-beam";
 import { Marquee } from "../components/ui/marquee";
 import { BlurFade } from "../components/ui/blur-fade";
+import { Spotlight } from "../components/ui/spotlight";
 import karnatakaDistrictsGeo from "../assets/karnataka-districts.json";
 import { localizedDistrictName } from "../i18n";
 import {
@@ -149,12 +150,13 @@ const StatCard: React.FC<{ icon: React.ElementType; label: string; value: React.
   value,
   sub,
 }) => (
-  <div className="glass-card p-3.5 border border-stone-850 flex items-center gap-3">
-    <div className="w-9 h-9 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 flex items-center justify-center shrink-0">
+  <div className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 relative overflow-hidden group hover:border-[#C79A4E]/40 transition-all shadow-sm">
+    <Spotlight className="from-[#C79A4E]/15 via-transparent to-transparent blur-xl pointer-events-none" size={160} />
+    <div className="w-9 h-9 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 flex items-center justify-center shrink-0 group-hover:scale-105 transition-transform">
       <Icon className="w-4.5 h-4.5 text-[#C79A4E]" />
     </div>
     <div className="min-w-0">
-      <div className="text-lg font-black text-stone-100 font-mono truncate leading-tight">{value}</div>
+      <div className="text-lg font-black text-stone-100 font-mono truncate leading-tight tabular-nums">{value}</div>
       <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide truncate">{label}</div>
       {sub && <div className="text-[9.5px] text-stone-600 truncate">{sub}</div>}
     </div>
