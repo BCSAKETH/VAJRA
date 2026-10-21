@@ -16,7 +16,6 @@ import { OSINTCard } from "../components/OSINTCard";
 import { ApprovalsCard } from "../components/ApprovalsCard";
 import { ThinkingOrb } from "../components/ui/thinking-orbs/react/ThinkingOrb";
 import type { OrbState } from "../components/ui/thinking-orbs";
-import { TextAnimate } from "../components/ui/text-animate";
 import { vakBus } from "../services/vajraVakEventBus";
 import { Download, X, Users, FileText, Globe, Check, MoreVertical, ListChecks, BookText, Pin, ChevronDown, ChevronUp, ChevronRight, FolderOpen, Timer } from "lucide-react";
 
@@ -42,29 +41,24 @@ const parseServerTimestamp = (ts: string): Date => {
 };
 
 // Maps backend agent reasoning steps to the appropriate ThinkingOrb behavioral state,
-// dynamically showcasing all 6 mathematical physics animations across the reasoning lifecycle
+// cycling frequently (every 2.0s) across all 6 mathematical physics animations
 const getOrbState = (msg: string | null, type: string | null, seconds: number = 0): OrbState => {
   if (type === "translation") return "shaping";
   const m = (msg || "").toLowerCase();
   
-  // Explicit semantic triggers based on backend tools & step names
-  if (/listen|input|prompt|voice|transcrib|intake/.test(m)) return "listening";
-  if (/cctns|database|fir|record|lookup|scan|registry|check/.test(m)) {
-    if (seconds > 10) return "solving";
-    if (seconds > 6) return "shaping";
-    return "searching";
+  // Specific tool overrides when backend is explicitly on a key domain step
+  if (/cctns|database|fir|lookup|scan|registry/.test(m)) {
+    const subCycle: OrbState[] = ["searching", "solving", "shaping"];
+    return subCycle[Math.floor(Math.max(0, seconds) / 2.0) % subCycle.length];
   }
-  if (/graph|syndicate|remand|bnss|bns|section|penal|calculat|solve|link/.test(m)) return "solving";
-  if (/pattern|spatial|cluster|modus|polygon|h3|hex|shape|morph/.test(m)) return "shaping";
-  if (/draft|compos|writ|generat|prosecut|brief|dossier|synthesiz|format/.test(m)) return "composing";
-  if (/orchestrat|agent|loop|evaluat|decid/.test(m)) {
-    const cycle: OrbState[] = ["working", "solving", "shaping", "searching", "composing", "listening"];
-    return cycle[Math.floor(Math.max(0, seconds) / 2.5) % cycle.length];
-  }
+  if (/graph|syndicate|remand|bnss|bns|penal|calculat|solve/.test(m)) return "solving";
+  if (/pattern|spatial|cluster|modus|polygon|h3|hex/.test(m)) return "shaping";
+  if (/draft|compos|writ|generat|prosecut|brief|dossier/.test(m)) return "composing";
+  if (/listen|input|prompt|voice|transcrib/.test(m)) return "listening";
 
-  // Smooth cognitive progression through all 6 animations as seconds progress
-  const cognitiveStages: OrbState[] = ["listening", "searching", "solving", "shaping", "composing", "working"];
-  return cognitiveStages[Math.floor(Math.max(0, seconds) / 2.5) % cognitiveStages.length];
+  // Dynamic frequent rotation across all 6 animations every 2 seconds
+  const allStages: OrbState[] = ["searching", "solving", "shaping", "composing", "working", "listening"];
+  return allStages[Math.floor(Math.max(0, seconds) / 2.0) % allStages.length];
 };
 
 // Shared shape between the initial session-history fetch (handleSelectSession)
@@ -2194,14 +2188,6 @@ export const AIChatScreen: React.FC = () => {
                       ? t.translatingIndicator
                       : t.thinkingIndicator}
                   </span>
-                  <button
-                    type="button"
-                    onClick={cycleNextOrb}
-                    title="Click to cycle cognitive mode"
-                    className="px-2 py-0.5 rounded-full bg-amber-500/15 hover:bg-amber-500/25 text-[#C79A4E] text-[9.5px] border border-[#C79A4E]/30 font-semibold tracking-wider transition-colors cursor-pointer"
-                  >
-                    {activeState.toUpperCase()}
-                  </button>
                   <span className="text-[#C79A4E] font-mono font-bold">{thinkingSeconds}s</span>
                 </div>
                 {/* Live-progress ticker: a REAL step name the backend agent
@@ -2210,11 +2196,9 @@ export const AIChatScreen: React.FC = () => {
                     the first real step is emitted, so it simply doesn't show
                     for the first moment of a turn. */}
                 {tickerMessage && (
-                  <div className="text-[10.5px] text-[#C79A4E]/90 font-mono flex items-center gap-1.5">
+                  <div className="text-[11px] text-[#C79A4E] font-mono flex items-center gap-2 animate-fade-in leading-relaxed">
                     <span className="w-1.5 h-1.5 rounded-full bg-[#C79A4E] animate-pulse shrink-0" />
-                    <TextAnimate animation="fadeIn" by="word" duration={0.25} className="text-[#C79A4E]/90 font-mono">
-                      {tickerMessage}
-                    </TextAnimate>
+                    <span className="tracking-wide break-words">{tickerMessage}</span>
                   </div>
                 )}
                 {thinkingSeconds > 20 && (
