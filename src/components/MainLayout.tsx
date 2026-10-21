@@ -32,8 +32,19 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   // once here (this component never unmounts on a screen switch -- only
   // `children` swaps -- Loophole L1), instead of being split between this
   // file's own icon rail and a chat-screen-local ChatHistoryPanel.
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false);
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(() => {
+    const saved = localStorage.getItem("vajra_sidebar_expanded");
+    return saved !== null ? saved === "true" : true;
+  });
   const [isSidebarHovered, setIsSidebarHovered] = useState(false);
+
+  const handleToggleSidebar = () => {
+    setIsSidebarExpanded((prev) => {
+      const next = !prev;
+      localStorage.setItem("vajra_sidebar_expanded", String(next));
+      return next;
+    });
+  };
 
   if (!isAuthenticated || currentScreen === "login") {
     return <div className="min-h-screen bg-[#161412] flex flex-col">{children}</div>;
@@ -62,7 +73,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
             stay on this wrapper (unchanged behavior); the click toggle and
             everything else now lives inside UnifiedSidebar itself. */}
         <div onMouseEnter={() => setIsSidebarHovered(true)} onMouseLeave={() => setIsSidebarHovered(false)} className="contents">
-          <UnifiedSidebar isExpanded={isExpanded} onToggleExpand={() => setIsSidebarExpanded(!isSidebarExpanded)} />
+          <UnifiedSidebar isExpanded={isExpanded} onToggleExpand={handleToggleSidebar} />
         </div>
 
         {/* Content Shell */}

@@ -85,90 +85,81 @@ export const NewInvestigationModal: React.FC<NewInvestigationModalProps> = ({ on
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/80 backdrop-blur-md animate-fade-in"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/85 backdrop-blur-sm"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
       <div
-        className="w-full max-w-md bg-stone-900/95 border border-[#C79A4E]/35 rounded-2xl p-6 space-y-4.5 shadow-2xl relative"
+        className="w-full max-w-md glass-panel border border-[#C79A4E]/30 rounded-2xl p-6 space-y-4 shadow-2xl relative"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center justify-between pb-1 border-b border-stone-800">
-          <h3 className="text-sm font-bold text-stone-100 tracking-wide flex items-center gap-2">
-            <span className="w-7 h-7 rounded-lg bg-[#C79A4E]/15 border border-[#C79A4E]/30 flex items-center justify-center text-[#C79A4E] shrink-0">
-              <FolderPlus className="w-4 h-4" />
-            </span>
-            <span>{t.newInvestigation}</span>
+        <div className="flex items-center justify-between">
+          <h3 className="text-xs font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">
+            <FolderPlus className="w-4 h-4 text-[#C79A4E]" /> {t.newInvestigation}
           </h3>
-          <button
-            onClick={onClose}
-            aria-label="Close modal"
-            className="p-1.5 rounded-lg text-stone-400 hover:text-stone-100 hover:bg-stone-800 transition-colors cursor-pointer"
-          >
+          <button onClick={onClose} className="text-stone-500 hover:text-stone-200 cursor-pointer">
             <X className="w-4 h-4" />
           </button>
         </div>
 
         {error && (
-          <div className="p-2.5 bg-rose-500/10 border border-rose-500/30 text-rose-350 rounded-xl text-xs flex items-center gap-2">
-            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0" />
-            <span>{error}</span>
+          <div className="p-2.5 bg-rose-500/10 border border-rose-500/20 text-rose-450 rounded-lg text-[11px]">
+            {error}
           </div>
         )}
 
-        <div className="space-y-1.5">
-          <label className="block text-[11px] font-semibold text-stone-300">{t.titleLabel}</label>
+        <div className="space-y-1">
+          <label className="block text-[10px] font-black text-stone-450 uppercase font-mono">{t.titleLabel}</label>
           <input
             type="text"
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder={t.investigationTitlePlaceholder}
-            autoFocus
-            className="w-full bg-stone-950/80 border border-stone-700/80 focus:border-[#C79A4E] rounded-xl py-2.5 px-3 text-xs text-stone-100 placeholder:text-stone-500 focus:outline-none transition-all shadow-inner"
+            className="w-full bg-stone-950/60 border border-stone-850 focus:border-[#C79A4E] rounded-xl py-2.5 px-3 text-xs text-stone-200 focus:outline-none transition-all"
           />
         </div>
 
-        <div className="space-y-1.5">
-          <label className="block text-[11px] font-semibold text-stone-300">{t.descOptionalLabel}</label>
+        <div className="space-y-1">
+          <label className="block text-[10px] font-black text-stone-450 uppercase font-mono">{t.descOptionalLabel}</label>
           <textarea
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder={t.investigationDescPlaceholder}
             rows={2}
-            className="w-full bg-stone-950/80 border border-stone-700/80 focus:border-[#C79A4E] rounded-xl py-2.5 px-3 text-xs text-stone-100 placeholder:text-stone-500 focus:outline-none transition-all resize-none shadow-inner"
+            className="w-full bg-stone-950/60 border border-stone-850 focus:border-[#C79A4E] rounded-xl py-2.5 px-3 text-xs text-stone-200 focus:outline-none transition-all resize-none"
           />
         </div>
 
-        <div className="space-y-1.5">
-          <label className="block text-[11px] font-semibold text-stone-300">{t.linkCaseOptionalLabel}</label>
+        <div className="space-y-1">
+          <label className="block text-[10px] font-black text-stone-450 uppercase font-mono">{t.linkCaseOptionalLabel}</label>
           {selectedCase ? (
             <div className="flex items-center justify-between bg-[#C79A4E]/10 border border-[#C79A4E]/30 rounded-xl py-2 px-3">
               <span className="text-xs font-bold text-[#C79A4E]">{selectedCase}</span>
-              <button onClick={() => { setSelectedCase(null); setCaseQuery(""); }} className="p-1 rounded text-stone-400 hover:text-rose-400 cursor-pointer">
+              <button onClick={() => { setSelectedCase(null); setCaseQuery(""); }} className="text-stone-500 hover:text-rose-500 cursor-pointer">
                 <X className="w-3.5 h-3.5" />
               </button>
             </div>
           ) : (
             <div className="relative">
               <div className="relative">
-                <Search className="w-3.5 h-3.5 text-stone-500 absolute left-3 top-3" />
+                <Search className="w-3.5 h-3.5 text-stone-600 absolute left-3 top-3" />
                 <input
                   type="text"
                   value={caseQuery}
                   onChange={(e) => setCaseQuery(e.target.value)}
                   placeholder={t.caseSearchPlaceholder}
-                  className="w-full bg-stone-950/80 border border-stone-700/80 focus:border-[#C79A4E] rounded-xl py-2.5 pl-8 pr-3 text-xs text-stone-100 placeholder:text-stone-500 focus:outline-none transition-all shadow-inner"
+                  className="w-full bg-stone-950/60 border border-stone-850 focus:border-[#C79A4E] rounded-xl py-2.5 pl-8 pr-3 text-xs text-stone-200 focus:outline-none transition-all"
                 />
               </div>
               {caseResults.length > 0 && (
-                <div className="absolute top-full mt-1.5 w-full bg-stone-900 border border-stone-750 rounded-xl shadow-2xl z-20 max-h-44 overflow-y-auto divide-y divide-stone-800">
+                <div className="absolute top-full mt-1 w-full bg-stone-900 border border-stone-800 rounded-xl shadow-2xl z-10 max-h-40 overflow-y-auto">
                   {caseResults.map((c) => (
                     <button
                       key={c.case_no}
                       onClick={() => { setSelectedCase(c.case_no); setCaseResults([]); }}
-                      className="w-full text-left px-3 py-2.5 hover:bg-stone-800/80 transition-colors cursor-pointer"
+                      className="w-full text-left px-3 py-2 hover:bg-stone-800 border-b border-stone-850 last:border-0 cursor-pointer"
                     >
                       <div className="text-[11px] font-bold text-[#C79A4E]">{c.case_no}</div>
-                      <div className="text-[10px] text-stone-400 truncate">{c.brief_facts}</div>
+                      <div className="text-[10px] text-stone-500 truncate">{c.brief_facts}</div>
                     </button>
                   ))}
                 </div>
@@ -180,7 +171,7 @@ export const NewInvestigationModal: React.FC<NewInvestigationModalProps> = ({ on
         <button
           onClick={handleCreate}
           disabled={isCreating}
-          className="w-full py-2.5 rounded-xl bg-gradient-to-r from-[#C79A4E] to-amber-600 hover:from-[#d5a759] hover:to-amber-500 text-stone-950 text-xs font-black uppercase tracking-wider transition-all disabled:opacity-50 cursor-pointer shadow-md shadow-[#C79A4E]/20"
+          className="w-full py-2.5 rounded-xl bg-[#C79A4E]/10 hover:bg-[#C79A4E]/20 border border-[#C79A4E]/30 text-[#C79A4E] text-xs font-black uppercase tracking-wider transition-all disabled:opacity-50 cursor-pointer shadow-sm"
         >
           {isCreating ? t.creating : t.createInvestigation}
         </button>
