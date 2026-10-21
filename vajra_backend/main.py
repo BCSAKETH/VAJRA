@@ -7533,8 +7533,10 @@ async def upload_chat_attachments(
     # multi-paragraph description -- it would still destroy the entire
     # analysis for the rare genuinely-sensitive case too. Phone-number
     # masking (a targeted regex over free text, not a wholesale replace)
-    # is the correct and sufficient PII guard for this path.
     combined_analysis = redact_phone_numbers("\n\n".join(analysis_text_parts))
+    # Strip repetitive backslash escape artifacts
+    combined_analysis = re.sub(r'\\{2,}', '', combined_analysis)
+    combined_analysis = re.sub(r'\\+$', '', combined_analysis, flags=re.MULTILINE)
 
     # L33: High-Density Video Summarizer for oversized scene batches (>3500 chars / ~1000 tokens)
     if len(combined_analysis) > 3500 and "Video Analysis" in combined_analysis:

@@ -92,12 +92,15 @@ const decodeDisplayText = (raw: string | undefined | null): string => {
   if (s.indexOf("\\u") !== -1) {
     s = s.replace(/\\u([0-9a-fA-F]{4})/g, (_m, hex) => String.fromCharCode(parseInt(hex, 16)));
   }
+  // Strip repetitive backslash artifacts (e.g. \\\\\\\\ emitted by double-escaped markdown linebreaks or LLM continuations)
+  s = s.replace(/\\{2,}/g, "").replace(/\\+$/gm, "");
   return s;
 };
 
 // Clean markdown and formatting artifacts before sending text to speech synthesis
 const cleanTextForSpeech = (rawText: string): string => {
   return rawText
+    .replace(/\\+/g, " ") // strip backslashes so TTS doesn't speak "backslash"
     .replace(/\*\*([^*]+)\*\*/g, "$1") // strip bold **text**
     .replace(/#+\s*/g, "") // strip markdown headers ###
     .replace(/`([^`]+)`/g, "$1") // strip inline code
@@ -325,7 +328,7 @@ const renderRich = (text: string, styles?: (typeof TEXT_SIZE_STYLES)["medium"]):
 
   let i = 0;
   while (i < lines.length) {
-    const raw = lines[i];
+    const raw = lines[i].replace(/\\+$/, "").trimEnd();
     const t = raw.trim();
 
     // Fenced code block: ```...``` spans multiple lines, rendered verbatim

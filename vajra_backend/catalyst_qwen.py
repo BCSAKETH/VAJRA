@@ -125,6 +125,9 @@ class CatalystQwen:
         )
         text = self._call(prompt, images_b64)
         if text:
+            # Clean repetitive backslash artifacts or runaway markdown escape sequences
+            text = re.sub(r'\\{2,}', '', text)
+            text = re.sub(r'\\+$', '', text, flags=re.MULTILINE).strip()
             return {"available": True, "text": text}
         return {"available": False, "text": "Attachment analysis failed -- the Qwen vision service returned an error."}
 
