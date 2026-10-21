@@ -28,28 +28,28 @@ interface Preset {
 
 const PRESETS: Record<ModeKey, Record<OrbSize, Preset>> = {
   orbits: {
-    64: { speed: 1.885, count: 1, size: 1 },
-    20: { speed: 3.9, count: 0.238, size: 2.4 }
+    64: { speed: 1.885, count: 1.0, size: 1.15 },
+    20: { speed: 3.2, count: 0.65, size: 1.8 }
   },
   globe: {
-    64: { speed: 2.015, count: 0.42, size: 1.15, extra: { scanMul: 4.08, dimBase: 0.45 } },
-    20: { speed: 2.665, count: 0.105, size: 1.75, extra: { scanMul: 4.335, dimBase: 0.45 } }
+    64: { speed: 2.015, count: 0.65, size: 1.25, extra: { scanMul: 4.08, dimBase: 0.45 } },
+    20: { speed: 2.4, count: 0.45, size: 1.6, extra: { scanMul: 4.335, dimBase: 0.45 } }
   },
   rubik: {
-    64: { speed: 1.82, count: 0.35, size: 1.05 },
-    20: { speed: 1.95, count: 0.088, size: 1.9 }
+    64: { speed: 1.82, count: 0.55, size: 1.15 },
+    20: { speed: 2.1, count: 0.40, size: 1.6 }
   },
   wave: {
-    64: { speed: 4.388, count: 0.341, size: 1 },
-    20: { speed: 3.998, count: 0.105, size: 1.6 }
+    64: { speed: 4.388, count: 0.55, size: 1.2 },
+    20: { speed: 3.6, count: 0.42, size: 1.5 }
   },
   ribbon: {
-    64: { speed: 2.34, count: 0.25, size: 0.85, extra: { spin: 0, bandMul: 3.9, wobMul: 1 } },
-    20: { speed: 3.12, count: 0.051, size: 1.073, extra: { spin: 0, bandMul: 4.94, wobMul: 1 } }
+    64: { speed: 2.34, count: 0.45, size: 1.1, extra: { spin: 0, bandMul: 3.9, wobMul: 1 } },
+    20: { speed: 2.8, count: 0.35, size: 1.3, extra: { spin: 0, bandMul: 4.94, wobMul: 1 } }
   },
   morph: {
-    64: { speed: 2.405, count: 0.54, size: 0.395, extra: { spread: 1.45 } },
-    20: { speed: 2.08, count: 0.53, size: 1.011, extra: { spread: 1.45 } }
+    64: { speed: 2.405, count: 0.85, size: 0.65, extra: { spread: 1.45 } },
+    20: { speed: 2.2, count: 0.65, size: 1.0, extra: { spread: 1.45 } }
   }
 };
 
@@ -70,8 +70,8 @@ export function resolvePreset(state: OrbState, size: OrbSize): Resolved {
   const mode = STATE_TO_MODE[state] || 'orbits';
   const modePresets = PRESETS[mode] || PRESETS.orbits;
   
-  // Safe resolution for custom pixel sizes: snap to 20 or 64 base preset
-  const basePresetKey: 20 | 64 = size >= 42 ? 64 : 20;
+  // High-clarity resolution: size >= 28 uses high-density preset
+  const basePresetKey: 20 | 64 = size >= 28 ? 64 : 20;
   const preset: Preset = (modePresets as any)[size] ?? modePresets[basePresetKey] ?? { speed: 2, count: 1, size: 1 };
   
   let opts: ModeOpts = { ...(BASE_PROFILES[mode] || BASE_PROFILES.orbits) };

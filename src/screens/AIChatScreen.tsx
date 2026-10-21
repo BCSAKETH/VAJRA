@@ -40,15 +40,30 @@ const parseServerTimestamp = (ts: string): Date => {
   return new Date(hasTz ? ts : `${ts}Z`);
 };
 
-// Maps backend agent reasoning steps to the appropriate ThinkingOrb behavioral state
-const getOrbState = (msg: string | null, type: string | null): OrbState => {
+// Maps backend agent reasoning steps to the appropriate ThinkingOrb behavioral state,
+// dynamically showcasing all 6 mathematical physics animations across the reasoning lifecycle
+const getOrbState = (msg: string | null, type: string | null, seconds: number = 0): OrbState => {
   if (type === "translation") return "shaping";
-  if (!msg) return "working";
-  const m = msg.toLowerCase();
-  if (/search|cctns|query|fetch|find|look|dossier|record/.test(m)) return "searching";
-  if (/solve|graph|syndicate|reason|remand|analyz|calculat|link/.test(m)) return "solving";
-  if (/draft|compos|writ|generat|prosecut|brief/.test(m)) return "composing";
-  return "working";
+  const m = (msg || "").toLowerCase();
+  
+  // Explicit semantic triggers based on backend tools & step names
+  if (/listen|input|prompt|voice|transcrib|intake/.test(m)) return "listening";
+  if (/cctns|database|fir|record|lookup|scan|registry|check/.test(m)) {
+    if (seconds > 10) return "solving";
+    if (seconds > 6) return "shaping";
+    return "searching";
+  }
+  if (/graph|syndicate|remand|bnss|bns|section|penal|calculat|solve|link/.test(m)) return "solving";
+  if (/pattern|spatial|cluster|modus|polygon|h3|hex|shape|morph/.test(m)) return "shaping";
+  if (/draft|compos|writ|generat|prosecut|brief|dossier|synthesiz|format/.test(m)) return "composing";
+  if (/orchestrat|agent|loop|evaluat|decid/.test(m)) {
+    const cycle: OrbState[] = ["working", "solving", "shaping", "searching", "composing", "listening"];
+    return cycle[Math.floor(Math.max(0, seconds) / 2.5) % cycle.length];
+  }
+
+  // Smooth cognitive progression through all 6 animations as seconds progress
+  const cognitiveStages: OrbState[] = ["listening", "searching", "solving", "shaping", "composing", "working"];
+  return cognitiveStages[Math.floor(Math.max(0, seconds) / 2.5) % cognitiveStages.length];
 };
 
 // Shared shape between the initial session-history fetch (handleSelectSession)
@@ -222,6 +237,7 @@ export const AIChatScreen: React.FC = () => {
   // frozen UI well before that; a live counter makes the wait legible
   // without needing to guess at (and risk understating) a fixed ETA.
   const [thinkingSeconds, setThinkingSeconds] = useState(0);
+  const [manualOrbOverride, setManualOrbOverride] = useState<OrbState | null>(null);
   // Live-progress ticker (Part C item #8, backend built earlier -- this is
   // the missing frontend half): real step names the agent loop actually
   // reaches (see progress_tracker.py / GET /api/chat/progress/{session_id}),
@@ -517,6 +533,7 @@ export const AIChatScreen: React.FC = () => {
   useEffect(() => {
     if (!isThinking) {
       setThinkingSeconds(0);
+      setManualOrbOverride(null);
       return;
     }
     const interval = setInterval(() => setThinkingSeconds((s) => s + 1), 1000);
@@ -2152,49 +2169,63 @@ export const AIChatScreen: React.FC = () => {
           })
         )}
 
-        {isThinking && (
-          <div className="flex items-start gap-3 max-w-[75%] animate-fade-in">
-            <div className="shrink-0 flex items-center justify-center pt-0.5" title={getOrbState(tickerMessage, thinkingType)}>
-              <ThinkingOrb state={getOrbState(tickerMessage, thinkingType)} size={32} theme="dark" />
-            </div>
-            <div className="space-y-2 flex-1">
-              <div className="text-[10px] font-mono text-stone-500 font-bold uppercase tracking-wider flex items-center gap-2">
-                <span>
-                  {thinkingType === "translation"
-                    ? t.translatingIndicator
-                    : t.thinkingIndicator}
-                </span>
-                <span className="px-1.5 py-0.5 rounded bg-stone-850 text-[#C79A4E] text-[9px] border border-stone-800">
-                  {getOrbState(tickerMessage, thinkingType).toUpperCase()}
-                </span>
-                <span className="text-[#C79A4E]">{thinkingSeconds}s</span>
+        {isThinking && (() => {
+          const activeState = manualOrbOverride || getOrbState(tickerMessage, thinkingType, thinkingSeconds);
+          const cycleNextOrb = () => {
+            const all: OrbState[] = ["listening", "searching", "solving", "shaping", "composing", "working"];
+            const nextIdx = (all.indexOf(activeState) + 1) % all.length;
+            setManualOrbOverride(all[nextIdx]);
+          };
+
+          return (
+            <div className="flex items-start gap-3.5 max-w-[85%] animate-fade-in py-1">
+              <div 
+                className="shrink-0 flex items-center justify-center cursor-pointer transition-transform hover:scale-105 active:scale-95" 
+                title={`Cognitive Core: ${activeState.toUpperCase()} (Click to toggle modes)`}
+                onClick={cycleNextOrb}
+              >
+                <ThinkingOrb state={activeState} size={44} theme="dark" />
               </div>
-              {/* Live-progress ticker: a REAL step name the backend agent
-                  loop actually just reached (see streamTicker above) --
-                  never a fabricated status or a fake countdown. Empty until
-                  the first real step is emitted, so it simply doesn't show
-                  for the first moment of a turn. */}
-              {tickerMessage && (
-                <div className="text-[10px] text-[#C79A4E]/80 font-mono flex items-center gap-1.5">
-                  <span className="w-1 h-1 rounded-full bg-[#C79A4E] animate-pulse shrink-0" />
-                  {tickerMessage}
+              <div className="space-y-2 flex-1 pt-0.5">
+                <div className="text-[10px] font-mono text-stone-400 font-bold uppercase tracking-wider flex items-center gap-2">
+                  <span>
+                    {thinkingType === "translation"
+                      ? t.translatingIndicator
+                      : t.thinkingIndicator}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={cycleNextOrb}
+                    title="Click to cycle cognitive mode"
+                    className="px-2 py-0.5 rounded-full bg-amber-500/15 hover:bg-amber-500/25 text-[#C79A4E] text-[9.5px] border border-[#C79A4E]/30 font-semibold tracking-wider transition-colors cursor-pointer"
+                  >
+                    {activeState.toUpperCase()}
+                  </button>
+                  <span className="text-[#C79A4E] font-mono font-bold">{thinkingSeconds}s</span>
                 </div>
-              )}
-              {/* GLM is a "thinking" model that reasons at length before
-                  answering -- confirmed live, 15-140s is normal, not stuck.
-                  Past 20s (well within one uneventful turn) this softens the
-                  wait instead of letting the officer assume it hung. */}
-              {thinkingSeconds > 20 && (
-                <div className="text-[9.5px] text-stone-600 font-mono">
-                  {lang === "en"
-                    ? "Complex queries can take over a minute — still working."
-                    : "ಸಂಕೀರ್ಣ ಪ್ರಶ್ನೆಗಳಿಗೆ ಒಂದು ನಿಮಿಷಕ್ಕಿಂತ ಹೆಚ್ಚು ಸಮಯ ಬೇಕಾಗಬಹುದು — ಇನ್ನೂ ಕೆಲಸ ಮಾಡುತ್ತಿದೆ."}
-                </div>
-              )}
-              <div className="shimmer-bg h-10 w-full rounded-xl border border-stone-900" />
+                {/* Live-progress ticker: a REAL step name the backend agent
+                    loop actually just reached (see streamTicker above) --
+                    never a fabricated status or a fake countdown. Empty until
+                    the first real step is emitted, so it simply doesn't show
+                    for the first moment of a turn. */}
+                {tickerMessage && (
+                  <div className="text-[10.5px] text-[#C79A4E]/90 font-mono flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#C79A4E] animate-pulse shrink-0" />
+                    {tickerMessage}
+                  </div>
+                )}
+                {thinkingSeconds > 20 && (
+                  <div className="text-[9.5px] text-stone-600 font-mono">
+                    {lang === "en"
+                      ? "Complex queries can take over a minute — still working."
+                      : "ಸಂಕೀರ್ಣ ಪ್ರಶ್ನೆಗಳಿಗೆ ಒಂದು ನಿಮಿಷಕ್ಕಿಂತ ಹೆಚ್ಚು ಸಮಯ ಬೇಕಾಗಬಹುದು — ಇನ್ನೂ ಕೆಲಸ ಮಾಡುತ್ತಿದೆ."}
+                  </div>
+                )}
+                <div className="shimmer-bg h-10 w-full rounded-xl border border-stone-900" />
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         <div ref={messagesEndRef} />
         </div>

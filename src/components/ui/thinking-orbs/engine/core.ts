@@ -56,16 +56,32 @@ export function makeProj(yaw: number, tilt: number, cx: number, cy: number, scal
  * ink value is mirrored (1 - white) so near dots read bright — the same
  * depth language on an inverted substrate.
  */
-export function paint(ctx: CanvasRenderingContext2D, dots: Dot[], dark: boolean, rMin = 0.3): void {
+export function paint(ctx: CanvasRenderingContext2D, dots: Dot[], dark: boolean, rMin = 0.65): void {
   dots.sort((a, b) => a.z - b.z);
   for (const d of dots) {
     const alpha = d.a ?? 1;
     if (alpha < 0.02) continue;
     const w = Math.min(1, Math.max(0, d.white));
-    const g = Math.round((dark ? 1 - w : w) * 255);
-    ctx.fillStyle = `rgba(${g},${g},${g},${alpha})`;
+    
+    if (dark) {
+      // 3D depth normalization: z ranges roughly from -1 (far) to +1 (near)
+      const depthFactor = Math.max(0, Math.min(1, (d.z + 1) * 0.5));
+      const brightness = Math.min(1, Math.max(0.22, (1 - w) * 0.65 + depthFactor * 0.45));
+      
+      // Luminous high-clarity palette: specular highlights peak at diamond gold/white
+      const r = Math.round(205 + 50 * brightness);
+      const g = Math.round(180 + 70 * brightness);
+      const b = Math.round(130 + 125 * brightness);
+      const effAlpha = Math.min(1, Math.max(0.28, alpha * (0.35 + 0.65 * brightness)));
+      ctx.fillStyle = `rgba(${r},${g},${b},${effAlpha})`;
+    } else {
+      const g = Math.round(w * 255);
+      ctx.fillStyle = `rgba(${g},${g},${g},${alpha})`;
+    }
+
+    const rad = Math.max(rMin, d.r);
     ctx.beginPath();
-    ctx.arc(d.x, d.y, Math.max(rMin, d.r), 0, Math.PI * 2);
+    ctx.arc(d.x, d.y, rad, 0, Math.PI * 2);
     ctx.fill();
   }
 }

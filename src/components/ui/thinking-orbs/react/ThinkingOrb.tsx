@@ -95,12 +95,13 @@ export const ThinkingOrb = forwardRef<HTMLCanvasElement, ThinkingOrbProps>(funct
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
-    const dpr = Math.min(2, (typeof devicePixelRatio !== "undefined" && devicePixelRatio) || 1);
+    const dpr = Math.min(3, Math.max(2, (typeof devicePixelRatio !== "undefined" && devicePixelRatio) || 2));
     canvas.width = Math.round(size * dpr);
     canvas.height = Math.round(size * dpr);
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { alpha: true });
     if (!ctx) return;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
 
     const { mode, speed: baseSpeed, opts } = resolvePreset(state, size);
     const draw = MODE_DRAWS[mode] || MODE_DRAWS.orbits;
