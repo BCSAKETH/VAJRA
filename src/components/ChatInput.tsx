@@ -3,6 +3,7 @@ import { Mic, MicOff, Send, Paperclip, X, FileText, Image as ImageIcon, ChevronD
 import { API_BASE } from "../config";
 import { VajraVakMascot } from "./VajraVakMascot";
 import { vakBus } from "../services/vajraVakEventBus";
+import { BorderBeam } from "./ui/border-beam";
 
 const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_MESSAGE = 3;
@@ -409,6 +410,12 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
 
   return (
     <div className="relative w-full flex flex-col gap-2 glass-panel composer-elevation border border-stone-800 rounded-2xl p-3 transition-shadow duration-200 focus-within:border-[#C79A4E]/60">
+      {/* Dynamic Voice Recording Alert Perimeter */}
+      {isRecording && (
+        <div className="absolute inset-0 rounded-2xl overflow-hidden pointer-events-none z-20">
+          <BorderBeam size={160} duration={3} colorFrom="#EF4444" colorTo="#F59E0B" />
+        </div>
+      )}
       {/* Section 145-148: Vajra-Vak perches on the floating capsule's top
           rim -- anchored to THIS card (not the page), so it rides up with
           the card as the textarea auto-grows (L836's own invariant). */}
@@ -604,7 +611,7 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
             type="button"
             onClick={handleSendClick}
             disabled={isThinking || isUploading || (!inputVal.trim() && pendingAttachments.length === 0)}
-            className="p-2 rounded-xl bg-[#C79A4E] text-stone-950 font-bold hover:bg-[#d8ab5e] transition-all disabled:opacity-40 disabled:hover:bg-[#C79A4E] cursor-pointer shrink-0 shadow-md flex items-center justify-center"
+            className="p-2 rounded-xl bg-[#C79A4E] text-stone-950 font-bold hover:bg-[#d8ab5e] active:scale-95 hover:scale-105 transition-all disabled:opacity-40 disabled:hover:bg-[#C79A4E] disabled:hover:scale-100 cursor-pointer shrink-0 shadow-md flex items-center justify-center"
           >
             <Send className="w-4 h-4" />
           </button>

@@ -58,6 +58,9 @@ export const GreetingHeader: React.FC = () => {
       <h1 className="text-xl sm:text-2xl font-serif text-stone-100 tracking-tight">
         {greeting}, {officerName || (lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ")}
       </h1>
+      <p className="text-[10px] font-mono text-[#C79A4E]/80 uppercase tracking-widest mt-1">
+        KARNATAKA STATE POLICE • CCTNS INTELLIGENCE CORE
+      </p>
     </div>
   );
 };
