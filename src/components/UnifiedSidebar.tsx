@@ -212,7 +212,7 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
           className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[#C79A4E]/15 hover:bg-[#C79A4E]/25 border border-[#C79A4E]/40 text-[#C79A4E] text-xs font-bold uppercase tracking-wider transition-all cursor-pointer shadow-sm group"
         >
           <Plus className="w-3.5 h-3.5 shrink-0 transition-transform group-hover:rotate-90" />
-          {isExpanded && <span>+ New</span>}
+          {isExpanded && <span>{lang === "en" ? "New Chat" : "ಹೊಸ ಚಾಟ್"}</span>}
         </button>
         {navItems.map((item) => {
           const Icon = item.icon;

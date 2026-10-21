@@ -163,6 +163,168 @@ const StatCard: React.FC<{ icon: React.ElementType; label: string; value: React.
   </div>
 );
 
+interface KarnatakaDistrictMapProps {
+  districtPaths: Array<{ dbName: string; d: string; centroid: [number, number] }>;
+  rows: DistrictSummaryRow[];
+  maxCases: number;
+  selectedId: number | null;
+  onToggleDistrict: (districtId: number) => void;
+  lang: "en" | "kn";
+  isLoading: boolean;
+  localizedDistrictName: (dbName: string, lang: "en" | "kn") => string;
+}
+
+const KarnatakaDistrictMap: React.FC<KarnatakaDistrictMapProps> = React.memo(
+  ({
+    districtPaths,
+    rows,
+    maxCases,
+    selectedId,
+    onToggleDistrict,
+    lang,
+    isLoading,
+    localizedDistrictName,
+  }) => {
+    const [hoveredId, setHoveredId] = useState<number | null>(null);
+
+    const rowMap = useMemo(() => {
+      const map = new Map<string, DistrictSummaryRow>();
+      for (const r of rows) {
+        map.set(r.district, r);
+      }
+      return map;
+    }, [rows]);
+
+    const top3Hot = useMemo(() => {
+      return [...rows].sort((a, b) => b.active_cases - a.active_cases).slice(0, 3);
+    }, [rows]);
+
+    const hovered = useMemo(() => {
+      if (!hoveredId) return null;
+      return rows.find((r) => r.district_id === hoveredId) || null;
+    }, [rows, hoveredId]);
+
+    if (isLoading) {
+      return (
+        <div className="rounded-2xl border border-stone-850 bg-stone-950/40 p-4 relative">
+          <div className="h-[560px] flex items-center justify-center">
+            <div className="w-2/3 h-2/3 rounded-2xl shimmer-bg" />
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div className="rounded-2xl border border-stone-850 bg-stone-950/40 p-4 relative select-none">
+        <svg
+          viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`}
+          className="w-full h-auto max-h-[620px] mx-auto will-change-transform"
+          role="img"
+          aria-label={lang === "en" ? "Interactive map of Karnataka districts" : "ಕರ್ನಾಟಕ ಜಿಲ್ಲೆಗಳ ಸಂವಾದಾತ್ಮಕ ನಕ್ಷೆ"}
+        >
+          {districtPaths.map(({ dbName, d, centroid }) => {
+            const row = rowMap.get(dbName);
+            const intensity = row ? row.active_cases / maxCases : 0;
+            const isSelected = !!row && row.district_id === selectedId;
+            const isHovered = !!row && row.district_id === hoveredId;
+            const active = isSelected || isHovered;
+
+            return (
+              <g key={dbName}>
+                <path
+                  d={d}
+                  className="transition-colors duration-150 cursor-pointer"
+                  fill={active ? "#E4C590" : "#C79A4E"}
+                  fillOpacity={row ? (active ? 0.88 : 0.32 + intensity * 0.45) : 0.08}
+                  stroke={active ? "#FFF0D0" : "#1A1715"}
+                  strokeWidth={active ? 2.5 : 1.25}
+                  onMouseEnter={() => row && setHoveredId(row.district_id)}
+                  onMouseLeave={() => setHoveredId(null)}
+                  onClick={() => row && onToggleDistrict(row.district_id)}
+                />
+                {row && (
+                  <text
+                    x={centroid[0]}
+                    y={centroid[1]}
+                    textAnchor="middle"
+                    className="pointer-events-none select-none"
+                    fontSize={active ? 11 : 8.5}
+                    fontWeight={active ? 800 : 600}
+                    fill={active ? "#1A1715" : "rgba(33,31,29,0.7)"}
+                    style={{ fontFamily: "'JetBrains Mono', monospace" }}
+                  >
+                    {lang === "kn" ? localizedDistrictName(row.district, lang) : row.district.toUpperCase()}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+
+          {/* Radar sweep from the map centre */}
+          <g className="pointer-events-none">
+            <line
+              x1={MAP_WIDTH / 2}
+              y1={MAP_HEIGHT / 2}
+              x2={MAP_WIDTH / 2}
+              y2={MAP_HEIGHT * 0.06}
+              stroke="#C79A4E"
+              strokeWidth={1.5}
+              opacity={0.22}
+            >
+              <animateTransform
+                attributeName="transform"
+                type="rotate"
+                from={`0 ${MAP_WIDTH / 2} ${MAP_HEIGHT / 2}`}
+                to={`360 ${MAP_WIDTH / 2} ${MAP_HEIGHT / 2}`}
+                dur="9s"
+                repeatCount="indefinite"
+              />
+            </line>
+          </g>
+
+          {/* Pulsing "live threat" markers on top 3 hottest districts */}
+          {top3Hot.map((r, i) => {
+            const dp = districtPaths.find((p) => p.dbName === r.district);
+            if (!dp) return null;
+            const [cx, cy] = dp.centroid;
+            return (
+              <g key={`pulse-${r.district_id}`} className="pointer-events-none">
+                <circle cx={cx} cy={cy} r={5} fill="#E24B4A" opacity={0.95} />
+                <circle cx={cx} cy={cy} r={5} fill="none" stroke="#E24B4A" strokeWidth={2}>
+                  <animate attributeName="r" from="5" to="26" dur="2.4s" begin={`${i * 0.6}s`} repeatCount="indefinite" />
+                  <animate attributeName="opacity" from="0.75" to="0" dur="2.4s" begin={`${i * 0.6}s`} repeatCount="indefinite" />
+                </circle>
+              </g>
+            );
+          })}
+        </svg>
+
+        <div className="absolute bottom-3 left-4 text-[9px] font-mono text-stone-500 pointer-events-none">
+          {lang === "en"
+            ? "Fill intensity = active case load. Hover to preview, click for detailed metrics."
+            : "ಬಣ್ಣದ ತೀವ್ರತೆ = ಸಕ್ರಿಯ ಪ್ರಕರಣ ಹೊರೆ. ಪೂರ್ವವೀಕ್ಷಣೆಗೆ ಹೋವರ್ ಮಾಡಿ, ವಿವರಗಳಿಗೆ ಕ್ಲಿಕ್ ಮಾಡಿ."}
+        </div>
+
+        {hovered && (
+          <div className="absolute top-4 right-4 z-10 glass-panel border border-[#C79A4E]/30 rounded-xl p-3 w-56 shadow-2xl pointer-events-none animate-fade-in backdrop-blur-md bg-stone-900/90">
+            <p className="text-xs font-bold text-stone-100">{hovered.district}</p>
+            <p className="text-[10px] text-stone-400 font-mono mt-1">
+              {lang === "en" ? "Active cases" : "ಸಕ್ರಿಯ ಪ್ರಕರಣಗಳು"}:{" "}
+              <span className="text-[#C79A4E] font-bold">{hovered.active_cases}</span>
+            </p>
+            <p className="text-[10px] text-stone-400 font-mono mt-0.5">
+              {lang === "en" ? "Most wanted" : "ಅತಿ ಬೇಕಾದ"}:{" "}
+              <span className="text-rose-400 font-bold">
+                {hovered.most_wanted ? `${hovered.most_wanted.suspect} (${hovered.most_wanted.case_count})` : "—"}
+              </span>
+            </p>
+          </div>
+        )}
+      </div>
+    );
+  }
+);
+
 export const DistrictDashboardScreen: React.FC = () => {
   const { lang, addToast } = useApp();
   const [rows, setRows] = useState<DistrictSummaryRow[]>([]);
@@ -172,7 +334,6 @@ export const DistrictDashboardScreen: React.FC = () => {
   const [isLoadingSummary, setIsLoadingSummary] = useState(true);
   const [isRefreshingSummary, setIsRefreshingSummary] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [hoveredId, setHoveredId] = useState<number | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<DistrictDetail | null>(null);
   const [stateOv, setStateOv] = useState<{ total_incidents: number; monthly_trend: { label: string; count: number }[]; trend_pct: number; crime_mix: { name: string; value: number }[] } | null>(null);
@@ -851,7 +1012,6 @@ export const DistrictDashboardScreen: React.FC = () => {
   };
 
   const maxCases = Math.max(1, ...rows.map((r) => r.active_cases));
-  const hovered = rows.find((r) => r.district_id === hoveredId);
 
   const totalActiveCases = useMemo(() => rows.reduce((sum, r) => sum + r.active_cases, 0), [rows]);
   const flaggedSuspectCount = useMemo(() => rows.filter((r) => r.most_wanted).length, [rows]);
@@ -1589,112 +1749,17 @@ export const DistrictDashboardScreen: React.FC = () => {
             </div>
           </div>
 
-          {/* Standalone Karnataka cutout map -- no basemap/tiles at all, just
-              the state's own district polygons rendered as plain SVG paths
-              (d3-geo computes the projection + path geometry; nothing here
-              is a Leaflet layer). Districts ARE the interactive surface now
-              -- the old grid is gone entirely, replaced by hover/click on
-              the polygons themselves. Shape data is external public
-              geographic data (see GEOJSON_TO_DB_NAME above); every color,
-              count, and most-wanted label is still a live query result. */}
-          <div className="rounded-2xl border border-stone-850 bg-stone-950/40 p-4 relative">
-            {isLoadingSummary ? (
-              <div className="h-[560px] flex items-center justify-center">
-                <div className="w-2/3 h-2/3 rounded-2xl shimmer-bg" />
-              </div>
-            ) : (
-              <svg
-                viewBox={`0 0 ${MAP_WIDTH} ${MAP_HEIGHT}`}
-                className="w-full h-auto max-h-[620px] mx-auto"
-                role="img"
-                aria-label={lang === "en" ? "Interactive map of Karnataka districts" : "ಕರ್ನಾಟಕ ಜಿಲ್ಲೆಗಳ ಸಂವಾದಾತ್ಮಕ ನಕ್ಷೆ"}
-              >
-                {districtPaths.map(({ dbName, d, centroid }) => {
-                  const row = rows.find((r) => r.district === dbName);
-                  const intensity = row ? row.active_cases / maxCases : 0;
-                  const isSelected = !!row && row.district_id === selectedId;
-                  const isHovered = !!row && row.district_id === hoveredId;
-                  const active = isSelected || isHovered;
-                  return (
-                    <g key={dbName}>
-                      <path
-                        d={d}
-                        className="transition-all duration-200 cursor-pointer"
-                        fill={active ? "#E4C590" : "#C79A4E"}
-                        fillOpacity={row ? 0.32 + intensity * 0.45 : 0.08}
-                        stroke={active ? "#F2E4C4" : "#161412"}
-                        strokeWidth={active ? 2.5 : 1.25}
-                        style={active ? { filter: "drop-shadow(0 0 10px rgba(228,197,144,0.65))" } : undefined}
-                        onMouseEnter={() => row && setHoveredId(row.district_id)}
-                        onMouseLeave={() => setHoveredId(null)}
-                        onClick={() => row && handleToggleDistrict(row.district_id)}
-                      />
-                      {row && (
-                        <text
-                          x={centroid[0]}
-                          y={centroid[1]}
-                          textAnchor="middle"
-                          className="pointer-events-none select-none transition-all duration-200"
-                          fontSize={active ? 11 : 8.5}
-                          fontWeight={active ? 800 : 600}
-                          fill={active ? "#211F1D" : "rgba(33,31,29,0.55)"}
-                          style={{ fontFamily: "'JetBrains Mono', monospace" }}
-                        >
-                          {/* F.36: Kannada has no letter-case concept -- .toUpperCase() only applies to the English label */}
-                          {lang === "kn" ? localizedDistrictName(row.district, lang) : row.district.toUpperCase()}
-                        </text>
-                      )}
-                    </g>
-                  );
-                })}
-
-                {/* Radar sweep from the map centre — an ops-room "live scan" feel. */}
-                <g className="pointer-events-none">
-                  <line x1={MAP_WIDTH / 2} y1={MAP_HEIGHT / 2} x2={MAP_WIDTH / 2} y2={MAP_HEIGHT * 0.06}
-                    stroke="#C79A4E" strokeWidth={1.5} opacity={0.22}>
-                    <animateTransform attributeName="transform" type="rotate"
-                      from={`0 ${MAP_WIDTH / 2} ${MAP_HEIGHT / 2}`} to={`360 ${MAP_WIDTH / 2} ${MAP_HEIGHT / 2}`}
-                      dur="9s" repeatCount="indefinite" />
-                  </line>
-                </g>
-
-                {/* Pulsing "live threat" markers on the 3 hottest districts. */}
-                {[...rows].sort((a, b) => b.active_cases - a.active_cases).slice(0, 3).map((r, i) => {
-                  const dp = districtPaths.find((p) => p.dbName === r.district);
-                  if (!dp) return null;
-                  const [cx, cy] = dp.centroid;
-                  return (
-                    <g key={`pulse-${r.district_id}`} className="pointer-events-none">
-                      <circle cx={cx} cy={cy} r={5} fill="#E24B4A" opacity={0.95} />
-                      <circle cx={cx} cy={cy} r={5} fill="none" stroke="#E24B4A" strokeWidth={2}>
-                        <animate attributeName="r" from="5" to="28" dur="2.4s" begin={`${i * 0.6}s`} repeatCount="indefinite" />
-                        <animate attributeName="opacity" from="0.75" to="0" dur="2.4s" begin={`${i * 0.6}s`} repeatCount="indefinite" />
-                      </circle>
-                    </g>
-                  );
-                })}
-              </svg>
-            )}
-
-            <div className="absolute bottom-3 left-4 text-[9px] font-mono text-stone-500 pointer-events-none">
-              {lang === "en" ? "Fill intensity = active case load. Hover to preview, click for detailed metrics." : "ಬಣ್ಣದ ತೀವ್ರತೆ = ಸಕ್ರಿಯ ಪ್ರಕರಣ ಹೊರೆ. ಪೂರ್ವವೀಕ್ಷಣೆಗೆ ಹೋವರ್ ಮಾಡಿ, ವಿವರಗಳಿಗೆ ಕ್ಲಿಕ್ ಮಾಡಿ."}
-            </div>
-
-            {hovered && (
-              <div className="absolute top-4 right-4 z-10 glass-panel border border-[#C79A4E]/30 rounded-xl p-3 w-56 shadow-2xl pointer-events-none animate-fade-in">
-                <p className="text-xs font-bold text-stone-100">{hovered.district}</p>
-                <p className="text-[10px] text-stone-400 font-mono mt-1">
-                  {lang === "en" ? "Active cases" : "ಸಕ್ರಿಯ ಪ್ರಕರಣಗಳು"}: <span className="text-[#C79A4E] font-bold">{hovered.active_cases}</span>
-                </p>
-                <p className="text-[10px] text-stone-400 font-mono mt-0.5">
-                  {lang === "en" ? "Most wanted" : "ಅತಿ ಬೇಕಾದ"}:{" "}
-                  <span className="text-rose-400 font-bold">
-                    {hovered.most_wanted ? `${hovered.most_wanted.suspect} (${hovered.most_wanted.case_count})` : "—"}
-                  </span>
-                </p>
-              </div>
-            )}
-          </div>
+          {/* Standalone Karnataka cutout map -- memoized to eliminate lag & prevent re-rendering dashboard on hover */}
+          <KarnatakaDistrictMap
+            districtPaths={districtPaths}
+            rows={rows}
+            maxCases={maxCases}
+            selectedId={selectedId}
+            onToggleDistrict={handleToggleDistrict}
+            lang={lang}
+            isLoading={isLoadingSummary}
+            localizedDistrictName={localizedDistrictName}
+          />
 
           {/* Special Units & Pending Districts: CID, Karnataka Railways,
               Coastal Security Police, ISD Bengaluru have real case counts
