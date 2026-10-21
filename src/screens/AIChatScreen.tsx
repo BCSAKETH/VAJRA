@@ -2152,11 +2152,10 @@ export const AIChatScreen: React.FC = () => {
           })
         )}
 
-        {/* Shimmer loading / Thinking indicator */}
         {isThinking && (
           <div className="flex items-start gap-3 max-w-[75%] animate-fade-in">
-            <div className="w-9 h-9 rounded-xl bg-stone-900 border border-stone-800 flex items-center justify-center shrink-0 shadow-sm" title={getOrbState(tickerMessage, thinkingType)}>
-              <ThinkingOrb state={getOrbState(tickerMessage, thinkingType)} size={28} theme="dark" />
+            <div className="shrink-0 flex items-center justify-center pt-0.5" title={getOrbState(tickerMessage, thinkingType)}>
+              <ThinkingOrb state={getOrbState(tickerMessage, thinkingType)} size={32} theme="dark" />
             </div>
             <div className="space-y-2 flex-1">
               <div className="text-[10px] font-mono text-stone-500 font-bold uppercase tracking-wider flex items-center gap-2">
