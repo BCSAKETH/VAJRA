@@ -16,6 +16,7 @@ import { OSINTCard } from "../components/OSINTCard";
 import { ApprovalsCard } from "../components/ApprovalsCard";
 import { ThinkingOrb } from "../components/ui/thinking-orbs/react/ThinkingOrb";
 import type { OrbState } from "../components/ui/thinking-orbs";
+import { TextAnimate } from "../components/ui/text-animate";
 import { vakBus } from "../services/vajraVakEventBus";
 import { Download, X, Users, FileText, Globe, Check, MoreVertical, ListChecks, BookText, Pin, ChevronDown, ChevronUp, ChevronRight, FolderOpen, Timer } from "lucide-react";
 
@@ -2211,7 +2212,9 @@ export const AIChatScreen: React.FC = () => {
                 {tickerMessage && (
                   <div className="text-[10.5px] text-[#C79A4E]/90 font-mono flex items-center gap-1.5">
                     <span className="w-1.5 h-1.5 rounded-full bg-[#C79A4E] animate-pulse shrink-0" />
-                    {tickerMessage}
+                    <TextAnimate animation="fadeIn" by="word" duration={0.25} className="text-[#C79A4E]/90 font-mono">
+                      {tickerMessage}
+                    </TextAnimate>
                   </div>
                 )}
                 {thinkingSeconds > 20 && (

@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { BorderBeam } from "./ui/border-beam";
+import { ShineBorder } from "./ui/shine-border";
 import {
   ShieldAlert, ShieldCheck, Scale, Clock, Lock, Target, FileText,
   CheckCircle2, AlertTriangle, Activity, MapPin, Users, Repeat,
@@ -1053,10 +1054,17 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
                 key={i}
                 type="button"
                 onClick={() => onFollowUpQuery(act.query)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-stone-900 border border-stone-750 hover:border-[#C79A4E]/60 text-stone-200 hover:text-[#C79A4E] shadow-sm transition-all hover:scale-[1.02] cursor-pointer"
+                className="relative overflow-hidden flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-stone-900 border border-stone-750 hover:border-[#C79A4E]/60 text-stone-200 hover:text-[#C79A4E] shadow-sm transition-all hover:scale-[1.02] cursor-pointer"
               >
-                <span>{act.label}</span>
-                <ChevronRight className="w-3.5 h-3.5 opacity-60" />
+                {i === 0 && (
+                  <ShineBorder
+                    borderWidth={1}
+                    duration={8}
+                    shineColor={["#C79A4E", "#F59E0B", "#C79A4E"]}
+                  />
+                )}
+                <span className="relative z-10">{act.label}</span>
+                <ChevronRight className="w-3.5 h-3.5 opacity-60 relative z-10" />
               </button>
             ))}
           </div>

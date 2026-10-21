@@ -4,6 +4,7 @@ import type { Feature, Geometry } from "geojson";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import { NumberTicker } from "../components/ui/number-ticker";
+import { BorderBeam } from "../components/ui/border-beam";
 import karnatakaDistrictsGeo from "../assets/karnataka-districts.json";
 import { localizedDistrictName } from "../i18n";
 import {
@@ -1360,7 +1361,10 @@ export const DistrictDashboardScreen: React.FC = () => {
                     const tColor = threat > 66 ? "#E24B4A" : threat > 40 ? "#E4C590" : "#5DCAA5";
                     const dash = (threat / 100) * 158;
                     return (
-                      <div className="glass-card p-4 border border-stone-850 lg:col-span-2 flex items-center gap-5 flex-wrap">
+                      <div className="glass-card p-4 border border-stone-850 lg:col-span-2 flex items-center gap-5 flex-wrap relative overflow-hidden">
+                        {threat > 66 && (
+                          <BorderBeam size={90} duration={6} colorFrom="#E24B4A" colorTo="#F59E0B" />
+                        )}
                         <div className="flex items-center gap-4">
                           <svg viewBox="0 0 120 72" width="128" height="78">
                             <path d="M10,64 A54,54 0 0,1 110,64" fill="none" stroke="#2A2724" strokeWidth="9" strokeLinecap="round" />

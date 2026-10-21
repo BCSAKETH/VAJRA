@@ -288,3 +288,19 @@ html.light .glass-card {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-teal);
 }
+
+@keyframes shine {
+  0% {
+    background-position: 0% 0%;
+  }
+  50% {
+    background-position: 100% 100%;
+  }
+  to {
+    background-position: 0% 0%;
+  }
+}
+
+.animate-shine {
+  animation: shine var(--duration, 14s) infinite linear;
+}
