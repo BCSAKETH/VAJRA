@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { BorderBeam } from "./ui/border-beam";
 import {
   ShieldAlert, ShieldCheck, Scale, Clock, Lock, Target, FileText,
   CheckCircle2, AlertTriangle, Activity, MapPin, Users, Repeat,
@@ -593,10 +594,21 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
     return { label: String(act), query: String(act) };
   });
 
+  const isHighPriorityCard = Boolean(
+    meta.category.includes("DEADLINE") ||
+    meta.category.includes("RADAR") ||
+    meta.category.includes("DOSSIER") ||
+    meta.category.includes("SYNDICATE") ||
+    meta.category.includes("BAIL")
+  );
+
   return (
     <div className="w-full flex flex-col gap-4 font-sans text-stone-200">
       {/* 1. Tactical Header Banner */}
-      <div className="bg-gradient-to-r from-stone-900/95 via-stone-900/70 to-stone-950/90 border border-stone-800/80 rounded-xl p-4 shadow-xl backdrop-blur-md relative overflow-hidden">
+      <div className="bg-stone-900 border border-stone-850 rounded-xl p-4 shadow-xl relative overflow-hidden">
+        {isHighPriorityCard && (
+          <BorderBeam size={100} duration={8} colorFrom={meta.accent || "#C79A4E"} colorTo="#E0A94B" />
+        )}
         <div
           className="absolute -right-8 -top-8 w-32 h-32 rounded-full opacity-10 blur-2xl pointer-events-none"
           style={{ backgroundColor: meta.accent }}

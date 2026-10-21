@@ -3,6 +3,7 @@ import { geoMercator, geoPath } from "d3-geo";
 import type { Feature, Geometry } from "geojson";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
+import { NumberTicker } from "../components/ui/number-ticker";
 import karnatakaDistrictsGeo from "../assets/karnataka-districts.json";
 import { localizedDistrictName } from "../i18n";
 import {
@@ -1235,7 +1236,9 @@ export const DistrictDashboardScreen: React.FC = () => {
                 {specialUnits.map((u) => (
                   <div key={u.district_id} className="rounded-lg border border-stone-800 bg-stone-900/50 p-2.5">
                     <p className="text-[10.5px] font-semibold text-stone-200 truncate" title={u.district}>{u.district}</p>
-                    <p className="text-lg font-black text-[#C79A4E] font-mono leading-tight">{u.active_cases}</p>
+                    <p className="text-lg font-black text-[#C79A4E] font-mono leading-tight">
+                      <NumberTicker value={u.active_cases} />
+                    </p>
                     <p className="text-[9px] text-stone-500 font-mono">
                       {u.reason === "unmapped_district"
                         ? (lang === "en" ? "map shape pending" : "ನಕ್ಷೆ ಬಾಕಿ")
@@ -1371,7 +1374,7 @@ export const DistrictDashboardScreen: React.FC = () => {
                           </div>
                         </div>
                         <div className="flex gap-5 flex-wrap">
-                          <div><div className="text-[9px] font-mono uppercase tracking-wide text-stone-500">{lang === "en" ? "Active" : "ಸಕ್ರಿಯ"}</div><div className="text-lg font-black text-[#C79A4E] font-mono tabular-nums">{districtActive}</div></div>
+                          <div><div className="text-[9px] font-mono uppercase tracking-wide text-stone-500">{lang === "en" ? "Active" : "ಸಕ್ರಿಯ"}</div><div className="text-lg font-black text-[#C79A4E] font-mono tabular-nums"><NumberTicker value={districtActive} /></div></div>
                           <div><div className="text-[9px] font-mono uppercase tracking-wide text-stone-500">{lang === "en" ? "Trend" : "ಪ್ರವೃತ್ತಿ"}</div><div className="text-lg font-black font-mono tabular-nums" style={{ color: tp > 3 ? "#E24B4A" : tp < -3 ? "#5DCAA5" : "#A8A096" }}>{tp >= 0 ? "+" : ""}{tp}%</div></div>
                           <div><div className="text-[9px] font-mono uppercase tracking-wide text-stone-500">{lang === "en" ? "vs State" : "ರಾಜ್ಯ"}</div><div className="text-lg font-black font-mono tabular-nums" style={{ color: vsAvg > 0 ? "#E24B4A" : "#5DCAA5" }}>{vsAvg >= 0 ? "+" : ""}{vsAvg}%</div></div>
                         </div>

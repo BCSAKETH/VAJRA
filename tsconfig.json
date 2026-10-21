@@ -16,8 +16,13 @@
     "moduleDetection": "force",
     "allowJs": true,
     "jsx": "react-jsx",
+    "baseUrl": ".",
     "paths": {
+      "@/lib/utils": [
+        "./src/lib/utils"
+      ],
       "@/*": [
+        "./src/*",
         "./*"
       ]
     },

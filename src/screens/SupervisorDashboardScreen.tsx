@@ -4,6 +4,7 @@ import { API_BASE } from "../config";
 import { TwoPersonApprovalModal } from "../components/TwoPersonApprovalModal";
 import { PersonnelGovernancePanel } from "../components/PersonnelGovernancePanel";
 import { SupervisorApprovalReviewModal } from "../components/SupervisorApprovalReviewModal";
+import { NumberTicker } from "../components/ui/number-ticker";
 import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2, Bell, BellOff, Hourglass, ChevronDown, ChevronRight } from "lucide-react";
 
 // Supervisor Dashboard redesign: one shared, ALWAYS-EXPANDED section header,
@@ -957,33 +958,35 @@ export const SupervisorDashboardScreen: React.FC = () => {
 
       {/* Command Center strip -- moved to the TOP (was buried two-thirds down
           the page), every number real, every tile clickable (scrolls to AND
-          opens its section). */}
+      {/* Command Center strip -- solid tactical law enforcement surfaces with NumberTicker */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 shrink-0">
-        <button onClick={() => scrollToSection("approvals")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-[#C79A4E]/30 transition-colors cursor-pointer">
+        <button onClick={() => scrollToSection("approvals")} className="bg-stone-900 rounded-xl p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-[#C79A4E]/40 transition-colors cursor-pointer shadow-sm">
           <div className="w-9 h-9 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 flex items-center justify-center shrink-0">
             <Hourglass className="w-4.5 h-4.5 text-[#C79A4E]" />
           </div>
           <div className="min-w-0">
-            <div className="text-lg font-black text-stone-100 font-mono leading-tight">{totalPendingApprovals}</div>
+            <div className="text-lg font-black text-stone-100 font-mono leading-tight">
+              <NumberTicker value={totalPendingApprovals} />
+            </div>
             <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
               {lang === "en" ? "Pending Approvals" : "ಬಾಕಿ ಅನುಮೋದನೆಗಳು"}
             </div>
           </div>
         </button>
-        <button onClick={() => scrollToSection("flags")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-amber-500/30 transition-colors cursor-pointer">
+        <button onClick={() => scrollToSection("flags")} className="bg-stone-900 rounded-xl p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-amber-500/40 transition-colors cursor-pointer shadow-sm">
           <div className="w-9 h-9 rounded-lg bg-amber-500/10 border border-amber-500/25 flex items-center justify-center shrink-0">
             <AlertTriangle className="w-4.5 h-4.5 text-amber-500" />
           </div>
           <div className="min-w-0">
             <div className="text-lg font-black text-stone-100 font-mono leading-tight">
-              {isLoadingFlags ? "—" : flags.filter((f) => Number(f.reviewed) === 0).length}
+              {isLoadingFlags ? "—" : <NumberTicker value={flags.filter((f) => Number(f.reviewed) === 0).length} />}
             </div>
             <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
               {lang === "en" ? "Pending Flags" : "ಬಾಕಿ ಫ್ಲ್ಯಾಗ್‌ಗಳು"}
             </div>
           </div>
         </button>
-        <button onClick={() => scrollToSection("ledger")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-stone-700 transition-colors cursor-pointer">
+        <button onClick={() => scrollToSection("ledger")} className="bg-stone-900 rounded-xl p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-stone-700 transition-colors cursor-pointer shadow-sm">
           <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 border ${
             ledgerVerified === null ? "bg-stone-800/50 border-stone-700" : ledgerVerified ? "bg-emerald-500/10 border-emerald-500/25" : "bg-rose-500/10 border-rose-500/25"
           }`}>
@@ -1002,26 +1005,26 @@ export const SupervisorDashboardScreen: React.FC = () => {
             </div>
           </div>
         </button>
-        <button onClick={() => scrollToSection("officers")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-rose-500/30 transition-colors cursor-pointer">
+        <button onClick={() => scrollToSection("officers")} className="bg-stone-900 rounded-xl p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-rose-500/40 transition-colors cursor-pointer shadow-sm">
           <div className="w-9 h-9 rounded-lg bg-rose-500/10 border border-rose-500/25 flex items-center justify-center shrink-0">
             <ShieldAlert className="w-4.5 h-4.5 text-rose-450" />
           </div>
           <div className="min-w-0">
             <div className="text-lg font-black text-stone-100 font-mono leading-tight">
-              {isLoadingOfficers ? "—" : officers.filter((o) => o.flagged).length}
+              {isLoadingOfficers ? "—" : <NumberTicker value={officers.filter((o) => o.flagged).length} />}
             </div>
             <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
               {lang === "en" ? "Officers Flagged" : "ಗುರುತಿಸಲಾದ ಅಧಿಕಾರಿಗಳು"}
             </div>
           </div>
         </button>
-        <button onClick={() => scrollToSection("personnel")} className="glass-card p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-[#C79A4E]/30 transition-colors cursor-pointer">
+        <button onClick={() => scrollToSection("personnel")} className="bg-stone-900 rounded-xl p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-[#C79A4E]/40 transition-colors cursor-pointer shadow-sm">
           <div className="w-9 h-9 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 flex items-center justify-center shrink-0">
             <Users className="w-4.5 h-4.5 text-[#C79A4E]" />
           </div>
           <div className="min-w-0">
             <div className="text-sm font-black text-stone-100 font-mono leading-tight">
-              {lang === "en" ? "Manage" : "ನಿರ್ವಹಣೆ"}
+              {isLoadingOfficers ? "—" : <NumberTicker value={officers.length} />}
             </div>
             <div className="text-[9.5px] text-stone-500 uppercase font-mono tracking-wide">
               {lang === "en" ? "Personnel Roster" : "ಸಿಬ್ಬಂದಿ ಪಟ್ಟಿ"}

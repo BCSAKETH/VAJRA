@@ -14,6 +14,8 @@ import { InvestigationBrowser } from "../components/InvestigationBrowser";
 import { VajraLogo } from "../components/VajraLogo";
 import { OSINTCard } from "../components/OSINTCard";
 import { ApprovalsCard } from "../components/ApprovalsCard";
+import { ThinkingOrb } from "../components/ui/thinking-orbs/react/ThinkingOrb";
+import type { OrbState } from "../components/ui/thinking-orbs";
 import { vakBus } from "../services/vajraVakEventBus";
 import { Download, X, Users, FileText, Globe, Check, MoreVertical, ListChecks, BookText, Pin, ChevronDown, ChevronUp, ChevronRight, FolderOpen, Timer } from "lucide-react";
 
@@ -36,6 +38,17 @@ const ExpandedOverlay = lazy(() =>
 const parseServerTimestamp = (ts: string): Date => {
   const hasTz = /Z$|[+-]\d{2}:?\d{2}$/.test(ts);
   return new Date(hasTz ? ts : `${ts}Z`);
+};
+
+// Maps backend agent reasoning steps to the appropriate ThinkingOrb behavioral state
+const getOrbState = (msg: string | null, type: string | null): OrbState => {
+  if (type === "translation") return "shaping";
+  if (!msg) return "working";
+  const m = msg.toLowerCase();
+  if (/search|cctns|query|fetch|find|look|dossier|record/.test(m)) return "searching";
+  if (/solve|graph|syndicate|reason|remand|analyz|calculat|link/.test(m)) return "solving";
+  if (/draft|compos|writ|generat|prosecut|brief/.test(m)) return "composing";
+  return "working";
 };
 
 // Shared shape between the initial session-history fetch (handleSelectSession)
@@ -2142,8 +2155,8 @@ export const AIChatScreen: React.FC = () => {
         {/* Shimmer loading / Thinking indicator */}
         {isThinking && (
           <div className="flex items-start gap-3 max-w-[75%] animate-fade-in">
-            <div className="w-8 h-8 rounded-full bg-[#C79A4E]/10 border border-[#C79A4E]/20 flex items-center justify-center shrink-0 glow-teal">
-              <VajraLogo size={20} animated />
+            <div className="w-9 h-9 rounded-xl bg-stone-900 border border-stone-800 flex items-center justify-center shrink-0 shadow-sm" title={getOrbState(tickerMessage, thinkingType)}>
+              <ThinkingOrb state={getOrbState(tickerMessage, thinkingType)} size={28} theme="dark" />
             </div>
             <div className="space-y-2 flex-1">
               <div className="text-[10px] font-mono text-stone-500 font-bold uppercase tracking-wider flex items-center gap-2">
@@ -2151,6 +2164,9 @@ export const AIChatScreen: React.FC = () => {
                   {thinkingType === "translation"
                     ? t.translatingIndicator
                     : t.thinkingIndicator}
+                </span>
+                <span className="px-1.5 py-0.5 rounded bg-stone-850 text-[#C79A4E] text-[9px] border border-stone-800">
+                  {getOrbState(tickerMessage, thinkingType).toUpperCase()}
                 </span>
                 <span className="text-[#C79A4E]">{thinkingSeconds}s</span>
               </div>
