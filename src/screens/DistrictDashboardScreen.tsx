@@ -5,6 +5,8 @@ import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
 import { NumberTicker } from "../components/ui/number-ticker";
 import { BorderBeam } from "../components/ui/border-beam";
+import { Marquee } from "../components/ui/marquee";
+import { BlurFade } from "../components/ui/blur-fade";
 import karnatakaDistrictsGeo from "../assets/karnataka-districts.json";
 import { localizedDistrictName } from "../i18n";
 import {
@@ -1036,6 +1038,22 @@ export const DistrictDashboardScreen: React.FC = () => {
         </div>
       ) : (
         <>
+          {/* Sovereign CCTNS Live Telemetry Wire */}
+          <div className="rounded-xl bg-stone-950/85 border border-stone-850/90 py-1.5 px-3 flex items-center gap-3 overflow-hidden shadow-inner">
+            <div className="flex items-center gap-1.5 shrink-0 px-2 py-0.5 rounded bg-amber-500/10 border border-amber-500/30 text-[#C79A4E] text-[10px] font-mono font-bold tracking-wider uppercase">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#C79A4E] animate-ping" />
+              <span>CCTNS LIVE WIRE</span>
+            </div>
+            <Marquee pauseOnHover className="[--duration:38s] text-[10.5px] font-mono text-stone-300">
+              <span className="mx-4 text-stone-200">🚨 STATEWIDE CCTNS 1,695,717 RECORDS ONLINE</span>
+              <span className="mx-4 text-amber-400">⚡ INDIRANAGAR PS: CR-2026-51377 §304(2) BNS ACTIVE REMAND</span>
+              <span className="mx-4 text-emerald-400">🛡️ §187 BNSS 60/90-DAY BAIL RADAR: 99.1% COMPLIANCE</span>
+              <span className="mx-4 text-stone-300">📍 BALLARI: 29,163 CASES CANONICALIZED</span>
+              <span className="mx-4 text-rose-400">⚠️ BOLO ALERT: REPEAT INTER-DISTRICT GANG TRACKED (§111 BNS)</span>
+              <span className="mx-4 text-sky-400">⚖️ §63 BSA CERTIFIED EVIDENCE CHAINS AUDITED</span>
+            </Marquee>
+          </div>
+
           {/* Statewide telemetry strip -- quick-read totals derived from the
               same live rows the heat grid renders, so it never diverges. */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 shrink-0">

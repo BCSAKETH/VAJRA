@@ -1,6 +1,9 @@
 import React, { useState } from "react";
 import { BorderBeam } from "./ui/border-beam";
 import { ShineBorder } from "./ui/shine-border";
+import { Spotlight } from "./ui/spotlight";
+import { GridPattern } from "./ui/grid-pattern";
+import { RippleButton } from "./ui/ripple-button";
 import {
   ShieldAlert, ShieldCheck, Scale, Clock, Lock, Target, FileText,
   CheckCircle2, AlertTriangle, Activity, MapPin, Users, Repeat,
@@ -606,7 +609,17 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
   return (
     <div className="w-full flex flex-col gap-4 font-sans text-stone-200">
       {/* 1. Tactical Header Banner */}
-      <div className="bg-stone-900 border border-stone-850 rounded-xl p-4 shadow-xl relative overflow-hidden">
+      <div className="bg-stone-900 border border-stone-850 rounded-xl p-4 shadow-xl relative overflow-hidden group">
+        <GridPattern
+          width={24}
+          height={24}
+          strokeDasharray="2 2"
+          className="opacity-15 [mask-image:radial-gradient(180px_circle_at_center,white,transparent)]"
+        />
+        <Spotlight
+          className="from-[#C79A4E]/20 via-[#C79A4E]/5 to-transparent blur-xl pointer-events-none"
+          size={240}
+        />
         {isHighPriorityCard && (
           <BorderBeam size={100} duration={8} colorFrom={meta.accent || "#C79A4E"} colorTo="#E0A94B" />
         )}

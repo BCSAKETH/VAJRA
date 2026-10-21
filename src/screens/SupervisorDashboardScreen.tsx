@@ -5,6 +5,7 @@ import { TwoPersonApprovalModal } from "../components/TwoPersonApprovalModal";
 import { PersonnelGovernancePanel } from "../components/PersonnelGovernancePanel";
 import { SupervisorApprovalReviewModal } from "../components/SupervisorApprovalReviewModal";
 import { NumberTicker } from "../components/ui/number-ticker";
+import { RippleButton } from "../components/ui/ripple-button";
 import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2, Bell, BellOff, Hourglass, ChevronDown, ChevronRight } from "lucide-react";
 
 // Supervisor Dashboard redesign: one shared, ALWAYS-EXPANDED section header,
@@ -1084,20 +1085,22 @@ export const SupervisorDashboardScreen: React.FC = () => {
                     >
                       {lang === "en" ? "Inspect" : "ಪರಿಶೀಲಿಸಿ"}
                     </button>
-                    <button
+                    <RippleButton
                       onClick={() => decideExport(String(p.rowid), true)}
                       disabled={decidingExportId === String(p.rowid)}
+                      rippleColor="#10B981"
                       className="px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold uppercase tracking-wide text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 cursor-pointer"
                     >
                       {lang === "en" ? "Approve" : "ಅನುಮೋದಿಸಿ"}
-                    </button>
-                    <button
+                    </RippleButton>
+                    <RippleButton
                       onClick={() => decideExport(String(p.rowid), false)}
                       disabled={decidingExportId === String(p.rowid)}
+                      rippleColor="#EF4444"
                       className="px-3 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/40 text-[11px] font-bold uppercase tracking-wide text-rose-300 hover:bg-rose-500/20 disabled:opacity-50 cursor-pointer"
                     >
                       {lang === "en" ? "Reject" : "ತಿರಸ್ಕರಿಸಿ"}
-                    </button>
+                    </RippleButton>
                   </div>
                 ))}
               </div>
