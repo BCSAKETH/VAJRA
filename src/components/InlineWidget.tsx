@@ -59,6 +59,7 @@ const momArrow = (g: number) => (g > 3 ? "▲" : g < -3 ? "▼" : "▬");
 const TIER_BADGE: Record<string, { label: string; emoji: string; cls: string }> = {
   GOV: { label: "Official Gov", emoji: "🏛️", cls: "bg-emerald-500/15 text-emerald-300 border-emerald-500/30" },
   LEGAL: { label: "Judicial / Law", emoji: "⚖️", cls: "bg-purple-500/15 text-purple-300 border-purple-500/30" },
+  JUDICIAL: { label: "Judicial / Law", emoji: "⚖️", cls: "bg-purple-500/15 text-purple-300 border-purple-500/30" },
   PRESS: { label: "Verified Press", emoji: "📰", cls: "bg-amber-500/15 text-amber-300 border-amber-500/30" },
   WEB: { label: "Open Web", emoji: "🌐", cls: "bg-stone-700/40 text-stone-400 border-stone-700" },
 };

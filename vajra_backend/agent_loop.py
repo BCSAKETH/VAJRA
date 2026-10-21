@@ -1496,7 +1496,9 @@ class VajraAgentLoop(CognitiveBrainMixin):
     # only, never a loose substring match (Loophole L1).
     _SUSPECT_TYPO_MAP = {
         r"\bsucpect\b": "suspect", r"\bsuspet\b": "suspect", r"\bsuspec\b": "suspect",
+        r"\bsusect\b": "suspect", r"\bsuspekt\b": "suspect", r"\bsupsect\b": "suspect",
         r"\bacussed\b": "accused", r"\baccsued\b": "accused", r"\baccuse\b": "accused",
+        r"\baccusedd\b": "accused", r"\bakused\b": "accused",
     }
 
     def _normalize_suspect_typos(self, q: str) -> str:
@@ -7569,7 +7571,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             min_cases = int(params.get("min_cases", 2))
             if catalyst_app:
                 try:
-                    acc_rows = catalyst_app.zql().execute_query("SELECT AccusedName, CaseMasterID FROM Accused LIMIT 500")
+                    acc_rows = catalyst_app.zql().execute_query("SELECT AccusedName, CaseMasterID FROM Accused LIMIT 300")
                     from collections import defaultdict
                     counts = defaultdict(set)
                     for r in acc_rows:

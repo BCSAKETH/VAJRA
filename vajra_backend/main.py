@@ -9075,12 +9075,24 @@ def _run_proactive_alerts_sweep() -> Dict[str, Any]:
             last_times[name] = trigger_time
         return last_counts, history_exists
 
+    _ALL_VALID_ALERT_TYPES = {
+        "SPATIAL_CRIME_SPIKE", "REPEAT_OFFENDER", "OFFENDER_SPIKE", "OSINT_THREAT",
+        "STATUTORY_REMAND_CRITICAL", "BNSS_COMPLIANCE", "SYNDICATE_ACTIVITY",
+        "BAIL_VIOLATION", "ABSCONDER_DETECTED", "HOTSPOT_CONVERGENCE", "WEAPON_RECOVERY",
+        "EXPORT_APPROVAL", "POCSO_ACCESS", "DISTRICT_ACCESS", "PROFILE_CHANGE",
+        "UNAUTHORIZED_LOGOUT_ALERT", "ACCOUNT_LOCKOUT_ALERT", "SUPERVISOR_AUDIT_INSPECTION",
+        "TWO_PERSON_AUTH_REQUEST", "OPERATIONAL_INTELLIGENCE"
+    }
+
     def _insert_alerts(alerts: List[Dict[str, Any]]) -> int:
         inserted = 0
         for alert in alerts:
+            raw_type = str(alert.get("AlertType", "")).strip()
+            # B6 audit compliance: enforce write-side whitelist
+            valid_type = raw_type if raw_type in _ALL_VALID_ALERT_TYPES else "OPERATIONAL_INTELLIGENCE"
             insert_q = (
                 f"INSERT INTO ProactiveAlerts (AlertType, DistrictID, AlertMessage, TriggerTime, Severity, IsRead) "
-                f"VALUES ('{alert['AlertType']}', {alert['DistrictID']}, "
+                f"VALUES ('{valid_type}', {alert['DistrictID']}, "
                 f"'{alert['AlertMessage'].replace(chr(39), chr(39)+chr(39))}', '{alert['TriggerTime']}', "
                 f"'{alert['Severity']}', false)"
             )

@@ -215,6 +215,7 @@ _PRESS_NAME_HINTS = (
 _TIER_LABELS = {
     "GOV": {"label": "Official Gov", "emoji": "\U0001F3DB️", "color": "emerald"},
     "LEGAL": {"label": "Judicial / Law", "emoji": "⚖️", "color": "purple"},
+    "JUDICIAL": {"label": "Judicial / Law", "emoji": "⚖️", "color": "purple"},
     "PRESS": {"label": "Verified Press", "emoji": "\U0001F4F0", "color": "amber"},
     "WEB": {"label": "Open Web", "emoji": "\U0001F310", "color": "stone"},
 }

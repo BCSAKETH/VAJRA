@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from "react";
 import { SettingsScreen } from "../screens/SettingsScreen";
+import { BorderBeam } from "./ui/border-beam";
 
 /**
  * Finals-part 3.md §32-35: converts Settings from a full-page screen
@@ -110,6 +111,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
         aria-label="Settings"
         className="relative z-[105] flex flex-col w-full h-full sm:h-[85vh] sm:max-h-[720px] md:h-[640px] max-w-none sm:max-w-4xl bg-[#181614] border border-stone-800 sm:rounded-xl shadow-2xl overflow-hidden"
       >
+        <BorderBeam size={220} duration={14} colorFrom="#C79A4E" colorTo="#F59E0B" borderWidth={1.5} />
         {/* §32: the close button now lives INSIDE SettingsScreen's own
             per-tab header (matching the source document's exact layout:
             X sits next to the active tab's title, not floating over the
