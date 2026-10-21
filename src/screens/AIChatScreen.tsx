@@ -2013,9 +2013,6 @@ export const AIChatScreen: React.FC = () => {
                 prompt box down. The keys stay defined in translations.ts
                 (Loophole L843) in case anything else still reads them. */}
             <GreetingHeader />
-            <div className="w-13 h-13 my-1">
-              <VajraLogo animated size={52} />
-            </div>
             {/* Composer lives right here, inline with the greeting, until the
                 first message sends -- not pinned to the true bottom of the
                 screen with a gap under it (see composerContent's own

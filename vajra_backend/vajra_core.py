@@ -176,6 +176,9 @@ try:
         catalyst_app = zcatalyst_sdk.initialize_app()
     
     def _execute_http_sync(self, query: str):
+        # Guardrail: Zoho Catalyst ZCQL has a hard maximum limit of 300 rows.
+        # Clamp any LIMIT greater than 300 down to 300 to prevent 400 ZCQL query errors.
+        query = re.sub(r'\bLIMIT\s+(\d+)\b', lambda m: f"LIMIT {min(int(m.group(1)), 300)}", query, flags=re.IGNORECASE)
         token = get_cached_access_token()
         if not token:
             try:

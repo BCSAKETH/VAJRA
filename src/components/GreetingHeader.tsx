@@ -47,20 +47,16 @@ function pickTimeGreeting(lang: "en" | "kn"): string {
 // this component goes back to a pure, instant, client-only greeting with
 // zero network dependency.
 export const GreetingHeader: React.FC = () => {
-  const { lang, officerName } = useApp(); // officerName ALREADY exists in AppContext (global, persisted)
-  // Picked once per mount (lazy initializer), not recomputed every render --
-  // a fresh visit/new-chat gets a fresh pick, but it doesn't flicker mid-view.
-  const [greeting, setGreeting] = useState(() => pickTimeGreeting(lang));
-  useEffect(() => { setGreeting(pickTimeGreeting(lang)); }, [lang]);
+  const { lang } = useApp();
 
   return (
-    <div className="text-center mb-1">
-      <h1 className="text-xl sm:text-2xl font-serif text-stone-100 tracking-tight">
-        {greeting}, {officerName || (lang === "en" ? "Officer" : "ಅಧಿಕಾರಿ")}
+    <div className="text-center mb-2 flex flex-col items-center justify-center animate-fade-in">
+      <div className="w-10 h-10 rounded-full bg-[#C79A4E]/10 border border-[#C79A4E]/30 flex items-center justify-center text-[#C79A4E] text-xl mb-3 shadow-[0_0_20px_rgba(199,154,78,0.15)] select-none">
+        ✴
+      </div>
+      <h1 className="text-2xl sm:text-3xl font-serif text-stone-100 tracking-tight font-medium">
+        {lang === "en" ? "What shall we investigate today?" : "ನಾವು ಇಂದು ಏನು ತನಿಖೆ ಮಾಡೋಣ?"}
       </h1>
-      <p className="text-[10px] font-mono text-[#C79A4E]/80 uppercase tracking-widest mt-1">
-        KARNATAKA STATE POLICE • CCTNS INTELLIGENCE CORE
-      </p>
     </div>
   );
 };

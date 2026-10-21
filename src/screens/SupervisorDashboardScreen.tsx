@@ -6,7 +6,7 @@ import { PersonnelGovernancePanel } from "../components/PersonnelGovernancePanel
 import { SupervisorApprovalReviewModal } from "../components/SupervisorApprovalReviewModal";
 import { NumberTicker } from "../components/ui/number-ticker";
 import { RippleButton } from "../components/ui/ripple-button";
-import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2, Bell, BellOff, Hourglass, ChevronDown, ChevronRight } from "lucide-react";
+import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2, Bell, BellOff, Hourglass, ChevronDown, ChevronRight, Cpu, Bot, Zap, Radio } from "lucide-react";
 
 // Supervisor Dashboard redesign: one shared, ALWAYS-EXPANDED section header,
 // reused by every panel (Approvals/History/Ledger/Consistency Flags/Audit
@@ -882,6 +882,46 @@ export const SupervisorDashboardScreen: React.FC = () => {
   const [activeApprovalTab, setActiveApprovalTab] = useState<"exports" | "pocso" | "district" | "profile" | "security">("exports");
   const totalPendingApprovals = pendingExports.length + pendingPocso.length + pendingDistrict.length + pendingProfile.length + pendingSecurity.length;
 
+  // Domain 4: Paperclip Precinct Multi-Agent Team Orchestration
+  interface PrecinctTicket {
+    ticket_id: string;
+    department: string;
+    department_name: string;
+    title: string;
+    assignee: string;
+    case_no?: string;
+    status: string;
+    priority: string;
+    created_at: string;
+    findings: string;
+    heartbeat_cadence?: string;
+    token_budget?: string;
+  }
+  const [precinctTickets, setPrecinctTickets] = useState<PrecinctTicket[]>([]);
+  const [isLoadingTickets, setIsLoadingTickets] = useState(false);
+  const [selectedDeptFilter, setSelectedDeptFilter] = useState<string>("all");
+
+  const fetchPrecinctTickets = async (dept?: string) => {
+    setIsLoadingTickets(true);
+    try {
+      const token = localStorage.getItem("vajra_token") || "";
+      const url = dept && dept !== "all" ? `${API_BASE}/api/precinct/tickets?department=${dept}` : `${API_BASE}/api/precinct/tickets`;
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+      if (res.ok) {
+        const d = await res.json();
+        setPrecinctTickets(d.tickets || []);
+      }
+    } catch {
+      // safe fallback
+    } finally {
+      setIsLoadingTickets(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchPrecinctTickets();
+  }, []);
+
   // Every section on this page is always fully visible (no collapse/expand --
   // removed per explicit feedback). sectionRefs still backs the Command
   // Center strip's "jump to section" behavior below.
@@ -1032,6 +1072,197 @@ export const SupervisorDashboardScreen: React.FC = () => {
             </div>
           </div>
         </button>
+      </div>
+
+      {/* Blueprint Domain 4: Paperclip Precinct Multi-Agent Team Orchestration */}
+      <div className="shrink-0 rounded-xl border border-stone-800 bg-stone-900/60 p-5 space-y-4 shadow-xl">
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 border-b border-stone-800 pb-3">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-[#C79A4E]/15 border border-[#C79A4E]/40 flex items-center justify-center text-[#C79A4E] shadow-[0_0_15px_rgba(199,154,78,0.2)]">
+              <Bot className="w-4 h-4 animate-pulse" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-mono font-bold uppercase tracking-wider text-stone-100">
+                  {lang === "en" ? "Precinct Multi-Agent Orchestration" : "ಠಾಣೆ ಬಹು-ಏಜೆಂಟ್ ಸಮನ್ವಯ"}
+                </h3>
+                <span className="px-2 py-0.5 rounded text-[9px] font-mono font-black uppercase bg-[#C79A4E]/20 text-[#C79A4E] border border-[#C79A4E]/30">
+                  Paperclip + OpenDots
+                </span>
+              </div>
+              <p className="text-[10px] font-mono text-stone-400 mt-0.5">
+                VAK Master Conductor presiding over 4 specialized 24/7 autonomous divisions
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 self-end sm:self-auto">
+            <span className="text-[10px] font-mono text-emerald-400 font-bold flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-500/10 border border-emerald-500/20">
+              <Radio className="w-3 h-3 animate-pulse" />
+              ● 4 Autonomous Divisions Active
+            </span>
+            <button
+              onClick={() => fetchPrecinctTickets(selectedDeptFilter)}
+              className="p-1.5 rounded-lg text-stone-400 hover:text-[#C79A4E] hover:bg-stone-800 transition-colors cursor-pointer"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isLoadingTickets ? "animate-spin text-[#C79A4E]" : ""}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* 4 Specialized Precinct Division Cards */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          {[
+            {
+              id: "cyber",
+              name: "Cyber Crime Division",
+              lead: "Insp. Pradeep K. (Cyber Cell)",
+              scope: "1930 & Mule Freezes",
+              cadence: "15 min Heartbeat",
+              color: "cyan",
+              icon: Cpu
+            },
+            {
+              id: "legal",
+              name: "Legal & Remand Division",
+              lead: "PP Deshpande & PSI Raghavendra",
+              scope: "§187 BNSS 90-Day Clocks",
+              cadence: "Daily 06:00 IST",
+              color: "amber",
+              icon: ShieldAlert
+            },
+            {
+              id: "forensics",
+              name: "Forensic & Crash Physics",
+              lead: "Dr. Ananya Sharma (FSL)",
+              scope: "MuJoCo Kinematics & Ballistics",
+              cadence: "On-Demand Inquest",
+              color: "purple",
+              icon: Zap
+            },
+            {
+              id: "surveillance",
+              name: "Field Patrol & Radar",
+              lead: "CRSI Patil (Control Room)",
+              scope: "Voronoi Choke & ANPR",
+              cadence: "Real-time Telemetry",
+              color: "emerald",
+              icon: Activity
+            }
+          ].map((dept) => (
+            <div
+              key={dept.id}
+              onClick={() => {
+                setSelectedDeptFilter(dept.id === selectedDeptFilter ? "all" : dept.id);
+                fetchPrecinctTickets(dept.id === selectedDeptFilter ? "all" : dept.id);
+              }}
+              className={`p-3 rounded-xl border text-left transition-all cursor-pointer shadow-sm relative group ${
+                selectedDeptFilter === dept.id
+                  ? "bg-[#C79A4E]/10 border-[#C79A4E] shadow-[0_0_15px_rgba(199,154,78,0.15)]"
+                  : "bg-stone-950/70 border-stone-800/80 hover:border-stone-700"
+              }`}
+            >
+              <div className="flex items-center justify-between mb-2">
+                <dept.icon className={`w-4 h-4 ${
+                  dept.color === "cyan" ? "text-cyan-400" :
+                  dept.color === "amber" ? "text-amber-400" :
+                  dept.color === "purple" ? "text-purple-400" : "text-emerald-400"
+                }`} />
+                <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-stone-900 border border-stone-800 text-stone-400">
+                  {dept.cadence}
+                </span>
+              </div>
+              <h4 className="text-xs font-mono font-bold text-stone-200 group-hover:text-stone-100">
+                {dept.name}
+              </h4>
+              <p className="text-[10px] font-mono text-[#C79A4E] mt-0.5 truncate">
+                {dept.lead}
+              </p>
+              <p className="text-[9.5px] font-mono text-stone-500 mt-1">
+                Mandate: {dept.scope}
+              </p>
+            </div>
+          ))}
+        </div>
+
+        {/* Task Tickets Pipeline */}
+        <div className="space-y-2 pt-1">
+          <div className="flex items-center justify-between text-xs font-mono text-stone-400">
+            <span className="font-bold uppercase tracking-wider text-stone-300">
+              Autonomous Task Tickets ({precinctTickets.length})
+            </span>
+            <div className="flex items-center gap-1.5 text-[10px]">
+              {["all", "cyber", "legal", "forensics", "surveillance"].map((filter) => (
+                <button
+                  key={filter}
+                  onClick={() => {
+                    setSelectedDeptFilter(filter);
+                    fetchPrecinctTickets(filter);
+                  }}
+                  className={`px-2 py-0.5 rounded uppercase font-mono transition-colors cursor-pointer ${
+                    selectedDeptFilter === filter
+                      ? "bg-[#C79A4E] text-stone-950 font-bold"
+                      : "bg-stone-900 hover:bg-stone-800 text-stone-400 hover:text-stone-200"
+                  }`}
+                >
+                  {filter}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+            {isLoadingTickets ? (
+              <div className="py-8 text-center text-xs font-mono text-stone-500 flex items-center justify-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin text-[#C79A4E]" />
+                <span>Synchronizing Paperclip Task Tickets...</span>
+              </div>
+            ) : precinctTickets.length === 0 ? (
+              <div className="py-6 text-center text-xs font-mono text-stone-550 border border-stone-850 rounded-lg bg-stone-950/40">
+                No active tickets in this department queue.
+              </div>
+            ) : (
+              precinctTickets.map((tk) => (
+                <div
+                  key={tk.ticket_id}
+                  className="p-3 rounded-lg bg-stone-950/60 border border-stone-800 hover:border-stone-700 transition-colors space-y-1.5 text-xs font-mono"
+                >
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-stone-200">
+                        {tk.title}
+                      </span>
+                      <span className="text-[10px] text-[#C79A4E] px-1.5 py-0.2 rounded bg-[#C79A4E]/10 border border-[#C79A4E]/20">
+                        {tk.ticket_id}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded ${
+                        tk.priority === "CRITICAL" ? "bg-rose-500/20 text-rose-400 border border-rose-500/30" :
+                        tk.priority === "HIGH" ? "bg-amber-500/20 text-amber-400 border border-amber-500/30" :
+                        "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                      }`}>
+                        {tk.priority}
+                      </span>
+                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-stone-800 text-stone-300">
+                        {tk.status}
+                      </span>
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-stone-400 leading-relaxed">
+                    {tk.findings}
+                  </p>
+
+                  <div className="flex items-center justify-between text-[10px] text-stone-500 pt-1 border-t border-stone-850">
+                    <span>Assignee: {tk.assignee} · Dept: {tk.department_name}</span>
+                    <span className="text-emerald-400 font-bold">🔒 Section 63 BSA Certified Ledger</span>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
       </div>
 
       {/* Approvals Queue -- merged from 4 separate cards into ONE with a tab

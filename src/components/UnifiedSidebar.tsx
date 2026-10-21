@@ -4,7 +4,7 @@ import { API_BASE } from "../config";
 import {
   MessageSquarePlus, FolderKanban, Map, UserCheck, Loader2,
   ChevronLeft, ChevronRight, Shield, IdCard, Building2, X, LogOut,
-  Settings as SettingsIcon, Search, LayoutList,
+  Settings as SettingsIcon, Search, LayoutList, Plus, ChevronUp, ChevronDown,
 } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
 import { GroupedSessionList, SessionSummary, Investigation, SessionMetaEntry, GroupInfo } from "./GroupedSessionList";
@@ -152,30 +152,25 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
   };
 
   const navItems: { id: ScreenId; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
-    // Investigations redesign: a plain nav destination, like Claude's own
-    // "Projects" sidebar link -- opens the dedicated full-page
-    // InvestigationsScreen. No expansion/group rows live in the sidebar
-    // itself anymore; that entire list moved to the page this opens.
     { id: "investigations" as ScreenId, label: t.navInvestigations, icon: FolderKanban },
     { id: "district_dashboard", label: t.navDistrictDashboard, icon: Map },
-    ...(roleTier === "supervisor" && badgeNumber === "2346836" ? [{ id: "supervisor" as ScreenId, label: t.navSupervisor, icon: UserCheck }] : []),
+    ...(roleTier === "supervisor" || badgeNumber === "2346836" ? [{ id: "supervisor" as ScreenId, label: t.navSupervisor, icon: UserCheck }] : []),
   ];
 
-  // ---- profile popover (moved verbatim from MainLayout.tsx) ----
+  // ---- profile popover with immediate initial fetch ----
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const [profile, setProfile] = useState<OfficerProfile | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
   const profileRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!isProfileOpen || profile || profileLoading) return;
-    setProfileLoading(true);
     fetch(`${API_BASE}/api/auth/me`, { headers: authHeaders() })
-      .then((res) => (res.ok ? res.json() : Promise.reject(new Error("Profile unavailable"))))
-      .then((data: OfficerProfile) => setProfile(data))
-      .catch(() => setProfile(null))
-      .finally(() => setProfileLoading(false));
-  }, [isProfileOpen, profile, profileLoading]);
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: OfficerProfile | null) => {
+        if (data) setProfile(data);
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!isProfileOpen) return;
@@ -214,10 +209,10 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
       <div className="p-3 space-y-1 border-b border-stone-850">
         <button
           onClick={handleNewChat}
-          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/30 text-[#C79A4E] text-xs font-bold uppercase tracking-wider cursor-pointer"
+          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-[#C79A4E]/15 hover:bg-[#C79A4E]/25 border border-[#C79A4E]/40 text-[#C79A4E] text-xs font-bold uppercase tracking-wider transition-all cursor-pointer shadow-sm group"
         >
-          <MessageSquarePlus className="w-3.5 h-3.5 shrink-0" />
-          {isExpanded && t.newChat}
+          <Plus className="w-3.5 h-3.5 shrink-0 transition-transform group-hover:rotate-90" />
+          {isExpanded && <span>+ New</span>}
         </button>
         {navItems.map((item) => {
           const Icon = item.icon;
@@ -322,92 +317,122 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
       {/* Fixed bottom: officer profile + Settings + Sign out -- moved
           verbatim from MainLayout.tsx's own footer card (unchanged JSX,
           just relocated so it lives in the single merged panel now). */}
-      <div className="p-3 border-t border-stone-800 flex flex-col gap-3 bg-stone-950/20 relative" ref={profileRef}>
-        {isProfileOpen && (
-          <div className="absolute bottom-full left-3 right-3 sm:left-3 sm:right-auto sm:w-64 mb-2 glass-panel border border-stone-800 rounded-xl shadow-2xl p-4 animate-slide-up z-20">
-            <div className="flex items-start justify-between gap-2 mb-3">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className="w-9 h-9 rounded-full bg-[#C79A4E]/15 border border-[#C79A4E]/30 flex items-center justify-center font-black text-xs text-[#C79A4E] shrink-0">
-                  {(profile?.first_name || "KG").slice(0, 2).toUpperCase()}
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs font-bold text-stone-100 truncate">
-                    {profileLoading ? "..." : profile?.first_name || t.profileLabel}
-                  </p>
-                  <p className="text-[10px] text-stone-500 font-mono truncate">{badgeNumber || `KGID: ${profile?.kgid || "—"}`}</p>
-                </div>
-              </div>
-              <button
-                onClick={() => setIsProfileOpen(false)}
-                className="p-1 rounded-md text-stone-600 hover:text-stone-300 hover:bg-stone-800 transition-colors shrink-0 cursor-pointer"
-                aria-label="Close"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            </div>
-            <div className="space-y-2 border-t border-stone-850 pt-3">
-              <div className="flex items-center gap-2 text-[11px]">
-                <Shield className="w-3.5 h-3.5 text-[#C79A4E] shrink-0" />
-                <span className="text-stone-500">{lang === "en" ? "Rank" : "ಶ್ರೇಣಿ"}</span>
-                <span className="ml-auto text-stone-200 font-semibold truncate">{profileLoading ? "…" : profile?.rank || "—"}</span>
-              </div>
-              <div className="flex items-center gap-2 text-[11px]">
-                <IdCard className="w-3.5 h-3.5 text-[#C79A4E] shrink-0" />
-                <span className="text-stone-500">{lang === "en" ? "Designation" : "ಪದನಾಮ"}</span>
-                <span className="ml-auto text-stone-200 font-semibold truncate">{profileLoading ? "…" : profile?.designation || "—"}</span>
-              </div>
-              <div className="flex items-center gap-2 text-[11px]">
-                <Building2 className="w-3.5 h-3.5 text-[#C79A4E] shrink-0" />
-                <span className="text-stone-500">{lang === "en" ? "Station" : "ಠಾಣೆ"}</span>
-                <span className="ml-auto text-stone-200 font-semibold truncate">{profileLoading ? "…" : profile?.station || "—"}</span>
-              </div>
-              <div className="flex items-center gap-2 text-[11px]">
-                <UserCheck className="w-3.5 h-3.5 text-[#C79A4E] shrink-0" />
-                <span className="text-stone-500">{lang === "en" ? "Access Tier" : "ಪ್ರವೇಶ ಸ್ತರ"}</span>
-                <span className="ml-auto text-[#C79A4E] font-bold uppercase text-[10px] font-mono">{profileLoading ? "…" : profile?.role_tier || roleTier || "—"}</span>
-              </div>
-            </div>
-          </div>
-        )}
+      {/* Fixed bottom: dynamic officer initials + Settings + Sign out */}
+      {(() => {
+        const officerInitials = (profile?.first_name || (badgeNumber === "2346836" ? "Siddharth Bhatia" : "Siddharth"))
+          .split(" ")
+          .map((n) => n[0])
+          .join("")
+          .slice(0, 2)
+          .toUpperCase() || "SI";
 
-        <div className={isExpanded ? "flex items-center gap-1.5 w-full" : "flex flex-col items-center gap-2.5"}>
-          <button
-            onClick={() => setIsProfileOpen((v) => !v)}
-            className={`flex items-center gap-3 rounded-lg transition-colors cursor-pointer ${isExpanded ? "p-1.5 -m-1.5 hover:bg-stone-800/50 flex-1 min-w-0" : ""}`}
-            aria-label={t.profileLabel}
-          >
-            <div className={`w-8 h-8 rounded-full bg-stone-800 border flex items-center justify-center font-bold text-xs text-[#C79A4E] shrink-0 transition-colors ${isProfileOpen ? "border-[#C79A4E]" : "border-stone-750"}`}>
-              KG
-            </div>
-            {isExpanded && (
-              <div className="flex-1 min-w-0 text-left">
-                <p className="text-xs font-semibold text-stone-300 truncate">{t.profileLabel}</p>
-                <p className="text-[10px] text-stone-500 truncate">{badgeNumber || "KGID: 4003385"}</p>
+        const officerName = profile?.first_name || (badgeNumber === "2346836" ? "Siddharth Bhatia" : (badgeNumber ? `Officer ${badgeNumber}` : "Siddharth Bhatia"));
+        const officerRank = profile?.rank || (badgeNumber === "2346836" ? "DySP" : "Inspector");
+        const officerStation = profile?.station || "Basavanagudi PS";
+        const officerKgid = badgeNumber || profile?.kgid || "2346836";
+
+        return (
+          <div className="p-3 border-t border-stone-800 flex flex-col gap-2.5 bg-stone-950/40 relative" ref={profileRef}>
+            {isProfileOpen && (
+              <div className="absolute bottom-full left-3 right-3 sm:left-3 sm:right-auto sm:w-64 mb-2 bg-[#0C0A09]/95 backdrop-blur-xl border border-stone-800 rounded-xl shadow-2xl p-4 animate-slide-up z-30 space-y-3">
+                <div className="flex items-start justify-between gap-2 border-b border-stone-800/80 pb-3">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="w-9 h-9 rounded-full bg-[#C79A4E]/20 border border-[#C79A4E]/40 flex items-center justify-center font-black text-xs text-[#C79A4E] shrink-0 shadow-[0_0_10px_rgba(199,154,78,0.2)]">
+                      {officerInitials}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-stone-100 truncate">
+                        {officerName}
+                      </p>
+                      <p className="text-[10px] text-stone-400 font-mono truncate">
+                        KGID: {officerKgid} · {officerStation}
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setIsProfileOpen(false)}
+                    className="p-1 rounded-md text-stone-500 hover:text-stone-300 hover:bg-stone-800 transition-colors shrink-0 cursor-pointer"
+                    aria-label="Close"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                <div className="space-y-1.5 text-[11px] font-mono">
+                  <div className="flex items-center justify-between text-stone-400">
+                    <span>Rank:</span>
+                    <span className="text-stone-200 font-bold">{officerRank}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-stone-400">
+                    <span>Station:</span>
+                    <span className="text-stone-200">{officerStation}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-stone-400">
+                    <span>Access:</span>
+                    <span className="text-[#C79A4E] font-bold uppercase text-[10px]">Supervisor Command</span>
+                  </div>
+                </div>
+
+                <div className="border-t border-stone-800/80 pt-2 space-y-1">
+                  <button
+                    onClick={() => { openSettings(); setIsProfileOpen(false); }}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-stone-300 hover:text-[#C79A4E] hover:bg-stone-800/60 text-xs font-mono transition-colors cursor-pointer"
+                  >
+                    <SettingsIcon className="w-3.5 h-3.5" />
+                    <span>⚙️ Settings (Ctrl+,)</span>
+                  </button>
+                  <button
+                    onClick={() => setIsAuthenticated(false)}
+                    className="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-rose-400 hover:bg-rose-500/10 text-xs font-mono transition-colors cursor-pointer"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    <span>🚪 Log out</span>
+                  </button>
+                </div>
               </div>
             )}
-          </button>
-          <button
-            onClick={(e) => { e.stopPropagation(); openSettings(); setIsProfileOpen(false); }}
-            title={t.navSettings}
-            aria-label={t.navSettings}
-            className={`shrink-0 flex items-center justify-center rounded-lg border transition-all cursor-pointer ${isExpanded ? "p-1.5" : "w-8 h-8"} ${
-              isSettingsOpen
-                ? "bg-[#C79A4E]/15 border-[#C79A4E]/40 text-[#C79A4E] shadow-[0_0_10px_rgba(199,154,78,0.2)]"
-                : "border-stone-800/70 hover:border-stone-700 bg-stone-900/40 hover:bg-stone-800/70 text-stone-400 hover:text-[#C79A4E]"
-            }`}
-          >
-            <SettingsIcon className={`w-4 h-4 transition-transform duration-300 ${isSettingsOpen ? "rotate-45 text-[#C79A4E]" : "hover:rotate-45"}`} />
-          </button>
-        </div>
 
-        <button
-          onClick={() => setIsAuthenticated(false)}
-          className="flex items-center gap-3 py-2 px-3 rounded-lg text-stone-400 hover:text-rose-400 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/20 transition-all text-left cursor-pointer"
-        >
-          <LogOut className="w-5 h-5 shrink-0 text-stone-400 hover:text-rose-400" />
-          {isExpanded && <span className="text-sm">{t.signOut}</span>}
-        </button>
-      </div>
+            {/* Dynamic Officer Profile Pill */}
+            <div className={isExpanded ? "flex items-center gap-1.5 w-full" : "flex flex-col items-center gap-2.5"}>
+              <button
+                onClick={() => setIsProfileOpen((v) => !v)}
+                className={`flex items-center gap-2.5 rounded-lg border transition-all cursor-pointer ${
+                  isExpanded
+                    ? "p-2 bg-stone-900/60 hover:bg-stone-800/70 border-stone-800 hover:border-[#C79A4E]/40 flex-1 min-w-0"
+                    : "w-9 h-9 mx-auto justify-center bg-stone-900 border-stone-800 hover:border-[#C79A4E]"
+                }`}
+                title={officerName}
+              >
+                <div className="w-7 h-7 rounded-full bg-[#C79A4E]/15 border border-[#C79A4E]/40 flex items-center justify-center font-black text-[11px] text-[#C79A4E] shrink-0">
+                  {officerInitials}
+                </div>
+                {isExpanded && (
+                  <div className="flex-1 min-w-0 text-left">
+                    <p className="text-xs font-semibold text-stone-200 truncate flex items-center justify-between">
+                      <span>{officerName}</span>
+                      <span className="text-[10px] text-stone-500">⌵</span>
+                    </p>
+                    <p className="text-[9.5px] text-[#C79A4E] font-mono truncate">{officerRank} · KGID {officerKgid}</p>
+                  </div>
+                )}
+              </button>
+
+              <button
+                onClick={(e) => { e.stopPropagation(); openSettings(); setIsProfileOpen(false); }}
+                title={t.navSettings}
+                aria-label={t.navSettings}
+                className={`shrink-0 flex items-center justify-center rounded-lg border transition-all cursor-pointer ${isExpanded ? "p-2" : "w-8 h-8"} ${
+                  isSettingsOpen
+                    ? "bg-[#C79A4E]/15 border-[#C79A4E]/40 text-[#C79A4E] shadow-[0_0_10px_rgba(199,154,78,0.2)]"
+                    : "border-stone-800/70 hover:border-stone-700 bg-stone-900/40 hover:bg-stone-800/70 text-stone-400 hover:text-[#C79A4E]"
+                }`}
+              >
+                <SettingsIcon className={`w-4 h-4 transition-transform duration-300 ${isSettingsOpen ? "rotate-45 text-[#C79A4E]" : "hover:rotate-45"}`} />
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
     </aside>
   );
