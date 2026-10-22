@@ -1,0 +1,117 @@
+VAJRA — Sprint Implementation Report (2026-09-17, 11:30 PM – 11:55 PM IST)
+Scope: CLAUDE_MASTER_BUILD_PROMPT.md (subset of Finals-part 5.md: "VAJRA Final
+Optimization & Modular Architecture")
+
+Commits: a1d3beb, f66231e (author: BCSAKETH <bcsaketh@gmail.com>, no
+Co-Authored-By trailer, per the sprint doc's explicit instructions). Local
+only — no push, no `catalyst deploy` was run during the sprint window itself.
+
+=================================================================
+MODULE 1 — Sub-3s Query Acceleration Engine (PARTIAL)
+=================================================================
+Done:
+- vajra_backend/agent_loop.py: check_fast_path_intent() + _FAST_PATH_PATTERNS
+  + _ENRICHED_TOOL_HINTS. Matches narrow, single-intent phrasings ("top
+  crimes in Mysuru", "crime trends in Belagavi", "hotspots in X") and routes
+  straight to a tool call via the existing `forced_decision` fast-route
+  slot — zero LLM round trip. Deliberately bails to the normal pipeline on
+  any conjunction ("and", "compare", "vs") to avoid truncating real
+  multi-part questions.
+- vajra_backend/main.py: master TTL cache (get_all_units_cached(),
+  _MASTER_CACHE / _MASTER_CACHE_LOCK, 3600s TTL) wrapping the existing
+  paginated _get_all_units() fetch. _get_all_units() itself now delegates
+  to the cached wrapper, so every existing call site (including
+  agent_loop.py's import) benefits with no call-site changes.
+
+Not done (dropped under time pressure, no code touched):
+- Parallelizing the 12-month get_crime_trends loop via ThreadPoolExecutor.
+- Adaptive LLM timeout ladder / circuit breaker in catalyst_llm.py (clamp
+  tool-selection calls to 12s). Not attempted — the existing 90s timeout +
+  retry logic there is already tuned from a documented past incident, and
+  editing it blind against the clock was judged too risky.
+
+=================================================================
+MODULE 2 — OSINT Database-First Inversion (COMPLETE)
+=================================================================
+- vajra_backend/agent_loop.py: purged conversational/statutory stopwords
+  from _TOOL_HINTS["web_search"]; removed web_search from _DEFAULT_TOOLS;
+  _ALWAYS_TOOLS now guarantees {query_case, find_similar_cases} instead of
+  web_search; _relevant_tools() only keeps web_search when the query has
+  explicit external-web intent ("search the web", "google", "website",
+  "url", etc.).
+- Full Dossier compiler fallback and the GLM-unavailable fallback cascade
+  both now default to query_case ("CCTNS Datastore Safety Net") instead of
+  web_search; web_search only fires on explicit OSINT phrasing.
+- Offline statutory dictionary added: _STATUTORY_CODES (Section 187 BNSS,
+  Section 173 BNS, Section 63 BSA) + lookup_statutory_legal_code(), wired
+  in ahead of the deterministic classifier — answers "what is section 187
+  BNSS" instantly with zero network/model calls.
+
+=================================================================
+MODULE 3 — Granular Live SSE Progress Ticker
+=================================================================
+NOT DONE. Not attempted — required reading _execute_tool's/SSE plumbing in
+depth, judged unsafe to rush.
+
+=================================================================
+MODULE 4 — Desktop Push Notification Formatter (COMPLETE)
+=================================================================
+- vajra_backend/vajra_core.py: format_push_notification_payload(alert_type,
+  raw_payload) — per-alert-type title/URL mapping (EXPORT_APPROVAL,
+  POCSO_ACCESS, DISTRICT_ACCESS, PROFILE_CHANGE,
+  SERIAL_PATTERN_AUTO_MATCH), falling back to the old generic
+  "VAJRA: <Type>" shape for anything unlisted. Wired into
+  insert_proactive_alert()'s existing push dispatch — replaces the old
+  inline f-string title/body construction.
+
+=================================================================
+MODULE 5 — Prompt Box CSS Polish (COMPLETE)
+=================================================================
+- src/screens/AIChatScreen.tsx: fixed the composer's visible horizontal
+  seam. The old 8px solid-to-transparent gradient sat directly above a
+  fully transparent padded wrapper, producing a hard one-pixel-row cliff
+  wherever message content scrolled behind it. Extended the gradient
+  (8px -> 16px) and added a shared backdrop-blur + low-opacity tint across
+  the whole composer surface so it reads as one continuous glass panel.
+  Overlay div kept pointer-events-none so composer buttons stay clickable.
+
+=================================================================
+MODULE 6 — Autonomous Persona & Toolbar Cleanup (COMPLETE)
+=================================================================
+- src/components/ChatInput.tsx: removed the manual PersonaSelectorBadge
+  button from the composer toolbar (and its now-unused import), reversing
+  the earlier Feature-Package-8 addition per the sprint doc. The emergency
+  persona badge in ChatBubble.tsx was left untouched (not in scope for
+  removal).
+
+=================================================================
+MODULE 7 — 22-Block Modular PNLG Section Palette (STRETCH)
+=================================================================
+NOT DONE — stretch goal, explicitly dropped per the sprint doc's own time
+budget; no code touched.
+
+=================================================================
+VERIFICATION
+=================================================================
+- python -m py_compile vajra_backend/*.py: PASS (one pre-existing,
+  unrelated SyntaxWarning at agent_loop.py:2921, not introduced this
+  sprint).
+- npm run build: PASS (vite build + esbuild server bundle both succeeded).
+- QA re-check (post-sprint): manually traced the fast-path decision dict
+  shape against the downstream tool-call parser (matches exactly), traced
+  the "district" param through query_hotspots/get_crime_trends/
+  get_case_types_distribution handlers, and verified
+  format_push_notification_payload's call site against
+  send_push_to_kgids()'s real signature. No defects found; no fix commit
+  was necessary.
+
+=================================================================
+DEPLOY STATUS
+=================================================================
+`catalyst deploy` was run after the sprint window closed, at the user's
+explicit follow-up request. It exceeded the 5-minute foreground timeout and
+was moved to a background task; its outcome is not yet confirmed as of this
+report. Per this project's own deploy history, exit code 0 does not
+guarantee every target deployed — each component's own status line still
+needs to be checked once the run completes, with `catalyst deploy --only
+<target>` as the retry path for anything that shows as skipped/failed.

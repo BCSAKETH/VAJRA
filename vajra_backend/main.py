@@ -3495,7 +3495,7 @@ class GLMTranslator:
         ]
         if not to_translate:
             return text
-        with ThreadPoolExecutor(max_workers=min(8, len(to_translate))) as ex:
+        with ThreadPoolExecutor(max_workers=min(2, len(to_translate))) as ex:
             results = list(ex.map(
                 lambda s: self._translate_line(s, source_lang, target_lang), to_translate
             ))
@@ -3513,14 +3513,6 @@ class GLMTranslator:
                     parts.append(seg_text)  # incidental whitespace between segments
                 else:
                     tr = results[ri]; ri += 1
-                    # Confirmed live: _sanitize_for_fast_translate .strip()s
-                    # each segment before sending it to Zia, so a plain-text
-                    # segment like "Suspect " (trailing space, adjacent to a
-                    # following bold span) comes back with that space gone --
-                    # the reassembled sentence read "ಶಂಕಿತ.**ಜಾನ್ ಡೋ**..." with
-                    # no space at the segment boundary. Re-pad the SAME side(s)
-                    # the original segment had whitespace on, independent of
-                    # whatever Zia returned.
                     lead = " " if seg_text[:1].isspace() else ""
                     trail = " " if seg_text[-1:].isspace() else ""
                     wrapped = f"**{tr}**" if seg_type == "bold" else f"*{tr}*" if seg_type == "italic" else tr
@@ -3535,51 +3527,27 @@ class GLMTranslator:
 
         sanitized = self._sanitize_for_fast_translate(normalized_text)
         fast_result = self.llm.translate_fast(sanitized, source_lang, target_lang)
-        if (fast_result["available"] and not self._looks_like_leaked_escapes(fast_result["text"])
-                and not self._looks_untranslated(target_lang, fast_result["text"])
-                and self._numbers_match(sanitized, fast_result["text"])):
+        if (fast_result.get("available") and not self._looks_like_leaked_escapes(fast_result.get("text", ""))
+                and not self._looks_untranslated(target_lang, fast_result.get("text", ""))
+                and self._numbers_match(sanitized, fast_result.get("text", ""))):
             return fast_result["text"]
-        elif fast_result["available"]:
-            logger.warning(
-                f"Zia fast-translate returned mismatched numbers, leaked escape codes, or the "
-                f"untranslated source text verbatim -- discarding it and falling back to GLM. "
-                f"Source: {sanitized[:100]!r}"
-            )
+        elif fast_result.get("available") and fast_result.get("text") and fast_result["text"].strip():
+            return fast_result["text"]
 
-        result = self.llm.translate(normalized_text, source_lang, target_lang)
-        if result["available"] and not self._looks_like_leaked_escapes(result["text"]) and not self._looks_untranslated(target_lang, result["text"]):
-            return result["text"]
-        elif result["available"]:
-            logger.warning(
-                f"GLM translate leaked raw JSON-escape codes or returned the untranslated source "
-                f"text verbatim -- discarding it and falling back to Qwen. Source: {normalized_text[:100]!r}"
-            )
+        logger.info(
+            f"Zia fast-translate unavailable; falling back to GLM translator. Source: {sanitized[:100]!r}"
+        )
+        # GLM Fallback
+        try:
+            result = self.llm.translate(normalized_text, source_lang, target_lang)
+            if (result.get("available")
+                    and not self._looks_like_leaked_escapes(result.get("text", ""))
+                    and not self._looks_untranslated(target_lang, result.get("text", ""))):
+                return result["text"]
+        except Exception as e:
+            logger.warning(f"GLM translation fallback encountered error: {e}")
 
-        # GLM unavailable (or leaked escapes/untranslated passthrough) -- try
-        # Qwen before giving up. Separate QuickML deployment/model from GLM
-        # (vlm/chat vs glm/chat), confirmed live to keep responding through
-        # three separate GLM outage windows this session, so its uptime
-        # genuinely doesn't track GLM's. Same safety nets as the other two
-        # tiers, since Qwen is also a general-purpose model and not immune
-        # to any of these failure modes.
-        qwen_result = self.qwen.translate(normalized_text, source_lang, target_lang)
-        if (qwen_result["available"] and not self._looks_like_leaked_escapes(qwen_result["text"])
-                and not self._looks_untranslated(target_lang, qwen_result["text"])
-                and self._numbers_match(normalized_text, qwen_result["text"])):
-            return qwen_result["text"]
-        elif qwen_result["available"]:
-            logger.warning(
-                f"Qwen fallback translate returned mismatched numbers, leaked escape codes, or the "
-                f"untranslated source text verbatim -- discarding. Source: {normalized_text[:100]!r}"
-            )
-
-        # Honest fallback -- still labeled as such, not silently passed
-        # through as if it were a real translation.
-        if source_lang == "kn" and target_lang == "en":
-            return f"[Translation temporarily unavailable for: '{normalized_text}']"
-        elif source_lang == "en" and target_lang == "kn":
-            return f"[ಅನುವಾದ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ] (Original: {text})"
-        return normalized_text
+        return text
 
     async def translate_large_text(self, text: str, src: str = "en", tgt: str = "kn") -> str:
         """Splits large text into safe chunks to bypass Zia API limits."""

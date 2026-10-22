@@ -9,10 +9,6 @@ vajra_backend/cache/
 vajra_backend/cache/**
 vajra_backend/scratch/
 vajra_backend/scratch/**
-vajra_backend/**/tests/**
-vajra_backend/**/tests
-vajra_backend/**/test/**
-vajra_backend/**/test
 vajra_backend/*.bak*
 vajra_backend/*.new*
 node_modules/

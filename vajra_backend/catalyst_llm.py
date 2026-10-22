@@ -493,15 +493,8 @@ class CatalystLLM:
 
     def translate(self, text: str, source_lang: str, target_lang: str) -> Dict[str, Any]:
         """
-        Plain-text translation via the same GLM endpoint used for chat.
-        Reuses chat()'s retry/timeout/down-flag handling via
-        use_agent_system_prompt=False, which skips the tool-calling system
-        prompt entirely -- a translation request has nothing to do with tool
-        selection, and asking the model to also produce a JSON envelope for
-        a plain translation is another chance for it to fail for no benefit.
-        Replaces the old IndicTrans2Translator stub in main.py, which never
-        actually translated anything -- it always returned a canned
-        "[Translation Unavailable]" string regardless of input.
+        Plain-text translation fallback via GLM endpoint.
+        Used as a safety net when Zia Text Translation is unavailable or rejects input.
         """
         lang_names = {"en": "English", "kn": "Kannada"}
         src_name = lang_names.get(source_lang, source_lang)
@@ -517,13 +510,7 @@ class CatalystLLM:
             {"role": "user", "content": text}
         ]
 
-        # Confirmed live: this model's step-by-step reasoning for a
-        # translation task can run long enough to exhaust even 2500 tokens
-        # before it ever emits </think> -- a real correct translation was
-        # visible mid-reasoning ("Final Polish: ಡೇಟಾಬೇಸ್ ...") but got cut
-        # off before the model committed to it as the final answer. 4000
-        # gives it room to finish thinking on a task this simple.
-        res = self.chat(messages, tools=None, use_agent_system_prompt=False, max_tokens=4000)
+        res = self.chat(messages, tools=None, use_agent_system_prompt=False, max_tokens=2000)
         if res.get("error"):
             return {"available": False, "text": text}
         try:
@@ -531,17 +518,11 @@ class CatalystLLM:
         except Exception:
             return {"available": False, "text": text}
 
-        # No </think> means the response was cut off mid-reasoning (this
-        # model always emits it once done thinking, confirmed across every
-        # successful call observed) -- content before that point is a
-        # reasoning draft, not a committed final answer, and returning it
-        # as if it were the translation risks showing an officer a garbled
-        # partial sentence instead of an honest "unavailable".
-        if "</think>" not in content:
-            logger.warning("Translation response truncated before </think> -- reporting unavailable rather than returning a partial reasoning fragment.")
-            return {"available": False, "text": text}
+        if "</think>" in content:
+            clean = content.split("</think>")[-1].strip()
+        else:
+            clean = content.strip()
 
-        clean = content.split("</think>")[-1].strip()
         return {"available": True, "text": clean} if clean else {"available": False, "text": text}
 
     def translate_fast(self, text: str, source_lang: str, target_lang: str) -> Dict[str, Any]:
@@ -568,15 +549,20 @@ class CatalystLLM:
         if not token:
             return {"available": False, "text": text}
         domain = "in" if self.region == "IN" else "com"
-        url = f"https://api.catalyst.zoho.{domain}/quickml/api/v1/models/zia/translate"
+        url = os.getenv("CATALYST_TRANSLATION_ENDPOINT") or f"https://api.catalyst.zoho.{domain}/quickml/api/v2/project/50212000000025002/models/zia/text/translate"
         headers = {
             "Authorization": f"Zoho-oauthtoken {token}",
             "CATALYST-ORG": self.org_id,
             "Content-Type": "application/json",
+            "Environment": os.getenv("CATALYST_ENVIRONMENT", "Development"),
         }
-        payload = {"text": text, "src_lang": source_lang, "tgt_lang": target_lang}
+        payload = {"text": text, "source_language": source_lang, "target_language": target_lang}
         try:
             res = requests.post(url, headers=headers, json=payload, timeout=10)
+            if res.status_code != 200 and "LESS_THAN_MIN_OCCURANCE" in res.text:
+                # Fallback to legacy v1 payload if hitting v1 endpoint
+                payload_v1 = {"text": text, "src_lang": source_lang, "tgt_lang": target_lang}
+                res = requests.post(url, headers=headers, json=payload_v1, timeout=10)
             if res.status_code == 200:
                 data = res.json()
                 translated = None

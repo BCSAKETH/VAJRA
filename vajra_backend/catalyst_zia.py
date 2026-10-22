@@ -158,21 +158,25 @@ def translate_text(text: str, src_lang: str = "en", tgt_lang: str = "kn", org_id
     region = os.getenv("CATALYST_REGION", "IN")
     domain = "in" if region == "IN" else "com"
     target_org = org_id or os.getenv("CATALYST_ORG_ID") or os.getenv("CATALYST_PROJECT_KEY") or "60074806366"
-    url = f"https://api.catalyst.zoho.{domain}/quickml/api/v1/models/zia/translate"
+    url = os.getenv("CATALYST_TRANSLATION_ENDPOINT") or f"https://api.catalyst.zoho.{domain}/quickml/api/v2/project/50212000000025002/models/zia/text/translate"
     
     headers = {
         "Authorization": f"Zoho-oauthtoken {token}",
         "CATALYST-ORG": target_org,
         "Content-Type": "application/json",
+        "Environment": os.getenv("CATALYST_ENVIRONMENT", "Development"),
     }
     payload = {
         "text": sanitized,
-        "src_lang": src_lang,
-        "tgt_lang": tgt_lang
+        "source_language": src_lang,
+        "target_language": tgt_lang
     }
 
     try:
         res = requests.post(url, headers=headers, json=payload, timeout=10)
+        if res.status_code != 200 and "LESS_THAN_MIN_OCCURANCE" in res.text:
+            payload_v1 = {"text": sanitized, "src_lang": src_lang, "tgt_lang": tgt_lang}
+            res = requests.post(url, headers=headers, json=payload_v1, timeout=10)
         if res.status_code == 200:
             data = res.json()
             translated = None

@@ -590,6 +590,17 @@ def _get_scoped_access_token(env_var: str, cache_key: str) -> Optional[str]:
         cache = _scoped_token_caches.setdefault(cache_key, {"token": None, "fetched_at": 0.0})
         if cache["token"] and (time.time() - cache["fetched_at"] < 3000):
             return cache["token"]
+        token_file = os.path.join(os.path.dirname(__file__), f".token_cache_{cache_key}")
+        if os.path.exists(token_file) and (time.time() - os.path.getmtime(token_file) < 3000):
+            try:
+                with open(token_file, "r") as f:
+                    t = f.read().strip()
+                    if t:
+                        cache["token"] = t
+                        cache["fetched_at"] = os.path.getmtime(token_file)
+                        return t
+            except Exception:
+                pass
         client_id = os.getenv("CATALYST_CLIENT_ID")
         client_secret = os.getenv("CATALYST_CLIENT_SECRET")
         scoped_refresh_token = os.getenv(env_var)
@@ -603,10 +614,25 @@ def _get_scoped_access_token(env_var: str, cache_key: str) -> Optional[str]:
             }, timeout=10)
             data = res.json()
             if "access_token" in data:
-                cache["token"] = data["access_token"]
+                token_val = data["access_token"]
+                cache["token"] = token_val
                 cache["fetched_at"] = time.time()
-                return data["access_token"]
+                try:
+                    with open(token_file, "w") as f:
+                        f.write(token_val)
+                except Exception:
+                    pass
+                return token_val
             logger.error(f"{cache_key} token refresh failed: {data}")
+            # If disk cache exists (even if older than 3000s), use it as fallback during rate-limit
+            if os.path.exists(token_file):
+                try:
+                    with open(token_file, "r") as f:
+                        t = f.read().strip()
+                        if t:
+                            return t
+                except Exception:
+                    pass
         except Exception as e:
             logger.warning(f"{cache_key} token refresh error: {e}")
         return None
