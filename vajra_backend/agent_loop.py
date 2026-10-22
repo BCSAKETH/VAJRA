@@ -187,12 +187,8 @@ def check_fast_path_intent(query: str, real_districts: List[str]) -> Optional[Di
     c_low = cleaned.lower()
     if "stolen" in c_low and ("wheel" in c_low or "bike" in c_low or "vehicle" in c_low or "cross-match" in c_low):
         return {"tool": "find_similar_cases", "parameters": {"query": "stolen two-wheeler motorcycle getaway vehicles"}}
-    if "trace syndicate" in c_low or "syndicate graph" in c_low:
-        return {"tool": "query_graph_network", "parameters": {"suspect_name": "Ramesh"}}
     if "hawala" in c_low or "financial trail" in c_low or "mule account" in c_low:
         return {"tool": "find_similar_cases", "parameters": {"query": "hawala mule bank transactions"}}
-    if "repeat snatchers" in c_low or "repeat offender" in c_low:
-        return {"tool": "get_repeat_offenders", "parameters": {"district": "Bengaluru Urban"}}
     if re.search(r"\b(?:find\s+|show\s+|search\s+|trace\s+)?similar\s+(?:syndicates?|gangs?|cases?|crimes?|patterns?|mo|modus\s+operandi|snatching|theft|burglary|robbery|dacoity|extortion|fraud)\b", c_low):
         return {"tool": "find_similar_cases", "parameters": {"query": cleaned}}
     if any(k in c_low for k in ("similar syndicates", "similar gang", "similar cases", "similar crimes", "similar mo")):

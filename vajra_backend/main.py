@@ -470,24 +470,14 @@ async def multi_lens(payload: LensRequest, request: Request, location_context: s
     }
 
 
-@app.post("/api/voice/process-stream")
-async def process_voice_stream(audio: UploadFile = File(...)):
+@app.post("/api/voice/process-stream", deprecated=True)
+async def process_voice_stream(audio: UploadFile = File(...), location_context: str = Depends(security_firewall)):
     """
-    ASR Speech-to-text integration endpoint.
-    Returns service not configured error as Zia speech modules are not active.
+    Legacy voice endpoint alias. Forwarding directly to stt_endpoint to ensure
+    backward compatibility without 503 errors.
     """
-    logger.info(f"Incoming voice stream content type: {audio.content_type}")
-    try:
-        content = await audio.read(1024)
-        if len(content) == 0:
-            raise HTTPException(status_code=400, detail="Empty audio payload received.")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Failed to read audio stream: {e}")
-        
-    raise HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail="Zia Speech-to-Text Voice Service is not configured. Please wire active Zoho Intelligent Assistant SDK credentials."
-    )
+    logger.info(f"Incoming legacy voice stream, aliasing to stt_endpoint: {audio.content_type}")
+    return await stt_endpoint(audio=audio, language="auto", location_context=location_context)
 
 
 class AuthRequest(BaseModel):
@@ -935,12 +925,16 @@ async def report_unauthorized_eviction_endpoint(payload: ReportUnauthorizedReque
                 "reported_at": datetime.utcnow().isoformat() + "Z",
                 "message": f"Officer KSP-{badge} flagged an unrecognised remote session termination from IP {client_ip}. Potential credential leak."
             }
+            now_iso = datetime.utcnow().isoformat()
             zcql_insert_row("ProactiveAlerts", {
                 "AlertType": "UNAUTHORIZED_LOGOUT_ALERT",
                 "AlertMessage": json.dumps(alert_payload),
-                "Status": "ACTIVE",
+                "DistrictID": unit_id if 'unit_id' in locals() and unit_id else 1,
+                "TriggerTime": now_iso,
+                "CreatedTime": now_iso,
                 "Severity": "CRITICAL",
-                "CreatedTime": datetime.utcnow().isoformat()
+                "Status": "ACTIVE",
+                "IsRead": False
             })
         except Exception as e:
             logger.warning(f"Failed to post to ProactiveAlerts: {e}")
@@ -11619,14 +11613,14 @@ async def list_unrecognized_logins(request: Request, location_context: str = Dep
                 "ORDER BY ROWID DESC LIMIT 60")
             for r in res:
                 a = r.get("ProactiveAlerts", {})
-                if a.get("IsRead") is True:
+                if a.get("IsRead") is True or a.get("IsRead") == "true":
                     continue
                 try:
                     m = json.loads(a.get("AlertMessage") or "{}")
                 except Exception:
                     continue
                 m["rowid"] = a.get("ROWID")
-                m["trigger_time"] = a.get("TriggerTime")
+                m["trigger_time"] = a.get("TriggerTime") or a.get("CreatedTime") or m.get("reported_at")
                 m["alert_type"] = a.get("AlertType")
                 out.append(m)
         except Exception as e:

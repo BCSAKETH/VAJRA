@@ -294,21 +294,31 @@ class ThreatScoringEngine:
             arrest_dt_str = arrest_rows[0].get("ArrestSurrenderDate")
             if arrest_dt_str:
                 try:
-                    arr_date = datetime.strptime(str(arrest_dt_str)[:10], "%Y-%m-%d").date()
-                    days_remand = (date.today() - arr_date).days
-                    days_left_60 = max(0, 60 - days_remand)
-                    if 0 < days_left_60 <= 10:
-                        score += 20
-                        drivers.append({
-                            "name": "Imminent Default Bail Proximity",
-                            "impactPct": 20,
-                            "contribution": "positive",
-                            "statutory_ref": "Section 187(3) BNSS",
-                            "desc": f"Suspect remanded {days_remand} days; only {days_left_60} days before mandatory default bail.",
-                            "why_this_score": "Critical tactical evasion risk upon statutory release before chargesheet."
-                        })
-                except Exception:
-                    pass
+                    clean_dt_str = str(arrest_dt_str).strip().replace("T", " ")[:10]
+                    parsed_arr_date = None
+                    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+                        try:
+                            parsed_arr_date = datetime.strptime(clean_dt_str, fmt).date()
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                    if parsed_arr_date:
+                        days_remand = (date.today() - parsed_arr_date).days
+                        days_left_60 = max(0, 60 - days_remand)
+                        if 0 < days_left_60 <= 10:
+                            score += 20
+                            drivers.append({
+                                "name": "Imminent Default Bail Proximity",
+                                "impactPct": 20,
+                                "contribution": "positive",
+                                "statutory_ref": "Section 187(3) BNSS",
+                                "desc": f"Suspect remanded {days_remand} days; only {days_left_60} days before mandatory default bail.",
+                                "why_this_score": "Critical tactical evasion risk upon statutory release before chargesheet."
+                            })
+                    else:
+                        logger.error(f"Failed to parse ArrestSurrenderDate '{arrest_dt_str}' for §187(3) BNSS calculation.")
+                except Exception as ex:
+                    logger.error(f"Error computing §187(3) BNSS default bail countdown: {ex}")
 
         # Multi-Jurisdictional Cross-District Evasion
         distinct_stations = len({c.get("PoliceStationID") for c in case_rows if c.get("PoliceStationID")})
@@ -358,15 +368,24 @@ class ThreatScoringEngine:
         qualifying_cs = 0
         for cs in chargesheet_rows:
             cs_raw = cs.get("csdate")
-            if cs_raw:
+            if not cs_raw:
+                logger.warning("Chargesheet missing date field; strictly excluded from §111 BNS 10-year window.")
+                continue
+
+            clean_cs_str = str(cs_raw).strip().replace("T", " ")[:10]
+            parsed_cs_date = None
+            for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
                 try:
-                    cs_date = datetime.strptime(str(cs_raw)[:10], "%Y-%m-%d").date()
-                    if cs_date >= ten_years_ago:
-                        qualifying_cs += 1
-                except Exception:
+                    parsed_cs_date = datetime.strptime(clean_cs_str, fmt).date()
+                    break
+                except (ValueError, TypeError):
+                    continue
+
+            if parsed_cs_date:
+                if parsed_cs_date >= ten_years_ago:
                     qualifying_cs += 1
             else:
-                qualifying_cs += 1
+                logger.warning(f"Unparseable chargesheet date '{cs_raw}'; excluded from §111 BNS qualification.")
 
         is_bns_111 = qualifying_cs >= 2 and co_accused_count >= 2
         if is_bns_111:
@@ -435,11 +454,17 @@ class ThreatScoringEngine:
             arrest_dt_str = arrest_rows[0].get("ArrestSurrenderDate")
             if arrest_dt_str:
                 try:
-                    arr_date = datetime.strptime(str(arrest_dt_str)[:10], "%Y-%m-%d").date()
-                    days_remand = (date.today() - arr_date).days
-                    days_left_60 = max(0, 60 - days_remand)
-                except Exception:
-                    pass
+                    clean_dt_str = str(arrest_dt_str).strip().replace("T", " ")[:10]
+                    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%Y/%m/%d"):
+                        try:
+                            arr_date = datetime.strptime(clean_dt_str, fmt).date()
+                            days_remand = (date.today() - arr_date).days
+                            days_left_60 = max(0, 60 - days_remand)
+                            break
+                        except (ValueError, TypeError):
+                            continue
+                except Exception as ex:
+                    logger.error(f"Error formulating statutory directive for arrest date: {ex}")
 
         if bns_111:
             mandate = "OPPOSE BAIL UNDER SECTION 111 BNS"
