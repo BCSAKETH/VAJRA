@@ -2172,7 +2172,7 @@ export const AIChatScreen: React.FC = () => {
           return (
             <div className="flex items-start gap-3.5 max-w-[85%] animate-fade-in py-1">
               <div 
-                className="shrink-0 relative flex items-center justify-center cursor-pointer transition-transform hover:scale-105 active:scale-95 rounded-full p-0.5 bg-[#C79A4E]/5 border border-[#C79A4E]/30 shadow-[0_0_14px_rgba(199,154,78,0.2)]" 
+                className="shrink-0 flex items-center justify-center cursor-pointer transition-transform hover:scale-105 active:scale-95" 
                 title={`Cognitive Core: ${activeState.toUpperCase()} (Click to toggle modes)`}
                 onClick={cycleNextOrb}
               >
