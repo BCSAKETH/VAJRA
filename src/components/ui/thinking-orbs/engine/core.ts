@@ -52,9 +52,9 @@ export function makeProj(yaw: number, tilt: number, cx: number, cy: number, scal
 }
 
 /**
- * Painter: z-sort far→near, matte grayscale dots. On dark substrates the
- * ink value is mirrored (1 - white) so near dots read bright — the same
- * depth language on an inverted substrate.
+ * Painter: z-sort far→near, rendered in the canonical VAJRA Tactical Gold palette.
+ * Depth is conveyed by dot radius, alpha falloff, and burnished bronze → rich gold → radiant 24K specular highlights.
+ * STRICTLY NO WHITE: Blue channel is capped (b <= 88) so highlights never wash out to silver or white.
  */
 export function paint(ctx: CanvasRenderingContext2D, dots: Dot[], dark: boolean, rMin = 0.65): void {
   dots.sort((a, b) => a.z - b.z);
@@ -66,17 +66,25 @@ export function paint(ctx: CanvasRenderingContext2D, dots: Dot[], dark: boolean,
     if (dark) {
       // 3D depth normalization: z ranges roughly from -1 (far) to +1 (near)
       const depthFactor = Math.max(0, Math.min(1, (d.z + 1) * 0.5));
-      const brightness = Math.min(1, Math.max(0.22, (1 - w) * 0.65 + depthFactor * 0.45));
+      // Combined depth and ink factor: 0 = far/shadow, 1 = peak front specular highlight
+      const factor = Math.min(1, Math.max(0, (1 - w) * 0.55 + depthFactor * 0.45));
       
-      // Luminous high-clarity palette: specular highlights peak at diamond gold/white
-      const r = Math.round(205 + 50 * brightness);
-      const g = Math.round(180 + 70 * brightness);
-      const b = Math.round(130 + 125 * brightness);
-      const effAlpha = Math.min(1, Math.max(0.28, alpha * (0.35 + 0.65 * brightness)));
+      // VAJRA Tactical Gold Theme (STRICTLY NO WHITE):
+      // Far/shadow dots: Warm burnished bronze-gold #7A4E16 (r: 122, g: 78, b: 22)
+      // Mid-surface dots: Canonical VAJRA Gold #C79A4E (r: 199, g: 154, b: 78)
+      // Specular highlights: Radiant luminous 24K gold #F5C558 (r: 245, g: 197, b: 88)
+      const r = Math.round(122 + 123 * factor);
+      const g = Math.round(78 + 119 * factor);
+      const b = Math.round(22 + 66 * factor); // Strictly bounded so blue never produces white/silver
+      const effAlpha = Math.min(1, Math.max(0.32, alpha * (0.35 + 0.65 * factor)));
       ctx.fillStyle = `rgba(${r},${g},${b},${effAlpha})`;
     } else {
-      const g = Math.round(w * 255);
-      ctx.fillStyle = `rgba(${g},${g},${g},${alpha})`;
+      // Light background substrate: rich antique bronze/gold ink (never gray/white)
+      const factor = Math.min(1, Math.max(0, w * 0.6 + ((d.z + 1) * 0.5) * 0.4));
+      const r = Math.round(110 + 89 * factor);
+      const g = Math.round(72 + 82 * factor);
+      const b = Math.round(20 + 58 * factor);
+      ctx.fillStyle = `rgba(${r},${g},${b},${alpha})`;
     }
 
     const rad = Math.max(rMin, d.r);
