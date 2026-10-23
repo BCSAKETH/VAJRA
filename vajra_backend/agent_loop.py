@@ -434,6 +434,25 @@ class VajraAgentLoop(CognitiveBrainMixin):
     # 22 Capabilities Tool Registry definition for GLM-4.7-Flash
     TOOLS = [
         {
+            "name": "portal_scrape_live_contract",
+            "description": "Execute live stealth DOM scraping against state judicial and transport portals (e-Courts, Vahan RTO, Sarathi DL, High Court Cause Lists) using TLS fingerprinting and Section 63 BSA evidence locking.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "portal_key": {
+                        "type": "string",
+                        "description": "Target portal contract key: 'ecourts_karnataka', 'vahan_karnataka', 'sarathi_karnataka', 'highcourt_karnataka'"
+                    },
+                    "caseno": {"type": "string", "description": "Case number for court search (e.g. 'CR-2026-81977')"},
+                    "caseyear": {"type": "string", "description": "Year of case filing (e.g. '2026')"},
+                    "district": {"type": "string", "description": "District court jurisdiction"},
+                    "reg_no": {"type": "string", "description": "Vehicle registration plate for Vahan lookup"},
+                    "dl_no": {"type": "string", "description": "Driving license number for Sarathi lookup"}
+                },
+                "required": ["portal_key"]
+            }
+        },
+        {
             "name": "get_my_profile",
             "description": "Return the CURRENTLY LOGGED-IN officer's OWN profile -- their name, rank, designation, police station/unit, and district. Use this whenever the officer asks about THEMSELVES: 'what is my name', 'my details', 'my profile', 'who am I', 'my rank/station/posting/current assignment', 'which district am I in'. This is NOT for looking up suspects or other people -- it is the officer's own identity, resolved from their authenticated session. Takes no parameters.",
             "parameters": {
@@ -6497,6 +6516,42 @@ class VajraAgentLoop(CognitiveBrainMixin):
             else:
                 text_result = "I could not resolve your officer profile from this session."
             self._write_audit_log(employee_id, "Self Profile Inquiry", str(employee_id), "Officer requested own profile", text_result, session_id)
+
+        # 0.5. portal_scrape_live_contract (Stealth OSINT Extraction)
+        elif tool_name in ("portal_scrape_live_contract", "portal_scraper"):
+            import scrapling_engine
+            portal_key = params.get("portal_key") or "ecourts_karnataka"
+            req_params = {k: v for k, v in params.items() if k != "portal_key"}
+            if "case_no" in params and "caseno" not in req_params:
+                req_params["caseno"] = params["case_no"]
+            if "plate_number" in params and "reg_no" not in req_params:
+                req_params["reg_no"] = params["plate_number"]
+            if "dl_number" in params and "dl_no" not in req_params:
+                req_params["dl_no"] = params["dl_number"]
+
+            scrape_res = scrapling_engine.execute_portal_scrape(portal_key, req_params)
+            evidence = scrape_res.get("evidence_certificate", {})
+            payload = scrape_res.get("extracted_payload", {})
+            portal_name = scrape_res.get("portal", portal_key)
+            ev_hash = evidence.get("evidence_hash", "63BSA-PENDING")
+
+            response_type = "portal_scrape"
+            data = scrape_res
+            citations.append({
+                "type": "Stealth OSINT Extraction",
+                "id": ev_hash,
+                "details": f"{portal_name} • Captured under {evidence.get('statutory_compliance', 'Section 63 BSA 2023')}"
+            })
+            text_result = (
+                f"🏛️ **Stealth OSINT Extraction — {portal_name}**\n"
+                f"• **Statutory Evidence Hash**: `{ev_hash}` ({evidence.get('statutory_compliance', 'Section 63 BSA')})\n"
+                f"• **Source Endpoint**: {scrape_res.get('source_url', 'Authenticated Portal')}\n"
+                f"• **Capture Timestamp (UTC)**: {evidence.get('captured_at_utc', '')}\n"
+                f"• **Handshake Cipher**: {scrape_res.get('session_handshake', {}).get('tls_cipher', 'Chromium TLS 1.3')}\n\n"
+                f"**Extracted Record:**\n"
+                + "\n".join(f"• **{k.replace('_', ' ').title()}**: {v}" for k, v in list(payload.items())[:6])
+            )
+            final_answer = True
 
         # 1. query_case
         elif tool_name == "list_cases_sharing_id":

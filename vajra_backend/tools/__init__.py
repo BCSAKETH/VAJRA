@@ -11,3 +11,4 @@ import tools.tool_threat_score
 import tools.tool_cctns_search
 import tools.tool_vision_extractor
 import tools.tool_syndicate_graph
+import tools.tool_portal_scraper

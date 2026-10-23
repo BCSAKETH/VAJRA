@@ -1,0 +1,62 @@
+{
+  "ecourts_karnataka": {
+    "name": "e-Courts Karnataka District & Sessions Registry",
+    "base_url": "https://karnatakajudiciary.kar.nic.in",
+    "handshake_endpoint": "/case_status",
+    "query_endpoint": "/case_status/query",
+    "method": "POST",
+    "csrf_token_field": "__RequestVerificationToken",
+    "session_cookie": "JSESSIONID",
+    "headers": {
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    "required_params": ["casetype", "caseno", "caseyear", "district"],
+    "statute": "Section 187 BNSS / High Court Rules"
+  },
+  "vahan_karnataka": {
+    "name": "Vahan National Vehicle Register (Karnataka Transport)",
+    "base_url": "https://transport.karnataka.gov.in",
+    "handshake_endpoint": "/vahan/status",
+    "query_endpoint": "/vahan/status",
+    "method": "POST",
+    "csrf_token_field": "_csrf",
+    "session_cookie": "JSESSIONID",
+    "headers": {
+      "Accept": "application/json, text/javascript, */*; q=0.01",
+      "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"
+    },
+    "required_params": ["reg_no"],
+    "statute": "Motor Vehicles Act 1988 / Sec 105 BNSS"
+  },
+  "sarathi_karnataka": {
+    "name": "Sarathi National Driving License Registry",
+    "base_url": "https://parivahan.gov.in",
+    "handshake_endpoint": "/sarathi/dlquery",
+    "query_endpoint": "/sarathi/dlquery",
+    "method": "POST",
+    "csrf_token_field": "__RequestVerificationToken",
+    "session_cookie": "JSESSIONID",
+    "headers": {
+      "Accept": "application/json, text/plain, */*",
+      "Content-Type": "application/json"
+    },
+    "required_params": ["dl_no"],
+    "statute": "Motor Vehicles Act 1988 / KPA 1963"
+  },
+  "highcourt_karnataka": {
+    "name": "Karnataka High Court Cause List & Order Vault",
+    "base_url": "https://karnatakajudiciary.kar.nic.in",
+    "handshake_endpoint": "/hck/causelist",
+    "query_endpoint": "/hck/causelist/search",
+    "method": "POST",
+    "csrf_token_field": "__RequestVerificationToken",
+    "session_cookie": "JSESSIONID",
+    "headers": {
+      "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "Content-Type": "application/x-www-form-urlencoded"
+    },
+    "required_params": ["bench", "date"],
+    "statute": "Section 480 BNSS / Bail Docket"
+  }
+}
