@@ -64,6 +64,7 @@ from tool_training_optimizer import get_matching_tool_exemplars, resolve_entity_
 from crime_heads_118_map import ALL_118_CRIME_HEADS_MAP
 import tools
 from tools.registry import ToolManager
+from jurisdiction_resolver import DynamicJurisdictionResolver
 
 logger = logging.getLogger(__name__)
 
@@ -7613,25 +7614,32 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
         # Tool 16: predict_future_crimes
         elif tool_name == "predict_future_crimes":
-            district = self.sanitize_sql_input(params.get("district", "Belagavi")).strip()
-            data = {
-                "district": district,
-                "forecast_window": "Next 14 Days",
-                "predicted_high_risk_sectors": [
-                    {"sector": "Khade Bazar Commercial Hub", "risk": "HIGH (78.4%)", "time_window": "00:00 - 04:00"},
-                    {"sector": "Chennamma Circle Highway Transit", "risk": "ELEVATED (64.2%)", "time_window": "19:00 - 23:00"}
-                ],
-                "recommended_deployments": ["Deploy 2 Hoysala patrol units with GPS breadcrumb logging under §173 BNSS."]
-            }
-            response_type = "predictive_forecast_card"
-            text_result = (
-                f"🔮 **Predictive Crime Forecast: {district} (Next 14 Days)**\n"
-                f"• **High-Risk Sector 1:** Khade Bazar (78.4% Probability, 00:00 - 04:00)\n"
-                f"• **High-Risk Sector 2:** Chennamma Circle (64.2% Probability, 19:00 - 23:00)\n"
-                f"• **Tactical Advisory:** Increase mobile PCR visibility during designated high-probability time windows."
-            )
-            citations.append({"type": "Spatiotemporal Forecast Engine", "id": district, "details": "14-day Poisson forecast"})
-            self._write_audit_log(employee_id, "Predictive Crime Forecast", district, f"Forecast crimes in {district}", text_result, session_id)
+            district, needs_clarification = DynamicJurisdictionResolver.resolve_district(params, officer_ref=self)
+            if needs_clarification:
+                clarification = DynamicJurisdictionResolver.build_clarification_response(scope="district")
+                data = clarification
+                response_type = clarification["response_type"]
+                text_result = clarification["message"]
+                self._write_audit_log(employee_id, "Predictive Crime Forecast Clarification", "", "Target district required", text_result, session_id)
+            else:
+                data = {
+                    "district": district,
+                    "forecast_window": "Next 14 Days",
+                    "predicted_high_risk_sectors": [
+                        {"sector": "Central Commercial Hub", "risk": "HIGH (78.4%)", "time_window": "00:00 - 04:00"},
+                        {"sector": "Transit & Highway Ring", "risk": "ELEVATED (64.2%)", "time_window": "19:00 - 23:00"}
+                    ],
+                    "recommended_deployments": ["Deploy 2 Hoysala patrol units with GPS breadcrumb logging under §173 BNSS."]
+                }
+                response_type = "predictive_forecast_card"
+                text_result = (
+                    f"🔮 **Predictive Crime Forecast: {district} (Next 14 Days)**\n"
+                    f"• **High-Risk Sector 1:** Central Commercial Hub (78.4% Probability, 00:00 - 04:00)\n"
+                    f"• **High-Risk Sector 2:** Transit & Highway Ring (64.2% Probability, 19:00 - 23:00)\n"
+                    f"• **Tactical Advisory:** Increase mobile PCR visibility during designated high-probability time windows."
+                )
+                citations.append({"type": "Spatiotemporal Forecast Engine", "id": district, "details": "14-day Poisson forecast"})
+                self._write_audit_log(employee_id, "Predictive Crime Forecast", district, f"Forecast crimes in {district}", text_result, session_id)
 
         # Tool 17: search_accused_by_name
         elif tool_name == "search_accused_by_name":
@@ -9249,82 +9257,110 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
         # Tool 27: get_live_patrol_gps_tracking
         elif tool_name == "get_live_patrol_gps_tracking":
-            station = self.sanitize_sql_input(params.get("station", "Belagavi North")).strip()
-            data = {
-                "police_station": station,
-                "active_patrol_units": [
-                    {"vehicle_callsign": f"Hoysala-{station[:3].upper()}-01", "driver": "HC Patil", "speed_kmh": 32, "current_location": f"{station} Main Arterial", "status": "ON PATROL 🟢"},
-                    {"vehicle_callsign": f"Hoysala-{station[:3].upper()}-04", "driver": "PC Kumar", "speed_kmh": 0, "current_location": f"{station} Outbound Checkpoint", "status": "STATIONARY / NAKABANDI 🟡"},
-                    {"vehicle_callsign": f"Cheetah-{station[:3].upper()}-02", "driver": "PC Naik (Bike)", "speed_kmh": 45, "current_location": f"{station} Commercial Sector", "status": "INTERCEPT ACTIVE 🔴"}
-                ]
-            }
-            response_type = "live_gps_telematics"
-            text_result = (
-                f"🛰️ **Live Mobile Patrol Telematics & GPS Stream: {station.upper()}**\n" +
-                "\n".join(f"• **{u['vehicle_callsign']}** ({u['driver']}): {u['current_location']} [{u['speed_kmh']} km/h] — **{u['status']}**" for u in data["active_patrol_units"])
-            )
-            citations.append({"type": "Hoysala GPS Telematics Stream", "id": station, "details": "3 active patrol vehicles"})
-            self._write_audit_log(employee_id, "Live GPS Patrol Stream", station, f"Stream patrol GPS for {station}", text_result, session_id)
+            station, needs_clarification = DynamicJurisdictionResolver.resolve_station(params, officer_ref=self)
+            if needs_clarification:
+                clarification = DynamicJurisdictionResolver.build_clarification_response(scope="station", context_hint=getattr(self, "resolved_district", ""))
+                data = clarification
+                response_type = clarification["response_type"]
+                text_result = clarification["message"]
+                self._write_audit_log(employee_id, "Live GPS Patrol Clarification", "", "Target police station required", text_result, session_id)
+            else:
+                data = {
+                    "police_station": station,
+                    "active_patrol_units": [
+                        {"vehicle_callsign": f"Hoysala-{station[:3].upper()}-01", "driver": "HC Patil", "speed_kmh": 32, "current_location": f"{station} Main Arterial", "status": "ON PATROL 🟢"},
+                        {"vehicle_callsign": f"Hoysala-{station[:3].upper()}-04", "driver": "PC Kumar", "speed_kmh": 0, "current_location": f"{station} Outbound Checkpoint", "status": "STATIONARY / NAKABANDI 🟡"},
+                        {"vehicle_callsign": f"Cheetah-{station[:3].upper()}-02", "driver": "PC Naik (Bike)", "speed_kmh": 45, "current_location": f"{station} Commercial Sector", "status": "INTERCEPT ACTIVE 🔴"}
+                    ]
+                }
+                response_type = "live_gps_telematics"
+                text_result = (
+                    f"🛰️ **Live Mobile Patrol Telematics & GPS Stream: {station.upper()}**\n" +
+                    "\n".join(f"• **{u['vehicle_callsign']}** ({u['driver']}): {u['current_location']} [{u['speed_kmh']} km/h] — **{u['status']}**" for u in data["active_patrol_units"])
+                )
+                citations.append({"type": "Hoysala GPS Telematics Stream", "id": station, "details": "3 active patrol vehicles"})
+                self._write_audit_log(employee_id, "Live GPS Patrol Stream", station, f"Stream patrol GPS for {station}", text_result, session_id)
 
         # Tool 28: get_station_boundary_polygon
         elif tool_name == "get_station_boundary_polygon":
-            station = self.sanitize_sql_input(params.get("station", "Belagavi North")).strip()
-            data = {
-                "station_name": station,
-                "jurisdiction_area_sq_km": 24.5,
-                "polygon_geojson": {
-                    "type": "Polygon",
-                    "coordinates": [[[74.49, 15.84], [74.52, 15.84], [74.52, 15.87], [74.49, 15.87], [74.49, 15.84]]]
+            station, needs_clarification = DynamicJurisdictionResolver.resolve_station(params, officer_ref=self)
+            if needs_clarification:
+                clarification = DynamicJurisdictionResolver.build_clarification_response(scope="station", context_hint=getattr(self, "resolved_district", ""))
+                data = clarification
+                response_type = clarification["response_type"]
+                text_result = clarification["message"]
+                self._write_audit_log(employee_id, "Station Boundary Clarification", "", "Target police station required", text_result, session_id)
+            else:
+                data = {
+                    "station_name": station,
+                    "jurisdiction_area_sq_km": 24.5,
+                    "polygon_geojson": {
+                        "type": "Polygon",
+                        "coordinates": [[[74.49, 15.84], [74.52, 15.84], [74.52, 15.87], [74.49, 15.87], [74.49, 15.84]]]
+                    }
                 }
-            }
-            response_type = "boundary_polygon_card"
-            text_result = (
-                f"📐 **Police Station Boundary Polygon: {station.upper()}**\n"
-                f"• **Total Area:** 24.5 sq. km | Jurisdictional GeoJSON Verified\n"
-                f"• **Bounded Precincts:** {station} Sector 1, Sector 2, Outer Ring Road, Commercial Zone"
-            )
-            citations.append({"type": "Precinct GeoJSON Registry", "id": station, "details": "Boundary coordinates"})
-            self._write_audit_log(employee_id, "Station Boundary Polygon", station, f"Fetch polygon for {station}", text_result, session_id)
+                response_type = "boundary_polygon_card"
+                text_result = (
+                    f"📐 **Police Station Boundary Polygon: {station.upper()}**\n"
+                    f"• **Total Area:** 24.5 sq. km | Jurisdictional GeoJSON Verified\n"
+                    f"• **Bounded Precincts:** {station} Sector 1, Sector 2, Outer Ring Road, Commercial Zone"
+                )
+                citations.append({"type": "Precinct GeoJSON Registry", "id": station, "details": "Boundary coordinates"})
+                self._write_audit_log(employee_id, "Station Boundary Polygon", station, f"Fetch polygon for {station}", text_result, session_id)
 
         # Tool 29: get_choke_point_nakabandi_plan
         elif tool_name == "get_choke_point_nakabandi_plan":
-            station = self.sanitize_sql_input(params.get("station", "Belagavi North")).strip()
-            data = {
-                "police_station": station,
-                "choke_points": [
-                    {"point": f"{station} Highway Intercept Exit", "personnel": "1 PSI + 4 PCs", "equipment": "Tyre Deflators + ANPR Camera", "priority": "CRITICAL 🔴"},
-                    {"point": f"{station} Railway / Transit Overbridge", "personnel": "1 ASI + 2 PCs", "equipment": "Barricades + Breathalyzers", "priority": "HIGH 🟡"}
-                ],
-                "interception_tactics": "Seal outbound highway lanes within 4 minutes of 112 trigger."
-            }
-            response_type = "nakabandi_plan_card"
-            text_result = (
-                f"🚧 **Strategic Choke-Point Nakabandi Plan: {station.upper()}**\n"
-                f"• **Check Point 1 ({station} Highway Intercept):** 1 PSI + 4 PCs | Tyre Deflators & ANPR Camera [CRITICAL 🔴]\n"
-                f"• **Check Point 2 ({station} Transit Overbridge):** 1 ASI + 2 PCs | Heavy Barricades [HIGH 🟡]\n"
-                f"• **Protocol:** Instant highway lockdown upon suspect vehicle alert."
-            )
-            citations.append({"type": "Tactical Nakabandi Planner", "id": station, "details": "High-speed highway intercept"})
-            self._write_audit_log(employee_id, "Nakabandi Plan Inquest", station, f"Generate nakabandi for {station}", text_result, session_id)
+            station, needs_clarification = DynamicJurisdictionResolver.resolve_station(params, officer_ref=self)
+            if needs_clarification:
+                clarification = DynamicJurisdictionResolver.build_clarification_response(scope="station", context_hint=getattr(self, "resolved_district", ""))
+                data = clarification
+                response_type = clarification["response_type"]
+                text_result = clarification["message"]
+                self._write_audit_log(employee_id, "Nakabandi Clarification", "", "Target police station required", text_result, session_id)
+            else:
+                data = {
+                    "police_station": station,
+                    "choke_points": [
+                        {"point": f"{station} Highway Intercept Exit", "personnel": "1 PSI + 4 PCs", "equipment": "Tyre Deflators + ANPR Camera", "priority": "CRITICAL 🔴"},
+                        {"point": f"{station} Railway / Transit Overbridge", "personnel": "1 ASI + 2 PCs", "equipment": "Barricades + Breathalyzers", "priority": "HIGH 🟡"}
+                    ],
+                    "interception_tactics": "Seal outbound highway lanes within 4 minutes of 112 trigger."
+                }
+                response_type = "nakabandi_plan_card"
+                text_result = (
+                    f"🚧 **Strategic Choke-Point Nakabandi Plan: {station.upper()}**\n"
+                    f"• **Check Point 1 ({station} Highway Intercept):** 1 PSI + 4 PCs | Tyre Deflators & ANPR Camera [CRITICAL 🔴]\n"
+                    f"• **Check Point 2 ({station} Transit Overbridge):** 1 ASI + 2 PCs | Heavy Barricades [HIGH 🟡]\n"
+                    f"• **Protocol:** Instant highway lockdown upon suspect vehicle alert."
+                )
+                citations.append({"type": "Tactical Nakabandi Planner", "id": station, "details": "High-speed highway intercept"})
+                self._write_audit_log(employee_id, "Nakabandi Plan Inquest", station, f"Generate nakabandi for {station}", text_result, session_id)
 
         # Tool 30: evaluate_patrol_coverage_efficiency
         elif tool_name == "evaluate_patrol_coverage_efficiency":
-            station = self.sanitize_sql_input(params.get("station", "Belagavi North")).strip()
-            data = {
-                "station_name": station,
-                "coverage_efficiency_score": "91.2% (EXCELLENT 🟢)",
-                "unpatrolled_blackspots": [f"{station} Outer Industrial By-lane (Uncovered >4 Hrs)"],
-                "fuel_telematics_efficiency": "11.4 km/L (Optimized)"
-            }
-            response_type = "coverage_efficiency_card"
-            text_result = (
-                f"📊 **Patrol Coverage Efficiency Evaluation: {station.upper()}**\n"
-                f"• **Overall Coverage Score:** **91.2% (EXCELLENT 🟢)**\n"
-                f"• **Detected Black-spots:** {station} Outer Industrial By-lane (0 patrols in last 4 hours)\n"
-                f"• **Corrective Action:** Route patrol unit via outer by-lane during the 02:00 midnight shift."
-            )
-            citations.append({"type": "Patrol Telematics Evaluator", "id": station, "details": "91.2% coverage score"})
-            self._write_audit_log(employee_id, "Patrol Coverage Audit", station, f"Evaluate coverage for {station}", text_result, session_id)
+            station, needs_clarification = DynamicJurisdictionResolver.resolve_station(params, officer_ref=self)
+            if needs_clarification:
+                clarification = DynamicJurisdictionResolver.build_clarification_response(scope="station", context_hint=getattr(self, "resolved_district", ""))
+                data = clarification
+                response_type = clarification["response_type"]
+                text_result = clarification["message"]
+                self._write_audit_log(employee_id, "Patrol Coverage Clarification", "", "Target police station required", text_result, session_id)
+            else:
+                data = {
+                    "station_name": station,
+                    "coverage_efficiency_score": "91.2% (EXCELLENT 🟢)",
+                    "unpatrolled_blackspots": [f"{station} Outer Industrial By-lane (Uncovered >4 Hrs)"],
+                    "fuel_telematics_efficiency": "11.4 km/L (Optimized)"
+                }
+                response_type = "coverage_efficiency_card"
+                text_result = (
+                    f"📊 **Patrol Coverage Efficiency Evaluation: {station.upper()}**\n"
+                    f"• **Overall Coverage Score:** **91.2% (EXCELLENT 🟢)**\n"
+                    f"• **Detected Black-spots:** {station} Outer Industrial By-lane (0 patrols in last 4 hours)\n"
+                    f"• **Corrective Action:** Route patrol unit via outer by-lane during the 02:00 midnight shift."
+                )
+                citations.append({"type": "Patrol Telematics Evaluator", "id": station, "details": "91.2% coverage score"})
+                self._write_audit_log(employee_id, "Patrol Coverage Audit", station, f"Evaluate coverage for {station}", text_result, session_id)
 
 
         # 8. get_forecast
@@ -10668,23 +10704,30 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
         # Tool 74: get_community_policing_outreach
         elif tool_name == "get_community_policing_outreach":
-            station = self.sanitize_sql_input(params.get("station", "Belagavi North")).strip()
-            data = {
-                "police_station": station,
-                "active_beat_committees": 14,
-                "peace_committee_meetings_this_quarter": 4,
-                "senior_citizen_visits_logged": 86,
-                "student_police_cadet_schools": 3
-            }
-            response_type = "community_policing_card"
-            text_result = (
-                f"🤝 **Community Policing & Citizen Beat Outreach: {station.upper()}**\n"
-                f"• **Active Citizen Beat Committees:** 14 Neighborhood Committees\n"
-                f"• **Senior Citizen Safety Checks:** 86 vulnerable seniors visited and registered\n"
-                f"• **Peace Committee Meetings:** 4 inter-faith harmony sessions conducted\n"
-                f"• **Cadet Outreach:** 3 High Schools active in Student Police Cadet (SPC) program."
-            )
-            self._write_audit_log(employee_id, "Community Outreach Audit", station, f"Audit outreach for {station}", text_result, session_id)
+            station, needs_clarification = DynamicJurisdictionResolver.resolve_station(params, officer_ref=self)
+            if needs_clarification:
+                clarification = DynamicJurisdictionResolver.build_clarification_response(scope="station", context_hint=getattr(self, "resolved_district", ""))
+                data = clarification
+                response_type = clarification["response_type"]
+                text_result = clarification["message"]
+                self._write_audit_log(employee_id, "Community Outreach Clarification", "", "Target police station required", text_result, session_id)
+            else:
+                data = {
+                    "police_station": station,
+                    "active_beat_committees": 14,
+                    "peace_committee_meetings_this_quarter": 4,
+                    "senior_citizen_visits_logged": 86,
+                    "student_police_cadet_schools": 3
+                }
+                response_type = "community_policing_card"
+                text_result = (
+                    f"🤝 **Community Policing & Citizen Beat Outreach: {station.upper()}**\n"
+                    f"• **Active Citizen Beat Committees:** 14 Neighborhood Committees\n"
+                    f"• **Senior Citizen Safety Checks:** 86 vulnerable seniors visited and registered\n"
+                    f"• **Peace Committee Meetings:** 4 inter-faith harmony sessions conducted\n"
+                    f"• **Cadet Outreach:** 3 High Schools active in Student Police Cadet (SPC) program."
+                )
+                self._write_audit_log(employee_id, "Community Outreach Audit", station, f"Audit outreach for {station}", text_result, session_id)
 
         # DOMAIN 9 TO 12: EXTENDED INTELLIGENCE & COMMAND (TOOLS 75 TO 85)
 

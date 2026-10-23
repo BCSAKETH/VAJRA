@@ -2668,6 +2668,41 @@ async def get_station_dashboard_detail(unit_id: int, request: Request, location_
         raise HTTPException(status_code=500, detail=f"Failed to compute station detail: {str(e)}")
 
 
+@app.get("/api/spatial/query")
+@app.post("/api/spatial/query")
+async def get_spatial_query(
+    district: Optional[str] = None,
+    station: Optional[str] = None,
+    min_lat: Optional[float] = None,
+    max_lat: Optional[float] = None,
+    min_lng: Optional[float] = None,
+    max_lng: Optional[float] = None,
+    max_points: int = 5000,
+):
+    """
+    On-demand spatial query slicing directly from Catalyst Stratus object storage.
+    Enforces ephemeral memory buffer deallocation so AppSail baseline RAM stays low.
+    """
+    try:
+        from spatial_preindex_stratus import query_spatial_incidents
+        return query_spatial_incidents(
+            district=district,
+            station=station,
+            min_lat=min_lat,
+            max_lat=max_lat,
+            min_lng=min_lng,
+            max_lng=max_lng,
+            max_points=max_points,
+        )
+    except Exception as e:
+        logger.error(f"Stratus spatial query failed: {e}")
+        return {
+            "status": "error",
+            "reason": str(e),
+            "incidents": []
+        }
+
+
 @app.get("/api/intelligence/district-signals")
 async def get_district_signals(request: Request, district: str = "", district_id: int = 0,
                                location_context: str = Depends(security_firewall)):
