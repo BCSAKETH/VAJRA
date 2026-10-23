@@ -27,3 +27,7 @@ dist/**
 .git/**
 .claude/
 .claude/**
+vajra_backend/vendor/**/tests/**
+vajra_backend/vendor/**/test/**
+vajra_backend/vendor/imageio_ffmpeg/binaries/ffmpeg*
+vajra_backend/vendor/**/*.dist-info/**
