@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "motion/react";
 import { 
   ShieldAlert, 
@@ -89,7 +90,7 @@ export const MorphingSuspectDossier: React.FC<MorphingSuspectDossierProps> = ({
       >
         <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse group-hover:bg-amber-300 shrink-0" />
         <span className="font-semibold text-stone-200">{name}</span>
-        <span className="text-[10px] px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">
+        <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">
           {riskTier}
         </span>
         <span className="text-[10px] text-rose-400 font-bold ml-0.5">
@@ -97,10 +98,11 @@ export const MorphingSuspectDossier: React.FC<MorphingSuspectDossierProps> = ({
         </span>
       </motion.button>
 
-      {/* 2. Expanded Card Morphing from same layoutId */}
-      <AnimatePresence>
-        {isOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* 2. Expanded Card Morphing from same layoutId (Portaled to body to avoid container overflow clipping) */}
+      {typeof document !== "undefined" && createPortal(
+        <AnimatePresence>
+          {isOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
             {/* Backdrop smooth opacity fade */}
             <motion.div
               initial={{ opacity: 0 }}
@@ -316,7 +318,9 @@ export const MorphingSuspectDossier: React.FC<MorphingSuspectDossierProps> = ({
             </motion.div>
           </div>
         )}
-      </AnimatePresence>
-    </>
+      </AnimatePresence>,
+      document.body
+    )}
+  </>
   );
 };
