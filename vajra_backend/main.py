@@ -71,7 +71,7 @@ except Exception:
 import numpy as np
 import pandas as pd
 import joblib
-from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException, status, Request, WebSocket, WebSocketDisconnect, Query, Body
+from fastapi import FastAPI, Depends, UploadFile, File, Form, HTTPException, status, Request, WebSocket, WebSocketDisconnect, Query, Body, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
@@ -127,6 +127,21 @@ from catalyst_llm import CatalystLLM
 from catalyst_qwen import CatalystQwen
 from pdf_utils import safe_slice  # defensive type normalizer for PDF/HTML dossier card rendering
 from fastapi.responses import Response, JSONResponse
+
+# Phase 4 Step 2: Cognitive Memory Vault & Spotlight Search (Domain 8)
+from narrative_memory import (
+    update_session_narrative,
+    get_session_narrative,
+    update_custom_session_narrative,
+    clear_session_narrative,
+    list_all_session_narratives,
+    get_persona_directives,
+    add_persona_directive,
+    update_persona_directive,
+    delete_persona_directive,
+    get_reflect_metrics,
+    search_spotlight,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -5213,6 +5228,12 @@ async def _run_ai_turn_and_persist(
                 logger.debug(f"Eager TTS pre-gen failed (non-fatal): {_e}")
         asyncio.create_task(_eager_tts_pregen())
 
+    # Phase 4 Step 2: Asynchronously update session narrative ledger for non-streaming turn
+    try:
+        asyncio.create_task(run_in_threadpool(update_session_narrative, session_id, message, text))
+    except Exception as _ne:
+        logger.debug(f"Narrative memory ledger update failed (non-fatal): {_ne}")
+
 
 @app.get("/api/chat/progress/{session_id}")
 async def chat_progress_stream(session_id: str, request: Request, location_context: str = Depends(security_firewall)):
@@ -5309,7 +5330,7 @@ async def cowork_message_stream(session_id: str, request: Request, location_cont
 
 
 @app.post("/api/chat")
-async def chat_endpoint(payload: ChatRequest, request: Request, location_context: str = Depends(security_firewall)):
+async def chat_endpoint(payload: ChatRequest, request: Request, background_tasks: BackgroundTasks, location_context: str = Depends(security_firewall)):
     """
     Bilingual AI Chat engine grounded in the live Zoho Catalyst database with multi-turn memory.
 
@@ -5324,6 +5345,18 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
     # dump `message` carries when there was an attachment.
     display_text = (payload.display_text or message).strip()
     lang = payload.lang
+
+    # Phase 4 Step 2: Inject rolling narrative memory ledger into context window if present
+    if payload.session_id:
+        try:
+            prior_narrative = get_session_narrative(payload.session_id)
+            if prior_narrative and prior_narrative != "No prior narrative recorded for this session.":
+                message = (
+                    f"[ACTIVE CASE ROLLING NARRATIVE LEDGER (SESSION MEMORY):\n{prior_narrative.strip()}]\n\n"
+                    f"{message}"
+                )
+        except Exception:
+            pass
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId") or 4003385
     unit_id = request.state.user_profile.get("UnitID") or request.state.user_profile.get("unitid")
     first_name = request.state.user_profile.get("FirstName") or "Officer"
@@ -5563,7 +5596,7 @@ async def chat_endpoint(payload: ChatRequest, request: Request, location_context
 
 
 @app.post("/api/chat/stream")
-async def stream_chat_endpoint(payload: ChatRequest, request: Request, location_context: str = Depends(security_firewall)):
+async def stream_chat_endpoint(payload: ChatRequest, request: Request, background_tasks: BackgroundTasks, location_context: str = Depends(security_firewall)):
     """
     Phase 5: Real-Time SSE Token-by-Token Streaming Chat Endpoint.
     Yields Server-Sent Events (SSE) token chunks, handles 15s keep-alive heartbeats,
@@ -5595,6 +5628,17 @@ async def stream_chat_endpoint(payload: ChatRequest, request: Request, location_
         "sender_kgid": str(getattr(request.state, "kgid", employee_id) or employee_id)
     }
     _persist_chat_message(session_id, "user", display_text, "text", _user_msg_data, sender_employee_id=employee_id)
+
+    # Phase 4 Step 2: Inject rolling narrative memory ledger into context window if present
+    try:
+        prior_narrative = get_session_narrative(session_id)
+        if prior_narrative and prior_narrative != "No prior narrative recorded for this session.":
+            message = (
+                f"[ACTIVE CASE ROLLING NARRATIVE LEDGER (SESSION MEMORY):\n{prior_narrative.strip()}]\n\n"
+                f"{message}"
+            )
+    except Exception as _mme:
+        logger.debug(f"Failed to load session narrative for prompt: {_mme}")
 
     # Phase 7 & 8: Inject custom officer directives saved via Settings -> Account
     try:
@@ -5674,17 +5718,101 @@ async def stream_chat_endpoint(payload: ChatRequest, request: Request, location_
             "timestamp": datetime.utcnow().isoformat()
         })
 
+        # Phase 4 Step 2: Cognitive Memory Vault - Asynchronously update session narrative via FastAPI BackgroundTasks
+        try:
+            background_tasks.add_task(update_session_narrative, session_id, display_text, full_text)
+        except Exception as _bge:
+            logger.warning(f"Background narrative update dispatch error: {_bge}")
+
         yield f"data: {json.dumps(final_evt, default=str)}\n\n"
 
     return StreamingResponse(
         _token_generator(),
         media_type="text/event-stream",
+        background=background_tasks,
         headers={
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no"
         }
     )
+
+
+# =============================================================================
+# COGNITIVE MEMORY VAULT & SPOTLIGHT SEARCH ENDPOINTS (DOMAIN 8)
+# =============================================================================
+
+class NarrativeUpdateRequest(BaseModel):
+    narrative: str
+
+
+class DirectiveCreateRequest(BaseModel):
+    directive_text: str
+
+
+@app.get("/api/memory/narrative/{session_id}")
+async def get_session_narrative_endpoint(session_id: str, request: Request):
+    """Retrieves the rolling narrative ledger for a session."""
+    narrative = get_session_narrative(session_id)
+    return {"session_id": session_id, "narrative": narrative}
+
+
+@app.post("/api/memory/narrative/{session_id}")
+async def update_session_narrative_endpoint(session_id: str, payload: NarrativeUpdateRequest, request: Request):
+    """Manually updates the rolling narrative ledger for a session."""
+    success = update_custom_session_narrative(session_id, payload.narrative)
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to update session narrative.")
+    return {"status": "updated", "session_id": session_id, "narrative": payload.narrative}
+
+
+@app.delete("/api/memory/narrative/{session_id}")
+async def clear_session_narrative_endpoint(session_id: str, request: Request):
+    """Clears the rolling narrative ledger for a session."""
+    success = clear_session_narrative(session_id)
+    return {"status": "cleared" if success else "failed", "session_id": session_id}
+
+
+@app.get("/api/memory/narratives")
+async def list_all_narratives_endpoint(request: Request):
+    """Returns all session narrative ledger records."""
+    return list_all_session_narratives()
+
+
+@app.get("/api/memory/directives")
+async def get_directives_endpoint(request: Request):
+    """Lists all Tier 2 Officer Persona Directives."""
+    return get_persona_directives()
+
+
+@app.post("/api/memory/directives")
+async def create_directive_endpoint(payload: DirectiveCreateRequest, request: Request):
+    """Creates a new Tier 2 Officer Persona Directive."""
+    new_id = add_persona_directive(payload.directive_text)
+    if not new_id:
+        raise HTTPException(status_code=400, detail="Directive text cannot be empty.")
+    return {"status": "created", "id": new_id, "directive_text": payload.directive_text}
+
+
+@app.delete("/api/memory/directives/{directive_id}")
+async def delete_directive_endpoint(directive_id: int, request: Request):
+    """Deletes a Tier 2 Officer Persona Directive."""
+    success = delete_persona_directive(directive_id)
+    return {"status": "deleted" if success else "failed", "id": directive_id}
+
+
+@app.get("/api/memory/reflect")
+async def get_reflect_telemetry_endpoint(request: Request):
+    """Returns VAJRA Reflect officer workload telemetry."""
+    kgid = getattr(request.state, "kgid", "KGID-44102")
+    return get_reflect_metrics(kgid)
+
+
+@app.get("/api/spotlight/search")
+async def spotlight_search_endpoint(q: str = Query("", alias="q"), category: str = Query("ALL", alias="category")):
+    """Universal Spotlight Search across suspects, crime numbers, statutes, agent logs, and memory."""
+    results = search_spotlight(q, category)
+    return {"query": q, "category": category, "results": results, "count": len(results)}
 
 
 class CoworkInviteRequest(BaseModel):

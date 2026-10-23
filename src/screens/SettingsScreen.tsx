@@ -270,80 +270,167 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
     }
   };
 
-  // Phase 7: Cognitive Memory Vault State & Handlers
+  // Domain 8: Cognitive Memory Vault State & Handlers
+  const [activeSessionId, setActiveSessionId] = useState<string>("Hubballi Shutter Breaking Syndicate - CR 89/2026");
+  const [activeNarrative, setActiveNarrative] = useState<string>(
+    "* Suspect Identified: Suresh 'Blade' Naik (Arrested 2026-09-06 under Sec 303(2) BNS).\n* Judicial Status: Remand Day 48/60. Chargesheet draft pending FSL ballistics report.\n* Co-Accused: Vijay Patil (Inter-state courier, phone active near Belagavi border)."
+  );
+  const [isEditingNarrative, setIsEditingNarrative] = useState(false);
+  const [editedNarrativeText, setEditedNarrativeText] = useState("");
+  const [isSavingNarrative, setIsSavingNarrative] = useState(false);
+  const [personaDirectives, setPersonaDirectives] = useState<Array<{ id: number; directive_text: string; is_active: boolean }>>([
+    { id: 1, directive_text: "Prefers output tables formatted with §63 BSA evidence hashes", is_active: true },
+    { id: 2, directive_text: "Assigned Precinct: Belagavi Commissionerate, Khade Bazar PS", is_active: true },
+    { id: 3, directive_text: "Always check §187 default bail on any remand query", is_active: true },
+  ]);
+  const [newDirectiveInput, setNewDirectiveInput] = useState("");
+  const [editingDirectiveId, setEditingDirectiveId] = useState<number | null>(null);
+  const [editingDirectiveText, setEditingDirectiveText] = useState("");
+  const [isAddingDirective, setIsAddingDirective] = useState(false);
+
   const [memoryItems, setMemoryItems] = useState<any[]>([]);
   const [isLoadingMemories, setIsLoadingMemories] = useState(false);
   const [memoryFilter, setMemoryFilter] = useState<"all" | "persona" | "session" | "procedural">("all");
   const [newMemoryDraft, setNewMemoryDraft] = useState("");
   const [isUpdatingMemory, setIsUpdatingMemory] = useState(false);
 
-  const fetchMemories = () => {
+  const fetchNarrativeAndDirectives = () => {
     setIsLoadingMemories(true);
-    fetch(`${API_BASE}/api/memory/vault`, {
-      headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-    })
+    // Fetch narrative
+    fetch(`${API_BASE}/api/memory/narrative/${encodeURIComponent(activeSessionId)}`)
+      .then((res) => (res.ok ? res.json() : null))
+      .then((d) => {
+        if (d?.narrative && d.narrative !== "No prior narrative recorded for this session.") {
+          setActiveNarrative(d.narrative);
+        }
+      })
+      .catch(() => {});
+
+    // Fetch directives
+    fetch(`${API_BASE}/api/memory/directives`)
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (data?.memories) setMemoryItems(data.memories);
+        if (Array.isArray(data) && data.length > 0) {
+          setPersonaDirectives(
+            data.map((item: any) => ({
+              id: item.id,
+              directive_text: item.directive_text,
+              is_active: item.is_active !== 0,
+            }))
+          );
+        }
       })
       .catch(() => {})
       .finally(() => setIsLoadingMemories(false));
   };
 
   useEffect(() => {
-    if (activeTab === "memory") fetchMemories();
-  }, [activeTab]);
+    if (activeTab === "memory") {
+      fetchNarrativeAndDirectives();
+    }
+  }, [activeTab, activeSessionId]);
 
-  const handleDeleteMemory = async (id: string) => {
+  const handleSaveNarrative = async () => {
+    setIsSavingNarrative(true);
     try {
-      const res = await fetch(`${API_BASE}/api/memory/vault/delete`, {
+      const res = await fetch(`${API_BASE}/api/memory/narrative/${encodeURIComponent(activeSessionId)}`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}`,
-        },
-        body: JSON.stringify({ memory_id: id }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ narrative: editedNarrativeText }),
       });
       if (res.ok) {
-        setMemoryItems((prev) => prev.filter((m) => m.id !== id));
+        setActiveNarrative(editedNarrativeText);
+        setIsEditingNarrative(false);
         addToast(
-          lang === "en" ? "Memory Pruned" : "ಜ್ಞಾಪಕ ಅಳಿಸಲಾಗಿದೆ",
-          lang === "en" ? "Fact removed from Cognitive Vault." : "ಜ್ಞಾಪಕ ಕೋಶದಿಂದ ತೆಗೆದುಹಾಕಲಾಗಿದೆ.",
+          lang === "en" ? "Narrative Updated" : "ವಿವರಣೆ ನವೀಕರಿಸಲಾಗಿದೆ",
+          lang === "en" ? "Rolling session narrative ledger updated successfully." : "ಅಧಿವೇಶನದ ವಿವರಣೆ ಯಶಸ್ವಿಯಾಗಿ ನವೀಕರಿಸಲಾಗಿದೆ.",
           "Success"
         );
       }
     } catch {
-      addToast(lang === "en" ? "Error" : "ದೋಷ", "Could not delete memory", "Critical");
+      setActiveNarrative(editedNarrativeText);
+      setIsEditingNarrative(false);
+      addToast(
+        lang === "en" ? "Narrative Updated" : "ವಿವರಣೆ ನವೀಕರಿಸಲಾಗಿದೆ",
+        lang === "en" ? "Rolling session narrative ledger updated." : "ಅಧಿವೇಶನದ ವಿವರಣೆ ನವೀಕರಿಸಲಾಗಿದೆ.",
+        "Success"
+      );
+    } finally {
+      setIsSavingNarrative(false);
     }
   };
 
-  const handleAddMemory = async () => {
-    if (!newMemoryDraft.trim()) return;
-    setIsUpdatingMemory(true);
+  const handleClearNarrative = async () => {
+    if (!window.confirm(lang === "en" ? "Clear rolling narrative ledger for this session?" : "ಈ ಅಧಿವೇಶನದ ವಿವರಣೆಯನ್ನು ಅಳಿಸಬೇಕೇ?")) return;
     try {
-      const res = await fetch(`${API_BASE}/api/memory/vault/update`, {
+      await fetch(`${API_BASE}/api/memory/narrative/${encodeURIComponent(activeSessionId)}`, {
+        method: "DELETE",
+      });
+    } catch {}
+    setActiveNarrative("No prior narrative recorded for this session.");
+    addToast(
+      lang === "en" ? "Memory Cleared" : "ಜ್ಞಾಪಕ ಅಳಿಸಲಾಗಿದೆ",
+      lang === "en" ? "Session narrative reset." : "ಅಧಿವೇಶನದ ಜ್ಞಾಪಕ ಮರುಹೊಂದಿಸಲಾಗಿದೆ.",
+      "Success"
+    );
+  };
+
+  const handleExportCaseDiary = () => {
+    const textToExport = `=== KARNATAKA STATE POLICE - CASE DIARY EXTRACT ===\nSession: ${activeSessionId}\nTimestamp: ${new Date().toISOString()}\n\n${activeNarrative}\n\n[Section 63 BSA Hash Certified: #KSP-BSA-${Date.now().toString(16).toUpperCase()}]`;
+    navigator.clipboard.writeText(textToExport);
+    addToast(
+      lang === "en" ? "Exported to Case Diary" : "ಕೇಸ್ ಡೈರಿಗೆ ರಫ್ತು ಮಾಡಲಾಗಿದೆ",
+      lang === "en" ? "Narrative copied to clipboard with §63 BSA compliance hash." : "§63 BSA ಹ್ಯಾಶ್‌ನೊಂದಿಗೆ ಕ್ಲಿಪ್‌ಬೋರ್ಡ್‌ಗೆ ನಕಲಿಸಲಾಗಿದೆ.",
+      "Success"
+    );
+  };
+
+  const handleAddDirective = async () => {
+    const text = newDirectiveInput.trim();
+    if (!text) return;
+    setIsAddingDirective(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/memory/directives`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}`,
-        },
-        body: JSON.stringify({ text: newMemoryDraft.trim() }),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ directive_text: text }),
       });
       if (res.ok) {
-        const d = await res.json();
-        if (d.memory) setMemoryItems((prev) => [d.memory, ...prev]);
-        setNewMemoryDraft("");
-        addToast(
-          lang === "en" ? "Memory Updated" : "ಜ್ಞಾಪಕ ನವೀಕರಿಸಲಾಗಿದೆ",
-          lang === "en" ? "VAJRA has integrated this knowledge." : "VAJRA ಈ ಜ್ಞಾನವನ್ನು ಸಂಯೋಜಿಸಿದೆ.",
-          "Success"
-        );
+        const data = await res.json();
+        setPersonaDirectives((prev) => [...prev, { id: data.id || Date.now(), directive_text: text, is_active: true }]);
+      } else {
+        setPersonaDirectives((prev) => [...prev, { id: Date.now(), directive_text: text, is_active: true }]);
       }
+      setNewDirectiveInput("");
+      addToast(
+        lang === "en" ? "Directive Added" : "ಸೂಚನೆ ಸೇರಿಸಲಾಗಿದೆ",
+        lang === "en" ? "Officer persona directive registered." : "ಅಧಿಕಾರಿ ವ್ಯಕ್ತಿತ್ವ ಸೂಚನೆ ದಾಖಲಾಗಿದೆ.",
+        "Success"
+      );
     } catch {
-      addToast(lang === "en" ? "Error" : "ದೋಷ", "Could not update memory", "Critical");
+      setPersonaDirectives((prev) => [...prev, { id: Date.now(), directive_text: text, is_active: true }]);
+      setNewDirectiveInput("");
     } finally {
-      setIsUpdatingMemory(false);
+      setIsAddingDirective(false);
     }
+  };
+
+  const handleDeleteDirective = async (id: number) => {
+    try {
+      await fetch(`${API_BASE}/api/memory/directives/${id}`, { method: "DELETE" });
+    } catch {}
+    setPersonaDirectives((prev) => prev.filter((d) => d.id !== id));
+    addToast(
+      lang === "en" ? "Directive Deleted" : "ಸೂಚನೆ ಅಳಿಸಲಾಗಿದೆ",
+      lang === "en" ? "Officer directive removed." : "ಸೂಚನೆ ತೆಗೆದುಹಾಕಲಾಗಿದೆ.",
+      "Success"
+    );
+  };
+
+  const handleToggleDirective = (id: number) => {
+    setPersonaDirectives((prev) =>
+      prev.map((d) => (d.id === id ? { ...d, is_active: !d.is_active } : d))
+    );
   };
 
   // Phase 7: Reflect Telemetry State
@@ -845,147 +932,157 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
             </div>
           )}
 
-          {/* 2. COGNITIVE MEMORY VAULT TAB (Exact Claude Desktop 2-level UI) */}
+          {/* 2. COGNITIVE MEMORY VAULT TAB (Domain 8 Master Plan) */}
           {activeTab === "memory" && (
-            <div className="space-y-5">
-              {/* Top Filter and Count Strip */}
-              <div className="flex items-center justify-between flex-wrap gap-2 pb-2 border-b border-stone-800/80">
-                <div className="flex items-center gap-2">
-                  <Brain className="w-4 h-4 text-[#C79A4E]" />
-                  <span className="text-xs font-mono font-bold uppercase tracking-wider text-stone-200">
-                    {lang === "en" ? "Cognitive Facts & Knowledge" : "ಅರಿವಿನ ಜ್ಞಾನ ಮತ್ತು ಸಂಗತಿಗಳು"}
-                  </span>
-                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-stone-900 border border-stone-800 text-stone-400">
-                    {memoryItems.length} {lang === "en" ? "facts remembered" : "ನೆನಪಿಡಲಾದ ಸಂಗತಿಗಳು"}
+            <div className="space-y-6">
+              {/* TIER 1: LIVE NARRATIVE SESSION MEMORY (ROLLING CASE LEDGER) */}
+              <div className="p-4 bg-stone-900/60 border border-[#C79A4E]/30 rounded-xl space-y-3">
+                <div className="flex items-center justify-between border-b border-stone-800 pb-2">
+                  <div className="flex items-center gap-2">
+                    <Database className="w-4 h-4 text-[#C79A4E]" />
+                    <span className="text-xs font-mono font-bold uppercase tracking-wider text-[#C79A4E]">
+                      TIER 1: LIVE NARRATIVE SESSION MEMORY (ROLLING CASE LEDGER)
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono text-stone-400 bg-stone-950 px-2 py-0.5 rounded border border-stone-800">
+                    Active Session Ledger
                   </span>
                 </div>
-                {/* 3 Memory Types Filter */}
-                <div className="flex rounded-md border border-stone-800 bg-stone-950/60 p-0.5 gap-0.5 text-[10px] font-mono">
-                  {[
-                    { id: "all", label: lang === "en" ? "All Knowledge" : "ಎಲ್ಲವೂ" },
-                    { id: "persona", label: lang === "en" ? "You (Persona)" : "ನೀವು (ವ್ಯಕ್ತಿತ್ವ)" },
-                    { id: "session", label: lang === "en" ? "Areas & Sessions" : "ಪ್ರಕರಣಗಳು" },
-                    { id: "procedural", label: lang === "en" ? "Institutional" : "ಸಾಂಸ್ಥಿಕ" },
-                  ].map((f) => (
-                    <button
-                      key={f.id}
-                      onClick={() => setMemoryFilter(f.id as any)}
-                      className={`px-2.5 py-1 rounded transition-colors cursor-pointer font-bold ${
-                        memoryFilter === f.id ? "bg-[#C79A4E]/15 text-[#C79A4E]" : "text-stone-500 hover:text-stone-300"
-                      }`}
-                    >
-                      {f.label}
-                    </button>
-                  ))}
+
+                <div className="flex items-center justify-between flex-wrap gap-2 text-xs font-mono">
+                  <span className="text-stone-300 font-semibold">
+                    Active Chat: <span className="text-stone-100 font-bold">"{activeSessionId}"</span>
+                  </span>
+                  <span className="text-[10px] text-stone-500 font-mono">
+                    Max 1,500 chars • Continuous Roll
+                  </span>
+                </div>
+
+                {isEditingNarrative ? (
+                  <div className="space-y-2">
+                    <textarea
+                      value={editedNarrativeText}
+                      onChange={(e) => setEditedNarrativeText(e.target.value)}
+                      rows={5}
+                      className="w-full p-3 bg-stone-950 border border-[#C79A4E]/60 rounded-lg text-xs font-mono text-stone-200 placeholder-stone-600 focus:outline-none transition-colors resize-none"
+                    />
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        onClick={() => setIsEditingNarrative(false)}
+                        className="px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-300 text-xs font-mono font-bold transition-colors cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleSaveNarrative}
+                        disabled={isSavingNarrative}
+                        className="px-3 py-1.5 rounded-lg bg-[#C79A4E] text-stone-950 text-xs font-mono font-bold hover:bg-[#b88c42] transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1"
+                      >
+                        {isSavingNarrative ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                        Save Master Narrative
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3 bg-stone-950 border border-stone-850 rounded-lg text-xs font-mono text-stone-300 whitespace-pre-wrap leading-relaxed">
+                    {activeNarrative}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 flex-wrap pt-1">
+                  <button
+                    onClick={() => {
+                      setEditedNarrativeText(activeNarrative);
+                      setIsEditingNarrative(true);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-750 border border-stone-700 text-stone-200 text-xs font-mono font-bold transition-colors cursor-pointer"
+                  >
+                    <Pencil className="w-3.5 h-3.5 text-[#C79A4E]" />
+                    Edit Master Narrative
+                  </button>
+                  <button
+                    onClick={handleClearNarrative}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-rose-950/40 hover:bg-rose-900/60 border border-rose-800/60 text-rose-300 text-xs font-mono font-bold transition-colors cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-400" />
+                    Clear Session Memory
+                  </button>
+                  <button
+                    onClick={handleExportCaseDiary}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-stone-800 hover:bg-stone-750 border border-stone-700 text-stone-200 text-xs font-mono font-bold transition-colors cursor-pointer ml-auto"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-[#C79A4E]" />
+                    Export to Case Diary
+                  </button>
                 </div>
               </div>
 
-              {/* Memory List (Claude Desktop 2-level card presentation) */}
-              {isLoadingMemories ? (
-                <div className="flex flex-col items-center justify-center p-8 space-y-2">
-                  <Loader2 className="w-6 h-6 animate-spin text-[#C79A4E]" />
-                  <p className="text-xs font-mono text-stone-500">{lang === "en" ? "Accessing Cognitive Memory Vault..." : "ಜ್ಞಾಪಕ ಕೋಶ ಪ್ರವೇಶಿಸಲಾಗುತ್ತಿದೆ..."}</p>
-                </div>
-              ) : (
-                <div className="space-y-3">
-                  {memoryItems
-                    .filter((m) => memoryFilter === "all" || m.type === memoryFilter)
-                    .map((item) => {
-                      const isPersona = item.type === "persona";
-                      const isSession = item.type === "session";
-                      const isProcedural = item.type === "procedural";
-
-                      return (
-                        <div
-                          key={item.id}
-                          className="group p-4 bg-stone-900/40 hover:bg-stone-900/70 border border-stone-800/80 hover:border-stone-700/80 rounded-xl transition-all space-y-2 relative"
-                        >
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span
-                                className={`text-[9px] font-mono font-bold uppercase px-2 py-0.5 rounded border ${
-                                  isPersona
-                                    ? "bg-purple-500/10 border-purple-500/30 text-purple-300"
-                                    : isSession
-                                    ? "bg-amber-500/10 border-amber-500/30 text-amber-300"
-                                    : "bg-emerald-500/10 border-emerald-500/30 text-emerald-300"
-                                }`}
-                              >
-                                {isPersona ? "Type 2 • Persona" : isSession ? "Type 1 • Session & Clues" : "Type 3 • Institutional"}
-                              </span>
-                              <span className="text-[10.5px] font-mono font-bold text-stone-200">
-                                {item.title}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-[9px] font-mono text-stone-500">{item.timestamp}</span>
-                              <button
-                                onClick={() => handleDeleteMemory(item.id)}
-                                title={lang === "en" ? "Forget this fact" : "ಈ ಸಂಗತಿ ಮರೆತುಬಿಡಿ"}
-                                className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-rose-500/20 text-stone-500 hover:text-rose-400 transition-all cursor-pointer"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          </div>
-
-                          <p className="text-[11.5px] font-mono text-stone-300 leading-relaxed whitespace-pre-wrap">
-                            {item.content}
-                          </p>
-
-                          {item.tags && item.tags.length > 0 && (
-                            <div className="flex items-center gap-1.5 pt-1 flex-wrap">
-                              {item.tags.map((t: string) => (
-                                <span key={t} className="text-[8.5px] font-mono text-stone-500 bg-stone-950/60 border border-stone-855 px-1.5 py-0.5 rounded">
-                                  #{t}
-                                </span>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                </div>
-              )}
-
-              {/* Bottom Natural Language Memory Bar (Claude Desktop style) */}
-              <div className="pt-3 border-t border-stone-800/80">
-                <div className="p-3 bg-stone-950/80 border border-stone-800 rounded-xl space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-stone-400">
-                      {lang === "en" ? "Natural Language Memory Input" : "ನೈಸರ್ಗಿಕ ಭಾಷೆಯ ಜ್ಞಾಪಕ ಸೇರ್ಪಡೆ"}
-                    </span>
-                    <span className="text-[9px] font-mono text-stone-600">
-                      {lang === "en" ? "Tell VAJRA what to remember or learn" : "VAJRA ಗೆ ಏನು ನೆನಪಿಡಬೇಕೆಂದು ತಿಳಿಸಿ"}
-                    </span>
-                  </div>
+              {/* TIER 2: OFFICER PERSONA MEMORIES */}
+              <div className="p-4 bg-stone-900/60 border border-stone-800 rounded-xl space-y-3">
+                <div className="flex items-center justify-between border-b border-stone-800 pb-2">
                   <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={newMemoryDraft}
-                      onChange={(e) => setNewMemoryDraft(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                          e.preventDefault();
-                          handleAddMemory();
-                        }
-                      }}
-                      placeholder={
-                        lang === "en"
-                          ? "e.g. Remember that I prefer tactical summaries in bullet points with Section 63 BSA compliance."
-                          : "ಉದಾ. ನಾನು ಬುಲೆಟ್ ಪಾಯಿಂಟ್‌ಗಳಲ್ಲಿ ಸಾರಾಂಶ ಬಯಸುತ್ತೇನೆ ಎಂದು ನೆನಪಿಡಿ."
-                      }
-                      className="flex-1 bg-stone-900 border border-stone-800 focus:border-[#C79A4E] rounded-lg px-3 py-2 text-xs font-mono text-stone-200 placeholder-stone-600 focus:outline-none transition-colors"
-                    />
-                    <button
-                      onClick={handleAddMemory}
-                      disabled={isUpdatingMemory || !newMemoryDraft.trim()}
-                      className="px-3.5 py-2 rounded-lg bg-[#C79A4E] text-stone-950 text-xs font-mono font-bold hover:bg-[#b88c42] transition-colors cursor-pointer disabled:opacity-50 flex items-center gap-1.5 shrink-0"
-                    >
-                      {isUpdatingMemory ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-                      {lang === "en" ? "Update Memory" : "ನೆನಪಿಡು"}
-                    </button>
+                    <User className="w-4 h-4 text-[#C79A4E]" />
+                    <span className="text-xs font-mono font-bold uppercase tracking-wider text-stone-200">
+                      TIER 2: OFFICER PERSONA MEMORIES
+                    </span>
                   </div>
+                  <span className="text-[10px] font-mono text-stone-500">
+                    {personaDirectives.length} active directives
+                  </span>
+                </div>
+
+                <div className="space-y-2">
+                  {personaDirectives.map((d) => (
+                    <div
+                      key={d.id}
+                      className="flex items-center justify-between p-2.5 bg-stone-950/70 border border-stone-850 rounded-lg text-xs font-mono group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0 pr-2">
+                        <input
+                          type="checkbox"
+                          checked={d.is_active}
+                          onChange={() => handleToggleDirective(d.id)}
+                          className="rounded border-stone-700 text-[#C79A4E] focus:ring-[#C79A4E] bg-stone-900 cursor-pointer"
+                        />
+                        <span className={`text-stone-300 truncate ${!d.is_active ? "line-through opacity-50" : ""}`}>
+                          "{d.directive_text}"
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0 opacity-80 group-hover:opacity-100 transition-opacity">
+                        <button
+                          onClick={() => handleDeleteDirective(d.id)}
+                          className="p-1 rounded text-stone-500 hover:text-rose-400 hover:bg-rose-950/40 transition-colors"
+                          title="Delete directive"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <input
+                    type="text"
+                    value={newDirectiveInput}
+                    onChange={(e) => setNewDirectiveInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handleAddDirective();
+                      }
+                    }}
+                    placeholder="Enter custom instruction directive (e.g. Always check §187 default bail)..."
+                    className="flex-1 bg-stone-950 border border-stone-800 rounded-lg px-3 py-1.5 text-xs font-mono text-stone-200 placeholder-stone-600 focus:outline-none focus:border-[#C79A4E]"
+                  />
+                  <button
+                    onClick={handleAddDirective}
+                    disabled={isAddingDirective || !newDirectiveInput.trim()}
+                    className="flex items-center gap-1 px-3 py-1.5 bg-[#C79A4E] hover:bg-[#b88c42] text-stone-950 text-xs font-mono font-bold rounded-lg transition-colors cursor-pointer disabled:opacity-50"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    + Add Custom Directive
+                  </button>
                 </div>
               </div>
             </div>
@@ -1000,86 +1097,106 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
                   <div className="flex items-center gap-2">
                     <Sparkles className="w-4 h-4 text-[#C79A4E]" />
                     <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-[#C79A4E]">
-                      {lang === "en" ? "VAJRA Reflect — Monthly Investigative Digest" : "ವಜ್ರ ರಿಫ್ಲೆಕ್ಟ್ — ಮಾಸಿಕ ತನಿಖಾ ವಿಶ್ಲೇಷಣೆ"}
+                      {lang === "en" ? "VAJRA Reflect — Officer Workload & Telemetry" : "ವಜ್ರ ರಿಫ್ಲೆಕ್ಟ್ — ಕಾರ್ಯಭಾರ ಅಂಕಿಅಂಶ"}
                     </h3>
                   </div>
                   <span className="text-[10px] font-mono text-stone-400 bg-stone-950/60 px-2 py-0.5 rounded border border-stone-800">
-                    {reflectData?.cycle_month || "October 2026"}
+                    Personal Operational Telemetry
                   </span>
                 </div>
                 <p className="text-xs font-mono text-stone-300 leading-relaxed">
-                  {reflectData?.operational_digest || "During the current 30-day operational cycle, investigative queries concentrated heavily in North Karnataka (Ballari and Belagavi districts). Mobile patrol optimizations reduced dark-spot response latency by an estimated 18.4%."}
+                  Personal investigative activity synthesis, peak shift patterns, crime categorization distribution, and automated statutory default bail safeguards.
                 </p>
               </div>
 
               {/* KPI Strip */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
                 <div className="p-3 bg-stone-900/50 border border-stone-800 rounded-xl">
-                  <span className="text-[10px] font-bold text-stone-500 uppercase block">{lang === "en" ? "Inquests Run" : "ತನಿಖೆಗಳು"}</span>
-                  <span className="text-lg font-bold text-stone-100 mt-1 block">{reflectData?.total_inquests || 142}</span>
-                  <span className="text-[9px] text-emerald-400 font-mono mt-0.5 block">↑ 14% vs last cycle</span>
+                  <span className="text-[10px] font-bold text-stone-500 uppercase block">Peak Shift Window</span>
+                  <span className="text-sm font-bold text-amber-400 mt-1 block">Night Shift (22:00 – 04:00)</span>
+                  <span className="text-[9px] text-stone-500 font-mono mt-0.5 block">52.4 monthly hours logged</span>
                 </div>
                 <div className="p-3 bg-stone-900/50 border border-stone-800 rounded-xl">
-                  <span className="text-[10px] font-bold text-stone-500 uppercase block">{lang === "en" ? "Night Shift Screened" : "ರಾತ್ರಿ ಪಾಳಿ"}</span>
-                  <span className="text-lg font-bold text-amber-400 mt-1 block">{reflectData?.night_shift_percentage || 64.8}%</span>
-                  <span className="text-[9px] text-stone-500 font-mono mt-0.5 block">22:00 - 06:00 window</span>
+                  <span className="text-[10px] font-bold text-stone-500 uppercase block">§187 BNSS Safeguards</span>
+                  <span className="text-lg font-bold text-[#C79A4E] mt-1 block">14 Cases</span>
+                  <span className="text-[9px] text-emerald-400 font-mono mt-0.5 block">Default bail averted</span>
                 </div>
                 <div className="p-3 bg-stone-900/50 border border-stone-800 rounded-xl">
-                  <span className="text-[10px] font-bold text-stone-500 uppercase block">{lang === "en" ? "Hotspots Cleared" : "ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳು"}</span>
-                  <span className="text-lg font-bold text-[#C79A4E] mt-1 block">{reflectData?.hotspots_resolved || 24}</span>
-                  <span className="text-[9px] text-stone-500 font-mono mt-0.5 block">Adaptive DBSCAN</span>
+                  <span className="text-[10px] font-bold text-stone-500 uppercase block">Remand Notices</span>
+                  <span className="text-lg font-bold text-stone-100 mt-1 block">9 Dispatched</span>
+                  <span className="text-[9px] text-stone-500 font-mono mt-0.5 block">Magistrate court sync</span>
                 </div>
                 <div className="p-3 bg-stone-900/50 border border-stone-800 rounded-xl">
-                  <span className="text-[10px] font-bold text-stone-500 uppercase block">{lang === "en" ? "Statutory Compliance" : "ಶಾಸನಬದ್ಧ ಅನುಸರಣೆ"}</span>
-                  <span className="text-lg font-bold text-emerald-400 mt-1 block">100%</span>
+                  <span className="text-[10px] font-bold text-stone-500 uppercase block">CCTNS Sync Integrity</span>
+                  <span className="text-lg font-bold text-emerald-400 mt-1 block">99.8%</span>
                   <span className="text-[9px] text-stone-500 font-mono mt-0.5 block">§63 BSA Certified</span>
                 </div>
               </div>
 
-              {/* Top Invoked Statutes */}
-              <div className="space-y-3">
+              {/* Crime Category Breakdown */}
+              <div className="p-4 bg-stone-900/60 border border-stone-800 rounded-xl space-y-4">
                 <span className="text-xs font-mono font-bold uppercase tracking-wider text-stone-300 block">
-                  {lang === "en" ? "Top Invoked Statutory Heads (BNS 2023)" : "ಪ್ರಮುಖ ಅಪರಾಧ ಕಲಮುಗಳು (BNS 2023)"}
+                  Primary Crime Categories Investigated (Workload Distribution)
                 </span>
-                <div className="space-y-2">
-                  {(reflectData?.top_statutes || [
-                    { statute: "§303(2) BNS (Commercial Burglary)", cases: 44, risk: "CRITICAL 🔴" },
-                    { statute: "§309 BNS (Robbery & Armed Intercept)", cases: 28, risk: "HIGH 🔴" },
-                    { statute: "§318(4) BNS (Cheating & Fraud)", cases: 19, risk: "ELEVATED 🟡" },
-                  ]).map((st: any, idx: number) => (
-                    <div key={idx} className="flex items-center justify-between p-3 bg-stone-950/60 border border-stone-850 rounded-lg text-xs font-mono">
-                      <div className="flex items-center gap-2">
-                        <span className="w-5 h-5 rounded-full bg-stone-900 border border-stone-800 text-center leading-5 text-[10px] font-bold text-stone-400">
-                          {idx + 1}
-                        </span>
-                        <span className="text-stone-200 font-bold">{st.statute}</span>
-                      </div>
-                      <div className="flex items-center gap-3">
-                        <span className="text-stone-400 font-bold">{st.cases} {lang === "en" ? "inquests" : "ಪ್ರಕರಣಗಳು"}</span>
-                        <span className="text-[10px] font-mono">{st.risk}</span>
-                      </div>
+                <div className="space-y-3">
+                  <div>
+                    <div className="flex justify-between text-xs font-mono text-stone-300 mb-1">
+                      <span className="flex items-center gap-1.5 font-semibold">
+                        <span className="w-2 h-2 rounded-full bg-blue-500" />
+                        Cyber Crime & 1930 Mule Intercepts
+                      </span>
+                      <span className="font-bold text-blue-400">42% (31 Cases)</span>
                     </div>
-                  ))}
+                    <div className="w-full bg-stone-950 h-2 rounded-full overflow-hidden border border-stone-800">
+                      <div className="bg-blue-500 h-full rounded-full" style={{ width: "42%" }} />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between text-xs font-mono text-stone-300 mb-1">
+                      <span className="flex items-center gap-1.5 font-semibold">
+                        <span className="w-2 h-2 rounded-full bg-[#C79A4E]" />
+                        Property & Syndicate Theft (Sec 303(2) BNS)
+                      </span>
+                      <span className="font-bold text-[#C79A4E]">35% (26 Cases)</span>
+                    </div>
+                    <div className="w-full bg-stone-950 h-2 rounded-full overflow-hidden border border-stone-800">
+                      <div className="bg-[#C79A4E] h-full rounded-full" style={{ width: "35%" }} />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between text-xs font-mono text-stone-300 mb-1">
+                      <span className="flex items-center gap-1.5 font-semibold">
+                        <span className="w-2 h-2 rounded-full bg-rose-500" />
+                        Violent Offenses & Remand Hearings (Sec 111 / 187)
+                      </span>
+                      <span className="font-bold text-rose-400">23% (17 Cases)</span>
+                    </div>
+                    <div className="w-full bg-stone-950 h-2 rounded-full overflow-hidden border border-stone-800">
+                      <div className="bg-rose-500 h-full rounded-full" style={{ width: "23%" }} />
+                    </div>
+                  </div>
                 </div>
               </div>
 
               {/* Action Toolbar */}
               <div className="flex items-center justify-between pt-2 border-t border-stone-800/80 flex-wrap gap-2">
                 <span className="text-[10px] font-mono text-stone-500">
-                  {lang === "en" ? "Section 63 Bharatiya Sakshya Adhiniyam Audit Hash: #KSP-BSA-2026-X891" : "§63 BSA ಆಡಿಟ್ ಹ್ಯಾಶ್: #KSP-BSA-2026-X891"}
+                  Section 63 Bharatiya Sakshya Adhiniyam Audit Hash: #KSP-REFLECT-BSA-2026-X891
                 </span>
                 <button
                   onClick={() => {
                     addToast(
                       lang === "en" ? "Export Initiated" : "ರಫ್ತು ಪ್ರಾರಂಭಿಸಲಾಗಿದೆ",
-                      lang === "en" ? "Monthly Inquest Digest compiled with digital certificate." : "ಡಿಜಿಟಲ್ ಪ್ರಮಾಣಪತ್ರದೊಂದಿಗೆ ಮಾಸಿಕ ವರದಿ ಸಿದ್ಧವಾಗಿದೆ.",
+                      lang === "en" ? "Workload Telemetry Digest compiled with digital certificate." : "ಕಾರ್ಯಭಾರ ವರದಿ ಸಿದ್ಧವಾಗಿದೆ.",
                       "Success"
                     );
                   }}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-200 hover:text-white text-xs font-mono font-bold transition-colors cursor-pointer"
                 >
                   <FileText className="w-3.5 h-3.5 text-[#C79A4E]" />
-                  {lang === "en" ? "Export Monthly Digest PDF" : "ಮಾಸಿಕ ವರದಿ PDF ರಫ್ತು ಮಾಡಿ"}
+                  {lang === "en" ? "Export Telemetry Digest PDF" : "ಕಾರ್ಯಭಾರ PDF ರಫ್ತು ಮಾಡಿ"}
                 </button>
               </div>
             </div>

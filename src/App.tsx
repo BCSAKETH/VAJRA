@@ -9,6 +9,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ChangePasswordModal } from "./components/ChangePasswordModal";
 import { RemoteEvictionModal } from "./components/RemoteEvictionModal";
 import { UnrecognizedLoginWarningModal } from "./components/UnrecognizedLoginWarningModal";
+import { SpotlightSearch } from "./components/SpotlightSearch";
 
 // Code-split every screen except Login/AIChat (the two every officer hits on
 // every session) so the initial bundle doesn't pay upfront for chunks a
@@ -171,6 +172,7 @@ const AppContent: React.FC = () => {
           <SettingsModal isOpen={isSettingsOpen} onClose={closeSettings} />
         </Suspense>
       )}
+      <SpotlightSearch />
     </MainLayout>
   );
 };
