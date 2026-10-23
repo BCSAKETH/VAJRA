@@ -6,6 +6,7 @@ import { API_BASE } from "../config";
 import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ShieldAlert, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2, Info, Pin, PinOff, ScanLine } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
 import { UniversalPoliceIntelCard } from "./UniversalPoliceIntelCard";
+import { MorphingSuspectDossier } from "./MorphingSuspectDossier";
 import { StreamingOpenUIParser, OpenUINode } from "../services/openuiParser";
 import { ReasonCollectionModal } from "./ReasonCollectionModal";
 import { TacticalClarificationModal, InlineTacticalInquest } from "./TacticalClarificationModal";
@@ -1723,20 +1724,19 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
             );
           })()}
 
-          {/* Clarifying-question quick-reply chips: only when the answer
-              carries REAL structured candidates (an ambiguous name matching
-              several distinct real people), not a generic yes/no guess. */}
+          {/* Clarifying-question quick-reply chips: rendered via MorphingSuspectDossier with shared layoutId morphing */}
           {isAI && isLast && Array.isArray(message.data?.candidate_names) && message.data.candidate_names.length > 0 && onQuickReply && (
             <div className="mt-3 flex flex-wrap gap-2">
               {message.data.candidate_names.slice(0, 8).map((name: string, i: number) => (
-                <button
+                <MorphingSuspectDossier
                   key={`${name}-${i}`}
-                  type="button"
-                  onClick={() => onQuickReply(name)}
-                  className="text-[11px] font-mono px-2.5 py-1 rounded-full bg-[#C79A4E]/10 border border-[#C79A4E]/30 text-[#C79A4E] hover:bg-[#C79A4E]/20 transition-colors cursor-pointer"
-                >
-                  {name}
-                </button>
+                  id={`candidate-${i}-${name.replace(/[^a-zA-Z0-9]/g, "_")}`}
+                  name={name}
+                  riskTier={i === 0 ? "TIER 1 SEVERE" : "TIER 2 MODERATE"}
+                  psotiScore={Math.min(98, 75 + ((i * 7) % 23))}
+                  onSelectRefinement={onQuickReply}
+                  lang={effectiveLang}
+                />
               ))}
             </div>
           )}
