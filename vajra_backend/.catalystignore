@@ -12,3 +12,11 @@ scratch/
 scratch/**
 *.bak*
 *.new*
+tests/
+test/
+**/tests/**
+**/test/**
+*.dist-info/
+**/*.dist-info/**
+vendor/imageio_ffmpeg/binaries/**
+
