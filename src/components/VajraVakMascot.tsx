@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState, useCallback } from "react"
 import { API_BASE } from "../config";
 import { MascotState } from "../types/mascot";
 import { vakBus, vajraVakBus, MascotEventPayload, VajraVakEvent } from "../services/vajraVakEventBus";
+import { useWakeWord } from "../hooks/useWakeWord";
+import { useLoginBriefing } from "../hooks/useLoginBriefing";
 
 export interface VajraVakMascotProps {
   lang: "en" | "kn";
@@ -267,6 +269,49 @@ export const VajraVakMascot: React.FC<VajraVakMascotProps> = ({
     transitionTo,
   } = useSentinelOwlState(isThinking, currentInput);
 
+  // Dynamic Mascot & Voice Configuration
+  const [mascotCallSign, setMascotCallSign] = useState<string>(() => {
+    return (typeof window !== "undefined" && localStorage.getItem("vajra_callsign")) || "Garuda";
+  });
+  const [wakeWordActive, setWakeWordActive] = useState<boolean>(() => {
+    return typeof window !== "undefined" && localStorage.getItem("vajra_wakeword_enabled") === "true";
+  });
+  const [loginBriefingActive, setLoginBriefingActive] = useState<boolean>(() => {
+    return typeof window !== "undefined" && localStorage.getItem("vajra_login_briefing_enabled") !== "false";
+  });
+
+  useEffect(() => {
+    const onStorage = () => {
+      setMascotCallSign(localStorage.getItem("vajra_callsign") || "Garuda");
+      setWakeWordActive(localStorage.getItem("vajra_wakeword_enabled") === "true");
+      setLoginBriefingActive(localStorage.getItem("vajra_login_briefing_enabled") !== "false");
+    };
+    window.addEventListener("storage", onStorage);
+    const unsub = vajraVakBus.subscribe((e) => {
+      if (e.type === "app_loaded") {
+        onStorage();
+      }
+    });
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      unsub();
+    };
+  }, []);
+
+  // Hands-free Wake-Word Listener hook
+  useWakeWord({
+    enabled: wakeWordActive,
+    callSign: mascotCallSign,
+    lang,
+  });
+
+  // Tactical Login Audio Briefing hook
+  useLoginBriefing({
+    enabled: loginBriefingActive,
+    lang,
+    callSign: mascotCallSign,
+  });
+
   const [isBlinking, setIsBlinking] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [quip, setQuip] = useState<string | null>(null);
@@ -414,13 +459,13 @@ export const VajraVakMascot: React.FC<VajraVakMascotProps> = ({
       className="relative select-none cursor-pointer"
       onClick={handleClick}
       role="button"
-      aria-label={lang === "en" ? "VAJRA-Vak Tactical Sentinel Owl" : "ವಜ್ರ-ವಾಕ್ ರಕ್ಷಣಾ ಸಹಾಯಕ"}
+      aria-label={lang === "en" ? `${mascotCallSign} Tactical Sentinel Owl` : `${mascotCallSign} ರಕ್ಷಣಾ ಸಹಾಯಕ`}
       title={
         isAlertState
           ? lang === "en"
             ? "CRITICAL ALERT: Click to acknowledge"
             : "ತುರ್ತು ಎಚ್ಚರಿಕೆ: ದೃಢೀಕರಿಸಲು ಕ್ಲಿಕ್ ಮಾಡಿ"
-          : quip || `VAJRA-Vak (${vakState})`
+          : quip || `${mascotCallSign} (${vakState})`
       }
     >
       {/* Visual Trigger 1: Alert Radar Beacon Pulsing Crimson (#EF4444) */}

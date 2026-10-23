@@ -1,7 +1,8 @@
 import React, { useEffect, useState, useRef, useMemo } from "react";
 import { useApp, TranscriptTextSize, TranscriptWidth, TtsSpeed, TtsStyle } from "../AppContext";
 import { API_BASE } from "../config";
-import { Settings, ShieldCheck, Database, Languages, Clock, User, IdCard, MapPin, Lock, Pencil, X, Hourglass, Mail, KeyRound, Maximize2, Type, Volume2, Play, Square, CheckCircle2, Loader2, Search, Palette, Info, Brain, Sparkles, Trash2, Plus, RefreshCw, BarChart2, ShieldAlert, Save, FileText, Check } from "lucide-react";
+import { Settings, ShieldCheck, Database, Languages, Clock, User, IdCard, MapPin, Lock, Pencil, X, Hourglass, Mail, KeyRound, Maximize2, Type, Volume2, Play, Square, CheckCircle2, Loader2, Search, Palette, Info, Brain, Sparkles, Trash2, Plus, RefreshCw, BarChart2, ShieldAlert, Save, FileText, Check, Mic, MicOff, Bot, Radio } from "lucide-react";
+import { vajraVakBus } from "../services/vajraVakEventBus";
 import { ChangePasswordModal } from "../components/ChangePasswordModal";
 import { ProportionalWidthWireframe } from "../components/ProportionalWidthWireframe";
 
@@ -180,6 +181,56 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
   const [officerDirectives, setOfficerDirectives] = useState("");
   const [isSavingDirectives, setIsSavingDirectives] = useState(false);
   const [isDirectivesSaved, setIsDirectivesSaved] = useState(false);
+
+  // VAK Mascot & Voice Customization State (Domain 4 Sentinel Owl Rig)
+  const [mascotCallSign, setMascotCallSign] = useState<string>(() => {
+    return localStorage.getItem("vajra_callsign") || "Garuda";
+  });
+  const [puppetTheme, setPuppetTheme] = useState<string>(() => {
+    return localStorage.getItem("vajra_puppet_theme") || "owl";
+  });
+  const [anchorPerch, setAnchorPerch] = useState<string>(() => {
+    return localStorage.getItem("vajra_anchor_perch") || "top_right";
+  });
+  const [wakeWordEnabled, setWakeWordEnabled] = useState<boolean>(() => {
+    return localStorage.getItem("vajra_wakeword_enabled") === "true";
+  });
+  const [loginBriefingEnabled, setLoginBriefingEnabled] = useState<boolean>(() => {
+    return localStorage.getItem("vajra_login_briefing_enabled") !== "false";
+  });
+  const [isMascotSaved, setIsMascotSaved] = useState<boolean>(false);
+
+  const handleSaveMascotConfig = () => {
+    localStorage.setItem("vajra_callsign", mascotCallSign);
+    localStorage.setItem("vajra_puppet_theme", puppetTheme);
+    localStorage.setItem("vajra_anchor_perch", anchorPerch);
+    localStorage.setItem("vajra_wakeword_enabled", String(wakeWordEnabled));
+    localStorage.setItem("vajra_login_briefing_enabled", String(loginBriefingEnabled));
+
+    const fullMascotSettings = {
+      callSign: mascotCallSign,
+      puppetTheme,
+      anchorPerch,
+      wakeWordEnabled,
+      loginBriefingEnabled,
+      voiceSettings: ttsSettings,
+    };
+    localStorage.setItem("vajra_mascot_settings", JSON.stringify(fullMascotSettings));
+
+    setIsMascotSaved(true);
+    setTimeout(() => setIsMascotSaved(false), 2500);
+
+    vajraVakBus.emit("app_loaded");
+
+    addToast({
+      title: lang === "en" ? "Mascot & Voice Configuration Saved" : "ಮ್ಯಾಸ್ಕಾಟ್ ಮತ್ತು ಧ್ವನಿ ಸಂರಚನೆ ಉಳಿಸಲಾಗಿದೆ",
+      message:
+        lang === "en"
+          ? `Call-sign "${mascotCallSign}" active. Audio & Wake-word profiles updated.`
+          : `ಕಾಲ್-ಸೈನ್ "${mascotCallSign}" ಸಕ್ರಿಯವಾಗಿದೆ. ಆಡಿಯೋ ಪ್ರೊಫೈಲ್ ನವೀಕರಿಸಲಾಗಿದೆ.`,
+      type: "success",
+    });
+  };
 
   useEffect(() => {
     fetch(`${API_BASE}/api/profile/directives`, {
@@ -520,10 +571,10 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
     },
     {
       id: "voice" as SettingsTab,
-      label: lang === "en" ? "Voice" : "ಧ್ವನಿ",
-      sub: lang === "en" ? "Zia Audio Studio" : "ಜಿಯಾ ಆಡಿಯೋ ಸ್ಟುಡಿಯೋ",
+      label: lang === "en" ? "VAK Mascot & Voice" : "ವಜ್ರ-ವಾಕ್ ಮತ್ತು ಧ್ವನಿ",
+      sub: lang === "en" ? "Mascot Persona & Audio Studio" : "ಮ್ಯಾಸ್ಕಾಟ್ ಮತ್ತು ಆಡಿಯೋ ಸ್ಟುಡಿಯೋ",
       icon: Volume2,
-      keywords: "voice zia audio sound speak speech synthesizer speed timbre",
+      keywords: "voice zia audio sound speak speech synthesizer speed timbre mascot vak callsign wakeword briefing garuda jarvis sentinel",
     },
     {
       id: "about" as SettingsTab,
@@ -566,8 +617,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
       sub: lang === "en" ? "Display themes, semantic font sizing, and visual window scaling" : "ಪ್ರದರ್ಶನ ಥೀಮ್‌ಗಳು ಮತ್ತು ಫಾಂಟ್ ಗಾತ್ರ",
     },
     voice: {
-      title: lang === "en" ? "Voice — Zia Multi-Voice Studio" : "ಧ್ವನಿ — ಜಿಯಾ ಆಡಿಯೋ ಸ್ಟುಡಿಯೋ",
-      sub: lang === "en" ? "Neural speech synthesis parameters for field audio briefs" : "ಕ್ಷೇತ್ರ ಆಡಿಯೋ ಬ್ರೀಫ್‌ಗಳಿಗಾಗಿ ಧ್ವನಿ ಸಂಶ್ಲೇಷಣೆ",
+      title: lang === "en" ? "VAK Mascot & Voice — Persona & Audio Studio" : "ವಜ್ರ-ವಾಕ್ ಮತ್ತು ಧ್ವನಿ — ವ್ಯಕ್ತಿತ್ವ ಮತ್ತು ಆಡಿಯೋ ಸ್ಟುಡಿಯೋ",
+      sub: lang === "en" ? "Sentinel Owl persona customization, wake-word activation, and tactical speech parameters" : "ಸೆಂಟಿನೆಲ್ ಗೂಬೆ ವ್ಯಕ್ತಿತ್ವ, ವೇಕ್-ವರ್ಡ್ ಸಕ್ರಿಯಗೊಳಿಸುವಿಕೆ ಮತ್ತು ಧ್ವನಿ ಸೆಟ್ಟಿಂಗ್‌ಗಳು",
     },
     about: {
       title: lang === "en" ? "About — Security Policies & Diagnostics" : "ಕುರಿತು — ಭದ್ರತೆ ಮತ್ತು ಡೇಟಾಬೇಸ್",
@@ -1131,141 +1182,393 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
             </div>
           )}
 
-          {/* 3. VOICE TAB */}
+          {/* 3. VAK MASCOT & VOICE TAB (Domain 4 Master Plan Architecture) */}
           {activeTab === "voice" && (
-            <div className="space-y-5">
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
-                  {lang === "en" ? "Primary Audio Language" : "ಪ್ರಾಥಮಿಕ ಆಡಿಯೊ ಭಾಷೆ"}
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {[
-                    { id: "en", label: "English (India)", native: "Articulate" },
-                    { id: "kn", label: "ಕನ್ನಡ (Kannada)", native: "ಸ್ಥಳೀಯ ಉಚ್ಚಾರಣೆ" },
-                    { id: "hi", label: "हिन्दी (Hindi)", native: "प्राकृतिक" },
-                  ].map((l) => (
-                    <button
-                      key={l.id}
-                      type="button"
-                      onClick={() => {
-                        const newLang = l.id as "en" | "kn" | "hi";
-                        const defaultSpeaker = newLang === "kn" ? "Anu" : (newLang === "hi" ? "Divya" : "Anna");
-                        setTtsSettings({ language: newLang, voice: defaultSpeaker });
-                      }}
-                      className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer ${
-                        ttsSettings.language === l.id
-                          ? "border-[#C79A4E] bg-[#C79A4E]/10 text-stone-100 font-bold"
-                          : "border-stone-800 bg-stone-950/40 text-stone-400 hover:border-stone-700"
-                      }`}
-                    >
-                      <p className="text-xs font-mono font-bold">{l.label}</p>
-                      <p className="text-[10px] font-mono text-stone-500">{l.native}</p>
-                    </button>
-                  ))}
+            <div className="space-y-6">
+              {/* SECTION A: MASCOT PERSONA CONFIGURATION */}
+              <div className="p-4 rounded-xl bg-stone-900/60 border border-stone-850 space-y-4">
+                <div className="flex items-center justify-between border-b border-stone-800 pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <Bot className="w-4 h-4 text-[#C79A4E]" />
+                    <span className="text-xs font-mono font-bold uppercase tracking-wider text-stone-200">
+                      {lang === "en" ? "Mascot Persona Configuration" : "ಮ್ಯಾಸ್ಕಾಟ್ ವ್ಯಕ್ತಿತ್ವ ಸಂರಚನೆ"}
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#C79A4E]/10 border border-[#C79A4E]/30 text-[#C79A4E]">
+                    VAJRA 3.0 SENTINEL
+                  </span>
                 </div>
-              </div>
 
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
-                  {lang === "en" ? "Voice Persona & Timbre" : "ಧ್ವನಿ ವ್ಯಕ್ತಿತ್ವ ಮತ್ತು ಟೋನ್"}
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {[
-                    { id: "buttery" as TtsStyle, name: lang === "en" ? "Buttery" : "ಬಟರಿ", badge: lang === "en" ? "Warm & Relaxed" : "ಆತ್ಮೀಯ", desc: lang === "en" ? "Smooth vocal delivery for fatigue-free listening" : "ದಣಿವು-ಮುಕ್ತ ಆಲಿಸುವಿಕೆ" },
-                    { id: "authoritative" as TtsStyle, name: lang === "en" ? "Authoritative" : "ಅಧಿಕೃತ", badge: lang === "en" ? "Command Briefing" : "ಕಮಾಂಡ್", desc: lang === "en" ? "Crisp, formal police command cadence" : "ಖಚಿತ ಕಮಾಂಡ್ ಟೋನ್" },
-                    { id: "calm" as TtsStyle, name: lang === "en" ? "Calm" : "ಶಾಂತ", badge: lang === "en" ? "Empathetic" : "ಸಹಾನುಭೂತಿ", desc: lang === "en" ? "Steady, reassuring cadence for sensitive cases" : "ಸ್ಥಿರ ಶೈಲಿ" },
-                    { id: "urgent" as TtsStyle, name: lang === "en" ? "Urgent" : "ತುರ್ತು", badge: lang === "en" ? "Tactical Dispatch" : "ಕ್ಷಿಪ್ರ", desc: lang === "en" ? "Fast-paced tactical briefing and alerts" : "ವೇಗದ ಬ್ರೀಫಿಂಗ್" },
-                  ].map((p) => (
-                    <button
-                      key={p.id}
-                      type="button"
-                      onClick={() => { setTtsSettings({ style: p.id }); setVoicePersona(p.id); }}
-                      className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                        ttsSettings.style === p.id
-                          ? "border-[#C79A4E] bg-[#C79A4E]/10 ring-1 ring-[#C79A4E]/40"
-                          : "border-stone-800 bg-stone-950/40 hover:border-stone-700"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between w-full">
-                        <span className={`text-[11px] font-bold ${ttsSettings.style === p.id ? "text-[#C79A4E]" : "text-stone-200"}`}>{p.name}</span>
-                        <span className="text-[8.5px] font-mono px-1.5 py-0.5 rounded bg-stone-900 border border-stone-800 text-stone-400">{p.badge}</span>
-                      </div>
-                      <p className="text-[9.5px] text-stone-500 leading-snug mt-1">{p.desc}</p>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3 pt-2 border-t border-stone-850">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
-                    {lang === "en" ? "Playback Speed" : "ಪ್ಲೇಬ್ಯಾಕ್ ವೇಗ"}
-                  </label>
-                  <div className="flex rounded-lg border border-stone-800 bg-stone-950/50 p-1 gap-1">
-                    {[{ id: "slower" as TtsSpeed, label: "0.85x" }, { id: "normal" as TtsSpeed, label: "1.0x" }, { id: "faster" as TtsSpeed, label: "1.25x" }].map((spd) => (
+                {/* Call-Sign Text Input */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10.5px] font-bold text-stone-300 uppercase font-mono tracking-wider">
+                      {lang === "en" ? "Mascot Call-Sign / Custom Name" : "ಮ್ಯಾಸ್ಕಾಟ್ ಕಾಲ್-ಸೈನ್ / ಹೆಸರು"}
+                    </label>
+                    <span className="text-[10px] font-mono text-stone-500">
+                      {lang === "en" ? "Voice recognition target" : "ಧ್ವನಿ ಗುರುತಿಸುವಿಕೆ ಗುರಿ"}
+                    </span>
+                  </div>
+                  <input
+                    type="text"
+                    value={mascotCallSign}
+                    onChange={(e) => setMascotCallSign(e.target.value)}
+                    placeholder="e.g., Garuda, Jarvis, Sentinel"
+                    className="w-full px-3 py-2 rounded-lg bg-stone-950 border border-stone-800 text-stone-100 font-mono text-xs focus:outline-none focus:border-[#C79A4E] transition-colors"
+                  />
+                  <div className="flex items-center gap-2 pt-1 flex-wrap">
+                    <span className="text-[10px] font-mono text-stone-500">
+                      {lang === "en" ? "Quick Presets:" : "ಶಿಫಾರಸುಗಳು:"}
+                    </span>
+                    {["Garuda", "Vajra-Vak", "Sentinel", "Jarvis"].map((preset) => (
                       <button
-                        key={spd.id}
+                        key={preset}
                         type="button"
-                        onClick={() => setTtsSettings({ speed: spd.id })}
-                        className={`flex-1 py-1 text-center text-[10.5px] font-mono font-bold rounded-md transition-all cursor-pointer ${
-                          ttsSettings.speed === spd.id ? "bg-[#C79A4E] text-stone-950" : "text-stone-400 hover:text-stone-200 hover:bg-stone-900"
+                        onClick={() => setMascotCallSign(preset)}
+                        className={`px-2 py-0.5 rounded text-[10px] font-mono border transition-all cursor-pointer ${
+                          mascotCallSign === preset
+                            ? "bg-[#C79A4E] text-stone-950 font-bold border-[#C79A4E]"
+                            : "bg-stone-900 border-stone-800 text-stone-400 hover:text-stone-200"
                         }`}
                       >
-                        {spd.label}
+                        {preset}
                       </button>
                     ))}
                   </div>
                 </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
-                    {lang === "en" ? "Neural Speaker" : "ನ್ಯೂರಲ್ ಸ್ಪೀಕರ್"}
+
+                {/* Visual Puppet Theme Selection */}
+                <div className="space-y-2 pt-2 border-t border-stone-850">
+                  <label className="text-[10.5px] font-bold text-stone-300 uppercase font-mono tracking-wider block">
+                    {lang === "en" ? "Visual Puppet Theme" : "ದೃಶ್ಯ ಪಪೆಟ್ ಥೀಮ್"}
                   </label>
-                  <div className="flex rounded-lg border border-stone-800 bg-stone-950/50 p-1 gap-1">
-                    {(speakersByLang[ttsSettings.language] || speakersByLang.en).map((spk) => (
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {[
+                      { id: "owl", label: "Sentinel Owl", sub: "38-Layer Rig (Active)", badge: "Authoritative KSP Spec" },
+                      { id: "eagle", label: "Tactical Eagle", sub: "High-Altitude Recon", badge: "Vector Rig" },
+                      { id: "disk", label: "Minimal Radar Disk", sub: "Low-Profile HUD", badge: "Telemetry" },
+                    ].map((th) => (
                       <button
-                        key={spk.id}
+                        key={th.id}
                         type="button"
-                        onClick={() => setTtsSettings({ voice: spk.id })}
-                        className={`flex-1 py-1 text-center text-[10.5px] font-mono font-bold rounded-md transition-all cursor-pointer ${
-                          ttsSettings.voice === spk.id ? "bg-[#C79A4E] text-stone-950" : "text-stone-400 hover:text-stone-200 hover:bg-stone-900"
+                        onClick={() => setPuppetTheme(th.id)}
+                        className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                          puppetTheme === th.id
+                            ? "border-[#C79A4E] bg-[#C79A4E]/10 ring-1 ring-[#C79A4E]/40"
+                            : "border-stone-800 bg-stone-950/40 hover:border-stone-700"
                         }`}
-                        title={spk.gender}
                       >
-                        {spk.name}
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <span className={`text-xs font-bold font-mono ${puppetTheme === th.id ? "text-[#C79A4E]" : "text-stone-200"}`}>
+                              {th.label}
+                            </span>
+                            <span className="text-[8px] font-mono px-1 rounded bg-stone-900 text-stone-400 border border-stone-800">
+                              {th.badge}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-stone-500 font-mono mt-0.5">{th.sub}</p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Spatial Anchor Perch Selection */}
+                <div className="space-y-2 pt-2 border-t border-stone-850">
+                  <label className="text-[10.5px] font-bold text-stone-300 uppercase font-mono tracking-wider block">
+                    {lang === "en" ? "Spatial Anchor Perch" : "ಸ್ಪೇಷಿಯಲ್ ಆಂಕರ್ ಸ್ಥಾನ"}
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {[
+                      { id: "top_right", label: "Top-Right Perch", desc: "Default Sentinel Overlook" },
+                      { id: "floating", label: "Floating Capsule", desc: "Dynamic Draggable Follower" },
+                      { id: "docked", label: "Dock to Sidebar", desc: "Fixed Command Navigation" },
+                    ].map((anc) => (
+                      <button
+                        key={anc.id}
+                        type="button"
+                        onClick={() => setAnchorPerch(anc.id)}
+                        className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer ${
+                          anchorPerch === anc.id
+                            ? "border-[#C79A4E] bg-[#C79A4E]/10 ring-1 ring-[#C79A4E]/40"
+                            : "border-stone-800 bg-stone-950/40 hover:border-stone-700"
+                        }`}
+                      >
+                        <span className={`text-xs font-bold font-mono block ${anchorPerch === anc.id ? "text-[#C79A4E]" : "text-stone-200"}`}>
+                          {anc.label}
+                        </span>
+                        <span className="text-[9.5px] text-stone-500 font-mono mt-0.5 block">{anc.desc}</span>
                       </button>
                     ))}
                   </div>
                 </div>
               </div>
 
-              <div className="pt-2 border-t border-stone-850 flex items-center justify-between gap-3">
+              {/* SECTION B: VOICE & WAKE-WORD SYSTEM */}
+              <div className="p-4 rounded-xl bg-stone-900/60 border border-stone-850 space-y-4">
+                <div className="flex items-center justify-between border-b border-stone-800 pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <Volume2 className="w-4 h-4 text-[#C79A4E]" />
+                    <span className="text-xs font-mono font-bold uppercase tracking-wider text-stone-200">
+                      {lang === "en" ? "Voice & Wake-Word System" : "ಧ್ವನಿ ಮತ್ತು ವೇಕ್-ವರ್ಡ್ ವ್ಯವಸ್ಥೆ"}
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400">
+                    LIVE RECOGNITION
+                  </span>
+                </div>
+
+                {/* Primary Audio Language */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
+                    {lang === "en" ? "Primary Audio Language" : "ಪ್ರಾಥಮಿಕ ಆಡಿಯೊ ಭಾಷೆ"}
+                  </label>
+                  <div className="grid grid-cols-3 gap-2">
+                    {[
+                      { id: "en", label: "English (India)", native: "Articulate" },
+                      { id: "kn", label: "ಕನ್ನಡ (Kannada)", native: "ಸ್ಥಳೀಯ ಉಚ್ಚಾರಣೆ" },
+                      { id: "hi", label: "हिन्दी (Hindi)", native: "प्राकृतिक" },
+                    ].map((l) => (
+                      <button
+                        key={l.id}
+                        type="button"
+                        onClick={() => {
+                          const newLang = l.id as "en" | "kn" | "hi";
+                          const defaultSpeaker = newLang === "kn" ? "Anu" : newLang === "hi" ? "Divya" : "Anna";
+                          setTtsSettings({ language: newLang, voice: defaultSpeaker });
+                        }}
+                        className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer ${
+                          ttsSettings.language === l.id
+                            ? "border-[#C79A4E] bg-[#C79A4E]/10 text-stone-100 font-bold"
+                            : "border-stone-800 bg-stone-950/40 text-stone-400 hover:border-stone-700"
+                        }`}
+                      >
+                        <p className="text-xs font-mono font-bold">{l.label}</p>
+                        <p className="text-[10px] font-mono text-stone-500">{l.native}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Voice Persona & Timbre */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
+                    {lang === "en" ? "Voice Persona & Timbre" : "ಧ್ವನಿ ವ್ಯಕ್ತಿತ್ವ ಮತ್ತು ಟೋನ್"}
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {[
+                      {
+                        id: "buttery" as TtsStyle,
+                        name: lang === "en" ? "Buttery" : "ಬಟರಿ",
+                        badge: lang === "en" ? "Warm & Relaxed" : "ಆತ್ಮೀಯ",
+                        desc: lang === "en" ? "Smooth vocal delivery for fatigue-free listening" : "ದಣಿವು-ಮುಕ್ತ ಆಲಿಸುವಿಕೆ",
+                      },
+                      {
+                        id: "authoritative" as TtsStyle,
+                        name: lang === "en" ? "Authoritative" : "ಅಧಿಕೃತ",
+                        badge: lang === "en" ? "Command Briefing" : "ಕಮಾಂಡ್",
+                        desc: lang === "en" ? "Crisp, formal police command cadence" : "ಖಚಿತ ಕಮಾಂಡ್ ಟೋನ್",
+                      },
+                      {
+                        id: "calm" as TtsStyle,
+                        name: lang === "en" ? "Calm" : "ಶಾಂತ",
+                        badge: lang === "en" ? "Empathetic" : "ಸಹಾನುಭೂತಿ",
+                        desc: lang === "en" ? "Steady, reassuring cadence for sensitive cases" : "ಸ್ಥಿರ ಶೈಲಿ",
+                      },
+                      {
+                        id: "urgent" as TtsStyle,
+                        name: lang === "en" ? "Urgent" : "ತುರ್ತು",
+                        badge: lang === "en" ? "Tactical Dispatch" : "ಕ್ಷಿಪ್ರ",
+                        desc: lang === "en" ? "Fast-paced tactical briefing and alerts" : "ವೇಗದ ಬ್ರೀಫಿಂಗ್",
+                      },
+                    ].map((p) => (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => {
+                          setTtsSettings({ style: p.id });
+                          setVoicePersona(p.id);
+                        }}
+                        className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                          ttsSettings.style === p.id
+                            ? "border-[#C79A4E] bg-[#C79A4E]/10 ring-1 ring-[#C79A4E]/40"
+                            : "border-stone-800 bg-stone-950/40 hover:border-stone-700"
+                        }`}
+                      >
+                        <div className="flex items-center justify-between w-full">
+                          <span className={`text-[11px] font-bold ${ttsSettings.style === p.id ? "text-[#C79A4E]" : "text-stone-200"}`}>
+                            {p.name}
+                          </span>
+                          <span className="text-[8.5px] font-mono px-1.5 py-0.5 rounded bg-stone-900 border border-stone-800 text-stone-400">
+                            {p.badge}
+                          </span>
+                        </div>
+                        <p className="text-[9.5px] text-stone-500 leading-snug mt-1">{p.desc}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Speed & Neural Speaker */}
+                <div className="grid grid-cols-2 gap-3 pt-2 border-t border-stone-850">
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
+                      {lang === "en" ? "Playback Speed" : "ಪ್ಲೇಬ್ಯಾಕ್ ವೇಗ"}
+                    </label>
+                    <div className="flex rounded-lg border border-stone-800 bg-stone-950/50 p-1 gap-1">
+                      {[
+                        { id: "slower" as TtsSpeed, label: "0.85x" },
+                        { id: "normal" as TtsSpeed, label: "1.0x" },
+                        { id: "faster" as TtsSpeed, label: "1.25x" },
+                      ].map((spd) => (
+                        <button
+                          key={spd.id}
+                          type="button"
+                          onClick={() => setTtsSettings({ speed: spd.id })}
+                          className={`flex-1 py-1 text-center text-[10.5px] font-mono font-bold rounded-md transition-all cursor-pointer ${
+                            ttsSettings.speed === spd.id ? "bg-[#C79A4E] text-stone-950" : "text-stone-400 hover:text-stone-200 hover:bg-stone-900"
+                          }`}
+                        >
+                          {spd.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
+                      {lang === "en" ? "Neural Speaker" : "ನ್ಯೂರಲ್ ಸ್ಪೀಕರ್"}
+                    </label>
+                    <div className="flex rounded-lg border border-stone-800 bg-stone-950/50 p-1 gap-1">
+                      {(speakersByLang[ttsSettings.language] || speakersByLang.en).map((spk) => (
+                        <button
+                          key={spk.id}
+                          type="button"
+                          onClick={() => setTtsSettings({ voice: spk.id })}
+                          className={`flex-1 py-1 text-center text-[10.5px] font-mono font-bold rounded-md transition-all cursor-pointer ${
+                            ttsSettings.voice === spk.id ? "bg-[#C79A4E] text-stone-950" : "text-stone-400 hover:text-stone-200 hover:bg-stone-900"
+                          }`}
+                          title={spk.gender}
+                        >
+                          {spk.name}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Wake-Word Toggle Switch */}
+                <div className="pt-3 border-t border-stone-850 flex items-center justify-between gap-3">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <Mic className={`w-3.5 h-3.5 ${wakeWordEnabled ? "text-[#C79A4E]" : "text-stone-500"}`} />
+                      <span className="text-xs font-mono font-bold text-stone-200">
+                        {lang === "en"
+                          ? `Enable Hands-Free Microphone Wake-Word ("Hey ${mascotCallSign}...")`
+                          : `ಮೈಕ್ರೊಫೋನ್ ವೇಕ್-ವರ್ಡ್ ಸಕ್ರಿಯಗೊಳಿಸಿ ("Hey ${mascotCallSign}...")`}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-stone-500 font-mono">
+                      {lang === "en"
+                        ? "Listens in background via webkitSpeechRecognition to auto-focus chat input"
+                        : "ಹಿನ್ನೆಲೆಯಲ್ಲಿ ಆಲಿಸಿ ಚಾಟ್ ಇನ್‌ಪುಟ್‌ ಅನ್ನು ಸ್ವಯಂಚಾಲಿತವಾಗಿ ಫೋಕಸ್ ಮಾಡುತ್ತದೆ"}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setWakeWordEnabled(!wakeWordEnabled)}
+                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
+                      wakeWordEnabled ? "bg-[#C79A4E]" : "bg-stone-800"
+                    }`}
+                  >
+                    <span
+                      className={`block w-4 h-4 rounded-full bg-stone-950 absolute top-1 transition-transform ${
+                        wakeWordEnabled ? "left-6" : "left-1"
+                      }`}
+                    />
+                  </button>
+                </div>
+
+                {/* Login Audio Briefing Toggle Switch */}
+                <div className="pt-3 border-t border-stone-850 flex items-center justify-between gap-3">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-1.5">
+                      <Radio className={`w-3.5 h-3.5 ${loginBriefingEnabled ? "text-[#C79A4E]" : "text-stone-500"}`} />
+                      <span className="text-xs font-mono font-bold text-stone-200">
+                        {lang === "en"
+                          ? "Login Audio Briefing: Speak aloud tactical summary on sign-in"
+                          : "ಲಾಗಿನ್ ಆಡಿಯೋ ಬ್ರೀಫಿಂಗ್: ಲಾಗಿನ್ ಆದಾಗ ಸಾರಾಂಶವನ್ನು ಓದಿ"}
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-stone-500 font-mono">
+                      {lang === "en"
+                        ? "Speaks spoken tactical briefing of §187 remands and overnight cyber fraud upon app load"
+                        : "ಲಾಗಿನ್ ಆದಾಗ ತುರ್ತು ರಿಮಾಂಡ್‌ಗಳು ಮತ್ತು ಸೈಬರ್ ವಂಚನೆಗಳ ಧ್ವನಿ ಸಾರಾಂಶ"}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setLoginBriefingEnabled(!loginBriefingEnabled)}
+                    className={`w-11 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
+                      loginBriefingEnabled ? "bg-[#C79A4E]" : "bg-stone-800"
+                    }`}
+                  >
+                    <span
+                      className={`block w-4 h-4 rounded-full bg-stone-950 absolute top-1 transition-transform ${
+                        loginBriefingEnabled ? "left-6" : "left-1"
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+
+              {/* ACTION BAR: PREVIEW VOICE & SAVE CONFIGURATION */}
+              <div className="pt-3 border-t border-stone-850 flex flex-col sm:flex-row items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
-                  {isPlayingPreview ? (
+                  <button
+                    type="button"
+                    onClick={handleTestVoice}
+                    disabled={isPreviewLoading}
+                    className={`flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-bold font-mono uppercase tracking-wider transition-all cursor-pointer disabled:opacity-50 ${
+                      isPlayingPreview
+                        ? "bg-rose-500/20 text-rose-400 border border-rose-500/40 hover:bg-rose-500/30"
+                        : "bg-stone-900 border border-stone-800 text-stone-200 hover:border-[#C79A4E] hover:text-[#C79A4E]"
+                    }`}
+                  >
+                    {isPreviewLoading ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : isPlayingPreview ? (
+                      <Square className="w-3.5 h-3.5 fill-current" />
+                    ) : (
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                    )}
+                    <span>
+                      {isPreviewLoading
+                        ? lang === "en" ? "Synthesizing..." : "ಸಂಶ್ಲೇಷಿಸಲಾಗುತ್ತಿದೆ..."
+                        : isPlayingPreview
+                        ? lang === "en" ? "Stop Preview" : "ನಿಲ್ಲಿಸಿ"
+                        : lang === "en" ? "Test Voice Synthesis" : "ಧ್ವನಿ ಪರೀಕ್ಷೆ"}
+                    </span>
+                  </button>
+                  {isPlayingPreview && (
                     <div className="flex items-center gap-1 h-5 px-2 bg-[#C79A4E]/10 border border-[#C79A4E]/30 rounded-md">
                       <span className="w-1 bg-[#C79A4E] animate-pulse h-3 rounded-full" />
                       <span className="w-1 bg-[#C79A4E] animate-pulse h-4 rounded-full" />
                       <span className="w-1 bg-[#C79A4E] animate-pulse h-2 rounded-full" />
-                      <span className="text-[10px] text-[#C79A4E] font-mono font-bold ml-1.5">
-                        {lang === "en" ? "Streaming Preview..." : "ಪ್ಲೇ ಆಗುತ್ತಿದೆ..."}
-                      </span>
                     </div>
-                  ) : (
-                    <span className="text-[10px] font-mono text-stone-500">
-                      {lang === "en" ? "Sample voice test sentence" : "ಮಾದರಿ ಧ್ವನಿ ಪರೀಕ್ಷೆ ವಾಕ್ಯ"}
-                    </span>
                   )}
                 </div>
+
                 <button
                   type="button"
-                  onClick={handleTestVoice}
-                  disabled={isPreviewLoading}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wider transition-all cursor-pointer disabled:opacity-50 ${
-                    isPlayingPreview ? "bg-rose-500/20 text-rose-400 border border-rose-500/40 hover:bg-rose-500/30" : "bg-[#C79A4E] text-stone-950 hover:bg-[#E4C590]"
-                  }`}
+                  onClick={handleSaveMascotConfig}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-xs font-bold font-mono uppercase tracking-wider bg-[#C79A4E] hover:bg-[#E4C590] text-stone-950 transition-all cursor-pointer shadow-md hover:scale-[1.02]"
                 >
-                  {isPreviewLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : isPlayingPreview ? <Square className="w-3.5 h-3.5 fill-current" /> : <Play className="w-3.5 h-3.5 fill-current" />}
+                  {isMascotSaved ? <Check className="w-4 h-4 text-stone-950" /> : <Save className="w-4 h-4 text-stone-950" />}
                   <span>
-                    {isPreviewLoading ? (lang === "en" ? "Synthesizing..." : "ಸಂಶ್ಲೇಷಿಸಲಾಗುತ್ತಿದೆ...") : isPlayingPreview ? (lang === "en" ? "Stop" : "ನಿಲ್ಲಿಸಿ") : (lang === "en" ? "Preview Voice" : "ಧ್ವನಿ ಪೂರ್ವವೀಕ್ಷಣೆ")}
+                    {isMascotSaved
+                      ? lang === "en" ? "Configuration Saved!" : "ಉಳಿಸಲಾಗಿದೆ!"
+                      : lang === "en" ? "Save Mascot Configuration" : "ಮ್ಯಾಸ್ಕಾಟ್ ಸೆಟ್ಟಿಂಗ್ಸ್ ಉಳಿಸಿ"}
                   </span>
                 </button>
               </div>
