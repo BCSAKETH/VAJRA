@@ -14,6 +14,7 @@ import {
   Terminal, Search, FileCheck, Gavel, Database, X
 } from "lucide-react";
 import { OpenUINode } from "../services/openuiParser";
+import { StatuteIcon } from "./StatuteIcon";
 
 export interface UniversalPoliceIntelCardProps {
   type: string;
@@ -688,15 +689,21 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
                 color: meta.accent
               }}
             >
-              <IconComponent className="w-6 h-6" />
+              <StatuteIcon
+                code={meta.statute || type}
+                stroke={meta.accent || "#C79A4E"}
+                className="w-6 h-6"
+                title={`${meta.statute} • ${meta.title}`}
+              />
             </div>
             <div>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold tracking-wider uppercase border ${meta.badgeColor}`}>
                   {meta.category}
                 </span>
-                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-stone-800/80 border border-stone-700 text-stone-300">
-                  {meta.statute}
+                <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-stone-800/80 border border-stone-700 text-stone-300 flex items-center gap-1">
+                  <StatuteIcon code={meta.statute || type} stroke="#C79A4E" className="w-3 h-3" />
+                  <span>{meta.statute}</span>
                 </span>
                 {cardData?.urgency_tier && (
                   <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 border border-amber-500/30 text-amber-300">
