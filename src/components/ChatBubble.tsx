@@ -929,6 +929,12 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   // stray leading "\n" so answers don't start with a blank line.
   const displayText = decodeDisplayText(rawDisplayText).replace(/^\n+/, "");
 
+  // Batch & defer heavy markdown parsing during rapid token streaming (50 tokens/sec)
+  const deferredDisplayText = React.useDeferredValue(displayText);
+  const renderedRichContent = React.useMemo(() => {
+    return renderRich(deferredDisplayText, sizeStyles);
+  }, [deferredDisplayText, sizeStyles]);
+
   useEffect(() => {
     return () => {
       if (isSpeaking && "speechSynthesis" in window) window.speechSynthesis.cancel();
@@ -1666,7 +1672,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                     <span>{lang === "en" ? "Translating to Kannada..." : "ಕನ್ನಡಕ್ಕೆ ನೇರ ಅನುವಾದಿಸಲಾಗುತ್ತಿದೆ..."}</span>
                   </div>
                 )}
-                {renderRich(displayText, sizeStyles)}
+                {renderedRichContent}
               </div>
             )
             : <div className={`whitespace-pre-wrap font-sans text-stone-200 ${sizeStyles.userBubble}`}>{displayText}</div>}

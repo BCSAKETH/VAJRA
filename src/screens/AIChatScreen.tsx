@@ -270,8 +270,56 @@ export const AIChatScreen: React.FC = () => {
     }
   }, [clearPending]);
 
+  // Instant React Streaming Queue for high-throughput SSE token chunks
+  const streamingTextRef = useRef<string>("");
+  const streamingMsgIdRef = useRef<string | null>(null);
+  const streamRafPendingRef = useRef<number | null>(null);
+
+  const flushStreamingDelta = useCallback((turnSessionId: string) => {
+    if (streamRafPendingRef.current !== null) return;
+    streamRafPendingRef.current = requestAnimationFrame(() => {
+      streamRafPendingRef.current = null;
+      const currentText = streamingTextRef.current;
+      const msgId = streamingMsgIdRef.current;
+      if (!msgId || !currentText) return;
+
+      // Ensure turn matches active conversation to prevent ghost updates across sessions
+      if (activeSessionIdRef.current && activeSessionIdRef.current !== turnSessionId) return;
+
+      setChatMessages((prev) => {
+        const existingIdx = prev.findIndex((m) => m.id === msgId);
+        if (existingIdx !== -1) {
+          const updated = [...prev];
+          updated[existingIdx] = {
+            ...updated[existingIdx],
+            text: currentText,
+            textEn: currentText,
+          };
+          return updated;
+        } else {
+          const streamingBubble: ChatMessage = {
+            id: msgId,
+            sender: "assistant",
+            text: currentText,
+            textEn: currentText,
+            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            responseType: "text",
+          };
+          return [...prev, streamingBubble];
+        }
+      });
+    });
+  }, [setChatMessages]);
+
   const streamTicker = useCallback(async (sessionId: string) => {
     tickerAbortRef.current?.abort();
+    if (streamRafPendingRef.current !== null) {
+      cancelAnimationFrame(streamRafPendingRef.current);
+      streamRafPendingRef.current = null;
+    }
+    streamingMsgIdRef.current = null;
+    streamingTextRef.current = "";
+
     const controller = new AbortController();
     tickerAbortRef.current = controller;
     setTickerMessage("");
@@ -302,7 +350,36 @@ export const AIChatScreen: React.FC = () => {
               if (payload.message.includes("<think>")) vakBus.emit("ai_processing_started");
               if (payload.message.includes("TOOL_EXECUTED:")) vakBus.emit("retrieval_started");
             }
+            // Instant React Streaming Queue: Append token deltas via rAF throttle
+            if (payload.delta) {
+              if (!streamingMsgIdRef.current) {
+                streamingMsgIdRef.current = `stream-${sessionId}-${Date.now()}`;
+                streamingTextRef.current = "";
+              }
+              streamingTextRef.current += payload.delta;
+              flushStreamingDelta(sessionId);
+            }
             if (payload.done) {
+              if (streamRafPendingRef.current !== null) {
+                cancelAnimationFrame(streamRafPendingRef.current);
+                streamRafPendingRef.current = null;
+              }
+              // Flush any remaining buffered tokens synchronously
+              if (streamingMsgIdRef.current && streamingTextRef.current) {
+                const finalId = streamingMsgIdRef.current;
+                const finalText = streamingTextRef.current;
+                setChatMessages((prev) => {
+                  const idx = prev.findIndex((m) => m.id === finalId);
+                  if (idx !== -1) {
+                    const updated = [...prev];
+                    updated[idx] = { ...updated[idx], text: finalText, textEn: finalText };
+                    return updated;
+                  }
+                  return prev;
+                });
+              }
+              streamingMsgIdRef.current = null;
+              streamingTextRef.current = "";
               vakBus.emit("result_ready");
               triggerImmediateAssistantFetch(sessionId);
               return;
@@ -314,8 +391,13 @@ export const AIChatScreen: React.FC = () => {
       // Aborted (a new turn started, or this one finished) or a transient
       // network hiccup -- the static thinkingIndicator text below still
       // covers the wait either way, this is purely a UX enhancement.
+    } finally {
+      if (streamRafPendingRef.current !== null) {
+        cancelAnimationFrame(streamRafPendingRef.current);
+        streamRafPendingRef.current = null;
+      }
     }
-  }, [triggerImmediateAssistantFetch]);
+  }, [flushStreamingDelta, triggerImmediateAssistantFetch]);
 
   const [expandedWidget, setExpandedWidget] = useState<{ type: string; data: any } | null>(null);
   // F.34: this officer's own "last viewed this network" timestamp for the

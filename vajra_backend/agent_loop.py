@@ -9,8 +9,46 @@ import threading
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Any, List, Tuple, Optional, Callable
+import random
 import numpy as np
 import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+# ==============================================================================
+# TASK 1: SEMANTIC VECTOR ROUTER ANCHORS & MATRICES (scikit-learn TF-IDF)
+# ==============================================================================
+CASUAL_ANCHORS: List[str] = [
+    "hi bro how you doing",
+    "what is the current update",
+    "whats cooking",
+    "yeno samachara",
+    "good morning officer",
+    "namaskara",
+    "how are you doing brother",
+    "hey bro what is the update",
+    "hello officer how are you",
+    "whats up bro",
+    "yeno samachara vajra",
+    "namaskara vajra",
+]
+
+OPERATIONAL_ANCHORS: List[str] = [
+    "retrieve forensic dossier",
+    "find similar modus operandi",
+    "check pending non bailable warrants",
+    "trace criminal syndicate network",
+    "investigate suspect chargesheet details",
+    "analyze call detail records cdr tower dump",
+    "locate high risk crime hotspot beat",
+    "statutory section 187 remand limit",
+]
+
+_ALL_INTENT_ANCHORS = CASUAL_ANCHORS + OPERATIONAL_ANCHORS
+_INTENT_VECTORIZER: TfidfVectorizer = TfidfVectorizer(ngram_range=(1, 2), sublinear_tf=True)
+_ALL_ANCHORS_MAT = _INTENT_VECTORIZER.fit_transform([a.lower() for a in _ALL_INTENT_ANCHORS])
+_CASUAL_MAT = _ALL_ANCHORS_MAT[:len(CASUAL_ANCHORS)]
+_OPERATIONAL_MAT = _ALL_ANCHORS_MAT[len(CASUAL_ANCHORS):]
 
 from vajra_core import catalyst_app, VajraGraphRAG, VajraSemanticMemory, MOBehavioralProfiler, zcql_insert_row, \
     is_pocso_sensitive, redact_pocso_name, redact_phone_numbers, is_supervisor_badge, \
@@ -1632,6 +1670,28 @@ class VajraAgentLoop(CognitiveBrainMixin):
             return (True, "kannada_greeting" if is_kn else "greeting", detected_salutation)
 
         # -------------------------------------------------------------
+        # TASK 1: SEMANTIC VECTOR ROUTER (scikit-learn TF-IDF Cosine Similarity)
+        # Vectorize query and compare mathematically against Casual vs Operational anchors
+        # -------------------------------------------------------------
+        has_case_no = bool(self._CASE_NUMBER_REGEX.search(clean_text))
+        has_section = bool(self._SECTION_REGEX.search(clean_text))
+
+        if not has_case_no and not has_section:
+            try:
+                query_vec = _INTENT_VECTORIZER.transform([clean_text.lower()])
+                casual_sims = cosine_similarity(query_vec, _CASUAL_MAT)[0]
+                operational_sims = cosine_similarity(query_vec, _OPERATIONAL_MAT)[0]
+                max_casual = float(np.max(casual_sims)) if len(casual_sims) > 0 else 0.0
+                max_operational = float(np.max(operational_sims)) if len(operational_sims) > 0 else 0.0
+
+                # If query is mathematically closer to Casual anchors and exceeds confidence threshold
+                if max_casual > max_operational and max_casual >= 0.15:
+                    is_kn = bool(re.search(r'[\u0C80-\u0CFF]', clean_text)) or any(k in clean_text.lower() for k in ["samachara", "namaskara", "yeno"])
+                    return (True, "kannada_greeting" if is_kn else "semantic_casual", detected_salutation)
+            except Exception as e:
+                logger.warning(f"[INTENT_ROUTER] TF-IDF semantic vector routing failed: {e}")
+
+        # -------------------------------------------------------------
         # GATE 1: Domain Hard-Veto Guard (Law Enforcement Vocabulary)
         # -------------------------------------------------------------
         tokens = [t for t in re.split(r'[^a-zA-Z0-9\u0C80-\u0CFF]+', clean_text.lower()) if t]
@@ -1841,6 +1901,25 @@ class VajraAgentLoop(CognitiveBrainMixin):
             reply_text = self._generate_dynamic_probe(is_kn)
             payload_type = "probe"
             audit_action = "System Probe Fast-Path"
+        elif fast_path_type == "semantic_casual":
+            station = getattr(self, "resolved_station", "KSP Station")
+            officer_name = getattr(self, "resolved_officer_name", "Officer")
+            colleague_responses = [
+                "Doing good, brother! Systems are green. What are we working on?",
+                f"All systems operational, brother! CCTNS feeds are calm across {station}. What case or suspect are we tracking?",
+                "Going good, brother! Radar is active with no red alerts right now. What's on your desk today?",
+                f"Doing great, Officer {officer_name}! Databases are synced and ready. How can I assist with your investigation today?",
+            ]
+            if is_kn:
+                kannada_responses = [
+                    "ಎಲ್ಲವೂ ಸುಗಮವಾಗಿದೆ, ಸಹೋದರ! ಸಿಸ್ಟಮ್ ಸಂಪೂರ್ಣವಾಗಿ ಸಕ್ರಿಯವಾಗಿದೆ. ನಾವು ಇಂದು ಯಾವ ತನಿಖೆಯ ಮೇಲೆ ಕೆಲಸ ಮಾಡುತ್ತಿದ್ದೇವೆ?",
+                    "ಎಲ್ಲವೂ ಶಾಂತವಾಗಿದೆ, ಅಧಿಕಾರಿ! ಸಿಸಿಟಿಎನ್‌ಎಸ್ ಡೇಟಾ ಸಿದ್ಧವಾಗಿದೆ. ಯಾವ ಪ್ರಕರಣ ಅಥವಾ ಆರೋಪಿಯ ವಿವರಗಳು ಬೇಕು?",
+                ]
+                reply_text = random.choice(kannada_responses)
+            else:
+                reply_text = random.choice(colleague_responses)
+            payload_type = "colleague_fastpath"
+            audit_action = "Semantic Casual Fast-Path"
         else:
             return None
 
