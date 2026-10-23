@@ -25,7 +25,7 @@ import numpy as np
 
 logger = logging.getLogger("vajra.spatial_stratus")
 
-STRATUS_BUCKET = os.getenv("STRATUS_SPATIAL_BUCKET", "vajra-evidence-attachments")
+STRATUS_BUCKET = os.getenv("STRATUS_SPATIAL_BUCKET", "vajra-spatial-cache")
 STRATUS_OBJECT_KEY = "ksp_spatial_cache.npz"
 LOCAL_CACHE_FALLBACK = os.path.join(os.path.dirname(__file__), "data", "ksp_spatial_cache.npz")
 
