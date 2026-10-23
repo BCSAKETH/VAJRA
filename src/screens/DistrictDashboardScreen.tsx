@@ -1665,7 +1665,6 @@ export const DistrictDashboardScreen: React.FC = () => {
             <Marquee pauseOnHover className="[--duration:38s] text-[10.5px] font-mono text-stone-300">
               <span className="mx-4 text-stone-200">🚨 STATEWIDE CCTNS 1,695,717 RECORDS ONLINE</span>
               <span className="mx-4 text-amber-400">⚡ INDIRANAGAR PS: CR-2026-51377 §304(2) BNS ACTIVE REMAND</span>
-              <span className="mx-4 text-emerald-400">🛡️ §187 BNSS 60/90-DAY BAIL RADAR: 99.1% COMPLIANCE</span>
               <span className="mx-4 text-stone-300">📍 BALLARI: 29,163 CASES CANONICALIZED</span>
               <span className="mx-4 text-rose-400">⚠️ BOLO ALERT: REPEAT INTER-DISTRICT GANG TRACKED (§111 BNS)</span>
               <span className="mx-4 text-sky-400">⚖️ §63 BSA CERTIFIED EVIDENCE CHAINS AUDITED</span>

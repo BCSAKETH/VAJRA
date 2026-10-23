@@ -11,7 +11,7 @@ import {
   Radio, Fingerprint, Zap, Download, Copy, Check, ExternalLink,
   ChevronRight, ChevronDown, Sparkles, Building2, TestTube, AlertOctagon,
   Calendar, HeartHandshake, UserX, Award, Briefcase, Compass, ScanFace,
-  Terminal, Search, FileCheck, Gavel, Database
+  Terminal, Search, FileCheck, Gavel, Database, X
 } from "lucide-react";
 
 export interface UniversalPoliceIntelCardProps {
@@ -20,6 +20,8 @@ export interface UniversalPoliceIntelCardProps {
   lang?: "en" | "kn";
   onFollowUpQuery?: (query: string) => void;
   onClose?: () => void;
+  daysInRemand?: number;
+  remandLimit?: 60 | 90;
 }
 
 // Icon & Meta Resolver for any specialized police intelligence tool card
@@ -341,13 +343,46 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
   data,
   lang = "en",
   onFollowUpQuery,
-  onClose
+  onClose,
+  daysInRemand,
+  remandLimit
 }) => {
   const cardData: Record<string, any> = (data && typeof data === "object") ? data : {};
   const currentLang: "en" | "kn" = lang === "kn" ? "kn" : "en";
   const meta = getTacticalMeta(type, cardData, currentLang);
   const IconComponent = meta.icon;
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // Section 187 BNSS Statutory Remand Threat Barometer Calculation
+  const daysInRemandProp =
+    daysInRemand ??
+    cardData?.days_in_remand ??
+    cardData?.daysInRemand ??
+    cardData?.remand_days ??
+    cardData?.days_remand;
+
+  const tLower = (type || "").toLowerCase();
+  const isRemandContext =
+    tLower.includes("remand") ||
+    tLower.includes("bail_countdown") ||
+    tLower.includes("default_bail") ||
+    (tLower.includes("dossier") &&
+      (cardData?.status === "UNDER REMAND" ||
+        cardData?.remand_status ||
+        daysInRemandProp !== undefined));
+
+  const hasRemandRadar = daysInRemandProp !== undefined || isRemandContext;
+  const remandDays = typeof daysInRemandProp === "number" ? daysInRemandProp : 48;
+  const statutoryLimit: 60 | 90 =
+    remandLimit ??
+    cardData?.statutory_limit ??
+    cardData?.statutoryLimit ??
+    cardData?.remand_limit ??
+    (cardData?.is_heinous || (cardData?.penal_code && String(cardData.penal_code).includes("302")) ? 90 : 60);
+
+  const daysUntilBail = Math.max(0, statutoryLimit - remandDays);
+  const remandPercentage = Math.min(100, Math.max(0, Math.round((remandDays / statutoryLimit) * 100)));
+  const isCriticalWindow = daysUntilBail <= 15;
   const [showRawJson, setShowRawJson] = useState(false);
   const [showTechnicalZcql, setShowTechnicalZcql] = useState(false);
 
@@ -659,19 +694,189 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
             </div>
           </div>
 
-          {/* Quick Case / Entity Tag */}
-          {(cardData?.case_no || cardData?.plate_number || cardData?.ifsc || cardData?.witness_name || cardData?.accused_in_remand || cardData?.suspect_name) && (
-            <div className="self-start sm:self-auto px-3 py-1.5 rounded-lg bg-stone-950/80 border border-stone-800 text-right">
-              <span className="block text-[10px] font-mono text-stone-400 uppercase tracking-wider">
-                {currentLang === "en" ? "Active Reference" : "ಪ್ರಸ್ತುತ ಉಲ್ಲೇಖ"}
-              </span>
-              <span className="text-xs font-mono font-black text-[#C79A4E]">
-                {cardData.case_no || cardData.plate_number || cardData.ifsc || cardData.witness_name || cardData.accused_in_remand || cardData.suspect_name}
-              </span>
-            </div>
-          )}
+          {/* Quick Case / Entity Tag & Close Action */}
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            {(cardData?.case_no || cardData?.plate_number || cardData?.ifsc || cardData?.witness_name || cardData?.accused_in_remand || cardData?.suspect_name || cardData?.accused_name) && (
+              <div className="px-3 py-1.5 rounded-lg bg-stone-950/80 border border-stone-800 text-right">
+                <span className="block text-[10px] font-mono text-stone-400 uppercase tracking-wider">
+                  {currentLang === "en" ? "Active Reference" : "ಪ್ರಸ್ತುತ ಉಲ್ಲೇಖ"}
+                </span>
+                <span className="text-xs font-mono font-black text-[#C79A4E]">
+                  {cardData.case_no || cardData.plate_number || cardData.ifsc || cardData.witness_name || cardData.accused_in_remand || cardData.suspect_name || cardData.accused_name}
+                </span>
+              </div>
+            )}
+            {onClose && (
+              <button
+                type="button"
+                onClick={onClose}
+                className="p-1.5 rounded-lg bg-stone-950/80 border border-stone-800 text-stone-400 hover:text-white hover:border-stone-700 transition-colors cursor-pointer"
+                title={currentLang === "en" ? "Close" : "ಮುಚ್ಚಿ"}
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* 1.5 Relocated Section 187 BNSS Statutory Remand Deadline Radar UI (Domain 2 Tactical Threat Barometer) */}
+      {hasRemandRadar && (
+        <div className="bg-[#0C0A09] border border-[#C79A4E]/50 rounded-xl p-4 shadow-2xl relative overflow-hidden transition-all duration-300">
+          {/* Subtle Ambient Obsidian / Gold / Crimson Glow */}
+          <div
+            className={`absolute -right-12 -top-12 w-44 h-44 rounded-full opacity-15 blur-3xl pointer-events-none ${
+              isCriticalWindow ? "bg-[#EF4444]" : "bg-[#C79A4E]"
+            }`}
+          />
+
+          {/* Radar Header */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-3 border-b border-stone-850 relative z-10">
+            <div className="flex items-center gap-2.5">
+              <div
+                className={`p-2 rounded-lg border flex items-center justify-center shrink-0 ${
+                  isCriticalWindow
+                    ? "bg-[#EF4444]/15 border-[#EF4444]/40 text-[#EF4444]"
+                    : "bg-[#C79A4E]/15 border-[#C79A4E]/40 text-[#C79A4E]"
+                }`}
+              >
+                <Clock className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono font-bold tracking-widest uppercase text-[#C79A4E]">
+                    § 187 BNSS 2023 STATUTORY REMAND RADAR
+                  </span>
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-black uppercase ${
+                      isCriticalWindow
+                        ? "bg-[#EF4444]/20 border border-[#EF4444]/50 text-[#EF4444] animate-pulse"
+                        : "bg-[#C79A4E]/20 border border-[#C79A4E]/40 text-[#C79A4E]"
+                    }`}
+                  >
+                    {isCriticalWindow
+                      ? currentLang === "en" ? "CRITICAL WINDOW" : "ನಿರ್ಣಾಯಕ ಗಡುವು"
+                      : currentLang === "en" ? "ACTIVE REMAND" : "ಸಕ್ರಿಯ ರಿಮಾಂಡ್"}
+                  </span>
+                </div>
+                <h4 className="text-xs font-bold text-stone-100 tracking-tight mt-0.5">
+                  {currentLang === "en"
+                    ? `STATUTORY REMAND STATUS: DAY ${remandDays} OF ${statutoryLimit} (${
+                        isCriticalWindow ? "CRITICAL WINDOW REACHED" : "INVESTIGATION TIMELINE ACTIVE"
+                      })`
+                    : `ಶಾಸನಬದ್ಧ ರಿಮಾಂಡ್ ಸ್ಥಿತಿ: ದಿನ ${remandDays} / ${statutoryLimit} (${
+                        isCriticalWindow ? "ನಿರ್ಣಾಯಕ ಹಂತ ತಲುಪಿದೆ" : "ತನಿಖಾ ಕಾಲಮಿತಿ ಸಕ್ರಿಯ"
+                      })`}
+                </h4>
+              </div>
+            </div>
+
+            {/* Countdown Badge */}
+            <div
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border shrink-0 ${
+                isCriticalWindow
+                  ? "bg-[#EF4444]/15 border-[#EF4444]/50 text-[#EF4444]"
+                  : "bg-stone-900 border-[#C79A4E]/40 text-[#C79A4E]"
+              }`}
+            >
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  isCriticalWindow ? "bg-[#EF4444] animate-ping" : "bg-[#C79A4E]"
+                }`}
+              />
+              <span className="text-xs font-mono font-black tracking-tight">
+                {daysUntilBail} {currentLang === "en" ? "DAYS UNTIL DEFAULT BAIL" : "ದಿನಗಳಲ್ಲಿ ಡೀಫಾಲ್ಟ್ ಜಾಮೀನು"}
+              </span>
+            </div>
+          </div>
+
+          {/* Graphical Threat Barometer Progress */}
+          <div className="py-3 space-y-1.5 relative z-10">
+            <div className="flex items-center justify-between text-[10px] font-mono text-stone-400">
+              <span className="flex items-center gap-1.5">
+                <span className="text-stone-300 font-bold">DAY 0</span> (Remand Order)
+              </span>
+              <span className="text-[#C79A4E] font-bold">
+                {remandPercentage}% ELAPSED
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className={statutoryLimit === 60 ? "text-[#EF4444] font-black" : "text-stone-400"}>
+                  DAY 60
+                </span>
+                {statutoryLimit === 90 && (
+                  <>
+                    <span>•</span>
+                    <span className="text-[#EF4444] font-black">DAY 90 (Heinous/Special)</span>
+                  </>
+                )}
+              </span>
+            </div>
+
+            {/* The Visual Barometer */}
+            <div className="w-full bg-[#0C0A09] border border-stone-800 rounded-lg h-5 p-0.5 overflow-hidden shadow-inner relative flex items-center">
+              <div
+                className={`h-full rounded transition-all duration-700 ease-out flex items-center justify-end pr-2 text-[9px] font-mono font-black ${
+                  isCriticalWindow
+                    ? "bg-gradient-to-r from-amber-600 via-[#EF4444] to-[#EF4444] text-white shadow-[0_0_12px_rgba(239,68,68,0.5)]"
+                    : "bg-gradient-to-r from-stone-700 via-[#C79A4E] to-[#C79A4E] text-stone-950 shadow-[0_0_12px_rgba(199,154,78,0.3)]"
+                }`}
+                style={{ width: `${Math.max(8, remandPercentage)}%` }}
+              >
+                {remandDays}d
+              </div>
+            </div>
+          </div>
+
+          {/* Critical Warning Callout Under Section 187(3) BNSS */}
+          {isCriticalWindow && (
+            <div className="bg-[#EF4444]/10 border border-[#EF4444]/50 rounded-lg p-3 flex items-start gap-2.5 text-xs text-[#EF4444] relative z-10 my-1 animate-pulse-subtle">
+              <AlertOctagon className="w-4 h-4 shrink-0 mt-0.5 text-[#EF4444]" />
+              <div className="flex-1 space-y-0.5 font-sans leading-relaxed">
+                <span className="font-mono font-bold tracking-wider text-[10.5px] uppercase block text-[#EF4444]">
+                  {currentLang === "en"
+                    ? "CRITICAL STATUTORY WARNING: § 187(3) BNSS DEFAULT BAIL HAZARD"
+                    : "ನಿರ್ಣಾಯಕ ಶಾಸನಬದ್ಧ ಎಚ್ಚರಿಕೆ: § 187(3) BNSS ಡೀಫಾಲ್ಟ್ ಜಾಮೀನು ಅಪಾಯ"}
+                </span>
+                <p className="text-stone-200 text-[11px]">
+                  {currentLang === "en"
+                    ? `Under Section 187(3) BNSS 2023, failure to submit the final police chargesheet within ${daysUntilBail} days results in an indefeasible right to automatic statutory default bail for this accused.`
+                    : `ಭಾರತೀಯ ನಾಗರಿಕ ಸುರಕ್ಷಾ ಸಂಹಿತೆ (BNSS) ಸೆಕ್ಷನ್ 187(3) ರ ಪ್ರಕಾರ, ಮುಂದಿನ ${daysUntilBail} ದಿನಗಳಲ್ಲಿ ಆರೋಪಪಟ್ಟಿ ಸಲ್ಲಿಸದಿದ್ದರೆ ಆರೋಪಿಗೆ ಸ್ವಯಂಚಾಲಿತ ಶಾಸನಬದ್ಧ ಡೀಫಾಲ್ಟ್ ಜಾಮೀನು ಹಕ್ಕು ಲಭ್ಯವಾಗುತ್ತದೆ.`}
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Mandatory Action Directive Toolbar */}
+          <div className="mt-2 pt-2.5 border-t border-stone-850 flex flex-col sm:flex-row sm:items-center justify-between gap-2 relative z-10">
+            <div className="flex items-center gap-1.5 text-[10.5px] font-mono text-stone-300">
+              <span className="text-[#C79A4E] font-bold">⚡ MANDATORY ACTION:</span>
+              <span className="text-stone-200">
+                {cardData?.mandatory_action ||
+                  (currentLang === "en"
+                    ? "Forward Case Diary to Circle Inspector • Expedite FSL Chemical Report"
+                    : "ಕೇಸ್ ಡೈರಿಯನ್ನು ಸಿಪಿಐ ಅವರಿಗೆ ಕಳುಹಿಸಿ • ಎಫ್‌ಎಸ್‌ಎಲ್ ವರದಿ ತ್ವರಿತಗೊಳಿಸಿ")}
+              </span>
+            </div>
+
+            {onFollowUpQuery && (
+              <button
+                type="button"
+                onClick={() =>
+                  onFollowUpQuery(
+                    `Expedite Section 187 BNSS chargesheet filing and forward case diary for ${
+                      cardData.suspect_name || cardData.accused_in_remand || cardData.accused_name || cardData.case_no || "remand suspect"
+                    }`
+                  )
+                }
+                className="flex items-center gap-1.5 px-3 py-1 rounded bg-[#0C0A09] hover:bg-stone-900 border border-[#C79A4E]/60 hover:border-[#C79A4E] text-[#C79A4E] text-[10.5px] font-mono font-bold tracking-wider uppercase transition-all cursor-pointer shadow-sm hover:scale-[1.02] shrink-0"
+              >
+                <span>{currentLang === "en" ? "Expedite §187 Filing" : "§187 ಸಲ್ಲಿಕೆ ತ್ವರಿತಗೊಳಿಸಿ"}</span>
+                <ChevronRight className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 2. Statutory Procedural Defect / Urgency Warning Banner */}
       {warningMessage && (
