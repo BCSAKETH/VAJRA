@@ -5,6 +5,7 @@ import {
   MessageSquarePlus, FolderKanban, Map, UserCheck, Loader2,
   ChevronLeft, ChevronRight, Shield, IdCard, Building2, X, LogOut,
   Settings as SettingsIcon, Search, LayoutList, Plus, ChevronUp, ChevronDown,
+  Bot,
 } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
 import { GroupedSessionList, SessionSummary, Investigation, SessionMetaEntry, GroupInfo } from "./GroupedSessionList";
@@ -155,6 +156,7 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
     { id: "investigations" as ScreenId, label: t.navInvestigations, icon: FolderKanban },
     { id: "district_dashboard", label: t.navDistrictDashboard, icon: Map },
     ...(roleTier === "supervisor" || badgeNumber === "2346836" ? [{ id: "supervisor" as ScreenId, label: t.navSupervisor, icon: UserCheck }] : []),
+    { id: "agent_workspace" as ScreenId, label: lang === "en" ? "🤖 Agent Workspaces" : "🤖 ಏಜೆಂಟ್ ಕಾರ್ಯಕ್ಷೇತ್ರಗಳು", icon: Bot },
   ];
 
   // ---- profile popover with immediate initial fetch ----

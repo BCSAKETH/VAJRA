@@ -38,6 +38,9 @@ const InvestigationsScreen = lazy(() =>
 const AllChatsScreen = lazy(() =>
   import("./screens/AllChatsScreen").then((m) => ({ default: m.AllChatsScreen }))
 );
+const AgentWorkspaceScreen = lazy(() =>
+  import("./screens/AgentWorkspaceScreen").then((m) => ({ default: m.AgentWorkspaceScreen }))
+);
 
 const ScreenLoadingFallback: React.FC = () => (
   <div className="h-full flex items-center justify-center">
@@ -91,7 +94,7 @@ const AppContent: React.FC = () => {
   // Every other screen is fine to unmount/remount (no long-lived state to
   // preserve) and stays lazy/code-split as before.
   const isChatActive = currentScreen === "ai_chat" || !(
-    ["supervisor", "audit", "district_dashboard", "investigations", "all_chats"].includes(currentScreen)
+    ["supervisor", "audit", "district_dashboard", "investigations", "all_chats", "agent_workspace"].includes(currentScreen)
   );
 
   const renderOtherScreen = () => {
@@ -100,6 +103,8 @@ const AppContent: React.FC = () => {
         return <InvestigationsScreen />;
       case "all_chats":
         return <AllChatsScreen />;
+      case "agent_workspace":
+        return <AgentWorkspaceScreen />;
       case "supervisor":
       case "audit":
         if (roleTier !== "supervisor") {
