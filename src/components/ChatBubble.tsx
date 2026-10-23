@@ -5,6 +5,8 @@ import { translations } from "../i18n";
 import { API_BASE } from "../config";
 import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ShieldAlert, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2, Info, Pin, PinOff, ScanLine } from "lucide-react";
 import { InlineWidget } from "./InlineWidget";
+import { UniversalPoliceIntelCard } from "./UniversalPoliceIntelCard";
+import { StreamingOpenUIParser, OpenUINode } from "../services/openuiParser";
 import { ReasonCollectionModal } from "./ReasonCollectionModal";
 import { TacticalClarificationModal, InlineTacticalInquest } from "./TacticalClarificationModal";
 
@@ -929,8 +931,19 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   // stray leading "\n" so answers don't start with a blank line.
   const displayText = decodeDisplayText(rawDisplayText).replace(/^\n+/, "");
 
+  // Progressive Generative UI (OpenUI) Streaming AST Parsing
+  const { cleanDisplayText, openuiCard } = React.useMemo(() => {
+    if (displayText && (displayText.includes("<tactical_card") || displayText.includes("<entry"))) {
+      const parser = new StreamingOpenUIParser();
+      const res = parser.parseFullText(displayText);
+      return { cleanDisplayText: res.text, openuiCard: res.dynamicCard };
+    }
+    const fallbackNode = (message.data as any)?._openui_node || (message.data as any)?.openui_node || null;
+    return { cleanDisplayText: displayText, openuiCard: fallbackNode };
+  }, [displayText, message.data]);
+
   // Batch & defer heavy markdown parsing during rapid token streaming (50 tokens/sec)
-  const deferredDisplayText = React.useDeferredValue(displayText);
+  const deferredDisplayText = React.useDeferredValue(cleanDisplayText);
   const renderedRichContent = React.useMemo(() => {
     return renderRich(deferredDisplayText, sizeStyles);
   }, [deferredDisplayText, sizeStyles]);
@@ -1673,6 +1686,19 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
                   </div>
                 )}
                 {renderedRichContent}
+                {/* Progressive OpenUI Streaming Tactical Card */}
+                {openuiCard && (
+                  <div className="mt-3.5 w-full">
+                    <UniversalPoliceIntelCard
+                      type={openuiCard.type}
+                      data={openuiCard.props}
+                      openuiNode={openuiCard}
+                      isStreaming={!openuiCard.isComplete}
+                      lang={effectiveLang}
+                      onFollowUpQuery={onQuickReply}
+                    />
+                  </div>
+                )}
               </div>
             )
             : <div className={`whitespace-pre-wrap font-sans text-stone-200 ${sizeStyles.userBubble}`}>{displayText}</div>}

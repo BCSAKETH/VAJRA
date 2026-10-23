@@ -13,6 +13,7 @@ import {
   Calendar, HeartHandshake, UserX, Award, Briefcase, Compass, ScanFace,
   Terminal, Search, FileCheck, Gavel, Database, X
 } from "lucide-react";
+import { OpenUINode } from "../services/openuiParser";
 
 export interface UniversalPoliceIntelCardProps {
   type: string;
@@ -22,11 +23,24 @@ export interface UniversalPoliceIntelCardProps {
   onClose?: () => void;
   daysInRemand?: number;
   remandLimit?: 60 | 90;
+  openuiNode?: OpenUINode | null;
+  isStreaming?: boolean;
 }
 
 // Icon & Meta Resolver for any specialized police intelligence tool card
 export const getTacticalMeta = (type: string, data?: any, lang: "en" | "kn" = "en") => {
   const t = (type || "").toLowerCase();
+
+  if (t.includes("ledger") || t.includes("financial") || t.includes("transaction") || t.includes("money_trail")) {
+    return {
+      title: lang === "en" ? "Financial Transaction & Money Laundering Ledger" : "ಹಣಕಾಸು ವಹಿವಾಟು ಮತ್ತು ಮನಿ ಲಾಂಡರಿಂಗ್ ಲೆಡ್ಜರ್",
+      statute: "§ 107 BNSS / PMLA Act • § 63 BSA",
+      category: "FINANCIAL INTELLIGENCE LEDGER",
+      icon: Landmark,
+      badgeColor: "bg-[#C79A4E]/20 text-[#E4C590] border-[#C79A4E]/40",
+      accent: "#C79A4E"
+    };
+  }
 
   if (t.includes("bail_countdown") || t.includes("default_bail") || t.includes("statutory_deadline") || t.includes("remand_radar")) {
     return {
@@ -345,7 +359,9 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
   onFollowUpQuery,
   onClose,
   daysInRemand,
-  remandLimit
+  remandLimit,
+  openuiNode,
+  isStreaming = false
 }) => {
   const cardData: Record<string, any> = (data && typeof data === "object") ? data : {};
   const currentLang: "en" | "kn" = lang === "kn" ? "kn" : "en";
@@ -719,6 +735,193 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
           </div>
         </div>
       </div>
+
+      {/* 1.25 OpenUI Progressive Streaming Hydration Table / Dynamic AST Nodes */}
+      {openuiNode && (
+        <div className="bg-[#0C0A09] border border-[#C79A4E]/50 rounded-xl p-4 shadow-2xl relative overflow-hidden space-y-4 animate-fade-in transition-all">
+          {/* Subtle Ambient Gold Glow */}
+          <div
+            className="absolute -right-12 -top-12 w-48 h-48 rounded-full opacity-15 blur-3xl pointer-events-none"
+            style={{ backgroundColor: meta.accent || "#C79A4E" }}
+          />
+
+          {/* Hydration Status Bar */}
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-stone-850 relative z-10">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-lg bg-[#C79A4E]/15 border border-[#C79A4E]/40 text-[#C79A4E] shrink-0">
+                <Sparkles className="w-4 h-4 animate-pulse" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-mono font-bold tracking-widest uppercase text-[#C79A4E]">
+                    OPENUI AST PROGRESSIVE HYDRATION
+                  </span>
+                  <span
+                    className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-black uppercase flex items-center gap-1 ${
+                      isStreaming || !openuiNode.isComplete
+                        ? "bg-amber-500/20 border border-amber-500/40 text-amber-300 animate-pulse"
+                        : "bg-emerald-500/20 border border-emerald-500/40 text-emerald-300"
+                    }`}
+                  >
+                    {isStreaming || !openuiNode.isComplete ? (
+                      <>
+                        <Radio className="w-2.5 h-2.5 animate-pulse text-amber-400" />
+                        <span>LIVE HYDRATING (FRAME-BY-FRAME)</span>
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
+                        <span>§63 BSA CERTIFIED STREAM</span>
+                      </>
+                    )}
+                  </span>
+                </div>
+                <h4 className="text-xs font-bold text-stone-100 tracking-tight mt-0.5">
+                  {openuiNode.props.title || meta.title}
+                </h4>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 text-[10px] font-mono text-stone-400">
+              <span className="px-2 py-0.5 rounded bg-stone-900 border border-stone-800 text-stone-300">
+                {openuiNode.children.length} {openuiNode.children.length === 1 ? "Node Hydrated" : "Nodes Hydrated"}
+              </span>
+              <span className="text-[#C79A4E] font-bold">
+                {openuiNode.props.tokenId || "#OPENUI-STREAM"}
+              </span>
+            </div>
+          </div>
+
+          {/* Progressive Table Rendering for Financial Transactions / Ledger Entries */}
+          {openuiNode.children.length > 0 && openuiNode.children.some((c) => c.props.acc || c.props.account || c.props.amount) ? (
+            <div className="space-y-3 relative z-10">
+              <div className="overflow-x-auto rounded-lg border border-stone-850 bg-stone-950/60">
+                <table className="w-full text-left border-collapse text-xs font-mono">
+                  <thead>
+                    <tr className="border-b border-stone-800 bg-stone-900/80 text-[10px] text-stone-400 uppercase tracking-wider">
+                      <th className="py-2.5 px-3">Account No.</th>
+                      <th className="py-2.5 px-3">Bank / Branch</th>
+                      <th className="py-2.5 px-3">Amount (INR)</th>
+                      <th className="py-2.5 px-3">Status Badge</th>
+                      <th className="py-2.5 px-3">Provenance</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-stone-850/80">
+                    {openuiNode.children.map((child, idx) => {
+                      const acc = child.props.acc || child.props.account || child.props.account_no || "N/A";
+                      const bank = child.props.bank || child.props.branch || "Scheduled Commercial Bank";
+                      const rawAmount = child.props.amount ? Number(String(child.props.amount).replace(/[^0-9.]/g, "")) : 0;
+                      const formattedAmount = rawAmount ? `₹${rawAmount.toLocaleString("en-IN")}` : (child.props.amount || "—");
+                      const flag = (child.props.flag || child.props.status || "UNVERIFIED").toUpperCase();
+                      const prov = child.props.provenance || "§63 BSA Verified";
+
+                      const isMule = flag.includes("MULE");
+                      const isHawala = flag.includes("HAWALA");
+                      const isShell = flag.includes("SHELL");
+
+                      return (
+                        <tr
+                          key={idx}
+                          className="hover:bg-stone-900/40 transition-colors animate-fade-in"
+                        >
+                          <td className="py-2.5 px-3 font-bold text-stone-200">
+                            {acc}
+                          </td>
+                          <td className="py-2.5 px-3 text-stone-300">
+                            {bank}
+                          </td>
+                          <td className="py-2.5 px-3 font-bold text-[#C79A4E]">
+                            {formattedAmount}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            <span
+                              className={`px-2 py-0.5 rounded text-[9.5px] font-bold border ${
+                                isMule
+                                  ? "bg-rose-500/15 border-rose-500/40 text-rose-300"
+                                  : isHawala
+                                  ? "bg-purple-500/15 border-purple-500/40 text-purple-300"
+                                  : isShell
+                                  ? "bg-amber-500/15 border-amber-500/40 text-amber-300"
+                                  : "bg-emerald-500/15 border-emerald-500/40 text-emerald-300"
+                              }`}
+                            >
+                              {flag}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-[10px] text-stone-400">
+                            {prov}
+                          </td>
+                        </tr>
+                      );
+                    })}
+
+                    {/* Progressive Hydration Stream Shimmer Row (Prevents layout jumps) */}
+                    {(isStreaming || !openuiNode.isComplete) && (
+                      <tr className="bg-stone-900/30 border-t border-stone-850 animate-pulse">
+                        <td colSpan={5} className="py-2.5 px-3 text-[10.5px] font-mono text-[#C79A4E]/80 text-center">
+                          <div className="flex items-center justify-center gap-2">
+                            <Loader2 className="w-3.5 h-3.5 animate-spin text-[#C79A4E]" />
+                            <span>Streaming next record: &lt;entry acc="..." /&gt;</span>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              {/* Running Total Calculation Footer */}
+              <div className="p-3 rounded-lg bg-stone-950 border border-stone-800 flex items-center justify-between text-xs font-mono">
+                <span className="text-stone-400">
+                  Total Diverted Funds Identified:
+                </span>
+                <span className="text-[#C79A4E] font-bold text-sm">
+                  ₹{openuiNode.children.reduce((acc, c) => {
+                    const n = c.props.amount ? Number(String(c.props.amount).replace(/[^0-9.]/g, "")) : 0;
+                    return acc + (isNaN(n) ? 0 : n);
+                  }, 0).toLocaleString("en-IN")}{" "}
+                  <span className="text-[10px] text-stone-500 font-normal">
+                    {isStreaming || !openuiNode.isComplete ? "(Calculating live...)" : "(Final Audit)"}
+                  </span>
+                </span>
+              </div>
+            </div>
+          ) : openuiNode.children.length > 0 ? (
+            /* Generic OpenUI Child Nodes Grid */
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 relative z-10">
+              {openuiNode.children.map((child, idx) => (
+                <div
+                  key={idx}
+                  className="p-3 rounded-lg bg-stone-950/80 border border-stone-850 space-y-1 text-xs font-mono animate-fade-in"
+                >
+                  <div className="flex items-center justify-between text-[10px] text-stone-500 uppercase font-bold">
+                    <span>{child.type}</span>
+                    <span className="text-emerald-400">#NODE-{idx + 1}</span>
+                  </div>
+                  {Object.entries(child.props).map(([k, v]) => (
+                    <div key={k} className="flex items-center justify-between text-[11px]">
+                      <span className="text-stone-400">{k}:</span>
+                      <span className="text-stone-200 font-bold truncate max-w-[160px]">{String(v)}</span>
+                    </div>
+                  ))}
+                </div>
+              ))}
+              {(isStreaming || !openuiNode.isComplete) && (
+                <div className="p-3 rounded-lg bg-stone-900/30 border border-stone-850 border-dashed flex items-center justify-center gap-2 text-xs font-mono text-[#C79A4E] animate-pulse">
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Streaming child nodes...</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            /* Root Card mounted immediately, awaiting first child element */
+            <div className="py-6 text-center text-xs font-mono text-[#C79A4E] bg-stone-950/40 rounded-lg border border-dashed border-[#C79A4E]/30 flex items-center justify-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin text-[#C79A4E]" />
+              <span>Card shell mounted. Waiting for streaming OpenUI child tokens...</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* 1.5 Relocated Section 187 BNSS Statutory Remand Deadline Radar UI (Domain 2 Tactical Threat Barometer) */}
       {hasRemandRadar && (
