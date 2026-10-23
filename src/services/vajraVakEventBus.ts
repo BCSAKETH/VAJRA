@@ -22,7 +22,8 @@ export type VajraVakEvent =
   | "critical_alert"
   | "page_changed"
   | "idle_timeout"
-  | "user_returned";
+  | "user_returned"
+  | "deep_analysis_started";
 
 export interface MascotEventPayload {
   caseNo?: string;
@@ -36,6 +37,7 @@ export type EventHandler = (payload?: MascotEventPayload) => void;
 
 export class VajraVakEventBus {
   private handlers: Map<VajraVakEvent, Set<EventHandler>> = new Map();
+  private wildcardHandlers: Set<(event: { type: VajraVakEvent; payload?: MascotEventPayload }) => void> = new Set();
 
   on(event: VajraVakEvent, handler: EventHandler): () => void {
     if (!this.handlers.has(event)) {
@@ -55,6 +57,13 @@ export class VajraVakEventBus {
     }
   }
 
+  subscribe(handler: (event: { type: VajraVakEvent; payload?: MascotEventPayload }) => void): () => void {
+    this.wildcardHandlers.add(handler);
+    return () => {
+      this.wildcardHandlers.delete(handler);
+    };
+  }
+
   emit(event: VajraVakEvent, payload?: MascotEventPayload): void {
     const set = this.handlers.get(event);
     if (set) {
@@ -66,7 +75,17 @@ export class VajraVakEventBus {
         }
       });
     }
+
+    this.wildcardHandlers.forEach((handler) => {
+      try {
+        handler({ type: event, payload });
+      } catch (e) {
+        console.error(`[VajraVakEventBus] Error in wildcard handler for event '${event}':`, e);
+      }
+    });
   }
 }
 
 export const vakBus = new VajraVakEventBus();
+export const vajraVakBus = vakBus;
+
