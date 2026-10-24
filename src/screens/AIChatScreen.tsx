@@ -1035,7 +1035,11 @@ export const AIChatScreen: React.FC = () => {
       body: JSON.stringify({ pinned: !currentlyPinned }),
     }).catch(() => {
       setChatMessages((prev) => prev.map((m) => (m.msgId === msgId ? { ...m, isPinned: currentlyPinned } : m)));
-      addToast({ id: `pin-fail-${Date.now()}`, title: lang === "en" ? "Pin failed" : "ಪಿನ್ ವಿಫಲವಾಗಿದೆ", message: lang === "en" ? "Could not update this message. Try again." : "ಈ ಸಂದೇಶವನ್ನು ನವೀಕರಿಸಲಾಗಲಿಲ್ಲ. ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.", severity: "Warning", timestamp: new Date().toISOString() });
+      addToast(
+        lang === "en" ? "Pin failed" : "ಪಿನ್ ವಿಫಲವಾಗಿದೆ",
+        lang === "en" ? "Could not update this message. Try again." : "ಈ ಸಂದೇಶವನ್ನು ನವೀಕರಿಸಲಾಗಲಿಲ್ಲ. ಮತ್ತೆ ಪ್ರಯತ್ನಿಸಿ.",
+        "Warning"
+      );
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lang]);

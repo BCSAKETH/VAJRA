@@ -455,14 +455,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
   // use the functional updater form, so neither needs anything in its
   // dependency array to stay correct.
   const addToast = useCallback((
-    title: string,
-    message: string,
-    severity: "Critical" | "Warning" | "Info" | "Success",
+    title: any,
+    message?: any,
+    severity: "Critical" | "Warning" | "Info" | "Success" = "Info",
     realTimestamp?: string,
   ) => {
+    let resolvedTitle = "";
+    let resolvedMessage = "";
+    let resolvedSeverity: "Critical" | "Warning" | "Info" | "Success" = severity || "Info";
+
+    if (title && typeof title === "object") {
+      resolvedTitle = String(title.title || "");
+      resolvedMessage = String(title.message || "");
+      const rawSev = (title.severity || title.type || "Info").toString().toLowerCase();
+      resolvedSeverity = rawSev.includes("warn") ? "Warning" : rawSev.includes("crit") || rawSev.includes("err") ? "Critical" : rawSev.includes("succ") ? "Success" : "Info";
+    } else {
+      resolvedTitle = String(title || "");
+      resolvedMessage = String(message || "");
+    }
+
     setNotifications((prev) => {
       // Deduplicate to prevent spam on remount / rapid polling
-      const isDuplicate = prev.some((n) => n.title === title && n.message === message);
+      const isDuplicate = prev.some((n) => n.title === resolvedTitle && n.message === resolvedMessage);
       if (isDuplicate) return prev;
 
       const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
@@ -470,7 +484,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         ? parseServerTimestamp(realTimestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
         : new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
-      const newToast: ToastMessage = { id, title, message, severity, timestamp, read: false };
+      const newToast: ToastMessage = { id, title: resolvedTitle, message: resolvedMessage, severity: resolvedSeverity, timestamp, read: false };
       setToasts((t) => [...t, newToast]);
       return [newToast, ...prev];
     });
@@ -487,19 +501,33 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
   // buried real screen controls under "+N more notifications". They still
   // land in the bell icon's unread count exactly like before.
   const addNotification = useCallback((
-    title: string,
-    message: string,
-    severity: "Critical" | "Warning" | "Info" | "Success",
+    title: any,
+    message?: any,
+    severity: "Critical" | "Warning" | "Info" | "Success" = "Info",
     realTimestamp?: string,
   ) => {
+    let resolvedTitle = "";
+    let resolvedMessage = "";
+    let resolvedSeverity: "Critical" | "Warning" | "Info" | "Success" = severity || "Info";
+
+    if (title && typeof title === "object") {
+      resolvedTitle = String(title.title || "");
+      resolvedMessage = String(title.message || "");
+      const rawSev = (title.severity || title.type || "Info").toString().toLowerCase();
+      resolvedSeverity = rawSev.includes("warn") ? "Warning" : rawSev.includes("crit") || rawSev.includes("err") ? "Critical" : rawSev.includes("succ") ? "Success" : "Info";
+    } else {
+      resolvedTitle = String(title || "");
+      resolvedMessage = String(message || "");
+    }
+
     setNotifications((prev) => {
-      const isDuplicate = prev.some((n) => n.title === title && n.message === message);
+      const isDuplicate = prev.some((n) => n.title === resolvedTitle && n.message === resolvedMessage);
       if (isDuplicate) return prev;
       const id = `notif-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
       const timestamp = realTimestamp
         ? parseServerTimestamp(realTimestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
         : new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-      return [{ id, title, message, severity, timestamp, read: false }, ...prev];
+      return [{ id, title: resolvedTitle, message: resolvedMessage, severity: resolvedSeverity, timestamp, read: false }, ...prev];
     });
   }, []);
 

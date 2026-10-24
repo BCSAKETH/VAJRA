@@ -222,14 +222,13 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
 
     vajraVakBus.emit("app_loaded");
 
-    addToast({
-      title: lang === "en" ? "Mascot & Voice Configuration Saved" : "ಮ್ಯಾಸ್ಕಾಟ್ ಮತ್ತು ಧ್ವನಿ ಸಂರಚನೆ ಉಳಿಸಲಾಗಿದೆ",
-      message:
-        lang === "en"
-          ? `Call-sign "${mascotCallSign}" active. Audio & Wake-word profiles updated.`
-          : `ಕಾಲ್-ಸೈನ್ "${mascotCallSign}" ಸಕ್ರಿಯವಾಗಿದೆ. ಆಡಿಯೋ ಪ್ರೊಫೈಲ್ ನವೀಕರಿಸಲಾಗಿದೆ.`,
-      type: "success",
-    });
+    addToast(
+      lang === "en" ? "Mascot & Voice Configuration Saved" : "ಮ್ಯಾಸ್ಕಾಟ್ ಮತ್ತು ಧ್ವನಿ ಸಂರಚನೆ ಉಳಿಸಲಾಗಿದೆ",
+      lang === "en"
+        ? `Call-sign "${mascotCallSign}" active. Audio & Wake-word profiles updated.`
+        : `ಕಾಲ್-ಸೈನ್ "${mascotCallSign}" ಸಕ್ರಿಯವಾಗಿದೆ. ಆಡಿಯೋ ಪ್ರೊಫೈಲ್ ನವೀಕರಿಸಲಾಗಿದೆ.`,
+      "Success"
+    );
   };
 
   useEffect(() => {
@@ -296,9 +295,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
 
   const fetchNarrativeAndDirectives = () => {
     setIsLoadingMemories(true);
-    // Fetch narrative
-    fetch(`${API_BASE}/api/memory/narrative/${encodeURIComponent(activeSessionId)}`)
-      .then((res) => (res.ok ? res.json() : null))
+    const enc = encodeURIComponent(activeSessionId);
+    fetch(`${API_BASE}/api/memory/narrative?session_id=${enc}`)
+      .then((res) => (res.ok ? res.json() : fetch(`${API_BASE}/api/memory/narrative/${enc}`).then((r) => (r.ok ? r.json() : null))))
       .then((d) => {
         if (d?.narrative && d.narrative !== "No prior narrative recorded for this session.") {
           setActiveNarrative(d.narrative);

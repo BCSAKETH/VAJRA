@@ -181,6 +181,8 @@ export const NotificationBellPanel: React.FC = () => {
                   <div className="divide-y divide-stone-850">
                     {notifications.map((notif) => {
                       const style = getSeverityStyles(notif.severity);
+                      const displayTitle = typeof notif.title === "object" ? String((notif.title as any)?.title || "") : String(notif.title || "");
+                      const displayMessage = typeof notif.message === "object" ? String((notif.message as any)?.message || "") : (notif.message ? String(notif.message) : "");
                       return (
                         <div
                           key={notif.id}
@@ -192,14 +194,14 @@ export const NotificationBellPanel: React.FC = () => {
                           <div className="flex-1 space-y-0.5 min-w-0 pr-4">
                             <div className="flex justify-between items-baseline">
                               <span className={`text-[10px] font-black uppercase tracking-wider font-mono ${style.text}`}>
-                                {notif.title}
+                                {displayTitle}
                               </span>
                               <span className="text-[9px] text-stone-500 font-mono shrink-0">
                                 {notif.timestamp}
                               </span>
                             </div>
                             <p className="text-[11px] text-stone-350 leading-relaxed font-sans break-words">
-                              {notif.message}
+                              {displayMessage}
                             </p>
                           </div>
 

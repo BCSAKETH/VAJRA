@@ -164,23 +164,19 @@ app.include_router(officer_governance.router)
 @app.middleware("http")
 async def custom_cors_and_options_handler(request: Request, call_next):
     origin = request.headers.get("origin", "")
-    is_catalyst_domain = any(dom in origin for dom in ["catalystserverless.in", "catalystappsail.in", "zoho.com", "zoho.in"])
 
     if request.method == "OPTIONS":
         headers = {
+            "Access-Control-Allow-Origin": origin if origin else "*",
             "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
             "Access-Control-Allow-Headers": "*",
             "Access-Control-Allow-Credentials": "true",
         }
-        if not is_catalyst_domain:
-            headers["Access-Control-Allow-Origin"] = origin if origin else "*"
         return Response(status_code=200, headers=headers)
 
     response = await call_next(request)
     
-    # In Catalyst AppSail Cloud, Zoho Gateway Server (ZGS) automatically injects Access-Control-Allow-Origin
-    # for registered Catalyst client domains (*.catalystserverless.in). Adding it here causes duplicate headers.
-    if not is_catalyst_domain and "access-control-allow-origin" not in response.headers:
+    if "access-control-allow-origin" not in response.headers and "Access-Control-Allow-Origin" not in response.headers:
         response.headers["Access-Control-Allow-Origin"] = origin if origin else "*"
         response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS, PATCH"
         response.headers["Access-Control-Allow-Headers"] = "*"
@@ -5750,27 +5746,42 @@ class DirectiveCreateRequest(BaseModel):
     directive_text: str
 
 
-@app.get("/api/memory/narrative/{session_id}")
+@app.get("/api/memory/narrative")
+async def get_session_narrative_query_endpoint(session_id: str = Query("", alias="session_id")):
+    """Retrieves narrative via query param ?session_id=... to bypass proxy path-encoding issues."""
+    import urllib.parse
+    clean_session_id = urllib.parse.unquote(session_id).strip()
+    narrative = get_session_narrative(clean_session_id)
+    return {"session_id": clean_session_id, "narrative": narrative}
+
+
+@app.get("/api/memory/narrative/{session_id:path}")
 async def get_session_narrative_endpoint(session_id: str, request: Request):
     """Retrieves the rolling narrative ledger for a session."""
-    narrative = get_session_narrative(session_id)
-    return {"session_id": session_id, "narrative": narrative}
+    import urllib.parse
+    clean_session_id = urllib.parse.unquote(session_id).strip()
+    narrative = get_session_narrative(clean_session_id)
+    return {"session_id": clean_session_id, "narrative": narrative}
 
 
-@app.post("/api/memory/narrative/{session_id}")
+@app.post("/api/memory/narrative/{session_id:path}")
 async def update_session_narrative_endpoint(session_id: str, payload: NarrativeUpdateRequest, request: Request):
     """Manually updates the rolling narrative ledger for a session."""
-    success = update_custom_session_narrative(session_id, payload.narrative)
+    import urllib.parse
+    clean_session_id = urllib.parse.unquote(session_id).strip()
+    success = update_custom_session_narrative(clean_session_id, payload.narrative)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to update session narrative.")
-    return {"status": "updated", "session_id": session_id, "narrative": payload.narrative}
+    return {"status": "updated", "session_id": clean_session_id, "narrative": payload.narrative}
 
 
-@app.delete("/api/memory/narrative/{session_id}")
+@app.delete("/api/memory/narrative/{session_id:path}")
 async def clear_session_narrative_endpoint(session_id: str, request: Request):
     """Clears the rolling narrative ledger for a session."""
-    success = clear_session_narrative(session_id)
-    return {"status": "cleared" if success else "failed", "session_id": session_id}
+    import urllib.parse
+    clean_session_id = urllib.parse.unquote(session_id).strip()
+    success = clear_session_narrative(clean_session_id)
+    return {"status": "cleared" if success else "failed", "session_id": clean_session_id}
 
 
 @app.get("/api/memory/narratives")

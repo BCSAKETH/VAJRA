@@ -27,6 +27,9 @@ const ToastItem: React.FC<{
   const style = SEVERITY_STYLES[severity] || SEVERITY_STYLES.Info;
   const Icon = style.icon;
 
+  const displayTitle = typeof title === "object" ? String((title as any)?.title || "") : String(title || "");
+  const displayMessage = typeof message === "object" ? String((message as any)?.message || "") : (message ? String(message) : "");
+
   return (
     <div
       className={`glass-panel border ${style.border} ${style.bg} rounded-xl p-3.5 shadow-2xl w-80 animate-fade-in pointer-events-auto`}
@@ -36,10 +39,10 @@ const ToastItem: React.FC<{
         <Icon className={`w-4 h-4 shrink-0 mt-0.5 ${style.text}`} />
         <div className="min-w-0 flex-1">
           <div className="flex items-center justify-between gap-2">
-            <p className={`text-xs font-black uppercase tracking-wider ${style.text}`}>{title}</p>
+            <p className={`text-xs font-black uppercase tracking-wider ${style.text}`}>{displayTitle}</p>
             <span className="text-[9px] text-stone-550 font-mono shrink-0">{timestamp}</span>
           </div>
-          {message && <p className="text-[11px] text-stone-300 mt-1 leading-relaxed break-words">{message}</p>}
+          {displayMessage && <p className="text-[11px] text-stone-300 mt-1 leading-relaxed break-words">{displayMessage}</p>}
         </div>
         <button
           onClick={() => onDismiss(id)}
