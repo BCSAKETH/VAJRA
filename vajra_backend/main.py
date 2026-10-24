@@ -5815,6 +5815,36 @@ async def spotlight_search_endpoint(q: str = Query("", alias="q"), category: str
     return {"query": q, "category": category, "results": results, "count": len(results)}
 
 
+# =============================================================================
+# CATALYST CRON AUTOMATION: MIDNIGHT SPATIAL INDEX SYNC (00:05 IST)
+# =============================================================================
+
+@app.post("/api/spatial/seed-index")
+async def trigger_spatial_seed_cron(request: Request, background_tasks: BackgroundTasks):
+    """
+    Triggered nightly at 00:05 IST by Zoho Catalyst Cron scheduler.
+    Executes seed_stratus_index.py pipeline asynchronously in the background.
+    """
+    def _run_seeding():
+        try:
+            logger.info("Executing midnight spatial index synchronization pipeline...")
+            import seed_stratus_index
+            exit_code = seed_stratus_index.main()
+            logger.info(f"Midnight spatial seeding finished with code: {exit_code}")
+        except Exception as e:
+            logger.error(f"Midnight spatial seeding pipeline failed: {e}")
+
+    background_tasks.add_task(_run_seeding)
+    return {
+        "status": "triggered",
+        "job": "midnight_spatial_indexer",
+        "schedule": "00:05 IST",
+        "target": "vajra_backend/seed_stratus_index.py",
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+
 class CoworkInviteRequest(BaseModel):
     session_id: str
     invitee_badge: str

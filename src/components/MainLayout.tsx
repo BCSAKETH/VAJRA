@@ -25,6 +25,9 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
     goForward,
     canGoBack,
     canGoForward,
+    zenMode,
+    toggleZenMode,
+    activeChatSessionId,
   } = useApp();
 
   // §9.1 Unified Sidebar: nav rail, grouped chat/investigation lists, and
@@ -57,61 +60,83 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
       {/* Indian Tricolour Top Accent Strip */}
       <div className="tricolour-strip shrink-0" />
 
-      {/* Main Container. min-h-0 is required here (and on every nested
-          flex-1 ancestor below down to AIChatScreen's own root) -- without
-          it, a flex item's default auto min-height refuses to shrink below
-          its content's natural size, so a long sidebar list or message
-          thread silently grows this whole row (and therefore the page)
-          taller than the viewport instead of clipping/scrolling internally.
-          Confirmed live: this is exactly what made the sidebar list run off
-          past the bottom of the screen and pushed the composer down to the
-          real (oversized) page bottom instead of the viewport bottom. */}
+      {/* Main Container */}
       <div className="flex flex-1 min-h-0 overflow-hidden">
-        {/* §9.1 Unified Sidebar -- one merged panel (nav + grouped chat/
-            investigation lists + profile), replacing the old icon-only rail
-            + chat-screen-local ChatHistoryPanel. Hover-to-expand handlers
-            stay on this wrapper (unchanged behavior); the click toggle and
-            everything else now lives inside UnifiedSidebar itself. */}
-        <div onMouseEnter={() => setIsSidebarHovered(true)} onMouseLeave={() => setIsSidebarHovered(false)} className="contents">
+        {/* Unified Sidebar -- completely collapses in Zen Mode for full-width workspace */}
+        <div
+          onMouseEnter={() => !zenMode && setIsSidebarHovered(true)}
+          onMouseLeave={() => !zenMode && setIsSidebarHovered(false)}
+          className={zenMode ? "hidden" : "contents"}
+        >
           <UnifiedSidebar isExpanded={isExpanded} onToggleExpand={handleToggleSidebar} />
         </div>
 
         {/* Content Shell */}
         <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden">
           {/* Header Bar */}
-          <header className="glass-panel border-b border-stone-800 py-3.5 px-6 flex items-center justify-between z-10 shrink-0">
+          <header className="glass-panel border-b border-stone-800 py-3 px-6 flex items-center justify-between z-10 shrink-0">
             <div className="flex items-center gap-3">
-              {/* Back/Forward screen navigation -- browser-back-button-style,
-                  scoped to in-app screen switches only. */}
-              <div className="hidden sm:flex items-center gap-1 mr-1">
-                <button
-                  onClick={goBack}
-                  disabled={!canGoBack}
-                  aria-label="Back"
-                  title={lang === "en" ? "Back" : "ಹಿಂದೆ"}
-                  className="p-1.5 rounded-lg border border-stone-800 hover:border-stone-700 bg-stone-900/60 hover:bg-stone-850/80 text-stone-400 hover:text-stone-200 transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                >
-                  <ChevronLeft className="w-4 h-4" />
-                </button>
-                <button
-                  onClick={goForward}
-                  disabled={!canGoForward}
-                  aria-label="Forward"
-                  title={lang === "en" ? "Forward" : "ಮುಂದೆ"}
-                  className="p-1.5 rounded-lg border border-stone-800 hover:border-stone-700 bg-stone-900/60 hover:bg-stone-850/80 text-stone-400 hover:text-stone-200 transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
-                >
-                  <ChevronRight className="w-4 h-4" />
-                </button>
-              </div>
-              <VajraLogo animated={false} size={20} className="md:hidden" />
-              <div className="min-w-0">
-                <h1 className="text-sm font-bold text-stone-200 tracking-wide truncate">
-                  {t.title}
-                </h1>
-                <p className="text-[10.5px] text-stone-500 truncate hidden sm:block">
-                  {t.ksp} • {t.scrb}
-                </p>
-              </div>
+              {/* One-Click Zen Collapse Toggle [|] */}
+              <button
+                onClick={toggleZenMode}
+                title={zenMode ? "Exit Zen Canvas [|]" : "Enter Zen Canvas [|]"}
+                className={`p-1.5 px-2 rounded-lg border text-xs font-mono font-bold transition-all cursor-pointer flex items-center gap-1.5 ${
+                  zenMode
+                    ? "bg-[#C79A4E]/20 text-[#C79A4E] border-[#C79A4E]/50 shadow-[0_0_12px_rgba(199,154,78,0.25)]"
+                    : "border-stone-800 hover:border-stone-700 bg-stone-900/60 hover:bg-stone-850 text-stone-400 hover:text-stone-200"
+                }`}
+              >
+                <span>[|]</span>
+                <span className="text-[11px] font-mono tracking-wider">
+                  {zenMode ? "ZEN MODE (ON)" : "ZEN"}
+                </span>
+              </button>
+
+              {zenMode ? (
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-stone-600">|</span>
+                  <span className="text-xs font-mono text-stone-300 font-semibold truncate hidden sm:inline">
+                    KSP VAJRA 3.0 • SECURE WORKSPACE
+                  </span>
+                  <span className="text-stone-600 hidden sm:inline">|</span>
+                  <span className="text-xs font-mono text-[#C79A4E] font-bold truncate">
+                    SESSION: {activeChatSessionId || "CR-89/2026 INQUEST"}
+                  </span>
+                </div>
+              ) : (
+                <>
+                  {/* Back/Forward screen navigation */}
+                  <div className="hidden sm:flex items-center gap-1 mr-1">
+                    <button
+                      onClick={goBack}
+                      disabled={!canGoBack}
+                      aria-label="Back"
+                      title={lang === "en" ? "Back" : "ಹಿಂದೆ"}
+                      className="p-1.5 rounded-lg border border-stone-800 hover:border-stone-700 bg-stone-900/60 hover:bg-stone-850/80 text-stone-400 hover:text-stone-200 transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={goForward}
+                      disabled={!canGoForward}
+                      aria-label="Forward"
+                      title={lang === "en" ? "Forward" : "ಮುಂದೆ"}
+                      className="p-1.5 rounded-lg border border-stone-800 hover:border-stone-700 bg-stone-900/60 hover:bg-stone-850/80 text-stone-400 hover:text-stone-200 transition-all disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      <ChevronRight className="w-4 h-4" />
+                    </button>
+                  </div>
+                  <VajraLogo animated={false} size={20} className="md:hidden" />
+                  <div className="min-w-0">
+                    <h1 className="text-sm font-bold text-stone-200 tracking-wide truncate">
+                      {t.title}
+                    </h1>
+                    <p className="text-[10.5px] text-stone-500 truncate hidden sm:block">
+                      {t.ksp} • {t.scrb}
+                    </p>
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Header Widgets */}

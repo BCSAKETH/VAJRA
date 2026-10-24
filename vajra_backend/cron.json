@@ -1,0 +1,15 @@
+[
+  {
+    "cron_name": "midnight_spatial_indexer",
+    "description": "Automated spatial pre-index delta sync at 00:05 IST every night",
+    "cron_type": "CronExpression",
+    "cron_expression": "5 0 * * *",
+    "time_zone": "Asia/Kolkata",
+    "target_type": "AppSail",
+    "target_details": {
+      "app_name": "vajra-backend",
+      "url": "/api/spatial/seed-index",
+      "method": "POST"
+    }
+  }
+]

@@ -51,7 +51,7 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
   const {
     t, lang, currentScreen, setCurrentScreen, roleTier, badgeNumber, setIsAuthenticated,
     activeChatSessionId, requestChatSessionSelect, requestNewChat, chatSessionsRefreshNonce,
-    isSettingsOpen, openSettings,
+    isSettingsOpen, openSettings, zenMode, toggleZenMode,
   } = useApp();
 
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -198,13 +198,22 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
         ) : (
           <VajraLogo size={22} className="mx-auto" />
         )}
-        <button
-          onClick={onToggleExpand}
-          aria-label={isExpanded ? "Collapse sidebar" : "Expand sidebar"}
-          className="p-1 rounded-md border border-stone-800 hover:border-stone-700 bg-stone-900/50 hover:bg-stone-800 text-stone-400 hover:text-stone-200 transition-colors"
-        >
-          {isExpanded ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={toggleZenMode}
+            title={zenMode ? "Exit Zen Canvas [|]" : "Enter Zen Canvas [|]"}
+            className="px-1.5 py-1 rounded-md border border-stone-800 hover:border-[#C79A4E]/50 bg-stone-900/50 hover:bg-stone-800 text-stone-400 hover:text-[#C79A4E] text-[10.5px] font-mono font-bold transition-colors cursor-pointer"
+          >
+            [|]
+          </button>
+          <button
+            onClick={onToggleExpand}
+            aria-label={isExpanded ? "Collapse sidebar" : "Expand sidebar"}
+            className="p-1 rounded-md border border-stone-800 hover:border-stone-700 bg-stone-900/50 hover:bg-stone-800 text-stone-400 hover:text-stone-200 transition-colors cursor-pointer"
+          >
+            {isExpanded ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+          </button>
+        </div>
       </div>
 
       {/* Fixed top nav */}

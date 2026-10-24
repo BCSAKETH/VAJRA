@@ -215,6 +215,10 @@ interface AppContextType {
   requestNewChat: () => void;
   chatSessionsRefreshNonce: number;
   bumpChatSessionsRefresh: () => void;
+  // Domain 9: Zen Command Canvas full-width distraction-free mode
+  zenMode: boolean;
+  setZenMode: React.Dispatch<React.SetStateAction<boolean>>;
+  toggleZenMode: () => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -779,6 +783,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     setBadgeNumberState(badge);
   };
 
+  // Domain 9: Zen Command Canvas full-width distraction-free mode
+  const [zenMode, setZenMode] = useState<boolean>(() => {
+    return localStorage.getItem("vajra_zen_mode") === "true";
+  });
+
+  const toggleZenMode = () => {
+    setZenMode((prev) => {
+      const next = !prev;
+      localStorage.setItem("vajra_zen_mode", String(next));
+      return next;
+    });
+  };
 
   const t = translations[lang];
 
@@ -845,6 +861,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         bumpChatSessionsRefresh,
         evictionNotice,
         setEvictionNotice,
+        zenMode,
+        setZenMode,
+        toggleZenMode,
       }}
     >
       {children}

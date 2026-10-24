@@ -23,6 +23,9 @@
       "case_insert_signal"
     ],
     "source": "vajra_backend/functions"
+  },
+  "cron": {
+    "source": "cron.json"
   }
 }
 

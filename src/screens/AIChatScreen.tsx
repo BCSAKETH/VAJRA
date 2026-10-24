@@ -139,26 +139,29 @@ export const AIChatScreen: React.FC = () => {
     chatSessionSelectRequest,
     newChatRequestNonce,
     bumpChatSessionsRefresh,
+    zenMode,
   } = useApp();
 
   // Section 15: Transcript ergonomics width derivation
   const messageWidthCls = useMemo(() => {
+    if (zenMode) return "max-w-7xl w-full px-2";
     switch (transcriptWidth) {
       case "narrow": return "max-w-2xl"; // ~672px
       case "wide":   return "max-w-6xl"; // ~1152px
       case "medium":
       default:       return "max-w-4xl"; // ~896px
     }
-  }, [transcriptWidth]);
+  }, [transcriptWidth, zenMode]);
 
   const composerWidthCls = useMemo(() => {
+    if (zenMode) return "max-w-4xl w-full";
     switch (transcriptWidth) {
       case "narrow": return "max-w-2xl"; // ~672px
       case "wide":   return "max-w-5xl"; // ~1024px
       case "medium":
       default:       return "max-w-3xl"; // ~768px
     }
-  }, [transcriptWidth]);
+  }, [transcriptWidth, zenMode]);
 
   const [inputVal, setInputVal] = useState("");
   // The real, backend-assigned session id for the active conversation. null
@@ -2325,7 +2328,7 @@ export const AIChatScreen: React.FC = () => {
               transparent on outer gutters so clicks pass through to thread content. */}
           <div
             ref={composerRef}
-            className="p-4 pt-2 pb-[max(1rem,env(safe-area-inset-bottom))]"
+            className={`p-4 pt-2 ${zenMode ? "pb-6" : "pb-[max(1rem,env(safe-area-inset-bottom))]"}`}
           >
             {composerContent}
           </div>
