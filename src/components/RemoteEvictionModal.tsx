@@ -35,36 +35,40 @@ export const RemoteEvictionModal: React.FC<RemoteEvictionModalProps> = ({
     e.preventDefault();
     if (reportedIncidentId || isReporting) return;
     setIsReporting(true);
+    const token = localStorage.getItem("vajra_token") || "";
     try {
       const res = await fetch(`${API_BASE}/api/security/report-unauthorized-eviction`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({
           badge_no: badgeNumber || localStorage.getItem("vajra_badge") || "UNKNOWN",
-          token: localStorage.getItem("vajra_token") || "",
+          token: token,
           note: `Officer reported unrecognised logout from remote terminal ${deviceName} (${ipAddress}) at ${timestamp}`,
         }),
       });
       const data = await res.json();
-      if (res.ok) {
-        setReportedIncidentId(data.incident_id || "INC-RECORDED");
-        addToast(
-          lang === "en" ? "Incident Escalated" : "ಘಟನೆ ವರದಿ ಮಾಡಲಾಗಿದೆ",
-          lang === "en"
-            ? `Security alert dispatched to Station Supervisor (Ref: ${data.incident_id}).`
-            : "ಮೇಲ್ವಿಚಾರಕರಿಗೆ ಭದ್ರತಾ ಎಚ್ಚರಿಕೆ ರವಾನಿಸಲಾಗಿದೆ.",
-          "Critical"
-        );
-      } else {
+      if (!res.ok) {
         throw new Error(data.detail || "Reporting failed");
       }
-    } catch {
-      // Offline / network fallback
-      setReportedIncidentId("INC-LOCAL-LOGGED");
+      setReportedIncidentId(data.incident_id || "INC-RECORDED");
       addToast(
-        lang === "en" ? "Alert Dispatched" : "ಎಚ್ಚರಿಕೆ ರವಾನಿಸಲಾಗಿದೆ",
-        lang === "en" ? "Security flag registered in tamper-evident ledger." : "ಭದ್ರತಾ ದಾಖಲೆಯನ್ನು ನಮೂದಿಸಲಾಗಿದೆ.",
-        "Info"
+        lang === "en" ? "Incident Escalated" : "ಘಟನೆ ವರದಿ ಮಾಡಲಾಗಿದೆ",
+        lang === "en"
+          ? `Security alert dispatched to Station Supervisor (Ref: ${data.incident_id}).`
+          : "ಮೇಲ್ವಿಚಾರಕರಿಗೆ ಭದ್ರತಾ ಎಚ್ಚರಿಕೆ ರವಾನಿಸಲಾಗಿದೆ.",
+        "Critical"
+      );
+    } catch (err: any) {
+      console.error("Unauthorized eviction escalation error:", err);
+      addToast(
+        lang === "en" ? "Escalation Failed" : "ವರದಿ ವಿಫಲವಾಗಿದೆ",
+        lang === "en"
+          ? (err.message || "Could not reach Station Command Room. Please retry.")
+          : "ಸ್ಟೇಷನ್ ಕಂಟ್ರೋಲ್ ರೂಮ್ ಸಂಪರ್ಕಿಸಲು ಸಾಧ್ಯವಾಗಲಿಲ್ಲ. ದಯವಿಟ್ಟು ಮರುಪ್ರಯತ್ನಿಸಿ.",
+        "Critical"
       );
     } finally {
       setIsReporting(false);

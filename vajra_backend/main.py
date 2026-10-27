@@ -547,6 +547,7 @@ def _record_login_failure(badge_no: str) -> None:
         )
         if catalyst_app:
             try:
+                now_iso = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
                 zcql_insert_row("ProactiveAlerts", {
                     "AlertType": "ACCOUNT_LOCKOUT_ALERT",
                     "AlertMessage": json.dumps({
@@ -556,9 +557,10 @@ def _record_login_failure(badge_no: str) -> None:
                         "reported_at": datetime.utcnow().isoformat() + "Z",
                         "message": f"Badge KSP-{badge_no} locked out after {_LOGIN_MAX_ATTEMPTS} failed login attempts.",
                     }),
-                    "Status": "ACTIVE",
+                    "DistrictID": 1,
+                    "TriggerTime": now_iso,
                     "Severity": "CRITICAL",
-                    "CreatedTime": datetime.utcnow().isoformat(),
+                    "IsRead": False,
                 })
             except Exception as e:
                 logger.warning(f"Failed to post ACCOUNT_LOCKOUT_ALERT: {e}")
@@ -940,19 +942,19 @@ async def report_unauthorized_eviction_endpoint(payload: ReportUnauthorizedReque
                 "reported_at": datetime.utcnow().isoformat() + "Z",
                 "message": f"Officer KSP-{badge} flagged an unrecognised remote session termination from IP {client_ip}. Potential credential leak."
             }
-            now_iso = datetime.utcnow().isoformat()
-            zcql_insert_row("ProactiveAlerts", {
+            now_iso = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+            alert_row = {
                 "AlertType": "UNAUTHORIZED_LOGOUT_ALERT",
                 "AlertMessage": json.dumps(alert_payload),
-                "DistrictID": unit_id if 'unit_id' in locals() and unit_id else 1,
+                "DistrictID": int(unit_id) if 'unit_id' in locals() and unit_id else 1,
                 "TriggerTime": now_iso,
-                "CreatedTime": now_iso,
                 "Severity": "CRITICAL",
-                "Status": "ACTIVE",
                 "IsRead": False
-            })
+            }
+            zcql_insert_row("ProactiveAlerts", alert_row)
         except Exception as e:
-            logger.warning(f"Failed to post to ProactiveAlerts: {e}")
+            logger.error(f"Failed to post to ProactiveAlerts: {e}")
+            raise HTTPException(status_code=500, detail="Database write failure for security incident escalation.")
 
     return {
         "status": "reported",
@@ -11702,18 +11704,19 @@ async def list_unrecognized_logins(request: Request, location_context: str = Dep
         try:
             res = catalyst_app.zql().execute_query(
                 "SELECT ROWID, AlertType, AlertMessage, TriggerTime, IsRead FROM ProactiveAlerts "
-                "WHERE AlertType = 'UNAUTHORIZED_LOGOUT_ALERT' OR AlertType = 'ACCOUNT_LOCKOUT_ALERT' "
+                "WHERE (AlertType = 'UNAUTHORIZED_LOGOUT_ALERT' OR AlertType = 'ACCOUNT_LOCKOUT_ALERT') "
                 "ORDER BY ROWID DESC LIMIT 60")
             for r in res:
                 a = r.get("ProactiveAlerts", {})
                 if a.get("IsRead") is True or a.get("IsRead") == "true":
                     continue
+                raw_msg = a.get("AlertMessage") or "{}"
                 try:
-                    m = json.loads(a.get("AlertMessage") or "{}")
+                    m = json.loads(raw_msg)
                 except Exception:
-                    continue
+                    m = {"message": str(raw_msg), "requester_badge": "UNKNOWN", "incident_id": f"INC-{a.get('ROWID')}"}
                 m["rowid"] = a.get("ROWID")
-                m["trigger_time"] = a.get("TriggerTime") or a.get("CreatedTime") or m.get("reported_at")
+                m["trigger_time"] = a.get("TriggerTime") or m.get("reported_at")
                 m["alert_type"] = a.get("AlertType")
                 out.append(m)
         except Exception as e:
