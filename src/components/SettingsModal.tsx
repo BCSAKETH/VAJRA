@@ -109,7 +109,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
         role="dialog"
         aria-modal="true"
         aria-label="Settings"
-        className="relative z-[105] flex flex-col w-full h-full sm:h-[85vh] sm:max-h-[720px] md:h-[640px] max-w-none sm:max-w-4xl bg-[#181614] border border-stone-800 sm:rounded-xl shadow-2xl overflow-hidden"
+        className="relative z-[105] flex flex-col w-full h-full sm:h-[85vh] sm:max-h-[720px] md:h-[640px] max-w-none sm:max-w-4xl bg-stone-900 glass-panel border border-stone-800 sm:rounded-xl shadow-2xl overflow-hidden"
       >
         <BorderBeam size={220} duration={14} colorFrom="#C79A4E" colorTo="#F59E0B" borderWidth={1.5} />
         {/* §32: the close button now lives INSIDE SettingsScreen's own

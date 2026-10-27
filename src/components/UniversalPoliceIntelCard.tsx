@@ -724,7 +724,7 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
                   </span>
                 )}
               </div>
-              <h3 className="text-base font-extrabold text-white mt-1 tracking-tight">
+              <h3 className="text-base font-extrabold text-stone-100 mt-1 tracking-tight">
                 {meta.title}
               </h3>
             </div>
@@ -758,7 +758,7 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
 
       {/* 1.25 OpenUI Progressive Streaming Hydration Table / Dynamic AST Nodes */}
       {openuiNode && (
-        <div className="bg-[#0C0A09] border border-[#C79A4E]/50 rounded-xl p-4 shadow-2xl relative overflow-hidden space-y-4 animate-fade-in transition-all">
+        <div className="bg-stone-900 glass-card border border-[#C79A4E]/50 rounded-xl p-4 shadow-2xl relative overflow-hidden space-y-4 animate-fade-in transition-all">
           {/* Subtle Ambient Gold Glow */}
           <div
             className="absolute -right-12 -top-12 w-48 h-48 rounded-full opacity-15 blur-3xl pointer-events-none"
@@ -945,7 +945,7 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
 
       {/* 1.5 Relocated Section 187 BNSS Statutory Remand Deadline Radar UI (Domain 2 Tactical Threat Barometer) */}
       {hasRemandRadar && (
-        <div className="bg-[#0C0A09] border border-[#C79A4E]/50 rounded-xl p-4 shadow-2xl relative overflow-hidden transition-all duration-300">
+        <div className="bg-stone-900 glass-card border border-[#C79A4E]/50 rounded-xl p-4 shadow-2xl relative overflow-hidden transition-all duration-300">
           {/* Subtle Ambient Obsidian / Gold / Crimson Glow */}
           <div
             className={`absolute -right-12 -top-12 w-44 h-44 rounded-full opacity-15 blur-3xl pointer-events-none ${
@@ -1036,7 +1036,7 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
             </div>
 
             {/* The Visual Barometer */}
-            <div className="w-full bg-[#0C0A09] border border-stone-800 rounded-lg h-5 p-0.5 overflow-hidden shadow-inner relative flex items-center">
+            <div className="w-full bg-stone-950 border border-stone-800 rounded-lg h-5 p-0.5 overflow-hidden shadow-inner relative flex items-center">
               <div
                 className={`h-full rounded transition-all duration-700 ease-out flex items-center justify-end pr-2 text-[9px] font-mono font-black ${
                   isCriticalWindow
@@ -1091,7 +1091,7 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
                     }`
                   )
                 }
-                className="flex items-center gap-1.5 px-3 py-1 rounded bg-[#0C0A09] hover:bg-stone-900 border border-[#C79A4E]/60 hover:border-[#C79A4E] text-[#C79A4E] text-[10.5px] font-mono font-bold tracking-wider uppercase transition-all cursor-pointer shadow-sm hover:scale-[1.02] shrink-0"
+                className="flex items-center gap-1.5 px-3 py-1 rounded bg-stone-900 hover:bg-stone-850 border border-[#C79A4E]/60 hover:border-[#C79A4E] text-[#C79A4E] text-[10.5px] font-mono font-bold tracking-wider uppercase transition-all cursor-pointer shadow-sm hover:scale-[1.02] shrink-0"
               >
                 <span>{currentLang === "en" ? "Expedite §187 Filing" : "§187 ಸಲ್ಲಿಕೆ ತ್ವರಿತಗೊಳಿಸಿ"}</span>
                 <ChevronRight className="w-3 h-3" />
@@ -1133,7 +1133,7 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
                     § 480 / 483 BNSS
                   </span>
                 </div>
-                <h4 className="text-xs font-bold text-white tracking-tight">
+                <h4 className="text-xs font-bold text-stone-100 tracking-tight">
                   {lang === "en" ? "Sessions & High Court Bail Opposition Grounds" : "ಜಾಮೀನು ವಿರೋಧದ ಶಾಸನಬದ್ಧ ಆಧಾರಗಳು"}
                 </h4>
               </div>
@@ -1331,7 +1331,7 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
                     <span className="text-[9.5px] font-mono font-bold text-[#C79A4E] uppercase tracking-wider block">
                       {grp.register.code} • {grp.register.statute}
                     </span>
-                    <h4 className="text-xs font-bold text-white mt-0.5">
+                    <h4 className="text-xs font-bold text-stone-100 mt-0.5">
                       {grp.register.name}
                     </h4>
                   </div>
@@ -1367,7 +1367,7 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
               <div className="flex items-center gap-2">
                 <Landmark className="w-4 h-4 text-[#C79A4E]" />
                 <div>
-                  <span className="text-xs font-bold text-white block">
+                  <span className="text-xs font-bold text-stone-100 block">
                     {lang === "en" ? "State CCTNS Master Incident & Accused Repository" : "ರಾಜ್ಯ CCTNS ಘಟನಾ ಮತ್ತು ಆರೋಪಿ ದಾಖಲೆ ಭಂಡಾರ"}
                   </span>
                   <span className="text-[10px] font-mono text-stone-400">

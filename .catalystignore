@@ -39,9 +39,6 @@ vajra_backend/vendor/imageio_ffmpeg/binaries
 vajra_backend/vendor/imageio_ffmpeg/binaries/**
 vajra_backend/**/imageio_ffmpeg/binaries
 vajra_backend/**/imageio_ffmpeg/binaries/**
-vajra_backend/vendor/fontTools
-vajra_backend/vendor/fontTools/**
-vajra_backend/**/fontTools
-vajra_backend/**/fontTools/**
 vajra_backend/**/*.dist-info
 vajra_backend/**/*.dist-info/**
+

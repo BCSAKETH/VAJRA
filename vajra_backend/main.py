@@ -11550,7 +11550,17 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
                 self.cell(28, 4, f"Page {self.page_no()}/{{nb}}", align="R")
 
         pdf = VajraDoc()
-        pdf.add_font("NotoKannada", "", font_path)
+        try:
+            if os.path.exists(font_path):
+                pdf.add_font("NotoKannada", "", font_path)
+            else:
+                pdf.font_aliases["notokannada"] = "helvetica"
+        except Exception as _fe:
+            logger.warning(f"Could not load NotoKannada font in FPDF: {_fe}")
+            try:
+                pdf.font_aliases["notokannada"] = "helvetica"
+            except Exception:
+                pass
         pdf.set_auto_page_break(True, margin=18)
         pdf.alias_nb_pages()
         pdf.add_page()
@@ -11679,8 +11689,41 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
             headers={"Content-Disposition": f"attachment; filename={_fp_filename}"}
         )
     except Exception as e:
-        logger.error(f"Failed to generate PDF: {e}")
-        raise HTTPException(status_code=500, detail=f"PDF generation error: {e}")
+        logger.error(f"Failed to generate PDF via FPDF: {e}. Initiating zero-dependency emergency fallback.")
+        try:
+            from datetime import datetime
+            gen_utc = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+            _fp_filename = f"VAJRA_Report_{str(authed_badge)}_{report_lang}.pdf"
+            title_line = "VAJRA 2.0 - SCRB Official Investigation Report"
+            header_line = f"Badge: {authed_badge}  |  Generated: {gen_utc}  |  Language: {report_lang}"
+            lines = [f"{m.get('role', 'user').upper()}: {str(m.get('content') or m.get('text') or '')[:100]}" for m in (payload.transcript or [])[:20]]
+            stream_body = f"BT\n/F1 14 Tf\n40 790 Td\n({title_line}) Tj\n/F1 9 Tf\n0 -22 Td\n({header_line}) Tj\n0 -20 Td\n(RESTRICTED - FOR OFFICIAL LAW ENFORCEMENT USE ONLY) Tj\n"
+            y_off = -18
+            for l in lines:
+                clean_l = l.replace("(", "[").replace(")", "]").encode("ascii", "replace").decode("ascii")
+                stream_body += f"0 {y_off} Td\n({clean_l[:80]}) Tj\n"
+                y_off = -14
+            stream_body += "ET\n"
+            stream_bytes = stream_body.encode("latin-1", "replace")
+            pdf_raw = (
+                b"%PDF-1.4\n"
+                b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+                b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n"
+                b"3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n"
+                b"4 0 obj\n<< /Length " + str(len(stream_bytes)).encode("ascii") + b" >>\nstream\n"
+                + stream_bytes +
+                b"endstream\nendobj\n"
+                b"5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n"
+                b"xref\n0 6\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \n0000000224 00000 n \n0000000450 00000 n \ntrailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n520\n%%EOF"
+            )
+            return Response(
+                content=pdf_raw,
+                media_type="application/pdf",
+                headers={"Content-Disposition": f"attachment; filename={_fp_filename}", "X-Engine": "Emergency-Fallback"}
+            )
+        except Exception as e2:
+            logger.error(f"Emergency PDF fallback also failed: {e2}")
+            raise HTTPException(status_code=500, detail=f"PDF generation error: {e}")
 
 
 # §5.4/C.22: shared expire-and-notify -- one function used by all three

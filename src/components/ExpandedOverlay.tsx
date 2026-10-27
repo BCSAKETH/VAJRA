@@ -448,104 +448,104 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
             {isMultiFacet ? (
               <>
                 <Sparkles className="w-5 h-5 text-[#C79A4E]" />
-                <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Investigative Intelligence Dossier" : "ತನಿಖಾ ಗುಪ್ತಚರ ದೋಶಿಯರ್"}</h3>
+                <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Investigative Intelligence Dossier" : "ತನಿಖಾ ಗುಪ್ತಚರ ದೋಶಿಯರ್"}</h3>
               </>
             ) : (
               <>
                 {type === "map" && (
                   <>
                     <MapPin className="w-5 h-5 text-[#C79A4E]" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Geospatial Hotspots Exploration" : "ಭೌಗೋಳಿಕ ಹಾಟ್‌ಸ್ಪಾಟ್ ಪರಿಶೋಧನೆ"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Geospatial Hotspots Exploration" : "ಭೌಗೋಳಿಕ ಹಾಟ್‌ಸ್ಪಾಟ್ ಪರಿಶೋಧನೆ"}</h3>
                   </>
                 )}
                 {type === "network" && (
                   <>
                     <Network className="w-5 h-5 text-[#C79A4E]" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Relational Intelligence Network" : "ಸಂಬಂಧಾತ್ಮಕ ಗುಪ್ತಚಾರ ಜಾಲ"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Relational Intelligence Network" : "ಸಂಬಂಧಾತ್ಮಕ ಗುಪ್ತಚಾರ ಜಾಲ"}</h3>
                   </>
                 )}
                 {type === "risk" && (
                   <>
                     <ShieldAlert className="w-5 h-5 text-amber-500" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Explainable Recidivism Risk (SHAP Explainer)" : "ವಿವರಣಾತ್ಮಕ ಮರುಅಪರಾಧ ಅಪಾಯ (SHAP ವಿವರಣೆ)"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Explainable Recidivism Risk (SHAP Explainer)" : "ವಿವರಣಾತ್ಮಕ ಮರುಅಪರಾಧ ಅಪಾಯ (SHAP ವಿವರಣೆ)"}</h3>
                   </>
                 )}
                 {type === "forecast" && (
                   <>
                     <TrendingUp className="w-5 h-5 text-[#C79A4E]" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Seasonal Early Warning Predictions" : "ಋತುಮಾನ ಮುಂಚಿತ ಎಚ್ಚರಿಕೆ ಮುನ್ಸೂಚನೆಗಳು"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Seasonal Early Warning Predictions" : "ಋತುಮಾನ ಮುಂಚಿತ ಎಚ್ಚರಿಕೆ ಮುನ್ಸೂಚನೆಗಳು"}</h3>
                   </>
                 )}
                 {type === "timeline" && (
                   <>
                     <Clock className="w-5 h-5 text-[#C79A4E]" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Investigation Chronology" : "ಪ್ರಕರಣ ತನಿಖಾ ಕಾಲಾನುಕ್ರಮ"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Case Investigation Chronology" : "ಪ್ರಕರಣ ತನಿಖಾ ಕಾಲಾನುಕ್ರಮ"}</h3>
                   </>
                 )}
                 {type === "mo_match" && (
                   <>
                     <Fingerprint className="w-5 h-5 text-amber-500" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Behavioral MO Profiling Matches" : "ವರ್ತನೆಯ MO ಪ್ರೊಫೈಲಿಂಗ್ ಹೊಂದಾಣಿಕೆಗಳು"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Behavioral MO Profiling Matches" : "ವರ್ತನೆಯ MO ಪ್ರೊಫೈಲಿಂಗ್ ಹೊಂದಾಣಿಕೆಗಳು"}</h3>
                   </>
                 )}
                 {type === "correlation" && (
                   <>
                     <Users className="w-5 h-5 text-[#C79A4E]" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "District Socio-demographic Dashboard" : "ಜಿಲ್ಲಾ ಸಾಮಾಜಿಕ-ಜನಸಂಖ್ಯಾ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "District Socio-demographic Dashboard" : "ಜಿಲ್ಲಾ ಸಾಮಾಜಿಕ-ಜನಸಂಖ್ಯಾ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್"}</h3>
                   </>
                 )}
                 {type === "repeat_offenders" && (
                   <>
                     <Repeat className="w-5 h-5 text-amber-500" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Repeat Offender Roster" : "ಪುನರಾವರ್ತಿತ ಅಪರಾಧಿಗಳ ಪಟ್ಟಿ"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Repeat Offender Roster" : "ಪುನರಾವರ್ತಿತ ಅಪರಾಧಿಗಳ ಪಟ್ಟಿ"}</h3>
                   </>
                 )}
                 {type === "crime_groups" && (
                   <>
                     <Link2 className="w-5 h-5 text-amber-500" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Detected Organized Crime Groups" : "ಪತ್ತೆಯಾದ ಸಂಘಟಿತ ಅಪರಾಧ ಗುಂಪುಗಳು"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Detected Organized Crime Groups" : "ಪತ್ತೆಯಾದ ಸಂಘಟಿತ ಅಪರಾಧ ಗುಂಪುಗಳು"}</h3>
                   </>
                 )}
                 {type === "case_list" && (
                   <>
                     <Fingerprint className="w-5 h-5 text-amber-500" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Records" : "ಪ್ರಕರಣ ದಾಖಲೆಗಳು"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Case Records" : "ಪ್ರಕರಣ ದಾಖಲೆಗಳು"}</h3>
                   </>
                 )}
                 {type === "trend" && (
                   <>
                     <Activity className="w-5 h-5 text-[#C79A4E]" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Crime Trend Analysis" : "ಅಪರಾಧ ಪ್ರವೃತ್ತಿ ವಿಶ್ಲೇಷಣೆ"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Crime Trend Analysis" : "ಅಪರಾಧ ಪ್ರವೃತ್ತಿ ವಿಶ್ಲೇಷಣೆ"}</h3>
                   </>
                 )}
                 {type === "case_distribution" && (
                   <>
                     <PieChartIcon className="w-5 h-5 text-[#C79A4E]" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Types Distribution" : "ಪ್ರಕರಣಗಳ ಪ್ರಕಾರ ವಿತರಣೆ"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Case Types Distribution" : "ಪ್ರಕರಣಗಳ ಪ್ರಕಾರ ವಿತರಣೆ"}</h3>
                   </>
                 )}
                 {type === "case_funnel" && (
                   <>
                     <ShieldCheck className="w-5 h-5 text-[#C79A4E]" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Case Aging Funnel" : "ಪ್ರಕರಣ ಪ್ರಗತಿ ಹಂತಗಳು"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Case Aging Funnel" : "ಪ್ರಕರಣ ಪ್ರಗತಿ ಹಂತಗಳು"}</h3>
                   </>
                 )}
                 {type === "offender_timeline" && (
                   <>
                     <Repeat className="w-5 h-5 text-[#C79A4E]" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Offender Timeline" : "ಅಪರಾಧಿ ಕಾಲಾನುಕ್ರಮ"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Offender Timeline" : "ಅಪರಾಧಿ ಕಾಲಾನುಕ್ರಮ"}</h3>
                   </>
                 )}
                 {type === "unit_scorecards" && (
                   <>
                     <ShieldCheck className="w-5 h-5 text-[#C79A4E]" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "Unit Scorecards" : "ಘಟಕ ಸ್ಕೋರ್‌ಕಾರ್ಡ್‌ಗಳು"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "Unit Scorecards" : "ಘಟಕ ಸ್ಕೋರ್‌ಕಾರ್ಡ್‌ಗಳು"}</h3>
                   </>
                 )}
                 {type === "district_benchmark" && (
                   <>
                     <Scale className="w-5 h-5 text-[#C79A4E]" />
-                    <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{lang === "en" ? "District Benchmark" : "ಜಿಲ್ಲಾ ಮಾನದಂಡ"}</h3>
+                    <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{lang === "en" ? "District Benchmark" : "ಜಿಲ್ಲಾ ಮಾನದಂಡ"}</h3>
                   </>
                 )}
                 {![
@@ -559,7 +559,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                   return (
                     <>
                       <HeaderIcon className="w-5 h-5 text-[#C79A4E]" />
-                      <h3 className="text-sm font-extrabold text-white uppercase tracking-wider font-mono">{meta.title}</h3>
+                      <h3 className="text-sm font-extrabold text-stone-100 uppercase tracking-wider font-mono">{meta.title}</h3>
                     </>
                   );
                 })()}

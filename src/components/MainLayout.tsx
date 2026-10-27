@@ -50,7 +50,7 @@ export const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
   };
 
   if (!isAuthenticated || currentScreen === "login") {
-    return <div className="min-h-screen bg-[#161412] flex flex-col">{children}</div>;
+    return <div className="min-h-screen bg-[var(--color-background-dark)] text-[var(--color-text-primary)] flex flex-col transition-colors duration-300">{children}</div>;
   }
 
   const isExpanded = isSidebarExpanded || isSidebarHovered;

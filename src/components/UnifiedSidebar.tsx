@@ -345,7 +345,7 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
         return (
           <div className="p-3 border-t border-stone-800 flex flex-col gap-2.5 bg-stone-950/40 relative" ref={profileRef}>
             {isProfileOpen && (
-              <div className="absolute bottom-full left-3 right-3 sm:left-3 sm:right-auto sm:w-64 mb-2 bg-[#0C0A09]/95 backdrop-blur-xl border border-stone-800 rounded-xl shadow-2xl p-4 animate-slide-up z-30 space-y-3">
+              <div className="absolute bottom-full left-3 right-3 sm:left-3 sm:right-auto sm:w-64 mb-2 bg-stone-900/95 glass-panel backdrop-blur-xl border border-stone-800 rounded-xl shadow-2xl p-4 animate-slide-up z-30 space-y-3">
                 <div className="flex items-start justify-between gap-2 border-b border-stone-800/80 pb-3">
                   <div className="flex items-center gap-2.5 min-w-0">
                     <div className="w-9 h-9 rounded-full bg-[#C79A4E]/20 border border-[#C79A4E]/40 flex items-center justify-center font-black text-xs text-[#C79A4E] shrink-0 shadow-[0_0_10px_rgba(199,154,78,0.2)]">

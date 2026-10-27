@@ -426,7 +426,7 @@ export const AgentWorkspaceScreen: React.FC = () => {
   const selectedWorker = workers.find((w) => w.id === selectedWorkerId) || workers[0];
 
   return (
-    <div className="h-full flex flex-col overflow-hidden bg-[#0C0A09] text-stone-200">
+    <div className="h-full flex flex-col overflow-hidden bg-stone-950 text-stone-200">
       {/* Top Header */}
       <div className="p-5 border-b border-stone-850 bg-stone-950/80 backdrop-blur-md flex flex-col md:flex-row items-start md:items-center justify-between gap-4 shrink-0">
         <div className="flex items-center gap-3.5">
@@ -614,7 +614,7 @@ export const AgentWorkspaceScreen: React.FC = () => {
                     parseNaturalIntent(e.target.value);
                   }}
                   placeholder='e.g. "Update me every morning at 8 AM on the 1930 cyber fraud portal"'
-                  className="w-full bg-[#0C0A09] border border-stone-800 rounded-xl p-3 text-xs font-mono text-stone-100 placeholder-stone-600 focus:outline-none focus:border-[#C79A4E] focus:ring-1 focus:ring-[#C79A4E]/40 transition-all resize-none"
+                  className="w-full bg-stone-950/70 border border-stone-800 rounded-xl p-3 text-xs font-mono text-stone-100 placeholder-stone-600 focus:outline-none focus:border-[#C79A4E] focus:ring-1 focus:ring-[#C79A4E]/40 transition-all resize-none"
                 />
               </div>
 

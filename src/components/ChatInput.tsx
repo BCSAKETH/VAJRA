@@ -414,7 +414,7 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
     <div
       className={`relative w-full flex flex-col gap-2 transition-all duration-300 ${
         zenMode
-          ? "bg-[#0C0A09]/90 backdrop-blur-xl border border-[#C79A4E]/40 shadow-[0_16px_50px_rgba(0,0,0,0.85),0_0_25px_rgba(199,154,78,0.2)] rounded-2xl p-3.5 focus-within:border-[#C79A4E]"
+          ? "bg-stone-900/90 glass-panel composer-elevation border border-[#C79A4E]/40 shadow-2xl rounded-2xl p-3.5 focus-within:border-[#C79A4E]"
           : "glass-panel composer-elevation border border-stone-800 rounded-2xl p-3 focus-within:border-[#C79A4E]/60"
       }`}
     >

@@ -46,8 +46,6 @@ session_memory.db
 # Heavy binaries & unneeded files
 vendor/imageio_ffmpeg/binaries
 vendor/imageio_ffmpeg/binaries/**
-vendor/fontTools
-vendor/fontTools/**
 vendor/pymupdf
 vendor/pymupdf/**
 vendor/pillow.libs/libavif*

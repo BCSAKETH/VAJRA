@@ -277,7 +277,7 @@ export const SpotlightSearch: React.FC = () => {
       onClick={() => setIsOpen(false)}
     >
       <div
-        className="w-full max-w-3xl bg-[#0C0A09] border border-[#C79A4E]/40 rounded-xl shadow-[0_16px_50px_rgba(0,0,0,0.85)] flex flex-col overflow-hidden text-stone-100"
+        className="w-full max-w-3xl bg-stone-900 glass-panel border border-[#C79A4E]/40 rounded-xl shadow-[0_16px_50px_rgba(0,0,0,0.85)] flex flex-col overflow-hidden text-stone-100"
         onClick={(e) => e.stopPropagation()}
         onKeyDown={handleKeyDown}
       >
@@ -299,7 +299,7 @@ export const SpotlightSearch: React.FC = () => {
         </div>
 
         {/* Search Input Bar */}
-        <div className="relative flex items-center px-4 py-3 border-b border-stone-800 bg-[#12100E]">
+        <div className="relative flex items-center px-4 py-3 border-b border-stone-800 bg-stone-950/60">
           <Search className="w-5 h-5 text-[#C79A4E] shrink-0 mr-3" />
           <input
             ref={inputRef}

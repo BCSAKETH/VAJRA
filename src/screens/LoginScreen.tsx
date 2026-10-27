@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
-import { Shield, Lock, Key, Languages } from "lucide-react";
+import { Shield, Lock, Key, Languages, Sun, Moon } from "lucide-react";
 import { VajraLogo } from "../components/VajraLogo";
 import { DeviceConflictModal } from "../components/DeviceConflictModal";
 
@@ -10,6 +10,8 @@ export const LoginScreen: React.FC = () => {
     t,
     lang,
     setLang,
+    theme,
+    setTheme,
     setIsAuthenticated,
     setBadgeNumber,
     setOfficerName,
@@ -144,11 +146,18 @@ export const LoginScreen: React.FC = () => {
       {/* Indian Tricolour Top Accent Strip */}
       <div className="tricolour-strip absolute top-0 left-0 right-0 z-50" />
 
-      {/* Floating Language Switcher */}
-      <div className="absolute top-6 right-6">
+      {/* Floating Controls: Theme & Language */}
+      <div className="absolute top-6 right-6 flex items-center space-x-2">
+        <button
+          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          className="p-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-850/80 text-stone-400 hover:text-[#C79A4E] transition-all shadow-md cursor-pointer"
+          title={theme === "dark" ? "Switch to Light Mode" : "Switch to Dark Mode"}
+        >
+          {theme === "dark" ? <Sun className="w-4 h-4 text-[#C79A4E]" /> : <Moon className="w-4 h-4 text-[#C79A4E]" />}
+        </button>
         <button
           onClick={() => setLang(lang === "en" ? "kn" : "en")}
-          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-850/80 text-xs font-semibold text-[#C79A4E] hover:text-[#E4C590] transition-all shadow-lg"
+          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-850/80 text-xs font-semibold text-[#C79A4E] hover:text-[#E4C590] transition-all shadow-md cursor-pointer"
         >
           <Languages className="w-3.5 h-3.5" />
           <span>{lang === "en" ? "ಕನ್ನಡ" : "English"}</span>
@@ -165,7 +174,7 @@ export const LoginScreen: React.FC = () => {
             <VajraLogo animated={true} size={64} />
           </div>
           <div className="animate-fade-in" style={{ animationDelay: "280ms" }}>
-            <h2 className="text-2xl font-black text-white tracking-tight">
+            <h2 className="text-2xl font-black text-stone-100 tracking-tight">
               VAJRA / ವಜ್ರ
             </h2>
             <p className="text-[10px] font-mono tracking-widest text-[#C79A4E] uppercase font-bold mt-1.5">

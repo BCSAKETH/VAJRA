@@ -116,7 +116,7 @@ export const MorphingSuspectDossier: React.FC<MorphingSuspectDossierProps> = ({
             {/* Expanded Tactical Card */}
             <motion.div
               layoutId={`suspect-${safeId}`}
-              className="w-full max-w-xl bg-[#0C0A09] border border-[#C79A4E]/60 rounded-xl p-6 shadow-2xl relative overflow-hidden z-10 text-stone-200"
+              className="w-full max-w-xl bg-stone-900 glass-card border border-[#C79A4E]/60 rounded-xl p-6 shadow-2xl relative overflow-hidden z-10 text-stone-200"
               transition={{ type: "spring", damping: 25, stiffness: 220 }}
               onClick={(e) => e.stopPropagation()}
             >

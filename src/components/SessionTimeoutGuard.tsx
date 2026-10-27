@@ -157,7 +157,7 @@ export const SessionTimeoutGuard: React.FC = () => {
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-stone-950/85 backdrop-blur-md animate-fade-in">
-      <div className="w-full max-w-sm glass-panel border border-amber-500/40 rounded-2xl p-6 shadow-2xl space-y-4 text-center bg-[#141210]">
+      <div className="w-full max-w-sm glass-panel border border-amber-500/40 rounded-2xl p-6 shadow-2xl space-y-4 text-center bg-stone-900">
         <div className="mx-auto w-12 h-12 bg-amber-500/10 border border-amber-500/30 text-amber-400 rounded-full flex items-center justify-center animate-bounce">
           <ShieldAlert className="w-6 h-6" />
         </div>
