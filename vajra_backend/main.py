@@ -7283,15 +7283,23 @@ def _downscale_image(image_bytes: bytes) -> bytes:
 
 def _rasterize_pdf(pdf_bytes: bytes, max_pages: int = 3) -> List[bytes]:
     """Renders the first max_pages pages of a PDF to JPEG bytes."""
-    import fitz
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    page_images = []
-    for page_num in range(min(len(doc), max_pages)):
-        page = doc.load_page(page_num)
-        pix = page.get_pixmap(dpi=150)
-        page_images.append(pix.tobytes("jpeg"))
-    doc.close()
-    return page_images
+    try:
+        import fitz
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        page_images = []
+        for page_num in range(min(len(doc), max_pages)):
+            page = doc.load_page(page_num)
+            pix = page.get_pixmap(dpi=150)
+            page_images.append(pix.tobytes("jpeg"))
+        doc.close()
+        return page_images
+    except ImportError:
+        logger.warning("[PDF] PyMuPDF (fitz) not available for PDF rasterization; returning empty image list.")
+        return []
+    except Exception as exc:
+        logger.warning(f"[PDF] PDF rasterization encountered error: {exc}")
+        return []
+
 
 
 def _stitch_vertical(image_bytes_list: List[bytes], gap: int = 10) -> bytes:

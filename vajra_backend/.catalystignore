@@ -1,22 +1,75 @@
+# Virtual environments
 .venv
 .venv/**
+
+# Python cache & compiled bytecode
 __pycache__
 __pycache__/**
+**/__pycache__
 **/__pycache__/**
 *.pyc
-*.log
-.token_cache
-cache/
-cache/**
-scratch/
-scratch/**
-*.bak*
-*.new*
-tests/
-test/
-**/tests/**
-**/test/**
-*.dist-info/
-**/*.dist-info/**
-vendor/imageio_ffmpeg/binaries/**
+**/*.pyc
+*.pyo
+**/*.pyo
 
+# Logs
+*.log
+**/*.log
+backend_run*.log
+
+# Caches & temporary files
+.token_cache*
+cache
+cache/**
+scratch
+scratch/**
+session_memory.db
+
+# Backups and training duplicates
+*.bak*
+**/*.bak*
+*.new*
+**/*.new*
+
+# Tests
+**/tests
+**/tests/**
+**/test
+**/test/**
+
+# Dist-info & build metadata
+*.dist-info
+*.dist-info/**
+**/*.dist-info
+**/*.dist-info/**
+
+# Heavy binaries & unneeded files
+vendor/imageio_ffmpeg/binaries
+vendor/imageio_ffmpeg/binaries/**
+vendor/fontTools
+vendor/fontTools/**
+vendor/pymupdf
+vendor/pymupdf/**
+vendor/pillow.libs/libavif*
+vendor/bin
+vendor/bin/**
+**/*.exe
+
+# Unneeded C source/headers/docs in vendor
+vendor/**/*.h
+vendor/**/*.c
+vendor/**/*.cpp
+vendor/**/*.f
+vendor/**/*.f90
+vendor/**/*.pyx
+vendor/**/*.pxd
+vendor/**/*.rst
+vendor/**/*.html
+vendor/**/README*
+vendor/**/LICENSE*
+
+# Documentation and screenshots
+screenshots
+screenshots/**
+docs
+docs/**
