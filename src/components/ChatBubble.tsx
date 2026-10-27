@@ -866,6 +866,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
 
   const hasRealKannada = !!message.textKn && /[\u0C80-\u0CFF]/.test(message.textKn);
   const hasRealEnglish = !!message.textEn && !/[\u0C80-\u0CFF]/.test(message.textEn);
+  const canTranslate = isAI && !!((message.text || message.textEn || message.textKn || "").trim());
 
   // Which language to actually show: the app-wide toggle, flipped by the ⇄ button.
   const effectiveLang: "en" | "kn" = !showTranslated ? lang : (lang === "en" ? "kn" : "en");

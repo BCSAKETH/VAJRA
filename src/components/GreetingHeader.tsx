@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
-import { API_BASE } from "../config";
 
 function getTimeBucket(): "morning" | "afternoon" | "evening" | "night" {
   const h = new Date().getHours();
@@ -67,31 +66,7 @@ export const GreetingHeader: React.FC = () => {
     }
   }, [lang, officerName]);
 
-  // Optional background fetch to enhance with backend AI dynamic greeting if available
-  useEffect(() => {
-    let isMounted = true;
-    const fetchAiGreeting = async () => {
-      try {
-        const token = localStorage.getItem("vajra_token");
-        if (!token) return;
-        const res = await fetch(`${API_BASE}/api/officer/dynamic-greeting?lang=${lang}`, {
-          headers: { Authorization: `Bearer ${token}` },
-        });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.greeting && isMounted) {
-          setGreeting(data.greeting);
-          sessionStorage.setItem(`vajra_dynamic_greeting_${lang}`, data.greeting);
-        }
-      } catch {
-        // Silently preserve procedural greeting on network error or if endpoint unavailable
-      }
-    };
-    fetchAiGreeting();
-    return () => {
-      isMounted = false;
-    };
-  }, [lang]);
+
 
   return (
     <div className="text-center mb-2 flex flex-col items-center justify-center animate-fade-in select-none">

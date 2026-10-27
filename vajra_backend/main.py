@@ -6938,6 +6938,24 @@ async def mascot_quip(lang: str = "en", location_context: str = Depends(security
 
 # ---- §9.10 Context-aware greeting: officer digest --------------------------
 
+@app.get("/api/officer/dynamic-greeting")
+async def officer_dynamic_greeting(lang: str = "en", request: Request = None):
+    """Dynamic procedural time-of-day greeting (Track 19)."""
+    from datetime import datetime
+    # IST is UTC + 5:30
+    utc_now = datetime.utcnow()
+    ist_hour = (utc_now.hour + 5 + (1 if utc_now.minute >= 30 else 0)) % 24
+    if 5 <= ist_hour < 12:
+        g = "Dawn briefing" if lang == "en" else "ಮುಂಜಾನೆಯ ಅವಲೋಕನ"
+    elif 12 <= ist_hour < 17:
+        g = "Midday intelligence" if lang == "en" else "ಮಧ್ಯಾಹ್ನದ ಪರಿಶೀಲನೆ"
+    elif 17 <= ist_hour < 21:
+        g = "Evening thoughts" if lang == "en" else "ಸಂಜೆಯ ಅವಲೋಕನ"
+    else:
+        g = "Night watch" if lang == "en" else "ರಾತ್ರಿ ಜಾಗೃತಿ"
+    return {"greeting": g, "status": "success"}
+
+
 @app.get("/api/officer/digest")
 async def officer_digest(request: Request, location_context: str = Depends(security_firewall)):
     employee_id = request.state.user_profile.get("EmployeeID") or request.state.user_profile.get("EmployeeId")
