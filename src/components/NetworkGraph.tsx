@@ -1,30 +1,18 @@
 import React, { useMemo, useState, useRef, useEffect } from "react";
 import { API_BASE } from "../config";
+import { useApp } from "../AppContext";
 
 export interface GraphNode {
   id: string;
   label: string;
   sublabel?: string;
   type: "suspect" | "case" | "person" | "vehicle" | "phone" | "financial_account" | string;
-  // F.1/F.33: which combined-view toggle group this node belongs to.
-  // Separate from "type" on purpose (Loophole L4) -- toggling a layer on/off
-  // never changes a node's color/legend bucket.
   layer?: "co_accused" | "financial" | "phone_vehicle" | string;
-  // A node that is a de-duplicated match across layers (Loophole L1) carries
-  // every layer it appears in here; "layer" above stays its PRIMARY one for
-  // color/legend purposes.
   layers?: string[];
-  // F.2: BFS distance from the root suspect (1 = direct link). Missing/1
-  // renders as a normal direct link; >=2 renders dashed/faded (Loophole L2).
   hop?: number;
-  // F.6: real per-node degree centrality (0-1, normalized) and, ONLY when a
-  // caller has actually computed one, an individual risk score (0-100) --
-  // never fabricated when absent (Loophole L1).
   centrality?: number;
   risk?: number;
-  // F.9: a hub also confirmed on the Repeat Offenders list.
   cross_flag?: string;
-  // F.5: earliest shared-case date this specific edge/node was "first seen."
   first_seen?: string | null;
 }
 
@@ -36,12 +24,8 @@ export interface GraphEdge {
   label?: string;
   layer?: "co_accused" | "financial" | "phone_vehicle" | string;
   hop?: number;
-  // F.4: real shared-case (or transaction) count backing this edge -- drives
-  // line thickness, log-scaled and capped (Loophole L1).
   weight?: number;
   first_seen?: string | null;
-  // F.8: real transaction timestamp (financial edges only), used to sort a
-  // time-ordered money-flow animation.
   txn_time?: string | null;
   amount?: number | null;
 }
@@ -50,41 +34,33 @@ interface NetworkGraphProps {
   nodes: GraphNode[];
   edges: GraphEdge[];
   height?: number;
-  // F.1/F.33: which layer(s) render, and the toggle handler. Omitted
-  // entirely (no layers present on any node) falls back to "show everything,
-  // no toggle bar" -- fully backward compatible with every existing caller
-  // that doesn't pass per-node layers yet.
   activeLayers?: string[];
   onToggleLayer?: (layer: string) => void;
-  // Loophole L3 (F.1): this specific entity always renders regardless of
-  // any active filter.
   primaryEntityId?: string;
-  // F.1/#33 merge: hide peripheral nodes below this risk (0-100); never
-  // applied to primaryEntityId.
   minRiskFilter?: number;
-  // F.34: nodes/edges whose first_seen/txn_time is AFTER this ISO timestamp
-  // render with a "NEW" badge -- undefined/null means no badge (either
-  // never viewed before, or the feature's backing table isn't set up yet).
   newSinceTimestamp?: string | null;
-  // H.1.3: fires a follow-up chat query through the existing chat pipeline
-  // (same bridge already used for Repeat Offenders / suggestion chips) --
-  // used by click-to-trace. Omitted entirely disables the trace affordance,
-  // same backward-compatible pattern as every other optional prop here.
   onFollowUpQuery?: (text: string) => void;
 }
 
-// Categorical palette validated against the app's dark surface (#161412) via
-// the dataviz skill's validator: passing lightness band (OKLCH L 0.48-0.67),
-// chroma floor, adjacent-pair CVD separation, and normal-vision floor in this
-// exact order.
-const NODE_COLORS: Record<string, string> = {
+const DARK_NODE_COLORS: Record<string, string> = {
   suspect: "#00C6AD",
   case: "#f59e0b",
   person: "#a78bfa",
   vehicle: "#e66767",
   phone: "#38bdf8",
-  financial_account: "#22d3ee", // F.1/L4: distinct from "case" (#f59e0b), which already means a linked CrimeNo here
+  financial_account: "#22d3ee",
 };
+
+const LIGHT_NODE_COLORS: Record<string, string> = {
+  suspect: "#0f766e",        // Deep teal (WCAG AA > 4.5:1 on light surface)
+  case: "#b45309",           // Dark bronze / amber
+  person: "#6d28d9",         // Deep purple
+  vehicle: "#b91c1c",        // Deep crimson
+  phone: "#0369a1",          // Deep sky blue
+  financial_account: "#0e7490", // Deep cyan
+};
+
+const NODE_COLORS = DARK_NODE_COLORS;
 
 const NODE_TYPE_LABELS: Record<string, string> = {
   suspect: "Suspect",
@@ -229,6 +205,10 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
   activeLayers, onToggleLayer, primaryEntityId, minRiskFilter, newSinceTimestamp,
   onFollowUpQuery,
 }) => {
+  const { theme } = useApp();
+  const isLight = theme === "light";
+  const nodeColors = isLight ? LIGHT_NODE_COLORS : DARK_NODE_COLORS;
+
   // H.1.7: click-to-expand -- fetched expansions merge into ONE combined
   // node/edge list right here, so every existing computation below (layout,
   // filtering, date range, etc.) keeps working against a single `nodes`/
@@ -459,8 +439,8 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
         <div className="flex flex-wrap gap-x-3 gap-y-1 justify-center px-2 shrink-0">
           {presentTypes.map((t) => (
             <div key={t} className="flex items-center gap-1.5">
-              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: NODE_COLORS[t] }} />
-              <span className="text-[9.5px] font-mono text-stone-400">{NODE_TYPE_LABELS[t] || t}</span>
+              <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: nodeColors[t] || NODE_COLORS[t] }} />
+              <span className="text-[9.5px] font-mono text-stone-600 dark:text-stone-400">{NODE_TYPE_LABELS[t] || t}</span>
             </div>
           ))}
         </div>
@@ -470,10 +450,10 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
           edges have real dates; phone/vehicle links never do and always
           stay visible, per the plan's own honesty rule). */}
       {dateRangeMs && (
-        <div className="flex items-center gap-2 px-3 shrink-0 text-[10px] font-mono text-stone-400">
+        <div className="flex items-center gap-2 px-3 shrink-0 text-[10px] font-mono text-stone-600 dark:text-stone-400">
           <button
             onClick={() => { if (asOfCursor >= 100) setAsOfCursor(0); setIsPlaying((p) => !p); }}
-            className="px-2 py-1 rounded-lg border border-stone-800 bg-stone-900 hover:bg-stone-800 text-[#C79A4E] cursor-pointer shrink-0"
+            className="px-2 py-1 rounded-lg border border-stone-300 dark:border-stone-800 bg-white/90 dark:bg-stone-900 hover:bg-stone-100 dark:hover:bg-stone-800 text-[#C79A4E] cursor-pointer shrink-0"
             title={isPlaying ? "Pause" : "Play"}
           >
             {isPlaying ? "⏸" : "▶"}
@@ -493,9 +473,9 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
       <div className="w-full flex-1 overflow-auto relative">
       {/* H.1.4: zoom/pan control cluster */}
       <div className="absolute bottom-2 right-2 z-10 flex flex-col gap-1">
-        <button onClick={() => setZoom((z) => ({ ...z, scale: Math.min(3, z.scale * 1.2) }))} className="w-6 h-6 flex items-center justify-center rounded-lg border border-stone-800 bg-stone-900/90 hover:bg-stone-800 text-stone-300 text-xs font-bold cursor-pointer" title="Zoom in">+</button>
-        <button onClick={() => setZoom((z) => ({ ...z, scale: Math.max(0.4, z.scale / 1.2) }))} className="w-6 h-6 flex items-center justify-center rounded-lg border border-stone-800 bg-stone-900/90 hover:bg-stone-800 text-stone-300 text-xs font-bold cursor-pointer" title="Zoom out">−</button>
-        <button onClick={resetView} className="w-6 h-6 flex items-center justify-center rounded-lg border border-stone-800 bg-stone-900/90 hover:bg-stone-800 text-stone-300 text-[9px] font-bold cursor-pointer" title="Reset view">⟲</button>
+        <button onClick={() => setZoom((z) => ({ ...z, scale: Math.min(3, z.scale * 1.2) }))} className="w-6 h-6 flex items-center justify-center rounded-lg border border-stone-300 dark:border-stone-800 bg-white/90 dark:bg-stone-900/90 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs font-bold cursor-pointer" title="Zoom in">+</button>
+        <button onClick={() => setZoom((z) => ({ ...z, scale: Math.max(0.4, z.scale / 1.2) }))} className="w-6 h-6 flex items-center justify-center rounded-lg border border-stone-300 dark:border-stone-800 bg-white/90 dark:bg-stone-900/90 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-xs font-bold cursor-pointer" title="Zoom out">−</button>
+        <button onClick={resetView} className="w-6 h-6 flex items-center justify-center rounded-lg border border-stone-300 dark:border-stone-800 bg-white/90 dark:bg-stone-900/90 hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300 text-[9px] font-bold cursor-pointer" title="Reset view">⟲</button>
       </div>
       {/* H.1.3: trace confirmation chip */}
       {selectedTraceNodes.length === 2 && (
@@ -588,9 +568,9 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
               <line
                 x1={from.x} y1={from.y}
                 x2={to.x} y2={to.y}
-                stroke={isSelectedEdge ? "#C79A4E" : edgeIsNew ? "#5DCAA5" : "#64748b"}
+                stroke={isSelectedEdge ? "#C79A4E" : edgeIsNew ? "#5DCAA5" : (isLight ? "#94a3b8" : "#64748b")}
                 strokeWidth={isSelectedEdge ? strokeWidth + 1 : strokeWidth}
-                strokeOpacity={isSelectedEdge ? 0.95 : isMultiHop ? 0.35 : 0.65}
+                strokeOpacity={isSelectedEdge ? 0.95 : isMultiHop ? (isLight ? 0.45 : 0.35) : (isLight ? 0.8 : 0.65)}
                 strokeDasharray={isMultiHop ? "4 3" : undefined}
               />
               {edgeIsNew && (
@@ -603,7 +583,7 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
           const pos = positions.get(n.id);
           if (!pos) return null;
           const isOverflow = n.type === "overflow";
-          const color = isOverflow ? "#94a3b8" : NODE_COLORS[n.type] || "#64748b";
+          const color = isOverflow ? (isLight ? "#64748b" : "#94a3b8") : nodeColors[n.type] || (isLight ? "#475569" : "#64748b");
           const isMultiHopNode = (n.hop || 1) > 1;
           // F.6: importance blends real degree centrality with an
           // individual risk score ONLY when one exists for this node.
@@ -628,14 +608,6 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
               onClick={() => handleNodeClick(n)}
               onDoubleClick={(e) => { e.stopPropagation(); if (expandable) handleNodeExpand(n); }}
             >
-              {/* Native <title> gives every node a real hover tooltip with no
-                  extra JS state/positioning logic -- appropriate for a
-                  lightweight SVG diagram like this one (see interaction.md:
-                  "per-mark hover tooltip" is required, not a specific
-                  implementation). H.1.7: double-click expands a non-root
-                  node's own network in place -- a distinct gesture from
-                  H.1.3's single-click trace-select so the two features
-                  never fight over the same click. */}
               <title>{tooltipText}{traceable ? " · click to select for trace" : ""}{expandable ? " · double-click to expand" : ""}</title>
               {n.type === "suspect" && (
                 <circle
@@ -656,7 +628,7 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
               )}
               <circle
                 cx={pos.x} cy={pos.y} r={radius}
-                fill="#0f172a"
+                fill={isLight ? "#f8fafc" : "#0f172a"}
                 stroke={color}
                 strokeWidth={n.type === "suspect" ? 2.5 : 2}
                 strokeDasharray={isOverflow || isMultiHopNode ? "3 3" : undefined}

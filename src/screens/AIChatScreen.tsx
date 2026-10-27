@@ -1836,8 +1836,8 @@ export const AIChatScreen: React.FC = () => {
   const suggestionChips = suggestionSeeds
     ? [
         {
-          label: lang === "en" ? `Assess conviction risk for suspect ${suggestionSeeds.suspect}` : `${suggestionSeeds.suspect} ಅಪರಾಧದ ಅಪಾಯ ವಿಶ್ಲೇಷಿಸು`,
-          text: `Assess conviction risk for suspect ${suggestionSeeds.suspect}`,
+          label: lang === "en" ? `Assess public safety risk for suspect ${suggestionSeeds.suspect}` : `${suggestionSeeds.suspect} ಸಾರ್ವಜನಿಕ ಸುರಕ್ಷತಾ ಅಪಾಯ ವಿಶ್ಲೇಷಿಸು`,
+          text: `Assess public safety risk for suspect ${suggestionSeeds.suspect}`,
         },
         {
           label: lang === "en" ? `Find similar ${suggestionSeeds.crime_type.toLowerCase()} cases` : `${suggestionSeeds.crime_type} ಪ್ರಕರಣಗಳನ್ನು ಹುಡುಕಿ`,
@@ -1849,7 +1849,7 @@ export const AIChatScreen: React.FC = () => {
         },
       ]
     : [
-        { label: lang === "en" ? "Assess conviction risk for a suspect" : "ಶಂಕಿತ ಅಪರಾಧದ ಅಪಾಯ ವಿಶ್ಲೇಷಿಸು", text: "Assess conviction risk for a suspect" },
+        { label: lang === "en" ? "Assess public safety risk for a suspect" : "ಶಂಕಿತ ಸಾರ್ವಜನಿಕ ಸುರಕ್ಷತಾ ಅಪಾಯ ವಿಶ್ಲೇಷಿಸು", text: "Assess public safety risk for a suspect" },
         { label: lang === "en" ? "Find similar burglary cases" : " burglary ಪ್ರಕರಣಗಳನ್ನು ಹುಡುಕಿ", text: "Find similar burglary cases" },
         { label: lang === "en" ? "Plot crime hotspot coordinates" : "ಅಪರಾಧದ ಹಾಟ್‌ಸ್ಪಾಟ್‌ಗಳನ್ನು ತೋರಿಸಿ", text: "Plot crime hotspot coordinates" },
       ];

@@ -308,7 +308,8 @@ interface ExpandedOverlayProps {
 }
 
 export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType, data: rawData, onClose, inline = false, onFollowUpQuery, networkNewSinceTimestamp }) => {
-  const { lang, officerName, badgeNumber } = useApp();
+  const { lang, officerName, badgeNumber, theme } = useApp();
+  const isLight = theme === "light";
   const contentRef = useRef<HTMLDivElement>(null);
   // Confirmed live feedback: several charts (case_distribution, trend,
   // forecast) were each hardcoded to exactly one presentation with no way
@@ -389,27 +390,30 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
     downloadJson(data, `vajra_${type}_${stamp}.json`);
   };
 
-  // Formulate SHAP factor data for recharts with police-friendly translations
-  const shapData = (Array.isArray(data.shap_factors) ? data.shap_factors : []).map((f: any) => {
+  // Formulate factor data for recharts with police-friendly translations
+  const shapData = (Array.isArray(data.shap_factors) ? data.shap_factors : (Array.isArray(data.factors) ? data.factors : [])).map((f: any) => {
     const cfg = f?.name ? POLICE_EVIDENTIARY_FACTORS[f.name] : undefined;
     const displayName = cfg ? (lang === "en" ? cfg.en : cfg.kn) : (f?.name || "Factor");
     const desc = cfg ? (lang === "en" ? cfg.descEn : cfg.descKn) : "";
-    const numVal = parseFloat(f?.value ?? 0);
-    // Section 61: conviction_impact_pct is the properly-allocated whole-
-    // integer percentage (each feature's share of the real risk-score-vs-
-    // peer-average delta, via Largest Remainder rounding -- see
-    // get_offender_risk in agent_loop.py). Only present when a real peer
-    // baseline was resolvable; falls back to the raw SHAP value display
-    // (existing behavior) when absent, e.g. no peer group found.
-    const hasImpactPct = typeof f?.conviction_impact_pct === "number";
+
+    // Robust impact parsing: handles impactPct, impact_pct, conviction_impact_pct, and numeric value
+    const rawImpact = typeof f?.impactPct === "number" ? f.impactPct
+      : typeof f?.impact_pct === "number" ? f.impact_pct
+      : typeof f?.conviction_impact_pct === "number" ? f.conviction_impact_pct
+      : (typeof f?.value === "number" ? (Math.abs(f.value) <= 1 ? f.value * 100 : f.value) : null);
+
+    const hasImpactPct = typeof rawImpact === "number" && !isNaN(rawImpact);
+    const numVal = typeof f?.value === "number" ? f.value : parseFloat(f?.value ?? 0);
+    const finalValue = hasImpactPct ? rawImpact / 100 : (isNaN(numVal) ? 0 : numVal);
+
     return {
       rawName: f?.name || "",
       name: displayName,
-      value: hasImpactPct ? f.conviction_impact_pct / 100 : (isNaN(numVal) ? 0 : numVal),
-      impactPct: hasImpactPct ? f.conviction_impact_pct : null,
-      contribution: f?.contribution || (numVal >= 0 ? "positive" : "negative"),
+      value: finalValue,
+      impactPct: hasImpactPct ? Math.round(rawImpact) : null,
+      contribution: f?.contribution || (finalValue >= 0 ? "positive" : "negative"),
       desc,
-      whyThisScore: f?.why_this_score || "",
+      whyThisScore: f?.why_this_score || f?.whyThisScore || "",
     };
   });
 
@@ -822,7 +826,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                     <div>
                       <div className="flex items-center gap-2 flex-wrap">
                         <h4 className="font-black text-stone-100 text-lg sm:text-xl font-mono">
-                          {lang === "en" ? "Calibrated Conviction Probability:" : "ಪರಿಷ್ಕೃತ ಅಪರಾಧ ಸಾಧ್ಯತೆ:"}{" "}
+                          {lang === "en" ? "Public Safety & Operational Risk Index:" : "ಸಾರ್ವಜನಿಕ ಸುರಕ್ಷತೆ ಮತ್ತು ಕಾರ್ಯಾಚರಣಾ ಅಪಾಯ ಸೂಚ್ಯಂಕ:"}{" "}
                           <span className={isLowRisk ? "text-emerald-400" : isModerateRisk ? "text-amber-400" : "text-rose-400"}>
                             {riskScore}%
                           </span>
@@ -831,10 +835,10 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                           {riskTierBadge.text}
                         </span>
                       </div>
-                      <p className="text-xs text-stone-450 mt-1 leading-relaxed">
+                      <p className="text-xs text-stone-400 mt-1 leading-relaxed">
                         {lang === "en"
-                          ? "Calibrated CCTNS evidentiary risk assessment based on 12 jurisdictional factors. Outlines prosecution strength and mitigating defense elements."
-                          : "12 ನ್ಯಾಯವ್ಯಾಪ್ತಿಯ ಅಂಶಗಳ ಆಧಾರದ ಮೇಲೆ CCTNS ಸಾಕ್ಷ್ಯ ಮೌಲ್ಯಮಾಪನ. ಪ್ರಾಸಿಕ್ಯೂಷನ್ ಬಲ ಮತ್ತು ಶಮನಕಾರಿ ಅಂಶಗಳನ್ನು ತಿಳಿಸುತ್ತದೆ."}
+                          ? "Calibrated public safety & operational indicators assessment based on 12 jurisdictional factors. Outlines key case drivers and mitigating elements."
+                          : "12 ನ್ಯಾಯವ್ಯಾಪ್ತಿಯ ಅಂಶಗಳ ಆಧಾರದ ಮೇಲೆ ಸಾರ್ವಜನಿಕ ಸುರಕ್ಷತಾ ಮೌಲ್ಯಮಾಪನ. ಪ್ರಮುಖ ಪ್ರಕರಣ ಅಂಶಗಳು ಮತ್ತು ಶಮನಕಾರಿ ಅಂಶಗಳನ್ನು ತಿಳಿಸುತ್ತದೆ."}
                       </p>
                     </div>
                     <div className="flex flex-col items-start sm:items-end gap-1.5 shrink-0">
@@ -884,11 +888,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                   </div>
                 </div>
 
-                {/* F.18: Risk Score with Peer-Average Context -- real peer
-                    group (same crime type, this district; broadened
-                    statewide if too few local peers), scored with the SAME
-                    trained model. Absent entirely when the model/data
-                    couldn't produce one -- never a fabricated placeholder. */}
+                {/* F.18: Risk Score with Peer-Average Context */}
                 {data.peer_average?.available && (
                   <div className="bg-stone-950/80 border border-stone-850 p-3.5 rounded-xl flex items-center justify-between gap-3 shrink-0">
                     <div className="text-xs text-stone-400">
@@ -911,13 +911,13 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                       <h5 className="font-bold text-stone-200 text-xs font-mono tracking-wider flex items-center gap-2">
                         <Scale className="w-3.5 h-3.5 text-[#C79A4E]" />
                         {lang === "en"
-                          ? "EVIDENTIARY FACTORS DRIVING RECIDIVISM RISK (AGENTS & DEFENSE FACTORS)"
-                          : "ಅಪರಾಧ ಪುನರಾವರ್ತನೆಯ ಅಪಾಯವನ್ನು ನಿರ್ಧರಿಸುವ ಸಾಕ್ಷ್ಯ ಅಂಶಗಳು"}
+                          ? "KEY FACTORS BEHIND THIS ASSESSMENT (CASE DRIVERS & MITIGATING FACTORS)"
+                          : "ಈ ಮೌಲ್ಯಮಾಪನದ ಹಿಂದಿನ ಪ್ರಮುಖ ಅಂಶಗಳು (ಪ್ರಕರಣ ಚಾಲಕರು ಮತ್ತು ಶಮನಕಾರಿ ಅಂಶಗಳು)"}
                       </h5>
-                      <p className="text-[10px] text-stone-450 mt-0.5">
+                      <p className="text-[10px] text-stone-400 mt-0.5">
                         {lang === "en"
-                          ? "Impact on prosecution log-odds. Mitigating factors reduce conviction likelihood; aggravating factors increase it."
-                          : "ಪ್ರಾಸಿಕ್ಯೂಷನ್ ಲಾಗ್-ಆಡ್ಸ್ ಮೇಲಿನ ಪರಿಣಾಮ. ಶಮನಕಾರಿ ಅಂಶಗಳು ಅಪರಾಧ ಸಾಧ್ಯತೆಯನ್ನು ಕಡಿಮೆ ಮಾಡುತ್ತವೆ; ತೀವ್ರಗೊಳಿಸುವ ಅಂಶಗಳು ಹೆಚ್ಚಿಸುತ್ತವೆ."}
+                          ? "Impact on public safety score. Mitigating factors reduce assessed risk; escalating factors increase it."
+                          : "ಸಾರ್ವಜನಿಕ ಸುರಕ್ಷತಾ ಸ್ಕೋರ್ ಮೇಲಿನ ಪರಿಣಾಮ. ಶಮನಕಾರಿ ಅಂಶಗಳು ಅಪಾಯವನ್ನು ಕಡಿಮೆ ಮಾಡುತ್ತವೆ; ತೀವ್ರಗೊಳಿಸುವ ಅಂಶಗಳು ಹೆಚ್ಚಿಸುತ್ತವೆ."}
                       </p>
                     </div>
 
@@ -932,7 +932,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                       <div className="flex items-center gap-1.5">
                         <span className="w-2.5 h-2.5 rounded-sm shrink-0 bg-amber-500 shadow-sm shadow-amber-500/50" />
                         <span className="text-[10px] font-mono text-stone-300 font-medium">
-                          {lang === "en" ? "Aggravating (Increases Risk)" : "ತೀವ್ರಗೊಳಿಸುವಿಕೆ (ಅಪಾಯ ಹೆಚ್ಚಳ)"}
+                          {lang === "en" ? "Escalating (Increases Risk)" : "ತೀವ್ರಗೊಳಿಸುವಿಕೆ (ಅಪಾಯ ಹೆಚ್ಚಳ)"}
                         </span>
                       </div>
                     </div>
@@ -945,45 +945,36 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                         layout="vertical"
                         margin={{ top: 10, right: 30, left: 10, bottom: 10 }}
                       >
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" horizontal={false} />
+                        <CartesianGrid strokeDasharray="3 3" stroke={isLight ? "rgba(0,0,0,0.08)" : "rgba(255,255,255,0.04)"} horizontal={false} />
                         <XAxis
                           type="number"
-                          stroke="#64748B"
+                          stroke={isLight ? "#475569" : "#64748B"}
                           fontSize={10}
-                          tickLine={{ stroke: "rgba(255,255,255,0.1)" }}
-                          // CONFIRMED LIVE BUG (2026-09-16): this rendered the
-                          // raw SHAP log-odds coefficient verbatim (e.g.
-                          // "+0.15238471...") -- a float straight off the
-                          // model, not something an officer reading the axis
-                          // can act on. Every other reading of this same
-                          // value on this card (the tooltip's "Conviction
-                          // Impact" row, the evidence-panel badges below)
-                          // already frames it as a whole-integer percentage;
-                          // the axis now matches, so the same number reads
-                          // the same way everywhere on this widget.
+                          tickLine={{ stroke: isLight ? "rgba(0,0,0,0.15)" : "rgba(255,255,255,0.1)" }}
                           tickFormatter={(v) => `${v > 0 ? "+" : v < 0 ? "-" : ""}${Math.round(Math.abs(v) * 100)}%`}
                         />
                         <YAxis
                           dataKey="name"
                           type="category"
                           width={185}
-                          stroke="#CBD5E1"
+                          stroke={isLight ? "#334155" : "#CBD5E1"}
                           fontSize={11}
                           tickLine={false}
-                          axisLine={{ stroke: "rgba(255,255,255,0.15)" }}
+                          axisLine={{ stroke: isLight ? "rgba(0,0,0,0.2)" : "rgba(255,255,255,0.15)" }}
                           interval={0}
                           tick={({ x, y, payload }: any) => {
                             const text = payload.value || "";
                             const words = text.split(" ");
+                            const textColor = isLight ? "#0f172a" : "#CBD5E1";
                             if (text.length <= 24 || words.length === 1) {
                               return (
                                 <text
                                   x={x - 8}
                                   y={y + 4}
                                   textAnchor="end"
-                                  fill="#CBD5E1"
+                                  fill={textColor}
                                   fontSize={11}
-                                  fontWeight={500}
+                                  fontWeight={600}
                                 >
                                   {text}
                                 </text>
@@ -997,9 +988,9 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                                 x={x - 8}
                                 y={y - 2}
                                 textAnchor="end"
-                                fill="#CBD5E1"
+                                fill={textColor}
                                 fontSize={10.5}
-                                fontWeight={500}
+                                fontWeight={600}
                               >
                                 <tspan x={x - 8} dy="0">{line1}</tspan>
                                 <tspan x={x - 8} dy="13">{line2}</tspan>
@@ -1010,13 +1001,13 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                         {/* Anchor baseline at zero */}
                         <ReferenceLine
                           x={0}
-                          stroke="rgba(255, 255, 255, 0.4)"
+                          stroke={isLight ? "rgba(0, 0, 0, 0.45)" : "rgba(255, 255, 255, 0.4)"}
                           strokeWidth={1.5}
                           strokeDasharray="3 3"
                         />
                         {/* Tooltip with non-blinding dark cursor */}
                         <Tooltip
-                          cursor={{ fill: "rgba(255, 255, 255, 0.04)", radius: 4 }}
+                          cursor={{ fill: isLight ? "rgba(0, 0, 0, 0.04)" : "rgba(255, 255, 255, 0.04)", radius: 4 }}
                           content={({ active, payload }: any) => {
                             if (!active || !payload || !payload.length) return null;
                             const item = payload[0].payload;
@@ -1035,14 +1026,14 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                                     }`}
                                   >
                                     {isPos
-                                      ? (lang === "en" ? "▲ Aggravating" : "▲ ತೀವ್ರಗೊಳಿಸುವಿಕೆ")
+                                      ? (lang === "en" ? "▲ Escalating" : "▲ ತೀವ್ರಗೊಳಿಸುವಿಕೆ")
                                       : (lang === "en" ? "▼ Mitigating" : "▼ ಶಮನಕಾರಿ")}
                                   </span>
                                 </div>
                                 <div className="text-[11px] font-mono text-stone-300 space-y-1.5">
                                   <div className="flex justify-between items-center">
                                     <span className="text-stone-400">
-                                      {lang === "en" ? "Conviction Impact:" : "ಅಪರಾಧ ಸಾಧ್ಯತೆ ಮೇಲಿನ ಪರಿಣಾಮ:"}
+                                      {lang === "en" ? "Score Impact:" : "ಸ್ಕೋರ್ ಮೇಲಿನ ಪರಿಣಾಮ:"}
                                     </span>
                                     <span className={`font-bold ${isPos ? "text-amber-400" : "text-emerald-400"}`}>
                                       {isPos ? `+${pctEffect}%` : `-${pctEffect}%`}
@@ -1089,11 +1080,11 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                   <div className="mt-3 pt-2.5 border-t border-stone-800/60 flex items-center justify-between text-[9.5px] font-mono text-stone-400 px-3 py-2 bg-stone-950/60 rounded-lg border border-stone-850">
                     <span className="text-emerald-400/90 flex items-center gap-1.5 font-medium">
                       <span className="text-xs">◀</span>
-                      <span>{lang === "en" ? "Reduces Conviction Risk (Mitigating Evidence)" : "ಅಪರಾಧ ಸಾಧ್ಯತೆ ಕಡಿಮೆಗೊಳಿಸುವ ಪುರಾವೆಗಳು"}</span>
+                      <span>{lang === "en" ? "Reduces Public Safety Risk (Mitigating Factors)" : "ಸಾರ್ವಜನಿಕ ಸುರಕ್ಷತಾ ಅಪಾಯ ಕಡಿಮೆಗೊಳಿಸುವ ಅಂಶಗಳು"}</span>
                     </span>
                     <span className="text-stone-700 font-bold">|</span>
                     <span className="text-amber-400/90 flex items-center gap-1.5 font-medium">
-                      <span>{lang === "en" ? "Increases Conviction Risk (Aggravating Evidence)" : "ಅಪರಾಧ ಸಾಧ್ಯತೆ ಹೆಚ್ಚಿಸುವ ಪುರಾವೆಗಳು"}</span>
+                      <span>{lang === "en" ? "Increases Public Safety Risk (Escalating Factors)" : "ಸಾರ್ವಜನಿಕ ಸುರಕ್ಷತಾ ಅಪಾಯ ಹೆಚ್ಚಿಸುವ ಅಂಶಗಳು"}</span>
                       <span className="text-xs">▶</span>
                     </span>
                   </div>
@@ -1107,7 +1098,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-1.5 text-xs font-bold text-emerald-400 font-mono">
                           <ShieldCheck className="w-4 h-4 text-emerald-400 shrink-0" />
-                          <span>{lang === "en" ? "PRIMARY MITIGATING EVIDENCE" : "ಪ್ರಮುಖ ಶಮನಕಾರಿ ಪುರಾವೆಗಳು"}</span>
+                          <span>{lang === "en" ? "PRIMARY MITIGATING FACTORS" : "ಪ್ರಮುಖ ಶಮನಕಾರಿ ಅಂಶಗಳು"}</span>
                         </div>
                         <span className="text-[9.5px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                           {mitigatingFactors.length} {lang === "en" ? "factors" : "ಅಂಶಗಳು"}
@@ -1115,8 +1106,8 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                       </div>
                       <p className="text-[11px] text-stone-400 leading-relaxed mb-3">
                         {lang === "en"
-                          ? "Circumstances weakening prosecution conviction likelihood or indicating routine, non-predatory patterns:"
-                          : "ಪ್ರಾಸಿಕ್ಯೂಷನ್ ಅಪರಾಧ ಸಾಧ್ಯತೆಯನ್ನು ಕಡಿಮೆ ಮಾಡುವ ಅಥವಾ ಪ್ರತ್ಯೇಕ ಘಟನೆಯನ್ನು ಸೂಚಿಸುವ ಸಂದರ್ಭಗಳು:"}
+                          ? "Circumstances reducing public safety risk or indicating routine, non-predatory patterns:"
+                          : "ಸಾರ್ವಜನಿಕ ಸುರಕ್ಷತಾ ಅಪಾಯವನ್ನು ಕಡಿಮೆ ಮಾಡುವ ಅಥವಾ ಪ್ರತ್ಯೇಕ ಘಟನೆಯನ್ನು ಸೂಚಿಸುವ ಸಂದರ್ಭಗಳು:"}
                       </p>
                       <ul className="space-y-1.5">
                         {mitigatingFactors.slice(0, 3).map((f: any, idx: number) => (
@@ -1130,7 +1121,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                       </ul>
                     </div>
                     <div className="mt-3 pt-2.5 border-t border-emerald-500/15 text-[10.5px] text-emerald-300/80 font-mono">
-                      ✓ {lang === "en" ? "Defense Angle: Emphasize routine timing & localized footprint during bail hearings." : "ರಕ್ಷಣಾ ವಾದ: ಜಾಮೀನು ವಿಚಾರಣೆಯಲ್ಲಿ ಸಾಮಾನ್ಯ ಸಮಯ ಮತ್ತು ಸ್ಥಳೀಯ ನೆಲೆಯನ್ನು ಪ್ರತಿಪಾದಿಸಿ."}
+                      ✓ {lang === "en" ? "Operational Note: Localized presence & verified roots indicate lower public safety hazard." : "ಕಾರ್ಯಾಚರಣಾ ಟಿಪ್ಪಣಿ: ಸ್ಥಳೀಯ ವಾಸ್ತವ್ಯ ಮತ್ತು ಪರಿಶೀಲಿಸಿದ ಬೇರುಗಳು ಕಡಿಮೆ ಸಾರ್ವಜನಿಕ ಅಪಾಯವನ್ನು ಸೂಚಿಸುತ್ತವೆ."}
                     </div>
                   </div>
 
@@ -1140,7 +1131,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                       <div className="flex items-center justify-between mb-2">
                         <div className="flex items-center gap-1.5 text-xs font-bold text-amber-400 font-mono">
                           <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-                          <span>{lang === "en" ? "PRIMARY AGGRAVATING EVIDENCE" : "ಪ್ರಮುಖ ತೀವ್ರಗೊಳಿಸುವ ಪುರಾವೆಗಳು"}</span>
+                          <span>{lang === "en" ? "PRIMARY ESCALATING FACTORS" : "ಪ್ರಮುಖ ತೀವ್ರಗೊಳಿಸುವ ಅಂಶಗಳು"}</span>
                         </div>
                         <span className="text-[9.5px] font-mono px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
                           {aggravatingFactors.length} {lang === "en" ? "factors" : "ಅಂಶಗಳು"}
@@ -1148,8 +1139,8 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                       </div>
                       <p className="text-[11px] text-stone-400 leading-relaxed mb-3">
                         {lang === "en"
-                          ? "Statutory offense factors strengthening prosecution conviction likelihood and recidivism risk:"
-                          : "ಪ್ರಾಸಿಕ್ಯೂಷನ್ ಅಪರಾಧ ಸಾಧ್ಯತೆ ಮತ್ತು ಪುನರಾವರ್ತಿತ ಅಪಾಯವನ್ನು ಹೆಚ್ಚಿಸುವ ಶಾಸನಬದ್ಧ ಅಂಶಗಳು:"}
+                          ? "Offense history and operational factors increasing public safety risk and repeat offending:"
+                          : "ಸಾರ್ವಜನಿಕ ಸುರಕ್ಷತಾ ಅಪಾಯ ಮತ್ತು ಪುನರಾವರ್ತಿತ ಕೃತ್ಯಗಳನ್ನು ಹೆಚ್ಚಿಸುವ ಅಂಶಗಳು:"}
                       </p>
                       <ul className="space-y-1.5">
                         {aggravatingFactors.slice(0, 3).map((f: any, idx: number) => (
@@ -1163,7 +1154,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                       </ul>
                     </div>
                     <div className="mt-3 pt-2.5 border-t border-amber-500/15 text-[10.5px] text-amber-300/80 font-mono">
-                      ⚠ {lang === "en" ? "Prosecution Angle: Scrutinize co-accused disclosures & section statutory thresholds." : "ಪ್ರಾಸಿಕ್ಯೂಷನ್ ಕೋನ: ಸಹ-ಆರೋಪಿಗಳ ಹೇಳಿಕೆಗಳು ಮತ್ತು ಶಾಸನಬದ್ಧ ಮಿತಿಗಳನ್ನು ಪರಿಶೀಲಿಸಿ."}
+                      ⚠ {lang === "en" ? "Operational Note: Multi-jurisdictional reach & syndicate linkages suggest elevated flight and re-offending risk." : "ಕಾರ್ಯಾಚರಣಾ ಟಿಪ್ಪಣಿ: ಬಹು-ವ್ಯಾಪ್ತಿಯ ಜಾಲ ಮತ್ತು ಸಿಂಡಿಕೇಟ್ ಸಂಪರ್ಕಗಳು ಹೆಚ್ಚಿನ ಪರಾರಿಯಾಗುವ ಮತ್ತು ಪುನರಾವರ್ತನೆಯ ಅಪಾಯವನ್ನು ಸೂಚಿಸುತ್ತವೆ."}
                     </div>
                   </div>
                 </div>

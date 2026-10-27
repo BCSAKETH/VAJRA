@@ -540,7 +540,7 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
             {effectiveType === "risk" && (
               <>
                 <ShieldAlert className="w-4 h-4 text-amber-500" />
-                <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "Offender Recidivism Risk & SHAP Analysis" : "ಅಪರಾಧಿ ಮರುಅಪರಾಧ ಅಪಾಯ ಮತ್ತು SHAP"}</span>
+                <span className="text-xs font-bold text-amber-500 tracking-wider uppercase font-mono">{lang === "en" ? "Public Safety & Operational Indicators Assessment" : "ಸಾರ್ವಜನಿಕ ಸುರಕ್ಷತೆ ಮತ್ತು ಕಾರ್ಯಾಚರಣಾ ಸೂಚಕಗಳ ಮೌಲ್ಯಮಾಪನ"}</span>
               </>
             )}
             {effectiveType === "forecast" && (
