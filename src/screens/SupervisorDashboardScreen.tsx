@@ -926,7 +926,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
             className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-black uppercase tracking-wider transition-all disabled:opacity-50 cursor-pointer shadow-md ${
               pushEnabled
                 ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-400 hover:border-emerald-500/70"
-                : "bg-stone-900 border-stone-800 hover:border-[#C79A4E]/40 text-stone-400 hover:text-white"
+                : "bg-stone-900 border-stone-800 hover:border-[#C79A4E]/40 text-stone-400 hover:text-stone-100"
             }`}
           >
             {isTogglingPush ? (
@@ -949,7 +949,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
           <button
             onClick={handleVerifyLedger}
             disabled={isVerifyingLedger || isLoadingAudit}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-stone-900 border border-stone-800 hover:border-[#C79A4E]/40 text-xs font-black uppercase tracking-wider text-[#C79A4E] hover:text-white transition-all disabled:opacity-50 cursor-pointer shadow-md shadow-[#C79A4E]/5"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-stone-900 border border-stone-800 hover:border-[#C79A4E]/40 text-xs font-black uppercase tracking-wider text-[#C79A4E] hover:text-[#E4C590] transition-all disabled:opacity-50 cursor-pointer shadow-md shadow-[#C79A4E]/5"
           >
             <ShieldCheck className="w-4 h-4" />
             <span>{isVerifyingLedger ? t.supervisorVerifyingHashes : t.supervisorVerifyLedger}</span>
@@ -1594,7 +1594,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
                     <div className="text-right">
                       <button
                         onClick={() => handleReviewFlag(flag.rowid)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[#C79A4E] hover:text-white hover:bg-[#C79A4E]/20 font-bold font-mono text-[10px] uppercase cursor-pointer"
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-[#C79A4E]/10 border border-[#C79A4E]/25 text-[#C79A4E] hover:text-[#E4C590] hover:bg-[#C79A4E]/20 font-bold font-mono text-[10px] uppercase cursor-pointer"
                       >
                         <Lock className="w-3 h-3" />
                         <span>{t.supervisorResolveDualControl}</span>

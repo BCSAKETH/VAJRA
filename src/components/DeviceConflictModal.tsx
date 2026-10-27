@@ -73,9 +73,9 @@ export const DeviceConflictModal: React.FC<DeviceConflictModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fade-in">
-      <div className="relative w-full max-w-2xl overflow-hidden rounded-2xl border border-[#C79A4E]/40 bg-[#141210] shadow-[0_10px_50px_rgba(0,0,0,0.9)] grid grid-cols-1 md:grid-cols-12">
+      <div className="relative w-full max-w-2xl overflow-hidden rounded-2xl border border-[#C79A4E]/40 bg-stone-900 shadow-[0_10px_50px_rgba(0,0,0,0.9)] grid grid-cols-1 md:grid-cols-12">
         {/* Left Column: Visual Hardware Illustration & Police Alert Badge */}
-        <div className="md:col-span-5 p-6 bg-gradient-to-b from-[#1c1815] to-[#12100e] border-b md:border-b-0 md:border-r border-[#C79A4E]/20 flex flex-col justify-between relative overflow-hidden">
+        <div className="md:col-span-5 p-6 bg-gradient-to-b from-stone-900 to-stone-950 border-b md:border-b-0 md:border-r border-[#C79A4E]/20 flex flex-col justify-between relative overflow-hidden">
           <div className="absolute -right-8 -bottom-8 w-36 h-36 bg-[#C79A4E]/10 rounded-full blur-2xl pointer-events-none" />
 
           <div>
@@ -174,7 +174,7 @@ export const DeviceConflictModal: React.FC<DeviceConflictModalProps> = ({
             <button
               onClick={onCancel}
               disabled={isResolving}
-              className="w-full py-2 text-center text-xs font-mono text-stone-400 hover:text-stone-200 transition-colors cursor-pointer"
+              className="w-full py-2 text-center text-xs font-mono text-stone-400 hover:text-stone-100 transition-colors cursor-pointer"
             >
               {lang === "en" ? "Cancel & Return to Login" : "ರದ್ದುಮಾಡಿ ಮತ್ತು ಲಾಗಿನ್‌ಗೆ ಹಿಂತಿರುಗಿ"}
             </button>

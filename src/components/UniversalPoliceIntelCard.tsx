@@ -733,7 +733,7 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
               <button
                 type="button"
                 onClick={onClose}
-                className="p-1.5 rounded-lg bg-stone-950/80 border border-stone-800 text-stone-400 hover:text-white hover:border-stone-700 transition-colors cursor-pointer"
+                className="p-1.5 rounded-lg bg-stone-950/80 border border-stone-800 text-stone-400 hover:text-stone-100 hover:border-[#C79A4E]/50 transition-colors cursor-pointer"
                 title={currentLang === "en" ? "Close" : "ಮುಚ್ಚಿ"}
               >
                 <X className="w-4 h-4" />
@@ -1169,7 +1169,7 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
               <button
                 type="button"
                 onClick={() => onFollowUpQuery(`Draft formal Section 480 BNSS bail opposition memo for ${data?.suspect_name || data?.accused_name || data?.case_no || "suspect"}`)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-200 hover:text-white cursor-pointer transition-all"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 text-rose-200 hover:text-rose-100 cursor-pointer transition-all"
               >
                 <Scale className="w-3.5 h-3.5" />
                 <span>{lang === "en" ? "Draft Formal Bail Opposition Memo" : "ಔಪಚಾರಿಕ ಜಾಮೀನು ವಿರೋಧ ಮೆಮೊ ರಚಿಸಿ"}</span>
@@ -1449,7 +1449,7 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
           <button
             type="button"
             onClick={() => copyToClipboard(hashSeal || "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256")}
-            className="px-2.5 py-1 rounded bg-stone-900 border border-stone-700 text-[10px] font-mono text-stone-300 hover:text-white flex items-center gap-1 cursor-pointer transition-colors"
+            className="px-2.5 py-1 rounded bg-stone-900 border border-stone-700 text-[10px] font-mono text-stone-300 hover:text-stone-100 hover:border-[#C79A4E]/50 flex items-center gap-1 cursor-pointer transition-colors"
           >
             {copiedKey === "sha256" ? (
               <>

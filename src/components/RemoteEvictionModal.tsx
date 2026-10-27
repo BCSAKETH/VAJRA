@@ -73,7 +73,7 @@ export const RemoteEvictionModal: React.FC<RemoteEvictionModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/90 backdrop-blur-lg animate-fade-in select-none">
-      <div className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-rose-500/40 bg-[#161210] shadow-[0_20px_70px_rgba(0,0,0,0.95)] p-6 md:p-8 space-y-6 text-center">
+      <div className="relative w-full max-w-lg overflow-hidden rounded-2xl border border-rose-500/40 bg-stone-900 shadow-[0_20px_70px_rgba(0,0,0,0.95)] p-6 md:p-8 space-y-6 text-center">
         {/* Glowing Background Radial */}
         <div className="absolute top-0 left-1/2 -translate-x-1/2 w-64 h-32 bg-rose-500/15 rounded-full blur-3xl pointer-events-none" />
 

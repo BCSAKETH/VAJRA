@@ -1049,7 +1049,7 @@ export const DistrictDashboardScreen: React.FC = () => {
           <button
             onClick={handleRefreshSummary}
             disabled={isLoadingSummary || isRefreshingSummary}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-white transition-all disabled:opacity-50 disabled:cursor-wait cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-stone-100 transition-all disabled:opacity-50 disabled:cursor-wait cursor-pointer"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingSummary ? "animate-spin" : ""}`} />
             <span>{lang === "en" ? "Refresh" : "ರಿಫ್ರೆಶ್"}</span>
@@ -1125,7 +1125,7 @@ export const DistrictDashboardScreen: React.FC = () => {
           />
 
           {/* Drawer Content */}
-          <div className="relative w-full sm:w-[620px] h-full bg-[#0C0A09]/95 backdrop-blur-2xl border-l border-[#C79A4E]/30 shadow-[-25px_0_60px_rgba(0,0,0,0.85)] flex flex-col z-10 animate-in slide-in-from-right duration-200 overflow-hidden text-stone-200">
+          <div className="relative w-full sm:w-[620px] h-full bg-stone-950/95 backdrop-blur-2xl border-l border-[#C79A4E]/30 shadow-[-25px_0_60px_rgba(0,0,0,0.85)] flex flex-col z-10 animate-in slide-in-from-right duration-200 overflow-hidden text-stone-200">
             {/* Header */}
             <div className="px-5 py-4 border-b border-stone-800/80 bg-stone-900/50 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-3">
@@ -1872,7 +1872,7 @@ export const DistrictDashboardScreen: React.FC = () => {
                     </div>
                     <button
                       onClick={handleBackToDistrict}
-                      className="ml-auto shrink-0 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-[11px] font-bold text-stone-300 hover:text-white transition-all cursor-pointer"
+                      className="ml-auto shrink-0 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-[11px] font-bold text-stone-300 hover:text-stone-100 transition-all cursor-pointer"
                     >
                       {lang === "en" ? `← Back to ${detail.district}` : `← ${detail.district} ಗೆ ಹಿಂತಿರುಗಿ`}
                     </button>

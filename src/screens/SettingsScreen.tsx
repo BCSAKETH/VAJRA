@@ -708,9 +708,9 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
   };
 
   return (
-    <div className="flex flex-col md:flex-row h-full min-h-0 bg-[#181614] text-stone-200">
+    <div className="flex flex-col md:flex-row h-full min-h-0 bg-stone-950 text-stone-200">
       {/* LEFT NAVIGATION COLUMN */}
-      <div className="w-full md:w-64 bg-[#141210] border-b md:border-b-0 md:border-r border-stone-800 flex flex-col shrink-0">
+      <div className="w-full md:w-64 bg-stone-900 border-b md:border-b-0 md:border-r border-stone-800 flex flex-col shrink-0">
         <div className="p-3 border-b border-stone-800/80">
           <div className="relative">
             <Search className="w-3.5 h-3.5 absolute left-2.5 top-2.5 text-stone-500" />
@@ -755,7 +755,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
       </div>
 
       {/* RIGHT CONTENT COLUMN */}
-      <div className="flex-1 flex flex-col min-w-0 bg-[#181614] overflow-hidden">
+      <div className="flex-1 flex flex-col min-w-0 bg-stone-950 overflow-hidden">
         <div className="flex items-center justify-between px-6 py-4 border-b border-stone-800/80 bg-stone-900/20 shrink-0">
           <div>
             <h2 className="text-sm font-mono font-bold text-stone-100 uppercase tracking-wider">{tabTitles[activeTab].title}</h2>
@@ -1187,7 +1187,7 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
                       "Success"
                     );
                   }}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-200 hover:text-white text-xs font-mono font-bold transition-colors cursor-pointer"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-stone-900 border border-stone-700 text-stone-200 hover:text-stone-100 hover:border-[#C79A4E]/50 text-xs font-mono font-bold transition-colors cursor-pointer"
                 >
                   <FileText className="w-3.5 h-3.5 text-[#C79A4E]" />
                   {lang === "en" ? "Export Telemetry Digest PDF" : "ಕಾರ್ಯಭಾರ PDF ರಫ್ತು ಮಾಡಿ"}

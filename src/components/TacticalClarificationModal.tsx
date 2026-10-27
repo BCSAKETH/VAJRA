@@ -138,7 +138,7 @@ export const TacticalClarificationModal: React.FC<TacticalClarificationModalProp
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md animate-fadeIn">
       <div 
-        className="relative w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-amber-500/30 bg-[#0d1117]/95 shadow-2xl shadow-amber-500/10 overflow-hidden text-neutral-100"
+        className="relative w-full max-w-2xl max-h-[90vh] flex flex-col rounded-2xl border border-amber-500/30 bg-stone-900 shadow-2xl shadow-amber-500/10 overflow-hidden text-stone-100"
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
@@ -163,7 +163,7 @@ export const TacticalClarificationModal: React.FC<TacticalClarificationModalProp
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800/80 transition-colors"
+            className="p-1.5 rounded-lg text-stone-400 hover:text-stone-100 hover:bg-stone-800/80 transition-colors"
             title="Dismiss Inquest"
           >
             <X className="w-5 h-5" />
@@ -261,7 +261,7 @@ export const TacticalClarificationModal: React.FC<TacticalClarificationModalProp
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2">
                       <span className={`text-xs font-bold tracking-wide ${
-                        isSelected ? 'text-amber-200' : 'text-neutral-200 group-hover:text-white'
+                        isSelected ? 'text-amber-200' : 'text-stone-300 group-hover:text-stone-100'
                       }`}>
                         {opt.label}
                       </span>
@@ -322,7 +322,7 @@ export const TacticalClarificationModal: React.FC<TacticalClarificationModalProp
             {currentStepIdx > 0 && (
               <button
                 onClick={handlePrev}
-                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-neutral-300 bg-neutral-900 border border-neutral-800 hover:bg-neutral-850 hover:text-white transition-all"
+                className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold text-stone-300 bg-stone-900 border border-stone-800 hover:bg-stone-850 hover:text-stone-100 transition-all"
               >
                 <ChevronLeft className="w-4 h-4" />
                 <span>Back</span>
@@ -476,7 +476,7 @@ export const InlineTacticalInquest: React.FC<InlineTacticalInquestProps> = ({
         {onDismiss && (
           <button
             onClick={onDismiss}
-            className="p-1 rounded-lg text-stone-400 hover:text-white hover:bg-stone-800 transition-colors"
+            className="p-1 rounded-lg text-stone-400 hover:text-stone-100 hover:bg-stone-800 transition-colors"
             title="Dismiss Inquest"
           >
             <X className="w-4 h-4" />
@@ -563,7 +563,7 @@ export const InlineTacticalInquest: React.FC<InlineTacticalInquestProps> = ({
                   <div className="flex items-center justify-between gap-2">
                     <span
                       className={`text-xs font-bold tracking-wide ${
-                        isSelected ? 'text-amber-200' : 'text-stone-200 group-hover:text-white'
+                        isSelected ? 'text-amber-200' : 'text-stone-200 group-hover:text-stone-100'
                       }`}
                     >
                       {opt.label}
@@ -627,7 +627,7 @@ export const InlineTacticalInquest: React.FC<InlineTacticalInquestProps> = ({
           {currentStepIdx > 0 && (
             <button
               onClick={handlePrev}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-stone-300 bg-stone-900 border border-stone-800 hover:bg-stone-850 hover:text-white transition-all"
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-stone-300 bg-stone-900 border border-stone-800 hover:bg-stone-850 hover:text-stone-100 transition-all"
             >
               <ChevronLeft className="w-3.5 h-3.5" />
               <span>Back</span>

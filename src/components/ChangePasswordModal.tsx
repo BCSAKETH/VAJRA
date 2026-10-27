@@ -198,7 +198,7 @@ export const ChangePasswordModal: React.FC<ChangePasswordModalProps> = ({ isOpen
             <button
               type="button"
               onClick={onClose}
-              className="px-3.5 py-1.5 rounded-lg text-xs text-stone-400 hover:text-white uppercase font-bold transition-colors cursor-pointer"
+              className="px-3.5 py-1.5 rounded-lg text-xs text-stone-400 hover:text-stone-100 uppercase font-bold transition-colors cursor-pointer"
             >
               {lang === "en" ? "Cancel" : "ರದ್ದುಮಾಡಿ"}
             </button>

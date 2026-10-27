@@ -1953,14 +1953,14 @@ export const AIChatScreen: React.FC = () => {
             <button
               onClick={() => setShowTaskChecklist(true)}
               title={lang === "en" ? "Guided Tasks" : "ಮಾರ್ಗದರ್ಶಿ ಕಾರ್ಯಗಳು"}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-white transition-all shadow-md cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer"
             >
               <ListChecks className="w-3.5 h-3.5" />
             </button>
             <button
               onClick={() => setShowCaseDiary(true)}
               title={lang === "en" ? "Case Diary" : "ಪ್ರಕರಣ ದಿನಚರಿ"}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-white transition-all shadow-md cursor-pointer"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer"
             >
               <BookText className="w-3.5 h-3.5" />
             </button>
@@ -1968,7 +1968,7 @@ export const AIChatScreen: React.FC = () => {
               <button
                 onClick={() => setShowManageMenu((v) => !v)}
                 title={lang === "en" ? "Manage Investigation" : "ತನಿಖೆ ನಿರ್ವಹಿಸಿ"}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-white transition-all shadow-md cursor-pointer"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer"
               >
                 <MoreVertical className="w-3.5 h-3.5" />
               </button>
@@ -2003,7 +2003,7 @@ export const AIChatScreen: React.FC = () => {
           <button
             onClick={handleExportPDF}
             disabled={isExportingPdf}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-white transition-all shadow-md cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer disabled:opacity-50 disabled:cursor-wait"
           >
             <Download className={`w-3.5 h-3.5 ${isExportingPdf ? "animate-bounce" : ""}`} />
             <span>{isExportingPdf ? (lang === "en" ? "Exporting…" : "ರಫ್ತು ಮಾಡಲಾಗುತ್ತಿದೆ…") : t.exportPdf}</span>
@@ -2012,7 +2012,7 @@ export const AIChatScreen: React.FC = () => {
         <button
           onClick={() => setShowBrowser(true)}
           title={lang === "en" ? "Browse with VAJRA" : "VAJRA ಬ್ರೌಸ್"}
-          className="flex items-center justify-center p-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-stone-400 hover:text-white transition-all shadow-md cursor-pointer"
+          className="flex items-center justify-center p-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer"
         >
           <Globe className="w-3.5 h-3.5" />
         </button>

@@ -541,7 +541,7 @@ export const AgentWorkspaceScreen: React.FC = () => {
                       </div>
                     </div>
 
-                    <h4 className="text-xs font-mono font-bold text-stone-100 group-hover:text-white">
+                    <h4 className="text-xs font-mono font-bold text-stone-100 group-hover:text-[#C79A4E] transition-colors">
                       {worker.name}
                     </h4>
 

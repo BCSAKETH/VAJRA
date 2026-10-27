@@ -646,7 +646,7 @@ export const PersonnelGovernancePanel: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsAddModalOpen(false)}
-                  className="px-3.5 py-1.5 rounded-lg text-xs text-stone-400 hover:text-white uppercase font-bold cursor-pointer"
+                  className="px-3.5 py-1.5 rounded-lg text-xs text-stone-400 hover:text-stone-100 uppercase font-bold cursor-pointer transition-colors"
                 >
                   {lang === "en" ? "Cancel" : "ರದ್ದುಮಾಡಿ"}
                 </button>
@@ -702,7 +702,7 @@ export const PersonnelGovernancePanel: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setBlockTarget(null)}
-                className="px-3.5 py-1.5 rounded-lg text-xs text-stone-400 hover:text-white uppercase font-bold cursor-pointer"
+                className="px-3.5 py-1.5 rounded-lg text-xs text-stone-400 hover:text-stone-100 uppercase font-bold cursor-pointer transition-colors"
               >
                 {lang === "en" ? "Cancel" : "ರದ್ದುಮಾಡಿ"}
               </button>
@@ -757,7 +757,7 @@ export const PersonnelGovernancePanel: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setDeleteTarget(null)}
-                className="px-3.5 py-1.5 rounded-lg text-xs text-stone-400 hover:text-white uppercase font-bold cursor-pointer"
+                className="px-3.5 py-1.5 rounded-lg text-xs text-stone-400 hover:text-stone-100 uppercase font-bold cursor-pointer transition-colors"
               >
                 {lang === "en" ? "Cancel" : "ರದ್ದುಮಾಡಿ"}
               </button>
@@ -829,7 +829,7 @@ export const PersonnelGovernancePanel: React.FC = () => {
               <button
                 type="button"
                 onClick={() => setTransferTarget(null)}
-                className="px-3.5 py-1.5 rounded-lg text-xs text-stone-400 hover:text-white uppercase font-bold cursor-pointer"
+                className="px-3.5 py-1.5 rounded-lg text-xs text-stone-400 hover:text-stone-100 uppercase font-bold cursor-pointer transition-colors"
               >
                 {lang === "en" ? "Cancel" : "ರದ್ದುಮಾಡಿ"}
               </button>

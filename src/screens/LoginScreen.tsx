@@ -140,7 +140,7 @@ export const LoginScreen: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#161412] flex flex-col items-center justify-center relative p-4 overflow-hidden">
+    <div className="min-h-screen bg-stone-950 flex flex-col items-center justify-center relative p-4 overflow-hidden">
       {/* Indian Tricolour Top Accent Strip */}
       <div className="tricolour-strip absolute top-0 left-0 right-0 z-50" />
 
@@ -148,7 +148,7 @@ export const LoginScreen: React.FC = () => {
       <div className="absolute top-6 right-6">
         <button
           onClick={() => setLang(lang === "en" ? "kn" : "en")}
-          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-850/80 text-xs font-semibold text-[#C79A4E] hover:text-white transition-all shadow-lg"
+          className="flex items-center space-x-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-850/80 text-xs font-semibold text-[#C79A4E] hover:text-[#E4C590] transition-all shadow-lg"
         >
           <Languages className="w-3.5 h-3.5" />
           <span>{lang === "en" ? "ಕನ್ನಡ" : "English"}</span>
