@@ -588,6 +588,17 @@ def render_dossier_html(
     for panel in panels:
         p_role = panel.get("role", "assistant")
         p_text = panel.get("text_kn" if is_kn else "text") or panel.get("text") or ""
+        p_snapshot = panel.get("snapshot") or panel.get("image_url")
+        snapshot_html = ""
+        if p_snapshot:
+            snapshot_html = f"""
+            <div class="exhibit-plate" style="margin: 8px 0; border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden; background: #0f172a;">
+                <img src="{p_snapshot}" style="width: 100%; max-height: 280px; object-fit: contain; display: block;" alt="Visual Intelligence Exhibit" />
+                <div style="background: #f8fafc; border-top: 1px solid #e2e8f0; padding: 4px 8px; font-size: 7.5pt; font-weight: 700; color: #64748b; font-family: monospace;">
+                    ◈ EVIDENTIARY EXHIBIT (SECTION 63 BSA CERTIFIED VISUAL CAPTURE)
+                </div>
+            </div>
+            """
 
         if p_role == "user":
             formatted_body = _clean_and_format_text(p_text)
@@ -596,6 +607,7 @@ def render_dossier_html(
                 <div class="chat-bubble bubble-officer">
                     <span class="bubble-label label-officer">{officer_label_text}</span>
                     <div class="bubble-text">{formatted_body}</div>
+                    {snapshot_html}
                 </div>
             </div>
             """
@@ -636,6 +648,7 @@ def render_dossier_html(
                     <div class="section-body" style="padding: 6px 0 0 0;">
                         {formatted_body}
                         {visual_card}
+                        {snapshot_html}
                     </div>
                 </div>
             </div>

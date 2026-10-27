@@ -10721,8 +10721,9 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
             # role="user" panel as a distinct right-aligned bubble (see its
             # own comment), matching the live chat's own left/right
             # convention instead of collapsing everyone into identical cards.
-            if sender == "user" and m_text.strip():
-                panels.append({"role": "user", "text": m_text, "type": "text"})
+            m_snapshot = msg.get("snapshot") or msg.get("image_url") or (msg.get("data") or {}).get("snapshot")
+            if sender == "user" and (m_text.strip() or m_snapshot):
+                panels.append({"role": "user", "text": m_text, "type": "text", "snapshot": m_snapshot})
                 continue
             if sender in ("assistant", "ai", "vajra", "vajra.ai"):
                 narrative += f"\n{m_text}" if narrative else m_text
@@ -10769,15 +10770,17 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
                         "title_kn": ctitle,
                         "type": ctype,
                         "text": card_text,
-                        "data": c
+                        "data": c,
+                        "snapshot": m_snapshot
                     })
 
-                if not cards and m_text.strip():
+                if not cards and (m_text.strip() or m_snapshot):
                     panels.append({
                         "title": "Intelligence Analysis" if report_lang == "en" else "ಗುಪ್ತಚರ ವಿಶ್ಲೇಷಣೆ",
                         "type": "text",
                         "text": m_text,
-                        "data": {}
+                        "data": {},
+                        "snapshot": m_snapshot
                     })
 
                 m_data = msg.get("data")
@@ -11599,15 +11602,77 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
 
             clean_text = text.replace(r"\r\n", "\n").replace(r"\n", "\n").replace(r"\r", "\n")
             clean_text = re.sub(r"\*\*([^*]+)\*\*", r"\1", clean_text)
+            m_snapshot = msg.get("snapshot") or msg.get("image_url") or (msg.get("data") or {}).get("snapshot")
 
-            pdf.set_font("NotoKannada", size=8)
-            pdf.set_text_color(*(TEAL if is_ai else GOLD))
-            pdf.cell(0, 6, f"{label}   {time_str}", new_x="LMARGIN", new_y="NEXT")
-            pdf.set_text_color(*INK)
-            pdf.set_font("NotoKannada", size=9.5)
-            body = clean_text if clean_text.strip() else "(interactive visualization - see the VAJRA console for the live chart/map)"
-            pdf.multi_cell(0, 5.6, body)
-            pdf.ln(2.5)
+            if not is_ai:
+                # Right-aligned Officer Chat Bubble (Warm cream fill + Amber border)
+                bubble_w = min(136.0, pdf.w * 0.72)
+                x = pdf.w - 12.0 - bubble_w
+                pdf.set_font("NotoKannada", size=9.0)
+                lines = pdf.multi_cell(bubble_w - 8.0, 4.8, clean_text, dry_run=True, output="LINES") if clean_text.strip() else []
+                text_h = max(len(lines) * 4.8, 5.0)
+                bubble_h = 7.5 + text_h + 3.5
+                if pdf.get_y() + bubble_h > pdf.h - 18:
+                    pdf.add_page()
+                b_y = pdf.get_y()
+                pdf.set_fill_color(253, 246, 234)
+                pdf.set_draw_color(234, 205, 143)
+                pdf.set_line_width(0.35)
+                pdf.rect(x, b_y, bubble_w, bubble_h, style="FD")
+                pdf.set_xy(x + 4, b_y + 1.8)
+                pdf.set_font("NotoKannada", size=7.0)
+                pdf.set_text_color(146, 64, 14)
+                pdf.cell(bubble_w - 8, 3.5, label, align="R")
+                pdf.set_xy(x + 4, b_y + 6.2)
+                pdf.set_font("NotoKannada", size=9.0)
+                pdf.set_text_color(*INK)
+                pdf.multi_cell(bubble_w - 8, 4.8, clean_text)
+                pdf.set_y(b_y + bubble_h + 4.0)
+            else:
+                # Left-aligned VAJRA.AI Chat Bubble (Soft slate fill + Zinc border + Gold accent)
+                bubble_w = min(155.0, pdf.w * 0.82)
+                x = 12.0
+                body_str = clean_text if clean_text.strip() else ("(Interactive Intelligence Analysis - CCTNS Grounded)" if not msg.get("cards") else "")
+                pdf.set_font("NotoKannada", size=9.0)
+                lines = pdf.multi_cell(bubble_w - 12.0, 4.8, body_str, dry_run=True, output="LINES") if body_str else []
+                text_h = max(len(lines) * 4.8, 5.0) if body_str else 0.0
+                bubble_h = (7.5 + text_h + 3.5) if body_str else 0.0
+
+                if bubble_h > 0:
+                    if pdf.get_y() + bubble_h > pdf.h - 18:
+                        pdf.add_page()
+                    b_y = pdf.get_y()
+                    pdf.set_fill_color(248, 250, 252)
+                    pdf.set_draw_color(226, 232, 240)
+                    pdf.set_line_width(0.35)
+                    pdf.rect(x, b_y, bubble_w, bubble_h, style="FD")
+                    pdf.set_fill_color(*GOLD)
+                    pdf.rect(x, b_y, 2.5, bubble_h, style="F")
+                    pdf.set_xy(x + 6, b_y + 1.8)
+                    pdf.set_font("NotoKannada", size=7.0)
+                    pdf.set_text_color(*GOLD)
+                    pdf.cell(bubble_w - 12, 3.5, label)
+                    pdf.set_xy(x + 6, b_y + 6.2)
+                    pdf.set_font("NotoKannada", size=9.0)
+                    pdf.set_text_color(*INK)
+                    pdf.multi_cell(bubble_w - 12, 4.8, body_str)
+                    pdf.set_y(b_y + bubble_h + 3.0)
+
+            # Render embedded exhibit snapshot if present
+            if m_snapshot and isinstance(m_snapshot, str) and "base64," in m_snapshot:
+                try:
+                    import base64 as _b64, io as _io
+                    raw_b64 = m_snapshot.split("base64,")[1]
+                    img_bytes = _b64.b64decode(raw_b64)
+                    snap_w = min(150.0, pdf.w - 24.0)
+                    snap_h = 56.0
+                    if pdf.get_y() + snap_h + 8.0 > pdf.h - 18:
+                        pdf.add_page()
+                    snap_x = 12.0 if is_ai else (pdf.w - snap_w - 12.0)
+                    pdf.image(_io.BytesIO(img_bytes), x=snap_x, y=pdf.get_y(), w=snap_w, h=snap_h)
+                    pdf.set_y(pdf.get_y() + snap_h + 4.0)
+                except Exception as _ie:
+                    logger.warning(f"FPDF snapshot render error: {_ie}")
 
             card_w = pdf.w - 24
             if is_ai:
@@ -11686,7 +11751,10 @@ async def export_pdf_endpoint(payload: PDFExportRequest, request: Request, locat
         return Response(
             content=bytes(pdf_bytes),
             media_type="application/pdf",
-            headers={"Content-Disposition": f"attachment; filename={_fp_filename}"}
+            headers={
+                "Content-Disposition": f"attachment; filename={_fp_filename}",
+                "X-Engine": "FPDF-Engine"
+            }
         )
     except Exception as e:
         logger.error(f"Failed to generate PDF via FPDF: {e}. Initiating zero-dependency emergency fallback.")

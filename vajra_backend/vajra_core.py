@@ -645,8 +645,9 @@ def _get_mail_access_token(force_refresh: bool = False) -> Optional[str]:
 
 def get_smartbrowz_access_token() -> Optional[str]:
     """Dedicated SmartBrowz-only token (ZohoCatalyst.pdfshot.execute +
-    ZohoCatalyst.dataverse.execute) -- see _get_scoped_access_token."""
-    return _get_scoped_access_token("CATALYST_SMARTBROWZ_REFRESH_TOKEN", "smartbrowz")
+    ZohoCatalyst.dataverse.execute) -- see _get_scoped_access_token.
+    Falls back to the unified app cached access token if dedicated token is unset."""
+    return _get_scoped_access_token("CATALYST_SMARTBROWZ_REFRESH_TOKEN", "smartbrowz") or get_cached_access_token()
 
 
 def get_quickml_access_token() -> Optional[str]:

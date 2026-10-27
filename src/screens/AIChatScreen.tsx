@@ -1690,6 +1690,7 @@ export const AIChatScreen: React.FC = () => {
     timestamp: m.timestamp || "",
     data: m.data || {},
     citations: m.citations || [],
+    snapshot: (m as any).snapshot || (m.data && (m.data as any).snapshot) || undefined,
   }));
 
   const requestExport = async (targetLang: "en" | "kn", approvalId?: string, reason?: string): Promise<Response> =>
