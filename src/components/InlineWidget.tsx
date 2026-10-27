@@ -6,6 +6,7 @@ import { API_BASE } from "../config";
 import { Maximize2, ShieldAlert, ShieldCheck, MapPin, Network, TrendingUp, Activity, Clock, Fingerprint, Users, Repeat, Link2, PieChart, Newspaper, ExternalLink, Radio, ChevronDown, ChevronRight, Code2, Copy, Check, Sparkles, Download, Scale } from "lucide-react";
 import { ExpandedOverlay } from "./ExpandedOverlay";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { EvidenceBadge, EvidenceTier } from "./EvidenceBadge";
 
 // Fit the inline map to the ACTUAL hotspot coordinates every render, and force
 // a resize once the chat bubble has laid out (Leaflet renders grey/half-drawn
@@ -669,6 +670,17 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                 <span className="text-xs font-bold text-rose-400 tracking-wider uppercase font-mono">{lang === "en" ? "Prison Release & Parole Radar" : "ಜೈಲು ಬಿಡುಗಡೆ ಮತ್ತು ಪೆರೋಲ್ ಕಣ್ಗಾವಲು"}</span>
               </>
             )}
+            <EvidenceBadge
+              tier={
+                effectiveType === "diary_entry_card" || effectiveType === "case_list" || effectiveType === "dossier" || effectiveType === "offender_timeline" || effectiveType === "timeline"
+                  ? "verified_record"
+                  : effectiveType === "statutory_deadline_radar" || effectiveType === "chargesheet_ready_grid"
+                  ? "legal_reference"
+                  : effectiveType === "forecast" || effectiveType === "trend" || effectiveType === "case_distribution" || effectiveType === "custom_chart"
+                  ? "ai_summary"
+                  : "investigative_lead"
+              }
+            />
           </div>
 
           {/* Right action group: Explain + Maximize buttons */}

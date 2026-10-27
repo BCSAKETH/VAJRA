@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import { OpenUINode } from "../services/openuiParser";
 import { StatuteIcon } from "./StatuteIcon";
+import { EvidenceBadge } from "./EvidenceBadge";
 
 export interface UniversalPoliceIntelCardProps {
   type: string;
@@ -705,6 +706,18 @@ export const UniversalPoliceIntelCard: React.FC<UniversalPoliceIntelCardProps> =
                   <StatuteIcon code={meta.statute || type} stroke="#C79A4E" className="w-3 h-3" />
                   <span>{meta.statute}</span>
                 </span>
+                <EvidenceBadge
+                  tier={
+                    cardData?.evidence_tier ||
+                    (meta.statute?.includes("BNSS") || meta.statute?.includes("BNS") || meta.category?.includes("LEGAL") || meta.category?.includes("STATUTE")
+                      ? "legal_reference"
+                      : meta.category?.includes("DOSSIER") || meta.category?.includes("RECORD") || meta.category?.includes("CCTNS")
+                      ? "verified_record"
+                      : meta.category?.includes("SUMMARY")
+                      ? "ai_summary"
+                      : "investigative_lead")
+                  }
+                />
                 {cardData?.urgency_tier && (
                   <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/15 border border-amber-500/30 text-amber-300">
                     {cardData.urgency_tier}
