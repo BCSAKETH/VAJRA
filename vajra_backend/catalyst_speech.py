@@ -45,9 +45,9 @@ _TTS_URL = os.getenv("CATALYST_TTS_ENDPOINT") or f"https://api.catalyst.zoho.{_D
 _TTS_ENDPOINT_KEY = os.getenv("CATALYST_TTS_ENDPOINT_KEY", "")
 _STT_URL = f"https://api.catalyst.zoho.{_DOMAIN}/quickml/api/v1/models/zia/audio/transcribe"
 
-_SPEAKER_BY_LANG = {"en": "m_adam", "kn": "m_adam", "hi": "m_adam"}
-_VOICE_BY_LANG = {"en": "m_adam", "kn": "m_adam", "hi": "m_adam"}
-_LOCALE_BY_LANG = {"en": "en-us", "kn": "en-us", "hi": "hi"}
+_SPEAKER_BY_LANG = {"en": "m_adam", "kn": "m_adam"}
+_VOICE_BY_LANG = {"en": "m_adam", "kn": "m_adam"}
+_LOCALE_BY_LANG = {"en": "en-us", "kn": "en-us"}
 _SPEED_FLOAT = {
     "slower": 0.85,
     "slow": 0.85,
@@ -56,7 +56,7 @@ _SPEED_FLOAT = {
     "faster": 1.25,
     "fast": 1.5,
 }
-_SUPPORTED = {"en", "kn", "hi"}
+_SUPPORTED = {"en", "kn"}
 _MAX_TTS_CHARS = 4800  # model limit is 5000; leave headroom
 
 # Voice personas & Audio Studio presets (Section 15):
@@ -120,10 +120,6 @@ ZIA_SPEAKERS = {
     "kn": [
         {"id": "m_adam", "gender": "Male", "name": "Adam (Command Briefing)"},
         {"id": "f_sarah", "gender": "Female", "name": "Sarah (Clear Delivery)"},
-    ],
-    "hi": [
-        {"id": "m_adam", "gender": "Male", "name": "Adam (Hindi / Command)"},
-        {"id": "f_nicole", "gender": "Female", "name": "Nicole (Hindi - Natural)"},
     ],
 }
 

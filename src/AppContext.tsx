@@ -39,10 +39,10 @@ export type TtsSpeed = "slower" | "normal" | "faster";
 export type TtsStyle = "buttery" | "authoritative" | "calm" | "urgent";
 
 export interface TtsSettings {
-  language: "en" | "kn" | "hi";
+  language: "en" | "kn";
   style: TtsStyle;
   speed: TtsSpeed;
-  voice: string; // "Anna" | "Anu" | "James" | "Manoj" | "Divya"
+  voice: string; // "Anna" | "Anu" | "James" | "Manoj"
 }
 
 export interface ChatMessage {

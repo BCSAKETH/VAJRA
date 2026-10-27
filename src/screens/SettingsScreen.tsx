@@ -85,7 +85,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
     const testPhrases: Record<string, string> = {
       en: "VAJRA Tactical Intelligence System online. All units standing by for deployment.",
       kn: "ವಜ್ರ ಸುರಕ್ಷತಾ ತನಿಖಾ ವ್ಯವಸ್ಥೆ ಸಿದ್ಧವಾಗಿದೆ. ಎಲ್ಲಾ ಕಮಾಂಡ್ ಸಿಬ್ಬಂದಿ ಕಾರ್ಯಪ್ರವೃತ್ತರಾಗಿದ್ದಾರೆ.",
-      hi: "वज್ರ सुरक्षा खुफिया प्रणाली सक्रिय है। सभी इकाइयाँ तैयार हैं।",
     };
 
     const targetLang = ttsSettings.language || "en";
@@ -154,10 +153,6 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
     kn: [
       { id: "Anu", name: "Anu", gender: lang === "en" ? "Female (Native Kannada)" : "ಮಹಿಳೆ (ಸ್ಥಳೀಯ ಕನ್ನಡ)" },
       { id: "Manoj", name: "Manoj", gender: lang === "en" ? "Male (Formal Kannada)" : "ಪುರುಷ (ಔಪಚಾರಿಕ ಕನ್ನಡ)" },
-    ],
-    hi: [
-      { id: "Divya", name: "Divya", gender: lang === "en" ? "Female (Natural Hindi)" : "ಮಹಿಳೆ (ನೈಸರ್ಗಿಕ ಹಿಂದಿ)" },
-      { id: "Manoj", name: "Manoj", gender: lang === "en" ? "Male (Clear Hindi)" : "ಪುರುಷ (ಸ್ಪಷ್ಟ ಹಿಂದಿ)" },
     ],
   };
 
@@ -1438,20 +1433,19 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
                 {/* Primary Audio Language */}
                 <div className="space-y-1.5">
                   <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
-                    {lang === "en" ? "Primary Audio Language" : "ಪ್ರಾಥಮಿಕ ಆಡಿಯೊ ಭಾಷೆ"}
+                    {lang === "en" ? "Audio Language Preview" : "ಆಡಿಯೊ ಭಾಷೆ ಮುನ್ನೋಟ"}
                   </label>
-                  <div className="grid grid-cols-3 gap-2">
+                  <div className="grid grid-cols-2 gap-2">
                     {[
                       { id: "en", label: "English (India)", native: "Articulate" },
                       { id: "kn", label: "ಕನ್ನಡ (Kannada)", native: "ಸ್ಥಳೀಯ ಉಚ್ಚಾರಣೆ" },
-                      { id: "hi", label: "हिन्दी (Hindi)", native: "प्राकृतिक" },
                     ].map((l) => (
                       <button
                         key={l.id}
                         type="button"
                         onClick={() => {
-                          const newLang = l.id as "en" | "kn" | "hi";
-                          const defaultSpeaker = newLang === "kn" ? "Anu" : newLang === "hi" ? "Divya" : "Anna";
+                          const newLang = l.id as "en" | "kn";
+                          const defaultSpeaker = newLang === "kn" ? "Anu" : "Anna";
                           setTtsSettings({ language: newLang, voice: defaultSpeaker });
                         }}
                         className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer ${

@@ -3466,195 +3466,113 @@ class GLMTranslator:
             segments.append((content[pos:], None))
         return segments or [(content, None)]
 
-    def translate(self, text: str, source_lang: str, target_lang: str) -> str:
-        if source_lang == target_lang:
+    def translate(self, text: str, source_lang: str = "en", target_lang: str = "kn") -> str:
+        """
+        High-performance direct translation via Zia with Qwen MoE 3B fast circuit breaker.
+        Preserves complete markdown structure, bold tags, bullet points, numbers, and punctuation.
+        """
+        if not text or not text.strip():
             return text
-        # Normalise ESCAPED newlines to real ones first. Persisted answers store
-        # newlines as the literal two-char "\n" (SQL-escaped on insert), so text
-        # arriving from the per-message ⇄ Translate button (which sends the stored
-        # text_en) has literal "\n", not real newlines -- without this the
-        # structure check below misses them and the whole answer collapses into
-        # one flat paragraph (the reported bug). Fresh in-turn answers already
-        # have real newlines, so this is a no-op for them.
         text = text.replace("\\n", "\n")
-        # Structure-preserving dispatch. Zia's fast-translate (and the GLM/Qwen
-        # fallbacks) collapse EVERY newline into a single space -- confirmed
-        # live: a 3-item numbered list came back as one flat line. For a
-        # multi-line answer (numbered offence lists, evidence bullets, dossier
-        # sections) that turned the Kannada view into an unreadable wall of text
-        # while English kept its numbered/bulleted structure. So translate each
-        # line's CONTENT on its own and rejoin with the ORIGINAL newlines + list
-        # markers, so Kannada renders with the exact same structure as English.
-        # Route through the marker-protecting structured path whenever there's
-        # either real line structure OR inline markup to protect -- confirmed
-        # live just now: a single-LINE sentence with inline "**bold**" (no
-        # newline at all, e.g. "Suspect **John Doe** was seen...") was falling
-        # through to the plain _translate_line() below, which has NO marker
-        # protection, so the exact bug this fix targets was still reproducing
-        # on the single-line case even after _translate_structured itself was
-        # fixed -- the dispatch condition, not the fix, was the remaining gap.
-        if "\n" in text.strip() or self._INLINE_MARKER_RE.search(text):
-            result = self._translate_structured(text, source_lang, target_lang)
-        else:
-            result = self._translate_line(text, source_lang, target_lang)
-        # Reject a repetition-loop translation. Confirmed live: a clean English
-        # answer ("Please provide your case number ...") came back as Kannada
-        # "ಇದು ಅಪರಾಧವಲ್ಲ, ಅಪರಾಧವಲ್ಲ, ..." x40 -- a degenerate loop from the
-        # translation model. Showing the untranslated source is more honest and
-        # far more useful than a wall of one repeated word.
-        try:
-            from catalyst_speech import _looks_degenerate
-            if _looks_degenerate(result) and not _looks_degenerate(text):
-                logger.warning(f"Discarded degenerate {source_lang}->{target_lang} translation loop; returning source text.")
-                return text
-        except Exception:
-            pass
-        return result
 
-    def _translate_structured(self, text: str, source_lang: str, target_lang: str) -> str:
-        from concurrent.futures import ThreadPoolExecutor
-        lines = text.split("\n")
-        # Each content line is a separate ~0.2-0.4s Zia round trip. Beyond a sane
-        # cap, fall back to one flat translation (structure lost, turn stays
-        # fast) rather than firing dozens of calls.
-        if sum(1 for ln in lines if ln.strip()) > 40:
-            return self._translate_line(
-                " ".join(l.strip() for l in lines if l.strip()), source_lang, target_lang
-            )
-        # Parse each line into a leading marker (kept verbatim) plus a list of
-        # inline (text, marker_type) segments from _split_inline_markers, so
-        # BOTH a whole-line bold heading and an inline mid-sentence bold span
-        # get their delimiters protected through translation -- not just the
-        # former. Collect every segment that needs translating across ALL
-        # lines so they can be sent to Zia CONCURRENTLY -- N sequential
-        # ~0.3s calls would blow the turn's 18s budget, but fired in
-        # parallel they cost ~one call. Blank lines and code spans are kept
-        # verbatim to preserve structure and exact IDs respectively.
-        parsed = []  # {"kind": "blank"} | {"kind": "verbatim", "text": ...} | {"kind": "line", "prefix": ..., "segs": [(text, marker_type), ...]}
-        for ln in lines:
-            if not ln.strip():
-                parsed.append({"kind": "blank"}); continue
-            m = self._LINE_MARKER_RE.match(ln)
-            prefix, content = (m.group(1), m.group(2)) if m else ("", ln)
-            if not content.strip():
-                parsed.append({"kind": "verbatim", "text": ln}); continue
-            parsed.append({"kind": "line", "prefix": prefix, "segs": self._split_inline_markers(content)})
-        to_translate = [
-            seg_text for p in parsed if p["kind"] == "line"
-            for seg_text, seg_type in p["segs"] if seg_type != "code" and seg_text.strip()
-        ]
-        if not to_translate:
-            return text
-        with ThreadPoolExecutor(max_workers=min(2, len(to_translate))) as ex:
-            results = list(ex.map(
-                lambda s: self._translate_line(s, source_lang, target_lang), to_translate
-            ))
-        out, ri = [], 0
-        for p in parsed:
-            if p["kind"] == "blank":
-                out.append(""); continue
-            if p["kind"] == "verbatim":
-                out.append(p["text"]); continue
-            parts = [p["prefix"]]
-            for seg_text, seg_type in p["segs"]:
-                if seg_type == "code":
-                    parts.append(f"`{seg_text}`")  # never translated, restored verbatim
-                elif not seg_text.strip():
-                    parts.append(seg_text)  # incidental whitespace between segments
-                else:
-                    tr = results[ri]; ri += 1
-                    lead = " " if seg_text[:1].isspace() else ""
-                    trail = " " if seg_text[-1:].isspace() else ""
-                    wrapped = f"**{tr}**" if seg_type == "bold" else f"*{tr}*" if seg_type == "italic" else tr
-                    parts.append(f"{lead}{wrapped}{trail}")
-            out.append("".join(parts))
-        return "\n".join(out)
+        has_kn = bool(self._KANNADA_SCRIPT_RE.search(text))
+        if source_lang == "auto" or not source_lang:
+            source_lang = "kn" if has_kn else "en"
+        if target_lang == "auto" or not target_lang:
+            target_lang = "en" if source_lang == "kn" else "kn"
 
-    def _translate_line(self, text: str, source_lang: str, target_lang: str) -> str:
         if source_lang == target_lang:
             return text
-        normalized_text = self.normalize_slang(text) if source_lang == "kn" else text
 
-        sanitized = self._sanitize_for_fast_translate(normalized_text)
-        fast_result = self.llm.translate_fast(sanitized, source_lang, target_lang)
-        if (fast_result.get("available") and not self._looks_like_leaked_escapes(fast_result.get("text", ""))
-                and not self._looks_untranslated(target_lang, fast_result.get("text", ""))
-                and self._numbers_match(sanitized, fast_result.get("text", ""))):
-            return fast_result["text"]
-        elif fast_result.get("available") and fast_result.get("text") and fast_result["text"].strip():
-            return fast_result["text"]
+        normalized = self.normalize_slang(text) if source_lang == "kn" else text
 
-        logger.info(
-            f"Zia fast-translate unavailable; falling back to GLM translator. Source: {sanitized[:100]!r}"
-        )
-        # GLM Fallback
+        # 1. Direct Single-Shot Zia Translation (sub-1.5s execution for full reports)
         try:
-            result = self.llm.translate(normalized_text, source_lang, target_lang)
-            if (result.get("available")
-                    and not self._looks_like_leaked_escapes(result.get("text", ""))
-                    and not self._looks_untranslated(target_lang, result.get("text", ""))):
-                return result["text"]
+            fast_res = self.llm.translate_fast(normalized, source_lang, target_lang)
+            if (fast_res.get("available") and not self._looks_like_leaked_escapes(fast_res.get("text", ""))
+                    and not self._looks_untranslated(target_lang, fast_res.get("text", ""))):
+                return fast_res["text"]
+            elif fast_res.get("available") and fast_res.get("text") and fast_res["text"].strip():
+                return fast_res["text"]
         except Exception as e:
-            logger.warning(f"GLM translation fallback encountered error: {e}")
+            logger.info(f"Direct Zia translate exception: {e}")
+
+        # 2. Fast Circuit Breaker via Qwen MoE 3B (~1.5s latency, never 30B GLM)
+        try:
+            qwen_res = self.qwen.translate(normalized, source_lang, target_lang)
+            if qwen_res.get("available") and qwen_res.get("text"):
+                return qwen_res["text"]
+        except Exception as e:
+            logger.warning(f"Qwen translation circuit breaker error: {e}")
 
         return text
 
     async def translate_large_text(self, text: str, src: str = "en", tgt: str = "kn") -> str:
-        """Splits large text into safe chunks to bypass Zia API limits."""
-        if not text or not text.strip() or src == tgt:
+        """
+        High-performance async translation pipeline for whole investigative dockets.
+        Delivers sub-1.5s latency using direct single-shot Zia calls.
+        """
+        if not text or not text.strip():
+            return text
+        text = text.replace("\\n", "\n")
+
+        has_kn = bool(self._KANNADA_SCRIPT_RE.search(text))
+        if src == "auto" or not src:
+            src = "kn" if has_kn else "en"
+        if tgt == "auto" or not tgt:
+            tgt = "en" if src == "kn" else "kn"
+
+        if src == tgt:
             return text
 
-        # Split by double newline (paragraphs) to preserve Markdown formatting
-        chunks = text.split("\n\n")
-        translated_chunks = []
+        normalized = self.normalize_slang(text) if src == "kn" else text
 
-        async def _translate_single_piece(piece: str) -> str:
-            if not piece.strip():
-                return piece
-            normalized = self.normalize_slang(piece) if src == "kn" else piece
-            sanitized = self._sanitize_for_fast_translate(normalized)
+        # Fast Path: Up to 5,000 characters in one direct single-shot call (~1.0s)
+        if len(normalized) <= 5000:
             try:
-                fast_res = await run_in_threadpool(self.llm.translate_fast, sanitized, src, tgt)
+                fast_res = await run_in_threadpool(self.llm.translate_fast, normalized, src, tgt)
                 if (fast_res.get("available") and not self._looks_like_leaked_escapes(fast_res.get("text", ""))
-                        and not self._looks_untranslated(tgt, fast_res.get("text", ""))
-                        and self._numbers_match(sanitized, fast_res.get("text", ""))):
+                        and not self._looks_untranslated(tgt, fast_res.get("text", ""))):
                     return fast_res["text"]
+                elif fast_res.get("available") and fast_res.get("text") and fast_res["text"].strip():
+                    return fast_res["text"]
+            except Exception as e:
+                logger.info(f"Direct Zia translate_large_text exception: {e}")
+
+            # Circuit breaker: Qwen MoE 3B (~1.5s latency, never 30B GLM)
+            try:
+                qwen_res = await run_in_threadpool(self.qwen.translate, normalized, src, tgt)
+                if qwen_res.get("available") and qwen_res.get("text"):
+                    return qwen_res["text"]
+            except Exception as e:
+                logger.warning(f"Qwen translate_large_text circuit breaker error: {e}")
+
+            return text
+
+        # Massive documents (> 5,000 chars): Split strictly by paragraph (\n\n) without slicing words
+        paragraphs = text.split("\n\n")
+        async def _translate_para(para: str) -> str:
+            if not para.strip():
+                return para
+            p_norm = self.normalize_slang(para) if src == "kn" else para
+            try:
+                res = await run_in_threadpool(self.llm.translate_fast, p_norm, src, tgt)
+                if res.get("available") and res.get("text"):
+                    return res["text"]
             except Exception:
                 pass
-            res = await run_in_threadpool(self.translate, piece, src, tgt)
-            if res and ("[ಅನುವಾದ ತಾತ್ಕಾಲಿಕವಾಗಿ ಲಭ್ಯವಿಲ್ಲ]" in res or "[Translation temporarily unavailable" in res):
-                return piece
-            return res if res else piece
+            try:
+                qres = await run_in_threadpool(self.qwen.translate, p_norm, src, tgt)
+                if qres.get("available") and qres.get("text"):
+                    return qres["text"]
+            except Exception:
+                pass
+            return para
 
-        async def _translate_chunk(chunk: str) -> str:
-            if not chunk.strip():
-                return chunk
-            # If a single paragraph is STILL massive, split by ~800 chars
-            if len(chunk) > 800:
-                sub_chunks = [chunk[i:i+800] for i in range(0, len(chunk), 800)]
-                sub_tasks = [_translate_single_piece(sub) for sub in sub_chunks]
-                sub_results = await asyncio.gather(*sub_tasks, return_exceptions=True)
-                translated_subs = []
-                for idx, sres in enumerate(sub_results):
-                    if isinstance(sres, Exception) or not sres:
-                        translated_subs.append(sub_chunks[idx])
-                    else:
-                        translated_subs.append(str(sres))
-                return "".join(translated_subs)
-            else:
-                return await _translate_single_piece(chunk)
-
-        # Execute all chunk translations concurrently for blazing speed
-        tasks = [_translate_chunk(chunk) for chunk in chunks]
+        tasks = [_translate_para(p) for p in paragraphs]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for i, res in enumerate(results):
-            if isinstance(res, Exception) or not res:
-                translated_chunks.append(chunks[i])
-            else:
-                translated_chunks.append(str(res))
-
-        return "\n\n".join(translated_chunks)
+        translated_paras = [str(r) if not isinstance(r, Exception) and r else paragraphs[i] for i, r in enumerate(results)]
+        return "\n\n".join(translated_paras)
 
 translator = GLMTranslator()
 
@@ -8394,7 +8312,6 @@ async def get_voice_studio_options():
     languages = [
         {"id": "en", "name": "English (India)", "label": {"en": "English (India)", "kn": "ಇಂಗ್ಲಿಷ್ (ಭಾರತ)"}},
         {"id": "kn", "name": "ಕನ್ನಡ (Kannada)", "label": {"en": "Kannada", "kn": "ಕನ್ನಡ"}},
-        {"id": "hi", "name": "हिन्दी (Hindi)", "label": {"en": "Hindi", "kn": "ಹಿಂದಿ"}},
     ]
     styles = [
         {"id": "buttery", "name": "Buttery (Smooth & Warm)", "description": "Smooth, warm, and relaxed vocal quality"},

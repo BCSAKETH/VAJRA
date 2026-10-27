@@ -462,7 +462,7 @@ type SpeakResult = "started" | "unsupported" | "no_kannada_voice";
 // speaking at all: it looks like a working feature that's actually
 // producing noise. Returning "no_kannada_voice" lets the caller tell the
 // officer plainly instead, rather than mispronouncing Kannada through an
-const speakText = (text: string, lang: "en" | "kn" | "hi", onEnd: () => void, speed?: TtsSpeed): SpeakResult => {
+const speakText = (text: string, lang: "en" | "kn", onEnd: () => void, speed?: TtsSpeed): SpeakResult => {
   if (!("speechSynthesis" in window)) return "unsupported";
   window.speechSynthesis.cancel();
 
@@ -474,14 +474,12 @@ const speakText = (text: string, lang: "en" | "kn" | "hi", onEnd: () => void, sp
   if (lang === "kn") {
     matchedVoice = voices.find(v => v.lang.toLowerCase().includes("kn") || v.name.toLowerCase().includes("kannada") || v.name.toLowerCase().includes("kn-in"));
     if (!matchedVoice) return "no_kannada_voice";
-  } else if (lang === "hi") {
-    matchedVoice = voices.find(v => v.lang.toLowerCase().includes("hi") || v.name.toLowerCase().includes("hindi") || v.name.toLowerCase().includes("hi-in"));
   } else {
     matchedVoice = voices.find(v => v.lang.toLowerCase().includes("en-in")) || voices.find(v => v.lang.toLowerCase().includes("en-us"));
   }
 
   const utterance = new SpeechSynthesisUtterance(cleaned);
-  utterance.lang = lang === "kn" ? "kn-IN" : (lang === "hi" ? "hi-IN" : "en-US");
+  utterance.lang = lang === "kn" ? "kn-IN" : "en-US";
   let rate = lang === "kn" ? 0.92 : 1.0;
   if (speed === "slower") rate *= 0.85;
   else if (speed === "faster") rate *= 1.25;
@@ -857,13 +855,17 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   // cache it locally for instant re-toggles.
   const [showTranslated, setShowTranslated] = useState(false);
   const [liveKn, setLiveKn] = useState<string | null>(null);
+  const [liveEn, setLiveEn] = useState<string | null>(null);
   const [translating, setTranslating] = useState(false);
-  const englishSource = isAI ? (message.textEn || message.text) : message.text;
-  const canTranslate = isAI && !!(englishSource && englishSource.trim());
-  // A message has REAL Kannada only if its stored textKn is genuinely Kannada
-  // script and not just a copy of the English (English turns don't pre-compute
-  // Kannada, so textKn == englishSource there).
-  const hasRealKannada = !!message.textKn && message.textKn !== englishSource && /[ಀ-೿]/.test(message.textKn);
+
+  // Check if original message source text is predominantly Kannada script
+  const isOriginalKannada = React.useMemo(() => {
+    const raw = message.text || "";
+    return /[\u0C80-\u0CFF]/.test(raw);
+  }, [message.text]);
+
+  const hasRealKannada = !!message.textKn && /[\u0C80-\u0CFF]/.test(message.textKn);
+  const hasRealEnglish = !!message.textEn && !/[\u0C80-\u0CFF]/.test(message.textEn);
 
   // Which language to actually show: the app-wide toggle, flipped by the ⇄ button.
   const effectiveLang: "en" | "kn" = !showTranslated ? lang : (lang === "en" ? "kn" : "en");
@@ -871,56 +873,98 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   // Fetch a live Kannada translation of the English source once, cached in liveKn and global cache.
   const fetchKn = React.useCallback(async (): Promise<string | null> => {
     if (liveKn) return liveKn;
-    const cacheKey = `kn_${englishSource}`;
+    const sourceToTranslate = isAI ? (message.textEn || message.text) : message.text;
+    if (!sourceToTranslate || !sourceToTranslate.trim()) return null;
+    const cacheKey = `en_kn_${sourceToTranslate}`;
     if (GLOBAL_TRANSLATION_CACHE.has(cacheKey)) {
       const cached = GLOBAL_TRANSLATION_CACHE.get(cacheKey)!;
       setLiveKn(cached);
       return cached;
     }
-    if (translating || !canTranslate) return null;
+    if (translating) return null;
     setTranslating(true);
     try {
       const res = await fetch(`${API_BASE}/api/translate`, {
         method: "POST",
         headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ text: englishSource, source_lang: "en", target_lang: "kn" }),
+        body: JSON.stringify({ text: sourceToTranslate, source_lang: "en", target_lang: "kn" }),
       });
       if (res.ok) {
         const d = await res.json();
-        const translated = d.text || englishSource;
+        const translated = d.text || sourceToTranslate;
         GLOBAL_TRANSLATION_CACHE.set(cacheKey, translated);
         setLiveKn(translated);
         return translated;
       }
     } catch { /* silent -- officer still has the original */ } finally { setTranslating(false); }
     return null;
-  }, [liveKn, translating, canTranslate, englishSource]);
+  }, [liveKn, translating, isAI, message.textEn, message.text]);
+
+  // Fetch a live English translation of the Kannada source once, cached in liveEn and global cache.
+  const fetchEn = React.useCallback(async (): Promise<string | null> => {
+    if (liveEn) return liveEn;
+    const sourceToTranslate = isAI ? (message.textKn || message.text) : message.text;
+    if (!sourceToTranslate || !sourceToTranslate.trim()) return null;
+    const cacheKey = `kn_en_${sourceToTranslate}`;
+    if (GLOBAL_TRANSLATION_CACHE.has(cacheKey)) {
+      const cached = GLOBAL_TRANSLATION_CACHE.get(cacheKey)!;
+      setLiveEn(cached);
+      return cached;
+    }
+    if (translating) return null;
+    setTranslating(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/translate`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ text: sourceToTranslate, source_lang: "kn", target_lang: "en" }),
+      });
+      if (res.ok) {
+        const d = await res.json();
+        const translated = d.text || sourceToTranslate;
+        GLOBAL_TRANSLATION_CACHE.set(cacheKey, translated);
+        setLiveEn(translated);
+        return translated;
+      }
+    } catch { /* silent -- officer still has the original */ } finally { setTranslating(false); }
+    return null;
+  }, [liveEn, translating, isAI, message.textKn, message.text]);
 
   // Pre-fetch in background on hover over translate button
   const handlePreloadTranslate = React.useCallback(() => {
-    if (!hasRealKannada && !liveKn && canTranslate && !translating) {
+    const nextLang = effectiveLang === "en" ? "kn" : "en";
+    if (nextLang === "kn" && !hasRealKannada && !isOriginalKannada && !liveKn && !translating) {
       void fetchKn();
+    } else if (nextLang === "en" && !hasRealEnglish && isOriginalKannada && !liveEn && !translating) {
+      void fetchEn();
     }
-  }, [hasRealKannada, liveKn, canTranslate, translating, fetchKn]);
+  }, [effectiveLang, hasRealKannada, isOriginalKannada, liveKn, hasRealEnglish, liveEn, translating, fetchKn, fetchEn]);
 
   // WHOLE-APP language switch: when the top-right toggle is on Kannada (or the ⇄
   // asks for Kannada) and this message has no real stored Kannada, translate it
-  // live so the ENTIRE conversation switches language -- without the per-turn
-  // eager translation that made English answers slow.
+  // live so the ENTIRE conversation switches language.
   React.useEffect(() => {
-    if (effectiveLang === "kn" && !hasRealKannada && !liveKn && canTranslate) { void fetchKn(); }
-  }, [effectiveLang, hasRealKannada, liveKn, canTranslate, fetchKn]);
+    if (effectiveLang === "kn" && !hasRealKannada && !isOriginalKannada && !liveKn) {
+      void fetchKn();
+    } else if (effectiveLang === "en" && !hasRealEnglish && isOriginalKannada && !liveEn) {
+      void fetchEn();
+    }
+  }, [effectiveLang, hasRealKannada, isOriginalKannada, liveKn, hasRealEnglish, liveEn, fetchKn, fetchEn]);
 
-  const kannadaText = hasRealKannada ? (message.textKn as string) : (liveKn ?? englishSource);
+  const kannadaText = hasRealKannada ? message.textKn! : (isOriginalKannada ? message.text : (liveKn ?? message.text));
+  const englishText = hasRealEnglish ? message.textEn! : (!isOriginalKannada ? message.text : (liveEn ?? message.text));
   const rawDisplayText: string = !isAI
-    ? message.text
-    : (effectiveLang === "kn" ? kannadaText : englishSource);
+    ? (effectiveLang === "kn" ? (isOriginalKannada ? message.text : (liveKn ?? message.text)) : (isOriginalKannada ? (liveEn ?? message.text) : message.text))
+    : (effectiveLang === "kn" ? kannadaText : englishText);
 
   const handleTranslate = () => {
     setShowTranslated((v) => {
       const next = !v;
-      if (next && !hasRealKannada && !liveKn && canTranslate) {
+      const targetDisplayLang = !next ? lang : (lang === "en" ? "kn" : "en");
+      if (targetDisplayLang === "kn" && !hasRealKannada && !isOriginalKannada && !liveKn) {
         void fetchKn();
+      } else if (targetDisplayLang === "en" && !hasRealEnglish && isOriginalKannada && !liveEn) {
+        void fetchEn();
       }
       return next;
     });
@@ -989,14 +1033,18 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   // (a full multi-panel dossier is slow to synthesize and rarely wanted whole).
   // Shared by the click handler AND the background pre-generator so the cached
   // audio matches exactly what a click requests.
+  // Read the answer aloud. Prefer the server-side Zia TTS (real Kannada/
+  // English voice, device-independent) -- this is the fix for browser
+  // SpeechSynthesis mispronouncing Kannada when no Kannada voice is installed.
+  // Falls back to the browser voice only if the server call fails.
+  // The exact text spoken -- capped to a summary length at a sentence boundary
+  // (a full multi-panel dossier is slow to synthesize and rarely wanted whole).
+  // Shared by the click handler AND the background pre-generator so the cached
+  // audio matches exactly what a click requests.
   const getSpeakText = React.useCallback((): string => {
-    const cleaned = cleanTextForSpeech(displayText);
+    const textToClean = cleanDisplayText || displayText;
+    const cleaned = cleanTextForSpeech(textToClean);
     if (!cleaned) return "";
-    // Speak the FULL answer -- officers reported playback stopping mid-message
-    // when this trimmed to a ~140-char summary. Still bounded (not unlimited)
-    // so a single runaway answer can't exceed the backend Zia TTS model's own
-    // hard cap (_MAX_TTS_CHARS = 4800 in catalyst_speech.py); trimming to the
-    // last full sentence at that boundary avoids cutting a sentence in half.
     const MAX_SPEAK = 4500;
     if (cleaned.length <= MAX_SPEAK) return cleaned;
     const slice = cleaned.slice(0, MAX_SPEAK);
@@ -1005,7 +1053,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
       slice.lastIndexOf("। "), slice.lastIndexOf("\n")
     );
     return (lastStop > 60 ? slice.slice(0, lastStop + 1) : slice).trim();
-  }, [displayText]);
+  }, [cleanDisplayText, displayText]);
 
   const playUrl = (url: string, revokeOnEnd: boolean): Promise<boolean> => {
     return new Promise((resolve) => {
@@ -1054,7 +1102,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     });
   };
 
-  const fetchChunkAudio = (text: string, vlang: "en" | "kn" | "hi", key: string): Promise<string | null> => {
+  const fetchChunkAudio = (text: string, vlang: "en" | "kn", key: string): Promise<string | null> => {
     const cached = _ttsCache.get(key);
     if (cached) return Promise.resolve(cached);
 
@@ -1074,11 +1122,9 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
         const voiceSpeed = effectiveTtsSettings?.speed || "normal";
         let voiceSpeaker = effectiveTtsSettings?.voice;
         if (!voiceSpeaker) {
-          voiceSpeaker = vlang === "kn" ? "Anu" : (vlang === "hi" ? "Divya" : "Anna");
+          voiceSpeaker = vlang === "kn" ? "Anu" : "Anna";
         } else if (vlang === "kn" && !["Anu", "Manoj"].includes(voiceSpeaker)) {
           voiceSpeaker = "Anu";
-        } else if (vlang === "hi" && !["Divya", "Manoj"].includes(voiceSpeaker)) {
-          voiceSpeaker = "Divya";
         } else if (vlang === "en" && !["Anna", "James", "David", "Brian", "Emma", "George"].includes(voiceSpeaker)) {
           voiceSpeaker = "Anna";
         }
@@ -1129,29 +1175,26 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   // INSTANTLY from cache instead of waiting for synthesis.
   React.useEffect(() => {
     if (!isLast || !isAI || message.isSimulated) return;
-    const vlang: "en" | "kn" | "hi" = (effectiveTtsSettings?.language as any) || effectiveLang;
-    const toSpeak = vlang === "kn" ? (kannadaText || getSpeakText()) : getSpeakText();
+    const toSpeak = getSpeakText();
     if (!toSpeak) return;
+    const vlang: "en" | "kn" = /[\u0C80-\u0CFF]/.test(toSpeak) ? "kn" : "en";
     const firstChunk = splitIntoSpeechChunks(toSpeak)[0];
     if (!firstChunk) return;
     const voiceStyle = effectiveTtsSettings?.style || voicePersona || "buttery";
     let voiceSpeaker = effectiveTtsSettings?.voice;
     if (!voiceSpeaker) {
-      voiceSpeaker = vlang === "kn" ? "Anu" : (vlang === "hi" ? "Divya" : "Anna");
+      voiceSpeaker = vlang === "kn" ? "Anu" : "Anna";
     } else if (vlang === "kn" && !["Anu", "Manoj"].includes(voiceSpeaker)) {
       voiceSpeaker = "Anu";
-    } else if (vlang === "hi" && !["Divya", "Manoj"].includes(voiceSpeaker)) {
-      voiceSpeaker = "Divya";
     } else if (vlang === "en" && !["Anna", "James", "David", "Brian", "Emma", "George"].includes(voiceSpeaker)) {
       voiceSpeaker = "Anna";
     }
     const voiceSpeed = effectiveTtsSettings?.speed || "normal";
     const key = `${message.id}:${vlang}:${voiceStyle}:${voiceSpeaker}:${voiceSpeed}:0`;
     if (_ttsCache.has(key) || _ttsPending.has(key)) return;
-    if (vlang === "kn" && !/[\u0C80-\u0CFF]/.test(firstChunk)) return;
 
     fetchChunkAudio(firstChunk, vlang, key);
-  }, [isLast, isAI, message.id, message.isSimulated, effectiveLang, getSpeakText, voicePersona, effectiveTtsSettings, kannadaText]);
+  }, [isLast, isAI, message.id, message.isSimulated, getSpeakText, voicePersona, effectiveTtsSettings]);
 
   const notifyFallback = () => {
     if (fallbackNotifiedRef.current) return;
@@ -1165,7 +1208,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     );
   };
 
-  const playChunk = async (text: string, vlang: "en" | "kn" | "hi", key: string): Promise<boolean> => {
+  const playChunk = async (text: string, vlang: "en" | "kn", key: string): Promise<boolean> => {
     if (speakCancelRef.current) return false;
 
     if (engineLockRef.current === "local") {
@@ -1213,35 +1256,11 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     }
     _activeAudioStop = stopPlayback;
 
-    const vlang: "en" | "kn" | "hi" = (effectiveTtsSettings?.language as any) || effectiveLang;
+    // Track 10: "Read Exactly What is Visible" -- dynamically detect language from visible text
+    const toSpeak = getSpeakText();
+    if (!toSpeak) return;
 
-    // If Kannada is selected but translation is not yet ready, fetch it first
-    let speakSource = displayText;
-    if (vlang === "kn") {
-      if (!hasRealKannada && !liveKn && canTranslate) {
-        const translated = await fetchKn();
-        if (translated) {
-          speakSource = decodeDisplayText(translated).replace(/^\n+/, "");
-        }
-      } else if (kannadaText) {
-        speakSource = kannadaText;
-      }
-    }
-
-    const cleaned = cleanTextForSpeech(speakSource);
-    if (!cleaned) return;
-
-    const MAX_SPEAK = 4500;
-    let toSpeak = cleaned;
-    if (cleaned.length > MAX_SPEAK) {
-      const slice = cleaned.slice(0, MAX_SPEAK);
-      const lastStop = Math.max(
-        slice.lastIndexOf(". "), slice.lastIndexOf("? "), slice.lastIndexOf("! "),
-        slice.lastIndexOf("। "), slice.lastIndexOf("\n")
-      );
-      toSpeak = (lastStop > 60 ? slice.slice(0, lastStop + 1) : slice).trim();
-    }
-
+    const vlang: "en" | "kn" = /[\u0C80-\u0CFF]/.test(toSpeak) ? "kn" : "en";
     const chunks = splitIntoSpeechChunks(toSpeak);
     if (chunks.length === 0) return;
 
@@ -1253,11 +1272,9 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     const voiceStyle = effectiveTtsSettings?.style || voicePersona || "buttery";
     let voiceSpeaker = effectiveTtsSettings?.voice;
     if (!voiceSpeaker) {
-      voiceSpeaker = vlang === "kn" ? "Anu" : (vlang === "hi" ? "Divya" : "Anna");
+      voiceSpeaker = vlang === "kn" ? "Anu" : "Anna";
     } else if (vlang === "kn" && !["Anu", "Manoj"].includes(voiceSpeaker)) {
       voiceSpeaker = "Anu";
-    } else if (vlang === "hi" && !["Divya", "Manoj"].includes(voiceSpeaker)) {
-      voiceSpeaker = "Divya";
     } else if (vlang === "en" && !["Anna", "James", "David", "Brian", "Emma", "George"].includes(voiceSpeaker)) {
       voiceSpeaker = "Anna";
     }
