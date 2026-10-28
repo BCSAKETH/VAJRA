@@ -5093,15 +5093,19 @@ async def _run_ai_turn_and_persist(
             _msg_count_res = catalyst_app.zql().execute_query(
                 f"SELECT COUNT(ROWID) FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}'")
             _msg_count = int(_msg_count_res[0].get("ChatMessage", {}).get("COUNT(ROWID)") or 0) if _msg_count_res else 0
+            _is_turn1 = _msg_count == 2
             _is_turn2 = _msg_count == 4
             _is_entity_shift_check = _msg_count >= 8 and _msg_count % 2 == 0
-            if not _is_custom and (_is_turn2 or _is_entity_shift_check):
+            if not _is_custom and (_is_turn1 or _is_turn2 or _is_entity_shift_check):
                 _first_user_res = catalyst_app.zql().execute_query(
                     f"SELECT text FROM ChatMessage WHERE session_id = '{escape_zcql_literal(session_id)}' "
                     f"AND sender = 'user' ORDER BY ROWID ASC LIMIT 1")
                 _first_user_text = (_first_user_res[0].get("ChatMessage", {}).get("text") if _first_user_res else "") or ""
                 _new_title = None
-                if _msg_count == 4:
+                if _msg_count == 2:
+                    from dynamic_titler import generate_conversation_title
+                    _new_title = generate_conversation_title(_first_user_text, agent_loop)
+                elif _msg_count == 4:
                     from dynamic_titler import retitle_after_second_turn
                     _new_title = retitle_after_second_turn(_first_user_text, message, agent_loop)
                 else:
@@ -5295,8 +5299,8 @@ async def chat_endpoint(payload: ChatRequest, request: Request, background_tasks
     # history.
     session_id = payload.session_id or request.headers.get("X-Session-ID")
     if not session_id:
-        from dynamic_titler import generate_conversation_title
-        auto_title = generate_conversation_title(display_text, agent_loop)
+        from dynamic_titler import _deterministic_title
+        auto_title = _deterministic_title(display_text)
         try:
             session_id = _create_chat_session(employee_id, auto_title or "New Conversation")
         except Exception as e:

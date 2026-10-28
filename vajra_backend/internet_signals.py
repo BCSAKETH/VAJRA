@@ -29,7 +29,7 @@ import logging
 import threading
 import urllib.parse
 import requests
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger("internet_signals")
 
@@ -537,6 +537,10 @@ def _deep_crawl_official_domains(items: List[Dict[str, Any]], original_query: st
     the full rendered page content and key sub-pages (/about-us, /chairmans-message, /leadership),
     injecting high-density ground truth directly into the top citations.
     """
+    if len(items) >= 4 and not any(k in original_query.lower() for k in ("founder", "director", "chair", "principal", "head", "leadership", "official portal")):
+        return []
+
+    crawl_start = time.time()
     enriched: List[Dict[str, Any]] = []
     crawled_domains = set()
 
@@ -563,7 +567,9 @@ def _deep_crawl_official_domains(items: List[Dict[str, Any]], original_query: st
                 logger.debug(f"Known domain crawl skipped for {inst_url}: {kex}")
 
     # 2. Inspect search result items for official URLs
-    for it in items[:4]:
+    for it in items[:2]:
+        if time.time() - crawl_start > 2.5 or len(enriched) >= 2:
+            break
         url = (it.get("url") or "").strip()
         if not url:
             continue
@@ -656,8 +662,10 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
         return result
 
     items: List[Dict[str, str]] = []
+    seen_urls: Set[str] = set()
     fetched_via: List[str] = []
-    seen_urls = set()
+    _search_start = time.time()
+    _SEARCH_BUDGET_SECS = 4.5
 
     try:
         # TIER 1: SerpAPI (if configured)
@@ -710,7 +718,7 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
             news_queries.append(f'{effective_query} official OR accreditation OR affiliation')
 
         for nq in news_queries:
-            if len(items) >= limit:
+            if len(items) >= limit or time.time() - _search_start > _SEARCH_BUDGET_SECS:
                 break
             # Try GNews API first if configured
             if _GNEWS_KEY:
@@ -718,7 +726,7 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
                     r = requests.get(
                         "https://gnews.io/api/v4/search",
                         params={"q": nq, "country": "in", "lang": "en", "max": min(limit, 6), "apikey": _GNEWS_KEY},
-                        timeout=5,
+                        timeout=3,
                     )
                     if r.status_code == 200:
                         for a in (r.json().get("articles") or []):
@@ -747,15 +755,16 @@ def web_search(query: str, limit: int = 24) -> Dict[str, Any]:
 
         # TIER 4: Institutional & Official Portal Deep Crawling
         # If any official website is discovered in items or Dataverse, crawl its leadership & about pages
-        try:
-            deep_signals = _deep_crawl_official_domains(items, raw_query)
-            if deep_signals:
-                # Insert deep signals at the very top for priority grounding
-                for ds in reversed(deep_signals):
-                    items.insert(0, ds)
-                fetched_via.append("deep_web_crawler")
-        except Exception as dex:
-            logger.debug(f"Deep domain crawler error: {dex}")
+        if time.time() - _search_start <= _SEARCH_BUDGET_SECS:
+            try:
+                deep_signals = _deep_crawl_official_domains(items, raw_query)
+                if deep_signals:
+                    # Insert deep signals at the very top for priority grounding
+                    for ds in reversed(deep_signals):
+                        items.insert(0, ds)
+                    fetched_via.append("deep_web_crawler")
+            except Exception as dex:
+                logger.debug(f"Deep domain crawler error: {dex}")
 
         # TIER 5: Fallback to Raw Query if needed
         if not items and clean_q and clean_q != raw_query:

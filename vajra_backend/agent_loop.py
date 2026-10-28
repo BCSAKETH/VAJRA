@@ -6,8 +6,79 @@ import time
 import copy
 import hashlib
 import threading
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor
+
+# ==============================================================================
+# INDIC TRANSLITERATION MATRIX (ISO 15919 / KANNADA PHONETIC CONVERSION)
+# ==============================================================================
+_KN_VOWELS = {
+    'ಅ': 'a', 'ಆ': 'a', 'ಇ': 'i', 'ಈ': 'ee', 'ಉ': 'u', 'ಊ': 'oo',
+    'ಋ': 'ru', 'ಎ': 'e', 'ಏ': 'e', 'ಐ': 'ai', 'ಒ': 'o', 'ಓ': 'o', 'ಔ': 'au'
+}
+_KN_MATRAS = {
+    'ಾ': 'a', 'ಿ': 'i', 'ೀ': 'i', 'ು': 'u', 'ೂ': 'u', 'ೃ': 'ru',
+    'ೆ': 'e', 'ೇ': 'e', 'ೈ': 'ai', 'ೊ': 'o', 'ೋ': 'o', 'ೌ': 'au'
+}
+_KN_CONSONANTS = {
+    'ಕ': 'k', 'ಖ': 'kh', 'ಗ': 'g', 'ಘ': 'gh', 'ಙ': 'ng',
+    'ಚ': 'ch', 'ಛ': 'chh', 'ಜ': 'j', 'ಝ': 'jh', 'ಞ': 'ny',
+    'ಟ': 't', 'ಠ': 'th', 'ಡ': 'd', 'ಢ': 'dh', 'ಣ': 'n',
+    'ತ': 't', 'ಥ': 'th', 'ದ': 'd', 'ಧ': 'dh', 'ನ': 'n',
+    'ಪ': 'p', 'ಫ': 'f', 'ಬ': 'b', 'ಭ': 'bh', 'ಮ': 'm',
+    'ಯ': 'y', 'ರ': 'r', 'ಲ': 'l', 'ವ': 'v', 'ಶ': 'sh', 'ಷ': 'sh', 'ಸ': 's', 'ಹ': 'h', 'ಳ': 'l'
+}
+
+def transliterate_kn_to_latin(text: str) -> str:
+    """Converts Kannada Unicode script phonetically to Latin English for CCTNS ZCQL lookups."""
+    if not text or not re.search(r"[\u0C80-\u0CFF]", text):
+        return text or ""
+    res = []
+    i = 0
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if c in _KN_VOWELS:
+            res.append(_KN_VOWELS[c])
+            i += 1
+        elif c in _KN_CONSONANTS:
+            base = _KN_CONSONANTS[c]
+            if i + 1 < n:
+                nxt = text[i+1]
+                if nxt == '್':
+                    res.append(base)
+                    i += 2
+                elif nxt in _KN_MATRAS:
+                    res.append(base + _KN_MATRAS[nxt])
+                    i += 2
+                elif nxt == 'ಂ':
+                    res.append(base + 'am')
+                    i += 2
+                else:
+                    res.append(base + 'a')
+                    i += 1
+            else:
+                res.append(base + 'a')
+                i += 1
+        elif c in _KN_MATRAS:
+            res.append(_KN_MATRAS[c])
+            i += 1
+        elif c == 'ಂ':
+            res.append('m')
+            i += 1
+        else:
+            res.append(c)
+            i += 1
+    out = "".join(res)
+    words = [w.capitalize() for w in out.split()]
+    return " ".join(words)
+
+_KNOWN_SUSPECT_ALIASES = {
+    "satya butler": "Sanaya Patla",
+    "satya": "Sanaya Patla",
+    "sanaya": "Sanaya Patla",
+    "sanaya patel": "Sanaya Patla",
+}
 from typing import Dict, Any, List, Tuple, Optional, Callable
 import random
 import numpy as np
@@ -1381,6 +1452,20 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 )
                 if res:
                     return int(res[0].get("CaseMaster", {}).get("CaseMasterID"))
+
+            # Dual-Index Fallback: Check if target refers directly to numeric CaseMasterID or ROWID
+            num_cand = re.sub(r'^(CR|FIR)[-_ ]?', '', target_cno, flags=re.IGNORECASE).strip()
+            if num_cand.isdigit():
+                res_num = catalyst_app.zql().execute_query(
+                    f"SELECT CaseMasterID FROM CaseMaster WHERE CaseMasterID = {num_cand} LIMIT 1"
+                )
+                if res_num:
+                    return int(res_num[0].get("CaseMaster", {}).get("CaseMasterID"))
+                res_row = catalyst_app.zql().execute_query(
+                    f"SELECT CaseMasterID FROM CaseMaster WHERE ROWID = {num_cand} LIMIT 1"
+                )
+                if res_row:
+                    return int(res_row[0].get("CaseMaster", {}).get("CaseMasterID"))
         except Exception as e:
             logger.error(f"Error resolving case_no '{case_no}' to CaseMasterID: {e}")
         return None
@@ -1426,6 +1511,16 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 res = catalyst_app.zql().execute_query(
                     f"SELECT ROWID, CaseMasterID FROM CaseMaster WHERE CrimeNo = '{self.sanitize_sql_input(case_no)}' LIMIT 1"
                 )
+            if not res:
+                num_cand = re.sub(r'^(CR|FIR)[-_ ]?', '', target_cno, flags=re.IGNORECASE).strip()
+                if num_cand.isdigit():
+                    res = catalyst_app.zql().execute_query(
+                        f"SELECT ROWID, CaseMasterID FROM CaseMaster WHERE CaseMasterID = {num_cand} LIMIT 1"
+                    )
+                    if not res:
+                        res = catalyst_app.zql().execute_query(
+                            f"SELECT ROWID, CaseMasterID FROM CaseMaster WHERE ROWID = {num_cand} LIMIT 1"
+                        )
             if not res:
                 return None
             cm = res[0].get("CaseMaster", {})
@@ -2600,26 +2695,49 @@ class VajraAgentLoop(CognitiveBrainMixin):
             # If query is explicitly an open-source web search or URL summary, do not extract a suspect name
             if any(ws in q for ws in ("search the web", "web search", "search online", "look it up", "look up online", "google", "find online", "on the internet", "the internet", "summarize this url", "read this url")):
                 return ""
+
+            # Check known aliases first (e.g. Satya Butler -> Sanaya Patla)
+            for alias_key, canonical in _KNOWN_SUSPECT_ALIASES.items():
+                if re.search(r'\b' + re.escape(alias_key) + r'\b', q):
+                    return canonical
+
+            # Kannada Unicode script extraction & phonetic transliteration
+            if re.search(r"[\u0C80-\u0CFF]", query):
+                kn_stopwords = {
+                    "ಅಪರಾಧ", "ಇತಿಹಾಸ", "ಬಗ್ಗೆ", "ತನಿಖೆ", "ಮಾಹಿತಿ", "ಯಾರು", "ಏನು", "ಎಲ್ಲಿ", "ಹೇಗೆ",
+                    "ಅವರ", "ನೆಟ್‌ವರ್ಕ್", "ಜಾಲ", "ಗ್ರಾಫ್", "ಅಪಾಯ", "ಪ್ರಕರಣ", "ಗಸ್ತು", "ಬೀಟ್", "ಯೋಜನೆ",
+                    "ಹಾಟ್‌ಸ್ಪಾಟ್", "ನಕ್ಷೆ", "ಸಾಂದ್ರತೆ", "ತೋರಿಸಿ", "ವರದಿ", "ಸಾರಾಂಶ", "ಪಟ್ಟಿ"
+                }
+                kn_words = re.findall(r"[\u0C80-\u0CFF]+", query)
+                valid_kn = [w for w in kn_words if w not in kn_stopwords and len(w) >= 2]
+                if valid_kn:
+                    kn_cand = " ".join(valid_kn[:2])
+                    tl_cand = transliterate_kn_to_latin(kn_cand)
+                    if tl_cand:
+                        return _KNOWN_SUSPECT_ALIASES.get(tl_cand.lower(), tl_cand)
+
             # Prefer a full "First Last" capitalized match
             m = re.search(r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b", query)
             if m:
                 c = m.group(1).strip()
                 if c.lower() not in self._NAME_STOPWORDS and c.lower() not in self._KNOWN_DISTRICT_NAMES and c.lower() not in [d.lower() for d in get_real_districts()]:
-                    return c
+                    return _KNOWN_SUSPECT_ALIASES.get(c.lower(), c)
             # "suspect X" checked before the more generic "for X"/"connected to X"
             for cue in (r"suspect", r"for", r"connected to", r"of"):
                 m2 = re.search(rf"\b{cue}\s+([a-zA-Z]+)\b", query, re.IGNORECASE)
                 if m2:
                     cand = m2.group(1).strip()
                     if cand.lower() not in ("suspect",) and cand.lower() not in self._NAME_STOPWORDS and cand.lower() not in self._KNOWN_DISTRICT_NAMES and cand.lower() not in [d.lower() for d in get_real_districts()]:
-                        return cand.title()
+                        res = cand.title()
+                        return _KNOWN_SUSPECT_ALIASES.get(res.lower(), res)
             # Reversed word order ("is ramesh connected to") -- a word
             # immediately BEFORE "connected"/"linked".
             m3 = re.search(r"\b([a-zA-Z]+)\s+(?:connected|linked)\b", query, re.IGNORECASE)
             if m3:
                 cand3 = m3.group(1).strip()
                 if cand3.lower() not in ("is", "who", "what", "crimes") and cand3.lower() not in self._NAME_STOPWORDS and cand3.lower() not in self._KNOWN_DISTRICT_NAMES and cand3.lower() not in [d.lower() for d in get_real_districts()]:
-                    return cand3.title()
+                    res = cand3.title()
+                    return _KNOWN_SUSPECT_ALIASES.get(res.lower(), res)
             return ""
 
         def guess_case_no() -> str:
@@ -3368,6 +3486,12 @@ class VajraAgentLoop(CognitiveBrainMixin):
         """
         if not name or not name.strip() or not catalyst_app:
             return ""
+        # Check alias dictionary
+        name = _KNOWN_SUSPECT_ALIASES.get(name.lower(), name)
+        # Transliterate Kannada script to Latin
+        if re.search(r"[\u0C80-\u0CFF]", name):
+            name = transliterate_kn_to_latin(name)
+            name = _KNOWN_SUSPECT_ALIASES.get(name.lower(), name)
         safe = self.sanitize_sql_input(name)
         try:
             ex = catalyst_app.zql().execute_query(
@@ -5945,9 +6069,6 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 if _fast_syn:
                     response_text = _fast_syn
                     logger.info(f"Sub-3s deterministic synthesis succeeded for {last_tool_name} via 28-block PNLG.")
-                elif last_tool_text_result and last_tool_name in ("query_hotspots", "query_graph_network", "syndicate_graph", "detect_financial_ring", "get_offender_risk"):
-                    response_text = last_tool_text_result
-                    logger.info(f"[TOOL_DIRECT] Preserved grounded text_result directly for {last_tool_name}")
                 else:
                     # Track 20: Dual-Brain High-Speed Presentation Synthesis via Catalyst QuickML Qwen MoE 3B (@ 102 tok/s)
                     try:
@@ -5962,6 +6083,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                                 query=officer_query,
                                 officer_name=f"{resolved_rank} {resolved_officer_name}",
                                 station_name=resolved_station,
+                                lang="kn" if _is_kn else "en",
                                 timeout=12.0
                             )
                             if qwen_briefing and len(qwen_briefing.strip()) > 20:
@@ -5969,6 +6091,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
                                 logger.info("[DUAL_BRAIN] High-speed Qwen MoE briefing synthesis succeeded in sub-8s.")
                     except Exception as e_qwen:
                         logger.warning(f"[DUAL_BRAIN] Qwen MoE synthesis circuit breaker tripped: {e_qwen}")
+
+                    if not response_text and last_tool_text_result and last_tool_name in ("query_hotspots", "query_graph_network", "syndicate_graph", "detect_financial_ring", "get_offender_risk"):
+                        response_text = last_tool_text_result
+                        logger.info(f"[TOOL_DIRECT] Preserved grounded text_result fallback for {last_tool_name}")
 
                     if not response_text:
                         logger.info("Executing final LLM response synthesis turn...")
@@ -6048,6 +6174,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                             query=officer_query,
                             officer_name=f"{resolved_rank} {resolved_officer_name}",
                             station_name=resolved_station,
+                            lang="kn" if _is_kn else "en",
                             timeout=12.0
                         )
                         if qwen_briefing and len(qwen_briefing.strip()) > 20:
@@ -6656,6 +6783,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # simply not on record (the requested behaviour).
         if tool_name in ("query_graph_network", "get_offender_risk", "get_mo_profile", "generate_full_report", "check_alibi_consistency") and (params.get("suspect_name") or "").strip():
             _raw_name = str(params.get("suspect_name")).strip()
+            if _raw_name.lower() in _KNOWN_SUSPECT_ALIASES:
+                params["suspect_name"] = _KNOWN_SUSPECT_ALIASES[_raw_name.lower()]
+                _raw_name = params["suspect_name"]
+            elif re.search(r"[\u0C80-\u0CFF]", _raw_name):
+                _tl = transliterate_kn_to_latin(_raw_name)
+                params["suspect_name"] = _KNOWN_SUSPECT_ALIASES.get(_tl.lower(), _tl)
+                _raw_name = params["suspect_name"]
             _low_raw = _raw_name.lower()
             if is_known_district_or_stopword(_raw_name):
                 # District name or general keyword was routed as suspect name. Redirect to district-level CCTNS pattern search
@@ -14110,16 +14244,25 @@ class VajraAgentLoop(CognitiveBrainMixin):
             repeat_d = repeat_res.get("data") or {}
 
             data = dict(risk_d)
-            data["nodes"] = net_d.get("nodes", [])
-            data["edges"] = net_d.get("edges", [])
-            data["hub"] = net_d.get("hub", {})
+            compact_nodes = (net_d.get("nodes") or [])[:30]
+            compact_edges = (net_d.get("edges") or [])[:50]
+            data["nodes"] = compact_nodes
+            data["edges"] = compact_edges
+            data["hub"] = net_d.get("hub") or {}
             data["target_suspect"] = net_d.get("target_suspect") or suspect
             data["financial_transactions"] = (net_d.get("financial_transactions") or [])[:5]
-            data["network"] = net_d
+            data["network"] = {
+                "nodes": compact_nodes,
+                "edges": compact_edges,
+                "hub": data["hub"],
+                "target_suspect": data["target_suspect"]
+            }
             data["mo_profile"] = mo_d
-            data["repeat_offender_context"] = repeat_d
+            data["repeat_offender_context"] = {
+                "offenders": (repeat_d.get("offenders") or [])[:5]
+            }
             data["panels"] = [
-                {"type": "network", "panel_key": "query_graph_network", "title_en": "Criminal Syndicate Graph", "title_kn": "ಅಪರಾಧ ಜಾಲ ಗ್ರಾಫ್", "data": net_d, "text": ""},
+                {"type": "network", "panel_key": "query_graph_network", "title_en": "Criminal Syndicate Graph", "title_kn": "ಅಪರಾಧ ಜಾಲ ಗ್ರಾಫ್", "data": data["network"], "text": ""},
                 {"type": "risk", "panel_key": "get_offender_risk", "title_en": "Recidivism Risk & SHAP Analysis", "title_kn": "ಮರುಅಪರಾಧ ಅಪಾಯ ಮತ್ತು SHAP", "data": risk_d, "text": ""}
             ]
 
@@ -14242,6 +14385,11 @@ class VajraAgentLoop(CognitiveBrainMixin):
             data = dict(trend_res.get("data") or {})
             data["case_distribution"] = dist_res.get("data")
             data["hotspots"] = hotspot_res.get("data")
+            data["panels"] = [
+                {"type": "trend", "panel_key": "get_crime_trends", "title_en": "Incident Trends", "title_kn": "ಅಪರಾಧ ಪ್ರವೃತ್ತಿಗಳು", "data": trend_res.get("data") or {}, "text": ""},
+                {"type": "distribution", "panel_key": "get_case_types_distribution", "title_en": "Crime Distribution", "title_kn": "ಪ್ರಕರಣ ವಿತರಣೆ", "data": dist_res.get("data") or {}, "text": ""},
+                {"type": "hotspots", "panel_key": "query_hotspots", "title_en": "Spatial Hotspot Map", "title_kn": "ಹಾಟ್‌ಸ್ಪಾಟ್ ನಕ್ಷೆ", "data": hotspot_res.get("data") or {}, "text": ""}
+            ]
 
             trend_txt = trend_res.get('text_result', 'Incident counts tracked across multi-month historical reporting windows.')
             dist_txt = dist_res.get('text_result', 'Distribution mapped by IPC and BNS offence heads.')

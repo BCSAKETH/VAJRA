@@ -283,6 +283,7 @@ class CatalystQwen:
         query: str,
         officer_name: str = "Officer",
         station_name: str = "Jurisdiction PS",
+        lang: str = "en",
         timeout: float = 12.0,
     ) -> Optional[str]:
         """
@@ -299,6 +300,13 @@ class CatalystQwen:
         mem_val = slots.get('memory_recap', '').strip()
         cctns_val = slots.get('cctns_operational', '').strip()
 
+        is_kn = lang == "kn" or bool(re.search(r"[\u0C80-\u0CFF]", query or ""))
+        salutation_rule = (
+            f"Use the official Karnataka State Police Kannada salutation: 'ನಮಸ್ಕಾರ {officer_name}' at the beginning. Respond entirely in clear, professional Kannada (ಕನ್ನಡ)."
+            if is_kn else
+            f"Use the official Karnataka State Police salutation: 'Namaskara {officer_name}' at the beginning. Respond in authoritative, concise English."
+        )
+
         prompt = (
             "Ignore the attached image, it is blank and irrelevant. You are VAJRA, the AI Intelligence Copilot for Karnataka Police. "
             f"The officer asking is {officer_name} stationed at {station_name}.\n"
@@ -309,11 +317,11 @@ class CatalystQwen:
             + (f"- Prior Session Discussion: {mem_val}\n" if mem_val else "")
             + (f"- CCTNS Intelligence & Data: {cctns_val}\n" if cctns_val else "")
             + "\nStrict instructions:\n"
-            "1. Provide a direct, natural, professional response answering EXACTLY what was asked.\n"
-            "2. If a greeting or humor is present, present the greeting first and the humor naturally.\n"
-            "3. State grounded facts and data directly without artificial bureaucratic template headers or filler text.\n"
+            f"1. {salutation_rule}\n"
+            "2. Provide a direct, tactical response answering EXACTLY what was asked.\n"
+            "3. State grounded facts, numbers, Crime Numbers (e.g. CR-2024-22881), legal sections (e.g. Section 111 BNS, Section 74 JJA), and risk scores directly.\n"
             "4. NEVER invent or hallucinate accused names, cases, or facts not present in the verified context.\n"
-            "5. Do NOT output robotic sign-offs like 'Standby, Brain 2 Engine'. Speak cleanly as a trusted police colleague."
+            "5. Maintain Karnataka State Police tactical tone: zero corporate fluff or apologies. Speak cleanly as a trusted police colleague."
         )
 
         res = self._call(prompt, [_BLANK_PNG_B64], timeout=timeout)

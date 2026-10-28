@@ -1387,10 +1387,11 @@ def smartbrowz_deep_dive_page(url: str, extract_intent: str = "general", max_cha
         "Accept-Language": "en-US,en;q=0.9",
     }
 
+    _t_deep_start = time.time()
     # Helper to scrape single page cleanly
-    def _scrape_single(target_url: str) -> Tuple[str, str, str]:
+    def _scrape_single(target_url: str, tout: float = 3.0) -> Tuple[str, str, str]:
         try:
-            r = _requests.get(target_url, headers=headers, timeout=6, verify=False)
+            r = _requests.get(target_url, headers=headers, timeout=tout, verify=False)
             if r.status_code != 200:
                 return "", "", ""
             html_raw = r.text
@@ -1403,7 +1404,7 @@ def smartbrowz_deep_dive_page(url: str, extract_intent: str = "general", max_cha
         except Exception:
             return "", "", ""
 
-    main_title, main_text, main_html = _scrape_single(url)
+    main_title, main_text, main_html = _scrape_single(url, tout=3.5)
     if not main_text:
         return out
 
@@ -1426,8 +1427,10 @@ def smartbrowz_deep_dive_page(url: str, extract_intent: str = "general", max_cha
     ]
 
     for sr in subroutes:
+        if time.time() - _t_deep_start > 3.5:
+            break
         sub_url = f"{base_domain_url}{sr}"
-        sub_title, sub_text, sub_html = _scrape_single(sub_url)
+        sub_title, sub_text, sub_html = _scrape_single(sub_url, tout=2.0)
         if sub_text and len(sub_text) > 80:
             out["subpages_crawled"].append(sub_url)
             collected_texts.append(f"\n--- [Page: {sr}] ---\n" + sub_text[:2500])
