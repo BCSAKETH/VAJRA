@@ -38,12 +38,42 @@ export type TranscriptWidth = "narrow" | "medium" | "wide";
 export type TtsSpeed = "slower" | "normal" | "faster";
 export type TtsStyle = "buttery" | "authoritative" | "calm" | "urgent";
 
+export interface LanguageVoiceConfig {
+  voice: string; // "Anna" | "James" for en, "Anu" | "Manoj" for kn
+  style: TtsStyle;
+  speed: TtsSpeed;
+}
+
 export interface TtsSettings {
   language: "en" | "kn";
   style: TtsStyle;
   speed: TtsSpeed;
   voice: string; // "Anna" | "Anu" | "James" | "Manoj"
+  languages: {
+    en: LanguageVoiceConfig;
+    kn: LanguageVoiceConfig;
+  };
 }
+
+export const DEFAULT_TTS_SETTINGS: TtsSettings = {
+  language: "en",
+  style: "authoritative",
+  speed: "normal",
+  voice: "Anna",
+  languages: {
+    en: {
+      voice: "Anna",
+      style: "authoritative",
+      speed: "normal",
+    },
+    kn: {
+      voice: "Anu",
+      style: "buttery",
+      speed: "normal",
+    },
+  },
+};
+
 
 export interface ChatMessage {
   id: string;
@@ -182,6 +212,7 @@ interface AppContextType {
   setTranscriptWidth: (width: TranscriptWidth) => void;
   ttsSettings: TtsSettings;
   setTtsSettings: (settings: Partial<TtsSettings>) => void;
+  setLanguageVoiceConfig: (targetLang: "en" | "kn", config: Partial<LanguageVoiceConfig>) => void;
   selectedFirNo: string | null;
   setSelectedFirNo: (firNo: string | null) => void;
   chatMessages: ChatMessage[];
@@ -378,9 +409,32 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
   const [ttsSettings, setTtsSettingsState] = useState<TtsSettings>(() => {
     const saved = localStorage.getItem("vajra_tts_settings");
     if (saved) {
-      try { return JSON.parse(saved); } catch {}
+      try {
+        const parsed = JSON.parse(saved);
+        const enVoice = parsed.languages?.en?.voice || (parsed.language === "en" ? parsed.voice : null) || DEFAULT_TTS_SETTINGS.languages.en.voice;
+        const enStyle = parsed.languages?.en?.style || (parsed.language === "en" ? parsed.style : null) || DEFAULT_TTS_SETTINGS.languages.en.style;
+        const enSpeed = parsed.languages?.en?.speed || (parsed.language === "en" ? parsed.speed : null) || DEFAULT_TTS_SETTINGS.languages.en.speed;
+
+        const knVoice = parsed.languages?.kn?.voice || (parsed.language === "kn" ? parsed.voice : null) || DEFAULT_TTS_SETTINGS.languages.kn.voice;
+        const knStyle = parsed.languages?.kn?.style || (parsed.language === "kn" ? parsed.style : null) || DEFAULT_TTS_SETTINGS.languages.kn.style;
+        const knSpeed = parsed.languages?.kn?.speed || (parsed.language === "kn" ? parsed.speed : null) || DEFAULT_TTS_SETTINGS.languages.kn.speed;
+
+        const activeLang: "en" | "kn" = parsed.language === "kn" ? "kn" : "en";
+        return {
+          ...DEFAULT_TTS_SETTINGS,
+          ...parsed,
+          language: activeLang,
+          style: activeLang === "kn" ? knStyle : enStyle,
+          speed: activeLang === "kn" ? knSpeed : enSpeed,
+          voice: activeLang === "kn" ? knVoice : enVoice,
+          languages: {
+            en: { voice: enVoice, style: enStyle, speed: enSpeed },
+            kn: { voice: knVoice, style: knStyle, speed: knSpeed },
+          },
+        };
+      } catch {}
     }
-    return { language: "en", style: "buttery", speed: "normal", voice: "Anna" };
+    return DEFAULT_TTS_SETTINGS;
   });
 
   const setTranscriptTextSize = (size: TranscriptTextSize) => {
@@ -393,9 +447,62 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
     localStorage.setItem("vajra_transcript_width", width);
   };
 
+  const setLanguageVoiceConfig = (targetLang: "en" | "kn", config: Partial<LanguageVoiceConfig>) => {
+    setTtsSettingsState((prev) => {
+      const prevLangConfig = prev.languages?.[targetLang] || DEFAULT_TTS_SETTINGS.languages[targetLang];
+      const updatedLangConfig: LanguageVoiceConfig = {
+        ...prevLangConfig,
+        ...config,
+      };
+      const updated: TtsSettings = {
+        ...prev,
+        // If updating the active preview language, sync top-level convenience fields
+        ...(prev.language === targetLang ? {
+          style: updatedLangConfig.style,
+          speed: updatedLangConfig.speed,
+          voice: updatedLangConfig.voice,
+        } : {}),
+        languages: {
+          ...prev.languages,
+          [targetLang]: updatedLangConfig,
+        },
+      };
+      localStorage.setItem("vajra_tts_settings", JSON.stringify(updated));
+      return updated;
+    });
+    if (config.style) {
+      setVoicePersonaState(config.style);
+      localStorage.setItem("vajra_voice_persona", config.style);
+    }
+  };
+
   const setTtsSettings = (settings: Partial<TtsSettings>) => {
     setTtsSettingsState((prev) => {
-      const updated = { ...prev, ...settings };
+      const targetLang = settings.language || prev.language || "en";
+      const updated: TtsSettings = {
+        ...prev,
+        ...settings,
+        languages: {
+          en: {
+            ...prev.languages?.en,
+            ...(settings.languages?.en || {}),
+            ...(settings.language === "en" || (!settings.languages && targetLang === "en") ? {
+              ...(settings.style ? { style: settings.style } : {}),
+              ...(settings.speed ? { speed: settings.speed } : {}),
+              ...(settings.voice ? { voice: settings.voice } : {}),
+            } : {}),
+          },
+          kn: {
+            ...prev.languages?.kn,
+            ...(settings.languages?.kn || {}),
+            ...(settings.language === "kn" || (!settings.languages && targetLang === "kn") ? {
+              ...(settings.style ? { style: settings.style } : {}),
+              ...(settings.speed ? { speed: settings.speed } : {}),
+              ...(settings.voice ? { voice: settings.voice } : {}),
+            } : {}),
+          },
+        },
+      };
       localStorage.setItem("vajra_tts_settings", JSON.stringify(updated));
       return updated;
     });
@@ -872,6 +979,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({
         setTranscriptWidth,
         ttsSettings,
         setTtsSettings,
+        setLanguageVoiceConfig,
         selectedFirNo,
         setSelectedFirNo,
         chatMessages,

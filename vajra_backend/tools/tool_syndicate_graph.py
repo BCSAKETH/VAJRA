@@ -79,59 +79,101 @@ class SyndicateGraphTool(VajraTool):
         except Exception as e:
             logger.warning(f"[SyndicateGraphTool] Primary accused search error: {e}")
 
-        # Fallback to direct name if no exact wildcards match
         canonical_suspect = sorted(primary_accused_names, key=len)[0] if primary_accused_names else suspect
 
         if not case_ids:
-            # Fallback mock/synthetic demo network if suspect not yet populated in test partition
-            case_ids = {10101, 10102, 10103}
-            sample_coaccused = [
-                (canonical_suspect, 10101), ("Ramesh Kumar", 10101), ("Suresh Gowda", 10101),
-                (canonical_suspect, 10102), ("Suresh Gowda", 10102), ("Venkatesh Rao", 10102),
-                ("Ramesh Kumar", 10103), ("Anand Babu", 10103), ("Venkatesh Rao", 10103)
-            ]
-        else:
-            sample_coaccused = []
+            # Clean, truthful report when no records exist -- ZERO synthetic fallbacks
+            return {
+                "response_type": "text",
+                "text_result": (
+                    f"🔍 **Criminal Association Graph: {canonical_suspect}**\n\n"
+                    f"• **Status**: No recorded co-accused linkages found in CCTNS for suspect '{canonical_suspect}'.\n"
+                    f"• **Investigative Assessment**: The entity has no co-accused associations in registered FIRs. "
+                    f"Recorded either as a lone subject or unindexed in the active co-offending registry."
+                ),
+                "data": {
+                    "nodes": [{
+                        "data": {
+                            "id": canonical_suspect,
+                            "label": canonical_suspect,
+                            "type": "suspect",
+                            "case_count": 0,
+                            "degree": 0,
+                            "betweenness": 0.0,
+                            "community": 0
+                        }
+                    }],
+                    "edges": [],
+                    "target_suspect": canonical_suspect,
+                    "kingpin": canonical_suspect,
+                    "central_lead": canonical_suspect,
+                    "syndicate_size": 1,
+                    "edge_count": 0,
+                    "community_count": 0,
+                    "is_large_syndicate": False,
+                    "is_mock": False
+                },
+                "citations": [
+                    {"type": "CCTNS Accused Registry", "id": "Query-Zero", "details": "Direct CCTNS search returned 0 linked cases"}
+                ]
+            }
 
-        # 2. Retrieve all co-accused across these cases
+        # 2. Retrieve all co-accused across primary cases (Hop 1)
         case_map: Dict[int, List[str]] = defaultdict(list)
         case_details: Dict[int, str] = {}
+        cids_str = ", ".join(str(cid) for cid in sorted(case_ids)[:50])
 
-        if not sample_coaccused and case_ids:
-            cids_str = ", ".join(str(cid) for cid in sorted(case_ids)[:30])
-            try:
-                q2 = f"SELECT AccusedName, CaseMasterID FROM Accused WHERE CaseMasterID IN ({cids_str}) LIMIT 200"
-                rows2 = zcql_service.execute_query(q2)
-                for r in rows2:
-                    acc = r.get("Accused", r)
-                    cid = int(acc.get("CaseMasterID"))
-                    aname = (acc.get("AccusedName") or "").strip()
-                    if aname and aname not in case_map[cid]:
-                        case_map[cid].append(aname)
-            except Exception as e:
-                logger.warning(f"[SyndicateGraphTool] Co-accused retrieval error: {e}")
+        try:
+            q2 = f"SELECT AccusedName, CaseMasterID FROM Accused WHERE CaseMasterID IN ({cids_str}) LIMIT 300"
+            rows2 = zcql_service.execute_query(q2)
+            for r in rows2:
+                acc = r.get("Accused", r)
+                cid = int(acc.get("CaseMasterID"))
+                aname = (acc.get("AccusedName") or "").strip()
+                if aname and aname not in case_map[cid]:
+                    case_map[cid].append(aname)
+        except Exception as e:
+            logger.warning(f"[SyndicateGraphTool] Co-accused retrieval error: {e}")
 
-            # Fetch case numbers for edge labels
-            try:
-                q_cases = f"SELECT CaseMasterID, CrimeNo FROM CaseMaster WHERE CaseMasterID IN ({cids_str}) LIMIT 50"
+        # Optional Hop 2: For key co-accused, expand to other shared cases
+        hop1_associates = {name for names in case_map.values() for name in names if name != canonical_suspect}
+        if hop1_associates and len(hop1_associates) < 15:
+            sample_associates = list(hop1_associates)[:5]
+            for assoc in sample_associates:
+                esc_assoc = escape_zcql_literal(assoc)
+                try:
+                    q_hop2 = f"SELECT CaseMasterID FROM Accused WHERE AccusedName LIKE '*{esc_assoc}*' LIMIT 5"
+                    rows_h2 = zcql_service.execute_query(q_hop2)
+                    for r in rows_h2:
+                        acc = r.get("Accused", r)
+                        cid_h2 = acc.get("CaseMasterID")
+                        if cid_h2 and int(cid_h2) not in case_map:
+                            cid_int = int(cid_h2)
+                            case_ids.add(cid_int)
+                            case_map[cid_int].append(assoc)
+                except Exception:
+                    pass
+
+        # Fetch case numbers for edge labels
+        try:
+            all_cids_str = ", ".join(str(cid) for cid in sorted(case_map.keys())[:60])
+            if all_cids_str:
+                q_cases = f"SELECT CaseMasterID, CrimeNo FROM CaseMaster WHERE CaseMasterID IN ({all_cids_str}) LIMIT 60"
                 rows_cm = zcql_service.execute_query(q_cases)
                 for r in rows_cm:
                     cm = r.get("CaseMaster", r)
                     cid = int(cm.get("CaseMasterID"))
                     cno = cm.get("CrimeNo") or f"CR-{cid}"
                     case_details[cid] = cno
-            except Exception as e:
-                logger.warning(f"[SyndicateGraphTool] CaseMaster details error: {e}")
-        else:
-            for aname, cid in sample_coaccused:
-                if aname not in case_map[cid]:
-                    case_map[cid].append(aname)
-                case_details[cid] = f"CR-{cid}"
+        except Exception as e:
+            logger.warning(f"[SyndicateGraphTool] CaseMaster details error: {e}")
 
-        # 3. Construct Cytoscape-compatible Nodes & Edges
+        # 3. Construct Graph with NetworkX for rigorous network metrics
+        import networkx as nx
+
+        G = nx.Graph()
         nodes_dict: Dict[str, dict] = {}
         edges_list: List[dict] = []
-        degree_count: Dict[str, int] = defaultdict(int)
         edge_set: Set[str] = set()
 
         for cid, suspects_in_case in case_map.items():
@@ -144,9 +186,12 @@ class SyndicateGraphTool(VajraTool):
                             "label": s,
                             "type": "suspect" if s == canonical_suspect else "person",
                             "case_count": 0,
-                            "degree": 0
+                            "degree": 0,
+                            "betweenness": 0.0,
+                            "community": 0
                         }
                     }
+                    G.add_node(s)
                 nodes_dict[s]["data"]["case_count"] += 1
 
             # Build pairwise co-accused edges within the case
@@ -167,33 +212,74 @@ class SyndicateGraphTool(VajraTool):
                                 "weight": 1
                             }
                         })
-                        degree_count[u] += 1
-                        degree_count[v] += 1
+                        if G.has_edge(u, v):
+                            G[u][v]["weight"] = G[u][v].get("weight", 1) + 1
+                        else:
+                            G.add_edge(u, v, weight=1)
 
-        # 4. Identify Central Kingpin via Degree Centrality
-        kingpin_name = canonical_suspect
-        max_degree = 0
-        for node_id, deg in degree_count.items():
-            nodes_dict[node_id]["data"]["degree"] = deg
-            if deg > max_degree:
-                max_degree = deg
-                kingpin_name = node_id
+        # 4. Compute Network Metrics: Degree, Betweenness Centrality, and Communities
+        betweenness = nx.betweenness_centrality(G) if len(G) > 2 else {n: 0.0 for n in G.nodes()}
+        degrees = dict(G.degree())
 
-        if kingpin_name in nodes_dict:
-            nodes_dict[kingpin_name]["data"]["is_kingpin"] = True
-            nodes_dict[kingpin_name]["data"]["type"] = "kingpin"
+        # Community Detection (Louvain / Greedy Modularity)
+        try:
+            from networkx.algorithms.community import greedy_modularity_communities
+            communities = list(greedy_modularity_communities(G)) if len(G.edges()) > 1 else []
+        except Exception:
+            communities = []
+
+        node_community_map = {}
+        for comm_id, comm_nodes in enumerate(communities):
+            for node in comm_nodes:
+                node_community_map[node] = comm_id + 1
+
+        # Populate metrics back to Cytoscape node payloads
+        top_betweenness_lead = canonical_suspect
+        max_bw = -1.0
+        max_deg = 0
+        central_lead = canonical_suspect
+
+        for node_id, node_obj in nodes_dict.items():
+            bw = round(float(betweenness.get(node_id, 0.0)), 4)
+            deg = int(degrees.get(node_id, 0))
+            comm = int(node_community_map.get(node_id, 0))
+
+            node_obj["data"]["betweenness"] = bw
+            node_obj["data"]["degree"] = deg
+            node_obj["data"]["community"] = comm
+
+            if bw > max_bw:
+                max_bw = bw
+                top_betweenness_lead = node_id
+
+            if deg > max_deg:
+                max_deg = deg
+                central_lead = node_id
+
+        # Flag structural bridges and centrality leads (replaces crude "kingpin")
+        if central_lead in nodes_dict:
+            nodes_dict[central_lead]["data"]["is_central_hub"] = True
+            nodes_dict[central_lead]["data"]["type"] = "central_hub"
+            nodes_dict[central_lead]["data"]["is_kingpin"] = True  # Backward compatibility for UI
+
+        if top_betweenness_lead in nodes_dict and top_betweenness_lead != central_lead and max_bw > 0.15:
+            nodes_dict[top_betweenness_lead]["data"]["is_broker"] = True
+            nodes_dict[top_betweenness_lead]["data"]["type"] = "network_bridge"
 
         nodes = list(nodes_dict.values())
         edges = edges_list
 
         # 5. Format Investigative Intelligence Summary
         is_large_syndicate = len(nodes) > 5
+        num_communities = len(communities) if communities else (1 if nodes else 0)
+
         text_result = (
-            f"🕸️ **Criminal Syndicate Network: {canonical_suspect}**\n"
-            f"• **Network Scale**: {len(nodes)} identified entities, {len(edges)} co-accused linkages across {len(case_map)} case records.\n"
-            f"• **Identified Kingpin / Central Hub**: **{kingpin_name}** (Centrality Degree: {max_degree})\n"
-            f"• **Key Co-Accused**: {', '.join(s for s in list(nodes_dict.keys())[:6] if s != kingpin_name) or 'None'}\n"
-            f"• **Forensic Audit**: All connections grounded in CCTNS §63 BSA evidentiary audit trail."
+            f"🕸️ **Criminal Association Network: {canonical_suspect}**\n\n"
+            f"• **Network Topology**: {len(nodes)} identified entities, {len(edges)} co-accused linkages across {len(case_map)} case records.\n"
+            f"• **Centrality Lead**: **{central_lead}** (Degree: {max_deg} direct linkages)\n"
+            f"• **Structural Network Bridge**: **{top_betweenness_lead}** (Betweenness Score: {max_bw:.3f})\n"
+            f"• **Syndicate Sub-Clusters**: {num_communities} distinct community modules detected.\n"
+            f"• **Investigative Note**: Connections reflect documented co-accused FIR associations under CCTNS §63 BSA evidentiary provenance."
         )
 
         return {
@@ -203,17 +289,20 @@ class SyndicateGraphTool(VajraTool):
                 "nodes": nodes,
                 "edges": edges,
                 "target_suspect": canonical_suspect,
-                "kingpin": kingpin_name,
+                "kingpin": central_lead,
+                "central_lead": central_lead,
+                "network_bridge": top_betweenness_lead,
                 "syndicate_size": len(nodes),
                 "edge_count": len(edges),
+                "community_count": num_communities,
                 "is_large_syndicate": is_large_syndicate,
-                # Trigger spatial flight & celebration when a massive network is surfaced
+                "is_mock": False,
                 "trigger_mascot_alert": True,
                 "mascot_state": "SUCCESS" if is_large_syndicate else "NAVIGATION",
                 "mascot_anchor": "ANCHOR_GRAPH"
             },
             "citations": [
-                {"type": "CCTNS Accused Registry", "id": f"Cases-{len(case_map)}", "details": f"{len(nodes)} linked entities"}
+                {"type": "CCTNS Accused Registry", "id": f"Cases-{len(case_map)}", "details": f"{len(nodes)} linked entities across {len(case_map)} verified FIRs"}
             ]
         }
 

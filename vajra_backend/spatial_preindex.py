@@ -67,8 +67,9 @@ class SpatialPreIndexEngine:
             self.dows = data["dows"]
             self.head_ids = data["head_ids"]
             self.unit_ids = data["unit_ids"]
-            self.district_ids = data["district_ids"]
-            self.crime_nos = list(data["crime_nos"])
+            self.district_ids = data["district_ids"] if "district_ids" in data else np.zeros(len(self.coords), dtype=np.int16)
+            self.gh7_ids = data["gh7_ids"] if "gh7_ids" in data else np.zeros(len(self.coords), dtype=np.uint64)
+            self.crime_nos = list(data["crime_nos"]) if "crime_nos" in data else []
             self.total_records = len(self.coords)
             self.is_initialized = True
             self.last_sync_time = datetime.fromtimestamp(os.path.getmtime(CACHE_FILE))

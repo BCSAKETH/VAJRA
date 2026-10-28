@@ -1,0 +1,35 @@
+[
+  {
+    "ticket_id": "TICKET-CYB-0941",
+    "department": "cyber",
+    "title": "Freeze Inter-State Mule Account Bank of Baroda A/C 9182",
+    "assignee": "Insp. Pradeep K.",
+    "status": "IN_PROGRESS",
+    "priority": "HIGH",
+    "created_at": "2026-10-21T18:30:00Z",
+    "findings": "Traced 4.2 Lakhs defrauded under BNS \u00a7318(4). Section 106 BNSS notice dispatched to Nodal Officer.",
+    "token_consumed": 1240
+  },
+  {
+    "ticket_id": "TICKET-REM-1082",
+    "department": "legal",
+    "title": "Section 187 BNSS Remand Audit: Cowle Bazaar Cr. 313/2026",
+    "assignee": "PSI Raghavendra",
+    "status": "OPEN",
+    "priority": "CRITICAL",
+    "created_at": "2026-10-21T21:15:00Z",
+    "findings": "Accused Raju in custody for 51 days. 90-day statutory charge-sheet deadline in 39 days. Default bail objection required.",
+    "token_consumed": 890
+  },
+  {
+    "ticket_id": "TICKET-FOR-0312",
+    "department": "forensics",
+    "title": "MuJoCo Collision Velocity Reconstruction on NH-67 Hit-and-Run",
+    "assignee": "Dr. Ananya Sharma",
+    "status": "RESOLVED",
+    "priority": "CRITICAL",
+    "created_at": "2026-10-20T14:00:00Z",
+    "findings": "Calculated minimum impact velocity of 62.4 km/h from 28.5m skid marks on dry asphalt. Section 106(2) BNS corroborated.",
+    "token_consumed": 2150
+  }
+]

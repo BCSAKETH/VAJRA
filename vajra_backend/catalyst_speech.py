@@ -41,13 +41,15 @@ _REGION = os.getenv("CATALYST_REGION", "IN")
 _DOMAIN = "in" if _REGION == "IN" else "com"
 _ORG_ID = os.getenv("CATALYST_ORG_ID") or os.getenv("CATALYST_PROJECT_KEY", "") or "60074806366"
 
-_TTS_URL = os.getenv("CATALYST_TTS_ENDPOINT") or f"https://api.catalyst.zoho.{_DOMAIN}/quickml/api/v1/models/zia/tts/synthesize"
+_TTS_LEGACY_URL = f"https://api.catalyst.zoho.{_DOMAIN}/quickml/api/v1/models/zia/tts/synthesize"
+_TTS_MODERN_URL = os.getenv("CATALYST_TTS_ENDPOINT") or f"https://api.catalyst.zoho.{_DOMAIN}/quickml/api/v1/project/50212000000025002/models/zia/speech/synthesize"
+_TTS_URL = _TTS_MODERN_URL
 _TTS_ENDPOINT_KEY = os.getenv("CATALYST_TTS_ENDPOINT_KEY", "")
 _STT_URL = f"https://api.catalyst.zoho.{_DOMAIN}/quickml/api/v1/models/zia/audio/transcribe"
 
-_SPEAKER_BY_LANG = {"en": "m_adam", "kn": "m_adam"}
-_VOICE_BY_LANG = {"en": "m_adam", "kn": "m_adam"}
-_LOCALE_BY_LANG = {"en": "en-us", "kn": "en-us"}
+_SPEAKER_BY_LANG = {"en": "m_adam", "kn": "Anu"}
+_VOICE_BY_LANG = {"en": "m_adam", "kn": "Anu"}
+_LOCALE_BY_LANG = {"en": "en-us", "kn": "kn"}
 _SPEED_FLOAT = {
     "slower": 0.85,
     "slow": 0.85,
@@ -118,8 +120,11 @@ ZIA_SPEAKERS = {
         {"id": "f_bella", "gender": "Female", "name": "Bella (English - Warm)"},
     ],
     "kn": [
-        {"id": "m_adam", "gender": "Male", "name": "Adam (Command Briefing)"},
-        {"id": "f_sarah", "gender": "Female", "name": "Sarah (Clear Delivery)"},
+        {"id": "Anu", "gender": "Female", "name": "Anu (Kannada - Native Default)"},
+        {"id": "Vidya", "gender": "Female", "name": "Vidya (Kannada - Formal)"},
+        {"id": "Suresh", "gender": "Male", "name": "Suresh (Kannada - Command)"},
+        {"id": "Chetan", "gender": "Male", "name": "Chetan (Kannada - Clear)"},
+        {"id": "Manoj", "gender": "Male", "name": "Manoj (Kannada - Regional)"},
     ],
 }
 
@@ -127,9 +132,7 @@ ZIA_SPEAKERS = {
 _SPEAKER_ALIASES = {
     "James": "m_adam",
     "David": "m_adam",
-    "Manoj": "m_adam",
     "Anna": "f_sarah",
-    "Anu": "f_bella",
     "Divya": "f_nicole",
 }
 
@@ -381,36 +384,47 @@ def _call_zia_tts(
     speed_float = _SPEED_FLOAT.get(speed_override or params["speed"], 1.0)
     target_voice = _SPEAKER_ALIASES.get(speaker_override, None) or _SPEAKER_ALIASES.get(speaker, None) or speaker_override or _VOICE_BY_LANG.get(lang, "m_adam")
     
-    # Modern schema from Catalyst TTS documentation
-    body_modern = {
-        "text": cleaned,
-        "language": _LOCALE_BY_LANG.get(lang, "en-us"),
-        "format": "mp3",
-        "sampleRate": 48000,
-        "speed": speed_float,
-        "voice": target_voice,
-    }
-    # Legacy schema
-    body_legacy = {"text": cleaned, "language": lang, "speaker": target_speaker, **params}
-
-    # If custom endpoint is set, prefer modern payload; else default to modern with legacy fallback
-    body = body_modern if os.getenv("CATALYST_TTS_ENDPOINT") else body_modern
-
-    headers = {
-        "CATALYST-ORG": _ORG_ID,
-        "Authorization": f"Zoho-oauthtoken {token}",
-        "Content-Type": "application/json",
-        "Environment": os.getenv("CATALYST_ENVIRONMENT", "Development"),
-    }
-    if _TTS_ENDPOINT_KEY:
-        headers["x-quickml-endpoint-key"] = _TTS_ENDPOINT_KEY
+    if lang == "kn":
+        endpoint_url = _TTS_LEGACY_URL
+        kn_speaker = target_speaker if target_speaker in ("Anu", "Vidya", "Suresh", "Chetan", "Manoj") else "Anu"
+        body = {
+            "text": cleaned,
+            "language": "kn",
+            "speaker": kn_speaker,
+            "pitch": params.get("pitch", "moderate"),
+            "speed": params.get("speed", "moderate"),
+            "emotion": params.get("emotion", "neutral"),
+        }
+        headers = {
+            "CATALYST-ORG": _ORG_ID,
+            "Authorization": f"Zoho-oauthtoken {token}",
+            "Content-Type": "application/json",
+        }
+    else:
+        endpoint_url = _TTS_MODERN_URL
+        body = {
+            "text": cleaned,
+            "language": _LOCALE_BY_LANG.get(lang, "en-us"),
+            "format": "mp3",
+            "sampleRate": 48000,
+            "speed": speed_float,
+            "voice": target_voice,
+        }
+        headers = {
+            "CATALYST-ORG": _ORG_ID,
+            "Authorization": f"Zoho-oauthtoken {token}",
+            "Content-Type": "application/json",
+            "Environment": os.getenv("CATALYST_ENVIRONMENT", "Development"),
+        }
+        if _TTS_ENDPOINT_KEY:
+            headers["x-quickml-endpoint-key"] = _TTS_ENDPOINT_KEY
 
     timeout = 30 if lang == "kn" else 15
     last_status, last_body = 0, ""
     for attempt in range(2):
         t0 = time.time()
         try:
-            res = _http_session.post(_TTS_URL, headers=headers, json=body, timeout=timeout)
+            res = _http_session.post(endpoint_url, headers=headers, json=body, timeout=timeout)
             elapsed = time.time() - t0
             last_status, last_body = res.status_code, res.text[:300]
 
@@ -433,17 +447,12 @@ def _call_zia_tts(
                     logger.info(f"TTS synthesized WAV ({lang}, {persona}, {speaker}, {len(cleaned)} chars, {elapsed:.1f}s)")
                     return res.content, "audio/wav", 200, ""
 
-            # If modern schema returned 400 on legacy endpoint, try legacy payload once
-            if res.status_code == 400 and body == body_modern and not os.getenv("CATALYST_TTS_ENDPOINT"):
-                body = body_legacy
-                continue
-
-            if res.status_code == 400 and "Speaker" in res.text and speaker != _SPEAKER_BY_LANG.get(lang, "Anna"):
-                default_speaker = _SPEAKER_BY_LANG.get(lang, "Anna")
-                logger.info(f"Speaker '{speaker}' unavailable for {lang}; falling back to default '{default_speaker}'")
-                body["speaker"] = default_speaker
-                speaker = default_speaker
-                continue
+            if res.status_code == 400 and "Speaker" in res.text:
+                default_spk = _SPEAKER_BY_LANG.get(lang, "Anu" if lang == "kn" else "m_adam")
+                if body.get("speaker") != default_spk:
+                    logger.info(f"Speaker '{body.get('speaker')}' unavailable for {lang}; falling back to default '{default_spk}'")
+                    body["speaker"] = default_spk
+                    continue
 
             logger.warning(f"Zia TTS failed (attempt {attempt + 1}, {res.status_code}, {elapsed:.1f}s): {res.text[:200]}")
             if attempt == 0 and elapsed > 5:

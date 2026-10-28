@@ -20,6 +20,8 @@ vajra_backend/cache/
 # Datasets & Large Files
 *.csv
 *.pdf
+*.zip
+.claude/
 .git/index.lock
 .token_cache*
 **/.token_cache*

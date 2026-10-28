@@ -1,0 +1,86 @@
+{
+  "Overall": {
+    "test_sample_count": 2201,
+    "mae": {
+      "lightgbm": 0.755,
+      "baseline_t7": 1.978,
+      "baseline_4w_rolling": 0.816,
+      "baseline_seasonal_naive": 1.13
+    },
+    "rmse": {
+      "lightgbm": 1.418,
+      "baseline_t7": 3.807,
+      "baseline_4w_rolling": 1.559,
+      "baseline_seasonal_naive": 2.21
+    },
+    "mae_improvement_pct": {
+      "over_t7": 61.83,
+      "over_4w_rolling": 7.42,
+      "over_seasonal": 33.16
+    },
+    "deployment_gate_passed": true
+  },
+  "High Volume": {
+    "test_sample_count": 744,
+    "mae": {
+      "lightgbm": 0.018,
+      "baseline_t7": 0.0,
+      "baseline_4w_rolling": 0.0,
+      "baseline_seasonal_naive": 0.0
+    },
+    "rmse": {
+      "lightgbm": 0.019,
+      "baseline_t7": 0.0,
+      "baseline_4w_rolling": 0.0,
+      "baseline_seasonal_naive": 0.0
+    },
+    "mae_improvement_pct": {
+      "over_t7": -1803.94,
+      "over_4w_rolling": -1803.94,
+      "over_seasonal": -1803.94
+    },
+    "deployment_gate_passed": false
+  },
+  "Medium Volume": {
+    "test_sample_count": 713,
+    "mae": {
+      "lightgbm": 1.125,
+      "baseline_t7": 3.142,
+      "baseline_4w_rolling": 1.255,
+      "baseline_seasonal_naive": 1.726
+    },
+    "rmse": {
+      "lightgbm": 1.722,
+      "baseline_t7": 4.954,
+      "baseline_4w_rolling": 1.914,
+      "baseline_seasonal_naive": 2.709
+    },
+    "mae_improvement_pct": {
+      "over_t7": 64.2,
+      "over_4w_rolling": 10.39,
+      "over_seasonal": 34.82
+    },
+    "deployment_gate_passed": true
+  },
+  "Low Volume": {
+    "test_sample_count": 744,
+    "mae": {
+      "lightgbm": 1.138,
+      "baseline_t7": 2.841,
+      "baseline_4w_rolling": 1.21,
+      "baseline_seasonal_naive": 1.689
+    },
+    "rmse": {
+      "lightgbm": 1.764,
+      "baseline_t7": 4.399,
+      "baseline_4w_rolling": 1.917,
+      "baseline_seasonal_naive": 2.723
+    },
+    "mae_improvement_pct": {
+      "over_t7": 59.95,
+      "over_4w_rolling": 5.95,
+      "over_seasonal": 32.6
+    },
+    "deployment_gate_passed": true
+  }
+}

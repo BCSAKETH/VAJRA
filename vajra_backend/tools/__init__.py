@@ -12,3 +12,6 @@ import tools.tool_cctns_search
 import tools.tool_vision_extractor
 import tools.tool_syndicate_graph
 import tools.tool_portal_scraper
+import tools.tool_mo_semantic
+import tools.tool_patrol_route
+import tools.tool_socio_demographic

@@ -24,6 +24,9 @@ cache/**
 scratch
 scratch/**
 session_memory.db
+data/quickml_export
+data/quickml_export/**
+data/*.csv
 
 # Backups and training duplicates
 *.bak*

@@ -496,6 +496,47 @@ const speakText = (text: string, lang: "en" | "kn", onEnd: () => void, speed?: T
 // Global in-memory cache for translations: instant 0ms retrieval on re-toggle or across messages
 const GLOBAL_TRANSLATION_CACHE = new Map<string, string>();
 
+/**
+ * Resolves the language-specific voice configuration (Speaker, Speed, Style/Persona)
+ * based on the detected script ("en" or "kn"). Ensures each language uses its dedicated
+ * configuration profile saved by the officer.
+ */
+const resolveVoiceConfig = (
+  script: "en" | "kn",
+  settings?: TtsSettings,
+  defaultPersona?: string
+): { voice: string; style: TtsStyle; speed: TtsSpeed } => {
+  const langConfig = settings?.languages?.[script];
+  const style = langConfig?.style || (settings?.style as TtsStyle) || (defaultPersona as TtsStyle) || (script === "kn" ? "buttery" : "authoritative");
+  const speed = langConfig?.speed || settings?.speed || "normal";
+  let voice = langConfig?.voice || (settings?.language === script ? settings?.voice : undefined);
+
+  if (!voice) {
+    voice = script === "kn" ? "Anu" : "Anna";
+  } else if (script === "kn" && !["Anu", "Manoj"].includes(voice)) {
+    voice = "Anu";
+  } else if (script === "en" && !["Anna", "James", "David", "Brian", "Emma", "George"].includes(voice)) {
+    voice = "Anna";
+  }
+
+  return { voice, style, speed };
+};
+
+/**
+ * Robustly detects whether speech text should use the Kannada or English profile.
+ * Prevents mixed-script content (e.g., predominantly English text containing a suspect's
+ * bracketed native name, or Kannada text containing IPC section numbers) from misrouting.
+ */
+const detectSpeechLanguage = (text: string, currentDisplayLang?: "en" | "kn"): "en" | "kn" => {
+  if (!text) return currentDisplayLang || "en";
+  const knChars = (text.match(/[\u0C80-\u0CFF]/g) || []).length;
+  const enChars = (text.match(/[a-zA-Z]/g) || []).length;
+  if (currentDisplayLang === "kn" && knChars > 0) return "kn";
+  if (currentDisplayLang === "en" && enChars > knChars) return "en";
+  return knChars > enChars ? "kn" : "en";
+};
+
+
 export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
   message, lang, voicePersona, onExpandWidget, onRetry, onQuickReply, addToast, isLast,
   onEditMessage, onRetryVariant, totalVariants, activeVariantIndex, onCycleVariant, isReviewMode,
@@ -1119,16 +1160,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
         const headers: Record<string, string> = { "Content-Type": "application/json" };
         if (token) headers["Authorization"] = `Bearer ${token}`;
 
-        const voiceStyle = effectiveTtsSettings?.style || voicePersona || "buttery";
-        const voiceSpeed = effectiveTtsSettings?.speed || "normal";
-        let voiceSpeaker = effectiveTtsSettings?.voice;
-        if (!voiceSpeaker) {
-          voiceSpeaker = vlang === "kn" ? "Anu" : "Anna";
-        } else if (vlang === "kn" && !["Anu", "Manoj"].includes(voiceSpeaker)) {
-          voiceSpeaker = "Anu";
-        } else if (vlang === "en" && !["Anna", "James", "David", "Brian", "Emma", "George"].includes(voiceSpeaker)) {
-          voiceSpeaker = "Anna";
-        }
+        const { voice: voiceSpeaker, style: voiceStyle, speed: voiceSpeed } = resolveVoiceConfig(vlang, effectiveTtsSettings, voicePersona);
 
         const r = await fetch(`${API_BASE}/api/voice/tts`, {
           method: "POST",
@@ -1178,24 +1210,15 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     if (!isLast || !isAI || message.isSimulated) return;
     const toSpeak = getSpeakText();
     if (!toSpeak) return;
-    const vlang: "en" | "kn" = /[\u0C80-\u0CFF]/.test(toSpeak) ? "kn" : "en";
+    const vlang: "en" | "kn" = detectSpeechLanguage(toSpeak, effectiveLang);
     const firstChunk = splitIntoSpeechChunks(toSpeak)[0];
     if (!firstChunk) return;
-    const voiceStyle = effectiveTtsSettings?.style || voicePersona || "buttery";
-    let voiceSpeaker = effectiveTtsSettings?.voice;
-    if (!voiceSpeaker) {
-      voiceSpeaker = vlang === "kn" ? "Anu" : "Anna";
-    } else if (vlang === "kn" && !["Anu", "Manoj"].includes(voiceSpeaker)) {
-      voiceSpeaker = "Anu";
-    } else if (vlang === "en" && !["Anna", "James", "David", "Brian", "Emma", "George"].includes(voiceSpeaker)) {
-      voiceSpeaker = "Anna";
-    }
-    const voiceSpeed = effectiveTtsSettings?.speed || "normal";
+    const { voice: voiceSpeaker, style: voiceStyle, speed: voiceSpeed } = resolveVoiceConfig(vlang, effectiveTtsSettings, voicePersona);
     const key = `${message.id}:${vlang}:${voiceStyle}:${voiceSpeaker}:${voiceSpeed}:0`;
     if (_ttsCache.has(key) || _ttsPending.has(key)) return;
 
     fetchChunkAudio(firstChunk, vlang, key);
-  }, [isLast, isAI, message.id, message.isSimulated, getSpeakText, voicePersona, effectiveTtsSettings]);
+  }, [isLast, isAI, message.id, message.isSimulated, getSpeakText, voicePersona, effectiveTtsSettings, effectiveLang]);
 
   const notifyFallback = () => {
     if (fallbackNotifiedRef.current) return;
@@ -1211,11 +1234,12 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
 
   const playChunk = async (text: string, vlang: "en" | "kn", key: string): Promise<boolean> => {
     if (speakCancelRef.current) return false;
+    const { speed: activeSpeed } = resolveVoiceConfig(vlang, effectiveTtsSettings, voicePersona);
 
     if (engineLockRef.current === "local") {
       notifyFallback();
       return await new Promise<boolean>((resolve) => {
-        const result = speakText(text, vlang, () => resolve(true), effectiveTtsSettings?.speed);
+        const result = speakText(text, vlang, () => resolve(true), activeSpeed);
         if (result !== "started") resolve(false);
       });
     }
@@ -1240,7 +1264,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     engineLockRef.current = "local";
     notifyFallback();
     return await new Promise<boolean>((resolve) => {
-      const result = speakText(text, vlang, () => resolve(true), effectiveTtsSettings?.speed);
+      const result = speakText(text, vlang, () => resolve(true), activeSpeed);
       if (result !== "started") resolve(false);
     });
   };
@@ -1261,7 +1285,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     const toSpeak = getSpeakText();
     if (!toSpeak) return;
 
-    const vlang: "en" | "kn" = /[\u0C80-\u0CFF]/.test(toSpeak) ? "kn" : "en";
+    const vlang: "en" | "kn" = detectSpeechLanguage(toSpeak, effectiveLang);
     const chunks = splitIntoSpeechChunks(toSpeak);
     if (chunks.length === 0) return;
 
@@ -1270,16 +1294,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = React.memo(({
     fallbackNotifiedRef.current = false;
     setIsSpeaking(true);
 
-    const voiceStyle = effectiveTtsSettings?.style || voicePersona || "buttery";
-    let voiceSpeaker = effectiveTtsSettings?.voice;
-    if (!voiceSpeaker) {
-      voiceSpeaker = vlang === "kn" ? "Anu" : "Anna";
-    } else if (vlang === "kn" && !["Anu", "Manoj"].includes(voiceSpeaker)) {
-      voiceSpeaker = "Anu";
-    } else if (vlang === "en" && !["Anna", "James", "David", "Brian", "Emma", "George"].includes(voiceSpeaker)) {
-      voiceSpeaker = "Anna";
-    }
-    const voiceSpeed = effectiveTtsSettings?.speed || "normal";
+    const { voice: voiceSpeaker, style: voiceStyle, speed: voiceSpeed } = resolveVoiceConfig(vlang, effectiveTtsSettings, voicePersona);
     const makeKey = (idx: number) => `${message.id}:${vlang}:${voiceStyle}:${voiceSpeaker}:${voiceSpeed}:${idx}`;
 
     // Pipelined prefetching:

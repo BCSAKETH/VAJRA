@@ -1696,21 +1696,15 @@ class MOBehavioralProfiler:
             except Exception as e:
                 logger.error(f"Failed to load MO database: {e}")
 
-        if not self.vectors:
-            np.random.seed(42)
-            for i in range(50):
-                self.vectors.append(np.random.rand(5))
-                self.metadata.append({
-                    "fir_id": f"FIR-2026-MOCK-{i}",
-                    "suspect_name": f"Suspect-{i}",
-                    "crime_type": "Theft",
-                    "station": "Cubbon Park PS"
-                })
-
-        self.mo_matrix = np.vstack(self.vectors)
-        norms = np.linalg.norm(self.mo_matrix, axis=1, keepdims=True)
-        norms[norms == 0] = 1e-9
-        self.mo_matrix_normalized = self.mo_matrix / norms
+        if self.vectors:
+            self.mo_matrix = np.vstack(self.vectors)
+            norms = np.linalg.norm(self.mo_matrix, axis=1, keepdims=True)
+            norms[norms == 0] = 1e-9
+            self.mo_matrix_normalized = self.mo_matrix / norms
+        else:
+            self.mo_matrix = np.empty((0, 5), dtype=np.float32)
+            self.mo_matrix_normalized = np.empty((0, 5), dtype=np.float32)
+            self.data_source = "empty"
 
     def cluster_mo_signatures(self, min_cluster_size: int = 3) -> List[Dict[str, Any]]:
         """
@@ -1848,6 +1842,18 @@ class MOBehavioralProfiler:
                 "similarity_score": round(float(similarities[idx]), 4)
             })
         return matches
+
+    def find_similar_cases_semantic(self, query_text: str, top_k: int = 5, head_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """
+        Track 3: Dense semantic Modus Operandi retrieval across 20,000+ CCTNS cases
+        using multilingual Sentence-BERT embeddings.
+        """
+        try:
+            from mo_semantic_engine import find_similar_cases
+            return find_similar_cases(query_text=query_text, top_k=top_k, head_id=head_id)
+        except Exception as e:
+            logger.warning(f"Semantic MO retrieval fallback: {e}")
+            return []
 
 
 class VajraGraphRAG:

@@ -50,8 +50,19 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
     setTranscriptWidth,
     ttsSettings,
     setTtsSettings,
+    setLanguageVoiceConfig,
     addToast,
   } = useApp();
+
+  // Officer actively selected language tab for configuring voice engine ("en" | "kn")
+  const [audioConfigLang, setAudioConfigLang] = useState<"en" | "kn">(() => ttsSettings.language || "en");
+
+  // Active configuration for the currently selected audio language
+  const activeLangConfig = ttsSettings.languages?.[audioConfigLang] || {
+    voice: audioConfigLang === "kn" ? "Anu" : "Anna",
+    style: (ttsSettings.style || (audioConfigLang === "kn" ? "buttery" : "authoritative")) as TtsStyle,
+    speed: (ttsSettings.speed || "normal") as TtsSpeed,
+  };
 
   // Section 15: Zia Audio Studio Live Preview Player
   const [isPlayingPreview, setIsPlayingPreview] = useState(false);
@@ -87,7 +98,8 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
       kn: "ವಜ್ರ ಸುರಕ್ಷತಾ ತನಿಖಾ ವ್ಯವಸ್ಥೆ ಸಿದ್ಧವಾಗಿದೆ. ಎಲ್ಲಾ ಕಮಾಂಡ್ ಸಿಬ್ಬಂದಿ ಕಾರ್ಯಪ್ರವೃತ್ತರಾಗಿದ್ದಾರೆ.",
     };
 
-    const targetLang = ttsSettings.language || "en";
+    const targetLang = audioConfigLang;
+    const langConfig = ttsSettings.languages?.[targetLang] || activeLangConfig;
     const phrase = testPhrases[targetLang] || testPhrases.en;
 
     setIsPreviewLoading(true);
@@ -102,11 +114,11 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
         body: JSON.stringify({
           text: phrase,
           lang: targetLang,
-          persona: ttsSettings.style,
-          style: ttsSettings.style,
-          speed: ttsSettings.speed,
-          speaker: ttsSettings.voice,
-          voice: ttsSettings.voice,
+          persona: langConfig.style,
+          style: langConfig.style,
+          speed: langConfig.speed,
+          speaker: langConfig.voice,
+          voice: langConfig.voice,
         }),
       });
 
@@ -1430,142 +1442,272 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
                   </span>
                 </div>
 
-                {/* Primary Audio Language */}
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
-                    {lang === "en" ? "Audio Language Preview" : "ಆಡಿಯೊ ಭಾಷೆ ಮುನ್ನೋಟ"}
-                  </label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {[
-                      { id: "en", label: "English (India)", native: "Articulate" },
-                      { id: "kn", label: "ಕನ್ನಡ (Kannada)", native: "ಸ್ಥಳೀಯ ಉಚ್ಚಾರಣೆ" },
-                    ].map((l) => (
-                      <button
-                        key={l.id}
-                        type="button"
-                        onClick={() => {
-                          const newLang = l.id as "en" | "kn";
-                          const defaultSpeaker = newLang === "kn" ? "Anu" : "Anna";
-                          setTtsSettings({ language: newLang, voice: defaultSpeaker });
-                        }}
-                        className={`p-2.5 rounded-lg border text-left transition-all cursor-pointer ${
-                          ttsSettings.language === l.id
-                            ? "border-[#C79A4E] bg-[#C79A4E]/10 text-stone-100 font-bold"
-                            : "border-stone-800 bg-stone-950/40 text-stone-400 hover:border-stone-700"
-                        }`}
-                      >
-                        <p className="text-xs font-mono font-bold">{l.label}</p>
-                        <p className="text-[10px] font-mono text-stone-500">{l.native}</p>
-                      </button>
-                    ))}
+                {/* DUAL-LANGUAGE VOICE ENGINE CONFIGURATION */}
+                {/* User Request Requirement: "Each language can be configured differently depending on their preferences." */}
+                <div className="p-3.5 rounded-xl bg-[#C79A4E]/10 border border-[#C79A4E]/30 flex items-start gap-3">
+                  <div className="p-1.5 rounded-lg bg-[#C79A4E]/20 text-[#C79A4E] shrink-0 mt-0.5">
+                    <Info className="w-4 h-4" />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-xs font-mono font-bold text-[#E4C590] leading-snug">
+                      Each language can be configured differently depending on their preferences.
+                    </p>
+                    <p className="text-[10px] font-mono text-stone-300 leading-relaxed">
+                      {lang === "en"
+                        ? "Configure independent neural speakers, cadence personas, and playback speeds for English and Kannada. During investigation chat, VAJRA dynamically inspects the answer's language and automatically speaks using that language's configured profile."
+                        : "ಇಂಗ್ಲಿಷ್ ಮತ್ತು ಕನ್ನಡ ಭಾಷೆಗಳಿಗೆ ಪ್ರತ್ಯೇಕ ಧ್ವನಿ ಶೈಲಿ, ವೇಗ ಮತ್ತು ಸ್ಪೀಕರ್ ಅನ್ನು ಕಾನ್ಫಿಗರ್ ಮಾಡಿ. ಚಾಟ್ ಸಮಯದಲ್ಲಿ, VAJRA ಸ್ವಯಂಚಾಲಿತವಾಗಿ ಭಾಷೆಯನ್ನು ಪತ್ತೆಹಚ್ಚಿ ಆಯಾ ಭಾಷೆಯ ಧ್ವನಿ ಪ್ರೊಫೈಲ್ ಅನ್ನು ಅನ್ವಯಿಸುತ್ತದೆ."}
+                    </p>
                   </div>
                 </div>
 
-                {/* Voice Persona & Timbre */}
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
-                    {lang === "en" ? "Voice Persona & Timbre" : "ಧ್ವನಿ ವ್ಯಕ್ತಿತ್ವ ಮತ್ತು ಟೋನ್"}
-                  </label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {[
-                      {
-                        id: "buttery" as TtsStyle,
-                        name: lang === "en" ? "Buttery" : "ಬಟರಿ",
-                        badge: lang === "en" ? "Warm & Relaxed" : "ಆತ್ಮೀಯ",
-                        desc: lang === "en" ? "Smooth vocal delivery for fatigue-free listening" : "ದಣಿವು-ಮುಕ್ತ ಆಲಿಸುವಿಕೆ",
-                      },
-                      {
-                        id: "authoritative" as TtsStyle,
-                        name: lang === "en" ? "Authoritative" : "ಅಧಿಕೃತ",
-                        badge: lang === "en" ? "Command Briefing" : "ಕಮಾಂಡ್",
-                        desc: lang === "en" ? "Crisp, formal police command cadence" : "ಖಚಿತ ಕಮಾಂಡ್ ಟೋನ್",
-                      },
-                      {
-                        id: "calm" as TtsStyle,
-                        name: lang === "en" ? "Calm" : "ಶಾಂತ",
-                        badge: lang === "en" ? "Empathetic" : "ಸಹಾನುಭೂತಿ",
-                        desc: lang === "en" ? "Steady, reassuring cadence for sensitive cases" : "ಸ್ಥಿರ ಶೈಲಿ",
-                      },
-                      {
-                        id: "urgent" as TtsStyle,
-                        name: lang === "en" ? "Urgent" : "ತುರ್ತು",
-                        badge: lang === "en" ? "Tactical Dispatch" : "ಕ್ಷಿಪ್ರ",
-                        desc: lang === "en" ? "Fast-paced tactical briefing and alerts" : "ವೇಗದ ಬ್ರೀಫಿಂಗ್",
-                      },
-                    ].map((p) => (
-                      <button
-                        key={p.id}
-                        type="button"
-                        onClick={() => {
-                          setTtsSettings({ style: p.id });
-                          setVoicePersona(p.id);
-                        }}
-                        className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
-                          ttsSettings.style === p.id
-                            ? "border-[#C79A4E] bg-[#C79A4E]/10 ring-1 ring-[#C79A4E]/40"
-                            : "border-stone-800 bg-stone-950/40 hover:border-stone-700"
-                        }`}
-                      >
-                        <div className="flex items-center justify-between w-full">
-                          <span className={`text-[11px] font-bold ${ttsSettings.style === p.id ? "text-[#C79A4E]" : "text-stone-200"}`}>
-                            {p.name}
-                          </span>
-                          <span className="text-[8.5px] font-mono px-1.5 py-0.5 rounded bg-stone-900 border border-stone-800 text-stone-400">
-                            {p.badge}
+                {/* Primary Language Mode Switcher */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10.5px] font-bold text-stone-300 uppercase font-mono tracking-wider flex items-center gap-1.5">
+                      <Languages className="w-3.5 h-3.5 text-[#C79A4E]" />
+                      <span>{lang === "en" ? "Select Language to Configure" : "ಕಾನ್ಫಿಗರ್ ಮಾಡಲು ಭಾಷೆಯನ್ನು ಆಯ್ಕೆಮಾಡಿ"}</span>
+                    </label>
+                    <span className="text-[9.5px] font-mono text-stone-400">
+                      {audioConfigLang === "en"
+                        ? "Active Tab: English (en-IN)"
+                        : "ಸಕ್ರಿಯ ಟ್ಯಾಬ್: ಕನ್ನಡ (kn-IN)"}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {/* English Tab Button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAudioConfigLang("en");
+                        setTtsSettings({ language: "en" });
+                      }}
+                      className={`p-3 rounded-xl border text-left transition-all cursor-pointer relative ${
+                        audioConfigLang === "en"
+                          ? "border-[#C79A4E] bg-[#C79A4E]/15 shadow-md shadow-[#C79A4E]/10 ring-1 ring-[#C79A4E]/50"
+                          : "border-stone-800 bg-stone-950/60 text-stone-400 hover:border-stone-700 hover:text-stone-300"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-base">🇬🇧</span>
+                          <span className={`text-xs font-mono font-bold ${audioConfigLang === "en" ? "text-stone-100" : "text-stone-300"}`}>
+                            English (India)
                           </span>
                         </div>
-                        <p className="text-[9.5px] text-stone-500 leading-snug mt-1">{p.desc}</p>
-                      </button>
-                    ))}
+                        {audioConfigLang === "en" ? (
+                          <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded-full bg-[#C79A4E] text-stone-950 uppercase tracking-wider">
+                            Configuring
+                          </span>
+                        ) : (
+                          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-stone-900 border border-stone-800 text-stone-500">
+                            Click to Configure
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] font-mono text-stone-400 mt-1">
+                        {lang === "en" ? "Articulate Police Command Cadence" : "ಸ್ಪಷ್ಟ ಕಮಾಂಡ್ ಸಂವಹನ"}
+                      </p>
+                      <div className="flex items-center gap-1.5 mt-2.5 pt-2 border-t border-stone-800/80 text-[9.5px] font-mono text-stone-300">
+                        <span className="text-[#C79A4E] font-bold">{ttsSettings.languages?.en?.voice || "Anna"}</span>
+                        <span className="text-stone-600">•</span>
+                        <span className="capitalize">{ttsSettings.languages?.en?.speed || "normal"}</span>
+                        <span className="text-stone-600">•</span>
+                        <span className="capitalize">{ttsSettings.languages?.en?.style || "authoritative"}</span>
+                      </div>
+                    </button>
+
+                    {/* Kannada Tab Button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setAudioConfigLang("kn");
+                        setTtsSettings({ language: "kn" });
+                      }}
+                      className={`p-3 rounded-xl border text-left transition-all cursor-pointer relative ${
+                        audioConfigLang === "kn"
+                          ? "border-[#C79A4E] bg-[#C79A4E]/15 shadow-md shadow-[#C79A4E]/10 ring-1 ring-[#C79A4E]/50"
+                          : "border-stone-800 bg-stone-950/60 text-stone-400 hover:border-stone-700 hover:text-stone-300"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <span className="text-base">🇮🇳</span>
+                          <span className={`text-xs font-mono font-bold ${audioConfigLang === "kn" ? "text-stone-100" : "text-stone-300"}`}>
+                            ಕನ್ನಡ (Kannada)
+                          </span>
+                        </div>
+                        {audioConfigLang === "kn" ? (
+                          <span className="text-[9px] font-mono font-bold px-2 py-0.5 rounded-full bg-[#C79A4E] text-stone-950 uppercase tracking-wider">
+                            Configuring
+                          </span>
+                        ) : (
+                          <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-stone-900 border border-stone-800 text-stone-500">
+                            Click to Configure
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[10px] font-mono text-stone-400 mt-1">
+                        {lang === "en" ? "Native Karnataka Dialect & Tone" : "ಸ್ಥಳೀಯ ಕನ್ನಡ & ಅಧಿಕೃತ ಉಚ್ಚಾರಣೆ"}
+                      </p>
+                      <div className="flex items-center gap-1.5 mt-2.5 pt-2 border-t border-stone-800/80 text-[9.5px] font-mono text-stone-300">
+                        <span className="text-[#C79A4E] font-bold">{ttsSettings.languages?.kn?.voice || "Anu"}</span>
+                        <span className="text-stone-600">•</span>
+                        <span className="capitalize">{ttsSettings.languages?.kn?.speed || "normal"}</span>
+                        <span className="text-stone-600">•</span>
+                        <span className="capitalize">{ttsSettings.languages?.kn?.style || "buttery"}</span>
+                      </div>
+                    </button>
                   </div>
                 </div>
 
-                {/* Speed & Neural Speaker */}
-                <div className="grid grid-cols-2 gap-3 pt-2 border-t border-stone-850">
+                {/* ACTIVE LANGUAGE CONFIGURATION PANEL */}
+                <div className="p-3.5 rounded-xl bg-stone-950/70 border border-stone-800/90 space-y-3.5">
+                  <div className="flex items-center justify-between pb-2 border-b border-stone-850">
+                    <div className="flex items-center gap-2">
+                      <Radio className={`w-3.5 h-3.5 ${audioConfigLang === "en" ? "text-sky-400" : "text-amber-400"} animate-pulse`} />
+                      <span className="text-xs font-mono font-bold uppercase tracking-wider text-stone-200">
+                        {audioConfigLang === "en"
+                          ? "Configuring: English Voice Profile"
+                          : "Configuring: Kannada (ಕನ್ನಡ) Voice Profile"}
+                      </span>
+                    </div>
+                    <span className="text-[9.5px] font-mono px-2 py-0.5 rounded bg-stone-900 border border-stone-800 text-[#C79A4E]">
+                      {audioConfigLang === "en" ? "EN ENGINE" : "KN ENGINE"}
+                    </span>
+                  </div>
+
+                  {/* Voice Persona & Timbre for Active Language */}
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
-                      {lang === "en" ? "Playback Speed" : "ಪ್ಲೇಬ್ಯಾಕ್ ವೇಗ"}
+                      {lang === "en" ? `Voice Persona & Timbre (${audioConfigLang.toUpperCase()})` : `ಧ್ವನಿ ವ್ಯಕ್ತಿತ್ವ ಮತ್ತು ಟೋನ್ (${audioConfigLang.toUpperCase()})`}
                     </label>
-                    <div className="flex rounded-lg border border-stone-800 bg-stone-950/50 p-1 gap-1">
+                    <div className="grid grid-cols-2 gap-2">
                       {[
-                        { id: "slower" as TtsSpeed, label: "0.85x" },
-                        { id: "normal" as TtsSpeed, label: "1.0x" },
-                        { id: "faster" as TtsSpeed, label: "1.25x" },
-                      ].map((spd) => (
-                        <button
-                          key={spd.id}
-                          type="button"
-                          onClick={() => setTtsSettings({ speed: spd.id })}
-                          className={`flex-1 py-1 text-center text-[10.5px] font-mono font-bold rounded-md transition-all cursor-pointer ${
-                            ttsSettings.speed === spd.id ? "bg-[#C79A4E] text-stone-950" : "text-stone-400 hover:text-stone-200 hover:bg-stone-900"
-                          }`}
-                        >
-                          {spd.label}
-                        </button>
-                      ))}
+                        {
+                          id: "buttery" as TtsStyle,
+                          name: lang === "en" ? "Buttery" : "ಬಟರಿ",
+                          badge: lang === "en" ? "Warm & Relaxed" : "ಆತ್ಮೀಯ",
+                          desc: lang === "en" ? "Smooth vocal delivery for fatigue-free listening" : "ದಣಿವು-ಮುಕ್ತ ಆಲಿಸುವಿಕೆ",
+                        },
+                        {
+                          id: "authoritative" as TtsStyle,
+                          name: lang === "en" ? "Authoritative" : "ಅಧಿಕೃತ",
+                          badge: lang === "en" ? "Command Briefing" : "ಕಮಾಂಡ್",
+                          desc: lang === "en" ? "Crisp, formal police command cadence" : "ಖಚಿತ ಕಮಾಂಡ್ ಟೋನ್",
+                        },
+                        {
+                          id: "calm" as TtsStyle,
+                          name: lang === "en" ? "Calm" : "ಶಾಂತ",
+                          badge: lang === "en" ? "Empathetic" : "ಸಹಾನುಭೂತಿ",
+                          desc: lang === "en" ? "Steady, reassuring cadence for sensitive cases" : "ಸ್ಥಿರ ಶೈಲಿ",
+                        },
+                        {
+                          id: "urgent" as TtsStyle,
+                          name: lang === "en" ? "Urgent" : "ತುರ್ತು",
+                          badge: lang === "en" ? "Tactical Dispatch" : "ಕ್ಷಿಪ್ರ",
+                          desc: lang === "en" ? "Fast-paced tactical briefing and alerts" : "ವೇಗದ ಬ್ರೀಫಿಂಗ್",
+                        },
+                      ].map((p) => {
+                        const isSelected = activeLangConfig.style === p.id;
+                        return (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => {
+                              setLanguageVoiceConfig(audioConfigLang, { style: p.id });
+                            }}
+                            className={`p-2.5 rounded-xl border text-left transition-all cursor-pointer flex flex-col justify-between ${
+                              isSelected
+                                ? "border-[#C79A4E] bg-[#C79A4E]/10 ring-1 ring-[#C79A4E]/40"
+                                : "border-stone-800 bg-stone-950/40 hover:border-stone-700"
+                            }`}
+                          >
+                            <div className="flex items-center justify-between w-full">
+                              <span className={`text-[11px] font-bold ${isSelected ? "text-[#C79A4E]" : "text-stone-200"}`}>
+                                {p.name}
+                              </span>
+                              <span className="text-[8.5px] font-mono px-1.5 py-0.5 rounded bg-stone-900 border border-stone-800 text-stone-400">
+                                {p.badge}
+                              </span>
+                            </div>
+                            <p className="text-[9.5px] text-stone-500 leading-snug mt-1">{p.desc}</p>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
-                  <div className="space-y-1.5">
-                    <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
-                      {lang === "en" ? "Neural Speaker" : "ನ್ಯೂರಲ್ ಸ್ಪೀಕರ್"}
-                    </label>
-                    <div className="flex rounded-lg border border-stone-800 bg-stone-950/50 p-1 gap-1">
-                      {(speakersByLang[ttsSettings.language] || speakersByLang.en).map((spk) => (
-                        <button
-                          key={spk.id}
-                          type="button"
-                          onClick={() => setTtsSettings({ voice: spk.id })}
-                          className={`flex-1 py-1 text-center text-[10.5px] font-mono font-bold rounded-md transition-all cursor-pointer ${
-                            ttsSettings.voice === spk.id ? "bg-[#C79A4E] text-stone-950" : "text-stone-400 hover:text-stone-200 hover:bg-stone-900"
-                          }`}
-                          title={spk.gender}
-                        >
-                          {spk.name}
-                        </button>
-                      ))}
+
+                  {/* Speed & Neural Speaker for Active Language */}
+                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-stone-850">
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
+                        {lang === "en" ? `Playback Speed (${audioConfigLang.toUpperCase()})` : `ಪ್ಲೇಬ್ಯಾಕ್ ವೇಗ (${audioConfigLang.toUpperCase()})`}
+                      </label>
+                      <div className="flex rounded-lg border border-stone-800 bg-stone-950/50 p-1 gap-1">
+                        {[
+                          { id: "slower" as TtsSpeed, label: "0.85x" },
+                          { id: "normal" as TtsSpeed, label: "1.0x" },
+                          { id: "faster" as TtsSpeed, label: "1.25x" },
+                        ].map((spd) => {
+                          const isSelected = activeLangConfig.speed === spd.id;
+                          return (
+                            <button
+                              key={spd.id}
+                              type="button"
+                              onClick={() => setLanguageVoiceConfig(audioConfigLang, { speed: spd.id })}
+                              className={`flex-1 py-1 text-center text-[10.5px] font-mono font-bold rounded-md transition-all cursor-pointer ${
+                                isSelected ? "bg-[#C79A4E] text-stone-950" : "text-stone-400 hover:text-stone-200 hover:bg-stone-900"
+                              }`}
+                            >
+                              {spd.label}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
+
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-stone-400 uppercase font-mono tracking-wider block">
+                        {lang === "en" ? `Neural Speaker (${audioConfigLang.toUpperCase()})` : `ನ್ಯೂರಲ್ ಸ್ಪೀಕರ್ (${audioConfigLang.toUpperCase()})`}
+                      </label>
+                      <div className="flex rounded-lg border border-stone-800 bg-stone-950/50 p-1 gap-1">
+                        {(speakersByLang[audioConfigLang] || speakersByLang.en).map((spk) => {
+                          const isSelected = activeLangConfig.voice === spk.id;
+                          return (
+                            <button
+                              key={spk.id}
+                              type="button"
+                              onClick={() => setLanguageVoiceConfig(audioConfigLang, { voice: spk.id })}
+                              className={`flex-1 py-1 text-center text-[10.5px] font-mono font-bold rounded-md transition-all cursor-pointer ${
+                                isSelected ? "bg-[#C79A4E] text-stone-950" : "text-stone-400 hover:text-stone-200 hover:bg-stone-900"
+                              }`}
+                              title={spk.gender}
+                            >
+                              {spk.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Dual Configuration Status Tag */}
+                  <div className="pt-2 border-t border-stone-850/80 flex items-center justify-between text-[10px] font-mono text-stone-400">
+                    <div className="flex items-center gap-1.5">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                      <span>
+                        {lang === "en"
+                          ? `Auto-Saved for ${audioConfigLang === "en" ? "English" : "Kannada"}`
+                          : `${audioConfigLang === "en" ? "ಇಂಗ್ಲಿಷ್" : "ಕನ್ನಡ"} ಉಳಿಸಲಾಗಿದೆ`}
+                      </span>
+                    </div>
+                    <span className="text-stone-400">
+                      Active during chat queries
+                    </span>
                   </div>
                 </div>
+
 
                 {/* Wake-Word Toggle Switch */}
                 <div className="pt-3 border-t border-stone-850 flex items-center justify-between gap-3">
@@ -1654,10 +1796,12 @@ export const SettingsScreen: React.FC<SettingsScreenProps> = ({ onClose }) => {
                     )}
                     <span>
                       {isPreviewLoading
-                        ? lang === "en" ? "Synthesizing..." : "ಸಂಶ್ಲೇಷಿಸಲಾಗುತ್ತಿದೆ..."
+                        ? (lang === "en" ? `Synthesizing ${audioConfigLang.toUpperCase()}...` : `${audioConfigLang.toUpperCase()} ಸಂಶ್ಲೇಷಿಸಲಾಗುತ್ತಿದೆ...`)
                         : isPlayingPreview
-                        ? lang === "en" ? "Stop Preview" : "ನಿಲ್ಲಿಸಿ"
-                        : lang === "en" ? "Test Voice Synthesis" : "ಧ್ವನಿ ಪರೀಕ್ಷೆ"}
+                        ? (lang === "en" ? "Stop Preview" : "ನಿಲ್ಲಿಸಿ")
+                        : (lang === "en"
+                            ? `Test ${audioConfigLang === "en" ? "English" : "Kannada"} Voice (${activeLangConfig.voice})`
+                            : `${audioConfigLang === "en" ? "ಇಂಗ್ಲಿಷ್" : "ಕನ್ನಡ"} ಧ್ವನಿ ಪರೀಕ್ಷೆ (${activeLangConfig.voice})`)}
                     </span>
                   </button>
                   {isPlayingPreview && (
