@@ -4309,6 +4309,33 @@ class VajraAgentLoop(CognitiveBrainMixin):
             }
             logger.info(f"[BNSS_SENTINEL] Active remand deadline alert injected for unit {user_unit_id}: {alert_msg}")
 
+        # Sub-3s Query Acceleration: Direct Operational Fast-Path (Hotspots, Trends, Crime Types)
+        direct_fast_path = check_fast_path_intent(officer_query, get_real_districts())
+        if direct_fast_path and answer_mode != "dossier":
+            _tool = direct_fast_path.get("tool")
+            _params = direct_fast_path.get("parameters") or {}
+            _progress(f"Running {_tool} across CCTNS telemetry...")
+            _exec_res = self._execute_tool(_tool, _params, employee_id, session_id, user_unit_id)
+            _data = _exec_res.get("data") or {}
+            _text = _exec_res.get("text_result") or _exec_res.get("text") or f"Executed {_tool} successfully."
+            _rtype = _exec_res.get("response_type") or ("map" if "hotspot" in _tool else "text")
+            _cits = _exec_res.get("citations") or [{"type": "CCTNS Spatial Engine", "id": _params.get("district", "Statewide"), "details": "Direct sub-3s analytical execution"}]
+            context = session_memory.get_session_context(session_id)
+            history = context.get("messages", [])
+            history.append({"role": "user", "content": officer_query})
+            history.append({"role": "assistant", "content": _text})
+            context["messages"] = history
+            session_memory.update_session_context(session_id, context)
+            self._write_audit_log(employee_id, f"Fast-Path {_tool}", _params.get("district", ""), officer_query, _text[:200], session_id)
+            return {
+                "text": _text,
+                "response_type": _rtype,
+                "data": _data,
+                "citations": _cits,
+                "is_simulated": False,
+                "simulated_reason": ""
+            }
+
         # Track 1: Dual-Gate Lexical Token-Budget & Domain Entity Guard
         is_pure_conversational, fast_path_type, detected_salutation = self.classify_hybrid_intent(officer_query)
         self._current_detected_salutation = detected_salutation if not is_pure_conversational else None
