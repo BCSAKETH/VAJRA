@@ -218,12 +218,41 @@ _FAST_PATH_PATTERNS = [
 
 
 def check_fast_path_intent(query: str, real_districts: List[str]) -> Optional[Dict[str, Any]]:
-    cleaned = re.sub(r"[?!.,]+$", "", (query or "").strip())
-    if not cleaned or re.search(r"\b(and|compare|vs|versus|while|between|also)\b", cleaned, re.IGNORECASE):
+    c_raw = (query or "").strip()
+    cleaned = re.sub(r"[?!.,]+$", "", c_raw)
+    if not cleaned:
         return None
     
-    # Fast path for similarity / MO / syndicate searches and quick chips
     c_low = cleaned.lower()
+
+    # Fast path for suspect network, associates, criminal history, and risk
+    # Directly routes in < 1.5s bypassing upstream LLM timeouts for queries like:
+    # "Detailed case history and associates of suspect Upma Ramesh (Blade Upma)"
+    if any(k in c_low for k in ("associates of", "network of", "syndicate of", "gang of", "case history and associates", "history and associates", "associates and history")):
+        m = re.search(r"(?:associates\s+of\s+(?:suspect\s+)?|network\s+(?:of\s+)?(?:suspect\s+)?|syndicate\s+(?:of\s+)?(?:suspect\s+)?|gang\s+(?:of\s+)?(?:suspect\s+)?|case\s+history\s+and\s+associates\s+of\s+(?:suspect\s+)?|history\s+and\s+associates\s+of\s+(?:suspect\s+)?)(?P<name>[a-zA-Z\s]+)", c_raw, re.IGNORECASE)
+        if m:
+            s_name = m.group("name").strip()
+            s_name = re.split(r"[\(\[\{]", s_name)[0].strip()
+            if len(s_name) >= 2:
+                return {"tool": "syndicate_graph", "parameters": {"suspect_name": s_name}}
+
+    if any(k in c_low for k in ("risk of suspect", "recidivism of suspect", "recidivism risk of", "offender risk for", "risk score for")):
+        m = re.search(r"(?:risk\s+of\s+(?:suspect\s+)?|recidivism\s+(?:risk\s+)?(?:of\s+)?(?:suspect\s+)?|offender\s+risk\s+for\s+(?:suspect\s+)?|risk\s+score\s+for\s+(?:suspect\s+)?)(?P<name>[a-zA-Z\s]+)", c_raw, re.IGNORECASE)
+        if m:
+            s_name = m.group("name").strip()
+            s_name = re.split(r"[\(\[\{]", s_name)[0].strip()
+            if len(s_name) >= 2:
+                return {"tool": "get_offender_risk", "parameters": {"suspect_name": s_name}}
+
+    if any(k in c_low for k in ("dossier of suspect", "full report on suspect", "detailed dossier for")):
+        m = re.search(r"(?:dossier\s+of\s+(?:suspect\s+)?|full\s+report\s+on\s+(?:suspect\s+)?|detailed\s+dossier\s+for\s+(?:suspect\s+)?)(?P<name>[a-zA-Z\s]+)", c_raw, re.IGNORECASE)
+        if m:
+            s_name = m.group("name").strip()
+            s_name = re.split(r"[\(\[\{]", s_name)[0].strip()
+            if len(s_name) >= 2:
+                return {"tool": "generate_full_report", "parameters": {"suspect_name": s_name}}
+
+    # Fast path for similarity / MO / syndicate searches and quick chips
     if "stolen" in c_low and ("wheel" in c_low or "bike" in c_low or "vehicle" in c_low or "cross-match" in c_low):
         return {"tool": "find_similar_cases", "parameters": {"query": "stolen two-wheeler motorcycle getaway vehicles"}}
     if "hawala" in c_low or "financial trail" in c_low or "mule account" in c_low:
@@ -233,10 +262,14 @@ def check_fast_path_intent(query: str, real_districts: List[str]) -> Optional[Di
     if any(k in c_low for k in ("similar syndicates", "similar gang", "similar cases", "similar crimes", "similar mo")):
         return {"tool": "find_similar_cases", "parameters": {"query": cleaned}}
 
+    # Guard for district-level patterns: multi-district comparison queries should fall through to full agent loop
+    if re.search(r"\b(compare|vs|versus|while|between)\b", cleaned, re.IGNORECASE):
+        return None
+
     # Strip conversational filler prefix so natural phrasings match instantly
-    cleaned = re.sub(r"^(?:what\s+(?:are|is)\s+(?:the\s+)?|tell\s+me\s+(?:about\s+)?(?:the\s+)?|can\s+you\s+(?:show|give|tell|plot|map)\s+(?:me\s+)?(?:the\s+)?|please\s+(?:show|give|tell\s+me\s+|plot\s+|map\s+)?(?:the\s+)?|give\s+me\s+(?:the\s+)?|show\s+(?:me\s+)?(?:the\s+)?|plot\s+(?:me\s+)?(?:the\s+)?|map\s+(?:me\s+)?(?:the\s+)?|display\s+(?:me\s+)?(?:the\s+)?|view\s+(?:the\s+)?|list\s+(?:the\s+)?|which\s+(?:are\s+)?(?:the\s+)?|what\s+are\s+)", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned_dist = re.sub(r"^(?:what\s+(?:are|is)\s+(?:the\s+)?|tell\s+me\s+(?:about\s+)?(?:the\s+)?|can\s+you\s+(?:show|give|tell|plot|map)\s+(?:me\s+)?(?:the\s+)?|please\s+(?:show|give|tell\s+me\s+|plot\s+|map\s+)?(?:the\s+)?|give\s+me\s+(?:the\s+)?|show\s+(?:me\s+)?(?:the\s+)?|plot\s+(?:me\s+)?(?:the\s+)?|map\s+(?:me\s+)?(?:the\s+)?|display\s+(?:me\s+)?(?:the\s+)?|view\s+(?:the\s+)?|list\s+(?:the\s+)?|which\s+(?:are\s+)?(?:the\s+)?|what\s+are\s+)", "", cleaned, flags=re.IGNORECASE).strip()
     for pattern, tool_name in _FAST_PATH_PATTERNS:
-        match = pattern.match(cleaned)
+        match = pattern.match(cleaned_dist)
         if match:
             raw_dist = match.group("district").strip()
             # Direct or colloquial alias resolution
@@ -1716,6 +1749,15 @@ class VajraAgentLoop(CognitiveBrainMixin):
             return (False, None, detected_salutation)
 
         # -------------------------------------------------------------
+        # GATE 1.5: Pure Humor / Witticism Fast-Path (< 0.1ms)
+        # If no domain verbs, entities, sections, or case numbers were detected,
+        # and joke / humor keywords are present, route instantly to conversational humor
+        # -------------------------------------------------------------
+        if re.search(r"\b(joke|jokes|funny|funner|funnier|humor|laugh|laughing|make me laugh|chutkule|chutkula|witticism|comedy|roast)\b", clean_text.lower()):
+            is_kn = bool(re.search(r"[\u0C80-\u0CFF]", clean_text)) or any(k in clean_text.lower() for k in ["samachara", "namaskara", "chutuk"])
+            return (True, "joke", detected_salutation)
+
+        # -------------------------------------------------------------
         # GATE 2: Residual Substantive Token Budgeting
         # -------------------------------------------------------------
         substantive_tokens = [t for t in tokens if t not in self._CONVERSATIONAL_TOKENS]
@@ -1975,6 +2017,30 @@ class VajraAgentLoop(CognitiveBrainMixin):
             reply_text = self._generate_dynamic_probe(is_kn)
             payload_type = "probe"
             audit_action = "System Probe Fast-Path"
+        elif fast_path_type == "joke":
+            officer_name = getattr(self, "resolved_officer_name", "Officer")
+            rank = getattr(self, "resolved_rank", "Officer")
+            salutation_str = f"{detected_salutation.capitalize()} " if detected_salutation else "Hello "
+            greeting_header = f"{salutation_str}{rank} {officer_name}! Colleague rapport active."
+
+            en_jokes = [
+                "Why did the police officer keep a pencil behind their ear? To quickly sketch out the crime scene before the evidence could run away! 👮‍♂️",
+                "Why did the detective bring a flashlight to bed? Because they always operate under cover! 🔦",
+                "Why was the computer shivering at the police station? Because someone left its Windows open during the night patrol! 💻",
+                "What kind of shoes do undercover officers wear? Sneakers! 👟",
+                "Why are police officers fantastic at basketball? Because they always know how to execute a full-court press! 🏀",
+            ]
+            kn_jokes = [
+                "ಪೊಲೀಸ್ ಅಧಿಕಾರಿ ಪೆನ್ಸಿಲ್ ಅನ್ನು ಕಿವಿಯ ಹಿಂದೆ ಏಕೆ ಇಟ್ಟುಕೊಂಡಿದ್ದರು? ಸಾಕ್ಷ್ಯಗಳು ಓಡಿಹೋಗುವ ಮುನ್ನವೇ ಅಪರಾಧ ಸ್ಥಳವನ್ನು ಬರೆಯಲು! 👮‍♂️",
+                "ಕಂಪ್ಯೂಟರ್ ಯಾಕೆ ಪೊಲೀಸ್ ಠಾಣೆಯಲ್ಲಿ ಚಳಿಗೆ ನಡುಗುತ್ತಿತ್ತು? ರಾತ್ರಿ ಗಸ್ತಿನ ವೇಳೆ ವಿಂಡೋಸ್ (Windows) ತೆರೆದೇ ಇಟ್ಟಿದ್ದರು! 💻",
+                "ಪತ್ತೇದಾರಿ ಕಂಬಳಿ ಹೊದ್ದು ಯಾಕೆ ಮಲಗಿದ್ದರು? ಯಾಕಂದ್ರೆ ಅವರು ಯಾವಾಗಲೂ ಅಂಡರ್‌ಕವರ್ (undercover) ತನಿಖೆಯಲ್ಲೇ ಇರ್ತಾರೆ! 🕵️‍♂️",
+            ]
+            chosen_joke = random.choice(kn_jokes) if is_kn else random.choice(en_jokes)
+            closing = "ಎಲ್ಲಾ ಸಿಸಿಟಿಎನ್‌ಎಸ್ ಡೇಟಾಬೇಸ್‌ಗಳು ಸಕ್ರಿಯವಾಗಿವೆ. ನಿಮ್ಮ ಮುಂದಿನ ತನಿಖೆಯ ವಿವರಗಳನ್ನು ಕೇಳಿ!" if is_kn else "All CCTNS analytical nodes are online and ready at your desk. How can I assist with your investigation today?"
+
+            reply_text = f"{greeting_header}\n\nHere is a quick investigative witticism for your shift:\n\n😄 **Investigative Witticism:**\n*{chosen_joke}*\n\n{closing}"
+            payload_type = "colleague_joke"
+            audit_action = "Humor Fast-Path"
         elif fast_path_type == "semantic_casual":
             station = getattr(self, "resolved_station", "KSP Station")
             officer_name = getattr(self, "resolved_officer_name", "Officer")
@@ -3419,7 +3485,11 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "council", "bank", "police", "court", "station", "stationery", "hospital",
             "university", "college", "school", "office", "headquarters", "division",
             "act", "acts", "bns", "ipc", "bnss", "bsa", "upi", "minor", "minors",
-            "joke", "jokes", "network", "networks", "gang", "gangs"
+            "joke", "jokes", "funny", "funner", "funnier", "witticism", "camaraderie",
+            "rapport", "colleague", "incident", "overview", "statutory", "compliance",
+            "evidentiary", "preservation", "remand", "limits", "briefing", "prompt",
+            "turn", "session", "message", "query", "response", "drop", "cadence",
+            "network", "networks", "gang", "gangs"
         }
 
         # 1. Direct operational suspect capture (handles lowercase e.g. "network of ramesh", "find network of ramesh ok")
@@ -3467,9 +3537,14 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 resolved_district = dist
                 break
 
-        # Resolve with fallback cache context
-        case_id = case_match.group(1) if case_match else context.get("last_case_id")
-        suspect = suspect_match if suspect_match else context.get("last_offender_id")
+        # Resolve with fallback cache context - STRICT ANAPHORA GUARD:
+        # Never inherit an accused suspect or case from prior turns unless the officer's
+        # current words explicitly use anaphoric pronouns or follow-up references ("he", "she", "this suspect", "the case").
+        # This completely prevents unrelated queries (e.g. jokes, greetings, district trends) from being hijacked by stale session entities!
+        has_person_anaphora = bool(re.search(r'\b(he|she|him|her|his|they|them|suspect|accused|offender|target|perpetrator|person|guy)\b', clean_query, re.IGNORECASE))
+        has_case_anaphora = bool(re.search(r'\b(this\s+case|the\s+case|same\s+case|this\s+fir|the\s+fir|same\s+fir|it)\b', clean_query, re.IGNORECASE))
+        case_id = case_match.group(1) if case_match else (context.get("last_case_id") if has_case_anaphora else None)
+        suspect = suspect_match if suspect_match else (context.get("last_offender_id") if has_person_anaphora else None)
         district = resolved_district if resolved_district else context.get("last_location")
 
         # Transliteration-tolerant correction: a suspect name freshly extracted
@@ -5593,7 +5668,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                             clean_cno = _c_match.group(0).strip() if _c_match else routing_query
                             fallback_decision = {"tool": "query_case", "parameters": {"case_no": clean_cno}}
                             fallback_label = "CCTNS Case Record Lookup"
-                        elif entities.get("suspect"):
+                        elif entities.get("suspect") and (entities.get("suspect_fresh") or any(w in _q_low_fallback.split() for w in ("he", "she", "him", "her", "his", "suspect", "accused", "network", "syndicate", "gang", "associate", "associates", "risk", "history"))):
                             s_name = entities["suspect"]
                             prior_was_network = any(
                                 "network" in str(h.get("content", "")).lower() or "syndicate" in str(h.get("content", "")).lower()
@@ -5832,6 +5907,9 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 if _fast_syn:
                     response_text = _fast_syn
                     logger.info(f"Sub-3s deterministic synthesis succeeded for {last_tool_name} via 28-block PNLG.")
+                elif last_tool_text_result and last_tool_name in ("query_hotspots", "query_graph_network", "syndicate_graph", "detect_financial_ring", "get_offender_risk"):
+                    response_text = last_tool_text_result
+                    logger.info(f"[TOOL_DIRECT] Preserved grounded text_result directly for {last_tool_name}")
                 else:
                     # Track 20: Dual-Brain High-Speed Presentation Synthesis via Catalyst QuickML Qwen MoE 3B (@ 102 tok/s)
                     try:

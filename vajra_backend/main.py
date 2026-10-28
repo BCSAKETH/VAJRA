@@ -3859,7 +3859,7 @@ def _fit_json(obj: Any, cap: int) -> str:
     # repeat-offender roster, then MO profile), keeping the small core risk/
     # SHAP fields intact -- same "trim what's dispensable" pattern as the
     # financial_transactions/edges/news handling above.
-    if "risk_score" in d or "network" in d or "nodes" in d:
+    if "panels" not in d and ("risk_score" in d or "network" in d or "nodes" in d):
         # Before dropping network, first compact network nodes and edges to essential fields
         _net = d.get("network") if isinstance(d.get("network"), dict) else None
         if _net and _net.get("nodes"):
@@ -3879,7 +3879,7 @@ def _fit_json(obj: Any, cap: int) -> str:
             if len(s) <= cap:
                 return s
 
-        for _key in ("panels", "_zcql_provenance", "repeat_offender_context", "mo_profile"):
+        for _key in ("_zcql_provenance", "repeat_offender_context", "mo_profile"):
             if d.get(_key):
                 d = dict(d)
                 d.pop(_key, None)
