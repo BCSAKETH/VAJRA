@@ -12867,10 +12867,11 @@ async def review_district_access(request_id: str, payload: Dict[str, Any] = Body
     justified."""
     if getattr(request.state, "role_tier", "officer") != "supervisor":
         raise HTTPException(status_code=403, detail="Supervisor access only.")
-    meta = mark_district_access_reviewed(request_id, request.state.kgid, revoke=bool(payload.get("revoke")))
+    revoke_reason = payload.get("reason") or payload.get("revoke_reason")
+    meta = mark_district_access_reviewed(request_id, request.state.kgid, revoke=bool(payload.get("revoke")), revoke_reason=revoke_reason)
     if not meta:
         raise HTTPException(status_code=404, detail="Access request not found.")
-    return {"status": meta.get("status"), "reviewed": True, "revoked": meta.get("status") == "revoked"}
+    return {"status": meta.get("status"), "reviewed": True, "revoked": meta.get("status") == "revoked", "revoke_reason": meta.get("revoke_reason")}
 
 
 @app.get("/api/district-access/pending")
@@ -12986,6 +12987,8 @@ async def approvals_history(request: Request, type: str = "all", status: str = "
                             "subject": m.get("summary") or ", ".join(m.get("reasons") or []),
                             "status": m.get("status"), "approver_badge": m.get("approver_badge"),
                             "decided_at": m.get("decided_at"), "created_at": m.get("created_at"),
+                            "reason": m.get("reason") or m.get("justification") or m.get("summary") or ", ".join(m.get("reasons") or []),
+                            "supervisor_notes": m.get("notes") or m.get("supervisor_notes") or m.get("revoke_reason"),
                         })
             except Exception as e:
                 logger.warning(f"approvals_history export: {e}")
@@ -13009,6 +13012,8 @@ async def approvals_history(request: Request, type: str = "all", status: str = "
                             "status": m.get("status"), "approver_badge": m.get("approver_badge"),
                             "decided_at": m.get("decided_at"), "created_at": m.get("created_at"),
                             "grant_expires_at": m.get("grant_expires_at"),
+                            "reason": m.get("reason") or m.get("justification"),
+                            "supervisor_notes": m.get("notes") or m.get("supervisor_notes") or m.get("revoke_reason"),
                         })
             except Exception as e:
                 logger.warning(f"approvals_history pocso: {e}")
@@ -13032,6 +13037,8 @@ async def approvals_history(request: Request, type: str = "all", status: str = "
                             "status": m.get("status"), "approver_badge": m.get("approver_badge"),
                             "decided_at": m.get("decided_at"), "created_at": m.get("created_at"),
                             "grant_expires_at": m.get("grant_expires_at"),
+                            "reason": m.get("reason") or m.get("justification"),
+                            "supervisor_notes": m.get("notes") or m.get("supervisor_notes") or m.get("revoke_reason"),
                         })
             except Exception as e:
                 logger.warning(f"approvals_history district: {e}")

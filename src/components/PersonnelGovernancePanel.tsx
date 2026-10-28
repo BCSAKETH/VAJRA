@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import {
   UserPlus, ShieldBan, ShieldCheck, UserCheck, RefreshCw, KeyRound,
   AlertTriangle, Trash2, X, Lock, CheckCircle2, UserX, Loader2, Phone, Mail,
-  MapPin, Building2, ArrowRightLeft
+  MapPin, Building2, ArrowRightLeft, ArrowLeft
 } from "lucide-react";
 import { useApp } from "../AppContext";
 import { API_BASE } from "../config";
@@ -67,7 +67,11 @@ export const DEFAULT_POLICE_STATIONS: PoliceStationItem[] = [
   { unit_id: 16, name: "Vijayanagar PS", district_id: 16 }
 ].sort((a, b) => a.name.localeCompare(b.name));
 
-export const PersonnelGovernancePanel: React.FC = () => {
+export interface PersonnelGovernancePanelProps {
+  onBack?: () => void;
+}
+
+export const PersonnelGovernancePanel: React.FC<PersonnelGovernancePanelProps> = ({ onBack }) => {
   const { lang, addToast } = useApp();
   const [officers, setOfficers] = useState<OfficerRosterItem[]>([]);
   const [policeStations, setPoliceStations] = useState<PoliceStationItem[]>(DEFAULT_POLICE_STATIONS);
@@ -342,7 +346,20 @@ export const PersonnelGovernancePanel: React.FC = () => {
   };
 
   return (
-    <div className="glass-card p-5 border border-stone-850 space-y-4">
+    <div className="space-y-4">
+      {onBack && (
+        <div className="flex items-center justify-between pb-1">
+          <button
+            onClick={onBack}
+            className="inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-stone-800 bg-stone-900/80 hover:bg-stone-850 text-stone-200 hover:text-white text-xs font-mono font-bold transition-all cursor-pointer shadow-md group"
+          >
+            <ArrowLeft className="w-4 h-4 text-[#C79A4E] group-hover:-translate-x-0.5 transition-transform" />
+            <span>{lang === "en" ? "← Back to Supervisor Dashboard" : "← ಮೇಲ್ವಿಚಾರಕರ ಡ್ಯಾಶ್‌ಬೋರ್ಡ್‌ಗೆ ಹಿಂತಿರುಗಿ"}</span>
+          </button>
+        </div>
+      )}
+
+      <div className="glass-card p-5 border border-stone-850 space-y-4">
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-stone-850 pb-3">
         <div className="flex items-center gap-2">
@@ -844,6 +861,7 @@ export const PersonnelGovernancePanel: React.FC = () => {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 };

@@ -1352,7 +1352,7 @@ def create_emergency_district_access(requester_badge: str, requester_name: str,
     return meta
 
 
-def mark_district_access_reviewed(request_id: str, reviewer_badge: str, revoke: bool = False) -> Optional[Dict[str, Any]]:
+def mark_district_access_reviewed(request_id: str, reviewer_badge: str, revoke: bool = False, revoke_reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """Supervisor post-hoc review of an emergency grant: acknowledges it, and
     optionally revokes the still-active grant immediately (status ->
     'revoked', which has_active_district_access_grant no longer treats as
@@ -1366,6 +1366,8 @@ def mark_district_access_reviewed(request_id: str, reviewer_badge: str, revoke: 
     meta["reviewed_at"] = datetime.utcnow().isoformat()
     if revoke:
         meta["status"] = "revoked"
+        if revoke_reason:
+            meta["revoke_reason"] = str(revoke_reason).strip()
     try:
         zcql_update_row("ProactiveAlerts", {"ROWID": row["rowid"], "AlertMessage": json.dumps(meta)})
     except Exception as e:

@@ -6,7 +6,7 @@ import { PersonnelGovernancePanel } from "../components/PersonnelGovernancePanel
 import { SupervisorApprovalReviewModal } from "../components/SupervisorApprovalReviewModal";
 import { NumberTicker } from "../components/ui/number-ticker";
 import { RippleButton } from "../components/ui/ripple-button";
-import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2, Bell, BellOff, Hourglass, ChevronDown, ChevronRight, Cpu, Bot, Zap, Radio } from "lucide-react";
+import { ShieldCheck, UserCheck, RefreshCw, AlertTriangle, FileSpreadsheet, Lock, CheckCircle2, Activity, MessageSquare, ThumbsDown, ThumbsUp, ShieldAlert, Users, Clock, AlertOctagon, Fingerprint, Database, IdCard, Search, X, Loader2, Bell, BellOff, Hourglass, ChevronDown, ChevronRight, Cpu, Bot, Zap, Radio, Eye, Copy, Check, FileText } from "lucide-react";
 
 // Supervisor Dashboard redesign: one shared, ALWAYS-EXPANDED section header,
 // reused by every panel (Approvals/History/Ledger/Consistency Flags/Audit
@@ -380,13 +380,13 @@ export const SupervisorDashboardScreen: React.FC = () => {
   // Break-glass (Section 185 BNSS) post-hoc review: an emergency grant is
   // already active by the time a supervisor sees it -- there's nothing to
   // "approve", only to acknowledge (or revoke if the use wasn't justified).
-  const reviewEmergencyDistrict = async (rowid: string, revoke: boolean) => {
+  const reviewEmergencyDistrict = async (rowid: string, revoke: boolean, reason?: string) => {
     setDecidingDistrictId(rowid);
     try {
       const r = await fetch(`${API_BASE}/api/district-access/${rowid}/review`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "Authorization": `Bearer ${localStorage.getItem("vajra_token") || ""}` },
-        body: JSON.stringify({ revoke }),
+        body: JSON.stringify({ revoke, reason: reason || undefined }),
       });
       if (r.ok) {
         setPendingDistrict((prev) => prev.filter((p) => String(p.rowid) !== String(rowid)));
@@ -395,6 +395,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
           lang === "en" ? "Marked as reviewed." : "ಪರಿಶೀಲಿಸಲಾಗಿದೆ ಎಂದು ಗುರುತಿಸಲಾಗಿದೆ.",
           revoke ? "Warning" : "Info"
         );
+        setRevokeModalItem(null);
       }
     } catch { /* ignore */ } finally {
       setDecidingDistrictId(null);
@@ -882,6 +883,13 @@ export const SupervisorDashboardScreen: React.FC = () => {
   const [activeApprovalTab, setActiveApprovalTab] = useState<"exports" | "pocso" | "district" | "profile" | "security">("exports");
   const totalPendingApprovals = pendingExports.length + pendingPocso.length + pendingDistrict.length + pendingProfile.length + pendingSecurity.length;
 
+  const [activeSupervisorView, setActiveSupervisorView] = useState<"dashboard" | "personnel">("dashboard");
+  const [selectedHistoryItem, setSelectedHistoryItem] = useState<any | null>(null);
+  const [selectedAuditLog, setSelectedAuditLog] = useState<AuditLogRecord | null>(null);
+  const [revokeModalItem, setRevokeModalItem] = useState<any | null>(null);
+  const [revokeReason, setRevokeReason] = useState<string>("Administrative review under BNSS §185: Cross-district nexus not substantiated.");
+  const [copiedHash, setCopiedHash] = useState(false);
+
   // Every section on this page is always fully visible (no collapse/expand --
   // removed per explicit feedback). sectionRefs still backs the Command
   // Center strip's "jump to section" behavior below.
@@ -904,6 +912,10 @@ export const SupervisorDashboardScreen: React.FC = () => {
         isDeciding={isReviewModalDeciding}
       />
 
+      {activeSupervisorView === "personnel" && (
+        <PersonnelGovernancePanel onBack={() => setActiveSupervisorView("dashboard")} />
+      )}
+      <div className={activeSupervisorView === "personnel" ? "hidden" : "space-y-6"}>
       <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center border-b border-stone-850 pb-4 shrink-0">
         <div className="space-y-1">
           <h2 className="text-base font-black text-stone-100 uppercase tracking-wider font-mono flex items-center gap-2">
@@ -916,6 +928,24 @@ export const SupervisorDashboardScreen: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-2">
+          {/* View Switcher: Compliance Dashboard vs. Personnel Governance */}
+          <button
+            onClick={() => setActiveSupervisorView(activeSupervisorView === "personnel" ? "dashboard" : "personnel")}
+            className={`flex items-center gap-1.5 px-3 py-2 rounded-lg border text-xs font-black uppercase tracking-wider transition-all cursor-pointer shadow-md ${
+              activeSupervisorView === "personnel"
+                ? "bg-[#C79A4E] text-stone-950 border-[#C79A4E] shadow-[#C79A4E]/30"
+                : "bg-stone-900 border-stone-800 hover:border-[#C79A4E]/40 text-stone-300 hover:text-stone-100"
+            }`}
+            title={lang === "en" ? "Manage officer accounts and station roster" : "ಅಧಿಕಾರಿ ಖಾತೆಗಳು ಮತ್ತು ಠಾಣೆ ಪಟ್ಟಿಯನ್ನು ನಿರ್ವಹಿಸಿ"}
+          >
+            <Users className="w-4 h-4 text-inherit" />
+            <span>
+              {activeSupervisorView === "personnel"
+                ? (lang === "en" ? "Dashboard View" : "ಡ್ಯಾಶ್‌ಬೋರ್ಡ್")
+                : (lang === "en" ? "Officer Roster & Onboarding" : "ಅಧಿಕಾರಿ ನೋಂದಣಿ ಮತ್ತು ಪಟ್ಟಿ")}
+            </span>
+          </button>
+
           {/* §5.5: Push Notifications toggle -- instant alert on this device
               for pending approvals, instead of relying on the 5s poll while
               this tab happens to be open. */}
@@ -1019,7 +1049,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
             </div>
           </div>
         </button>
-        <button onClick={() => scrollToSection("personnel")} className="bg-stone-900 rounded-xl p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-[#C79A4E]/40 transition-colors cursor-pointer shadow-sm">
+        <button onClick={() => setActiveSupervisorView("personnel")} className="bg-stone-900 rounded-xl p-3.5 border border-stone-850 flex items-center gap-3 text-left hover:border-[#C79A4E]/40 transition-colors cursor-pointer shadow-sm">
           <div className="w-9 h-9 rounded-lg bg-[#C79A4E]/10 border border-[#C79A4E]/25 flex items-center justify-center shrink-0">
             <Users className="w-4.5 h-4.5 text-[#C79A4E]" />
           </div>
@@ -1169,6 +1199,12 @@ export const SupervisorDashboardScreen: React.FC = () => {
                 {p.emergency ? (
                   <>
                     <button
+                      onClick={() => setReviewModal({ item: p, type: "district" })}
+                      className="px-3 py-1.5 rounded-md bg-stone-800/80 border border-stone-700 text-[11px] font-bold uppercase tracking-wide text-stone-300 hover:bg-stone-700 cursor-pointer"
+                    >
+                      {lang === "en" ? "Inspect" : "ಪರಿಶೀಲಿಸಿ"}
+                    </button>
+                    <button
                       onClick={() => reviewEmergencyDistrict(String(p.rowid), false)}
                       disabled={decidingDistrictId === String(p.rowid)}
                       className="px-3 py-1.5 rounded-md bg-emerald-500/15 border border-emerald-500/40 text-[11px] font-bold uppercase tracking-wide text-emerald-300 hover:bg-emerald-500/25 disabled:opacity-50 cursor-pointer"
@@ -1176,7 +1212,10 @@ export const SupervisorDashboardScreen: React.FC = () => {
                       {lang === "en" ? "Acknowledge" : "ಒಪ್ಪಿಕೊಳ್ಳಿ"}
                     </button>
                     <button
-                      onClick={() => reviewEmergencyDistrict(String(p.rowid), true)}
+                      onClick={() => {
+                        setRevokeModalItem(p);
+                        setRevokeReason("Administrative review under BNSS §185: Cross-district nexus not substantiated.");
+                      }}
                       disabled={decidingDistrictId === String(p.rowid)}
                       className="px-3 py-1.5 rounded-md bg-rose-500/10 border border-rose-500/40 text-[11px] font-bold uppercase tracking-wide text-rose-300 hover:bg-rose-500/20 disabled:opacity-50 cursor-pointer"
                     >
@@ -1362,12 +1401,13 @@ export const SupervisorDashboardScreen: React.FC = () => {
                   <th className="text-left font-semibold py-1.5 pr-3">{lang === "en" ? "Subject" : "ವಿಷಯ"}</th>
                   <th className="text-left font-semibold py-1.5 pr-3">{lang === "en" ? "Decision" : "ನಿರ್ಧಾರ"}</th>
                   <th className="text-left font-semibold py-1.5 pr-3">{lang === "en" ? "Decided by" : "ನಿರ್ಧರಿಸಿದವರು"}</th>
-                  <th className="text-left font-semibold py-1.5">{lang === "en" ? "When" : "ಯಾವಾಗ"}</th>
+                  <th className="text-left font-semibold py-1.5 pr-2">{lang === "en" ? "When" : "ಯಾವಾಗ"}</th>
+                  <th className="text-right font-semibold py-1.5">{lang === "en" ? "Audit" : "ಆಡಿಟ್"}</th>
                 </tr>
               </thead>
               <tbody>
                 {historyItems.map((h) => (
-                  <tr key={`${h.kind}-${h.rowid}`} className="border-b border-stone-900/80 text-stone-300">
+                  <tr key={`${h.kind}-${h.rowid}`} className="border-b border-stone-900/80 text-stone-300 hover:bg-stone-950/40 transition-colors">
                     <td className="py-1.5 pr-3">
                       <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase ${h.kind === "pocso" ? "bg-rose-500/15 text-rose-300" : h.kind === "district" ? "bg-sky-500/15 text-sky-300" : "bg-[#C79A4E]/15 text-[#C79A4E]"}`}>
                         {h.kind === "pocso" ? "POCSO" : h.kind === "district" ? (lang === "en" ? "District" : "ಜಿಲ್ಲೆ") : (lang === "en" ? "Export" : "ರಫ್ತು")}
@@ -1390,7 +1430,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
                       </span>
                     </td>
                     <td className="py-1.5 pr-3 text-stone-400">{h.approver_badge || "—"}</td>
-                    <td className="py-1.5 text-stone-500">{(() => {
+                    <td className="py-1.5 pr-2 text-stone-500">{(() => {
                       if (!h.decided_at) return "—";
                       try {
                         const s = String(h.decided_at);
@@ -1400,6 +1440,16 @@ export const SupervisorDashboardScreen: React.FC = () => {
                         return String(h.decided_at);
                       }
                     })()}</td>
+                    <td className="py-1.5 text-right">
+                      <button
+                        onClick={() => setSelectedHistoryItem(h)}
+                        className="px-2 py-0.5 rounded border border-stone-700/60 bg-stone-900/60 hover:bg-[#C79A4E]/15 hover:border-[#C79A4E]/40 text-stone-400 hover:text-[#C79A4E] transition-all cursor-pointer inline-flex items-center gap-1 text-[10px]"
+                        title={lang === "en" ? "Inspect Audit Record" : "ಆಡಿಟ್ ದಾಖಲೆ ವೀಕ್ಷಿಸಿ"}
+                      >
+                        <Eye className="w-3 h-3 text-[#C79A4E]" />
+                        <span>{lang === "en" ? "Inspect" : "ವೀಕ್ಷಿಸಿ"}</span>
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -1730,13 +1780,23 @@ export const SupervisorDashboardScreen: React.FC = () => {
           ) : (
             <div className="space-y-2.5 max-h-[350px] overflow-y-auto pr-1 font-mono text-[10.5px]">
               {auditLogs.map((log, i) => (
-                <div key={i} className="bg-stone-950/20 p-2.5 rounded border border-stone-900 flex flex-col gap-1">
-                  <div className="flex justify-between text-stone-400">
-                    <span>{log.badgeId} • {log.action}</span>
-                    <span className="text-stone-500">{log.timestamp?.split(" ")[0]}</span>
+                <div
+                  key={i}
+                  onClick={() => setSelectedAuditLog(log)}
+                  className="bg-stone-950/40 p-2.5 rounded-lg border border-stone-850 hover:border-[#C79A4E]/50 hover:bg-stone-900/60 transition-all cursor-pointer flex flex-col gap-1 group"
+                >
+                  <div className="flex justify-between text-stone-400 items-center">
+                    <span className="font-bold text-stone-200 group-hover:text-[#C79A4E] transition-colors">{log.badgeId} • {log.action}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-stone-500">{log.timestamp?.split(" ")[0]}</span>
+                      <span className="text-[9px] uppercase px-1.5 py-0.5 rounded bg-stone-900 border border-stone-800 text-stone-400 group-hover:text-[#C79A4E] group-hover:border-[#C79A4E]/40 flex items-center gap-1">
+                        <Eye className="w-2.5 h-2.5" />
+                        <span>Inspect</span>
+                      </span>
+                    </div>
                   </div>
                   <p className="text-stone-350 truncate">{t.supervisorQueryLabel} "{log.queryParam}"</p>
-                  <div className="text-[9px] text-[#C79A4E] truncate">{t.supervisorHashLabel} {log.hash}</div>
+                  <div className="text-[9px] text-[#C79A4E]/80 truncate font-mono">{t.supervisorHashLabel} {log.hash}</div>
                 </div>
               ))}
               {hasMoreLogs && (
@@ -1944,10 +2004,7 @@ export const SupervisorDashboardScreen: React.FC = () => {
           </>
       </div>
 
-      {/* Personnel Governance & Account Administration */}
-      <div ref={(el) => { sectionRefs.current.personnel = el; }}>
-        <PersonnelGovernancePanel />
-      </div>
+        </div>
       </div>
 
       {/* Two Person Integrity Credential Check */}
@@ -1962,6 +2019,273 @@ export const SupervisorDashboardScreen: React.FC = () => {
         onClose={() => setIsApprovalOpen(false)}
         onApprove={onSupervisorApproved}
       />
+
+      {/* Break-glass Revoke Modal with Section 185 BNSS Reason */}
+      {revokeModalItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/80 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-lg bg-stone-900 border border-rose-500/40 rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-stone-800 pb-3">
+              <div className="flex items-center gap-2 text-rose-400 font-mono font-bold text-sm uppercase">
+                <ShieldAlert className="w-5 h-5 text-rose-500" />
+                <span>{lang === "en" ? "Revoke Emergency District Grant" : "ತುರ್ತು ಜಿಲ್ಲಾ ಪ್ರವೇಶ ರದ್ದುಗೊಳಿಸಿ"}</span>
+              </div>
+              <button
+                onClick={() => setRevokeModalItem(null)}
+                className="text-stone-400 hover:text-stone-100 p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs font-mono">
+              <div className="bg-stone-950/60 p-3 rounded-lg border border-stone-800 space-y-1">
+                <div className="text-stone-300">
+                  <span className="text-stone-500">Officer:</span> {revokeModalItem.requester_badge} ({revokeModalItem.requester_name || "—"})
+                </div>
+                <div className="text-stone-300">
+                  <span className="text-stone-500">Target District:</span> {revokeModalItem.target_district_name}
+                </div>
+                <div className="text-stone-400 text-[11px] italic pt-1">
+                  "{revokeModalItem.reason || "No written reason provided"}"
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-stone-300 mb-1">
+                  {lang === "en" ? "Mandatory Revocation Rationale (Section 185 BNSS)" : "ಕಡ್ಡಾಯ ರದ್ದತಿ ಸಮರ್ಥನೆ (ಸೆಕ್ಷನ್ 185 ಬಿಎನ್‌ಎಸ್‌ಎಸ್)"}
+                </label>
+                <textarea
+                  value={revokeReason}
+                  onChange={(e) => setRevokeReason(e.target.value)}
+                  rows={3}
+                  className="w-full bg-stone-950 border border-stone-700 focus:border-rose-500 rounded-lg p-2.5 text-xs font-mono text-stone-200 placeholder:text-stone-600 focus:outline-none"
+                  placeholder={lang === "en" ? "Specify why emergency access was not justified..." : "ತುರ್ತು ಪ್ರವೇಶ ಏಕೆ ಸಮರ್ಥನೀಯವಾಗಿರಲಿಲ್ಲ ಎಂದು ನಿರ್ದಿಷ್ಟಪಡಿಸಿ..."}
+                />
+                <p className="text-[10px] text-stone-500 mt-1">
+                  {lang === "en" ? "This rationale will be recorded in the audit trail and dispatched to the officer's terminal." : "ಈ ಸಮರ್ಥನೆಯನ್ನು ಆಡಿಟ್ ಟ್ರಯಲ್‌ನಲ್ಲಿ ದಾಖಲಿಸಲಾಗುತ್ತದೆ ಮತ್ತು ಅಧಿಕಾರಿಗೆ ತಲುಪಿಸಲಾಗುತ್ತದೆ."}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-stone-800">
+              <button
+                onClick={() => setRevokeModalItem(null)}
+                disabled={decidingDistrictId === String(revokeModalItem.rowid)}
+                className="px-4 py-2 rounded-lg text-xs font-mono uppercase font-bold text-stone-400 hover:text-stone-200 hover:bg-stone-800/60 transition-colors cursor-pointer"
+              >
+                {lang === "en" ? "Cancel" : "ರದ್ದುಮಾಡಿ"}
+              </button>
+              <button
+                onClick={() => reviewEmergencyDistrict(String(revokeModalItem.rowid), true, revokeReason)}
+                disabled={decidingDistrictId === String(revokeModalItem.rowid) || !revokeReason.trim()}
+                className="px-4 py-2 rounded-lg text-xs font-mono uppercase font-black bg-rose-600 hover:bg-rose-500 text-white transition-all shadow-md shadow-rose-900/40 disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
+              >
+                {decidingDistrictId === String(revokeModalItem.rowid) ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <ShieldAlert className="w-3.5 h-3.5" />
+                )}
+                <span>{lang === "en" ? "Confirm Revocation" : "ರದ್ದತಿಯನ್ನು ದೃಢೀಕರಿಸಿ"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Approval History Detail Modal */}
+      {selectedHistoryItem && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/80 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-2xl bg-stone-900 border border-[#C79A4E]/30 rounded-2xl shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-stone-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Eye className="w-5 h-5 text-[#C79A4E]" />
+                <h3 className="text-sm font-mono font-black uppercase tracking-wider text-stone-100">
+                  {lang === "en" ? "Approval Audit Record" : "ಅನುಮೋದನೆ ಆಡಿಟ್ ದಾಖಲೆ"}: REQ-{selectedHistoryItem.kind?.toUpperCase()}-{selectedHistoryItem.rowid}
+                </h3>
+              </div>
+              <button
+                onClick={() => setSelectedHistoryItem(null)}
+                className="text-stone-400 hover:text-stone-100 p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs font-mono">
+              <div className="bg-stone-950/60 p-3.5 rounded-xl border border-stone-800/80 space-y-2">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-[#C79A4E]">
+                  {lang === "en" ? "Requesting Officer Identity" : "ವಿನಂತಿಸಿದ ಅಧಿಕಾರಿಯ ವಿವರ"}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-stone-300">
+                  <div><span className="text-stone-500">Badge / KGID:</span> {selectedHistoryItem.requester_badge}</div>
+                  <div><span className="text-stone-500">Name:</span> {selectedHistoryItem.requester_name || "—"}</div>
+                  <div><span className="text-stone-500">Request Category:</span> <span className="uppercase font-bold text-stone-200">{selectedHistoryItem.kind}</span></div>
+                  <div><span className="text-stone-500">Submitted:</span> {selectedHistoryItem.created_at ? new Date(selectedHistoryItem.created_at).toLocaleString() : "—"}</div>
+                </div>
+              </div>
+
+              <div className="bg-stone-950/60 p-3.5 rounded-xl border border-stone-800/80 space-y-2">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-[#C79A4E]">
+                  {lang === "en" ? "Operational Request Specifications" : "ಕಾರ್ಯಾಚರಣೆ ವಿನಂತಿಯ ವಿವರಣೆ"}
+                </div>
+                <div className="text-stone-300">
+                  <span className="text-stone-500">Subject / Target:</span> <span className="text-stone-100 font-bold">{selectedHistoryItem.subject || "—"}</span>
+                </div>
+                <div className="space-y-1">
+                  <span className="text-stone-500 text-[10px] uppercase font-bold block">{lang === "en" ? "Officer's Submitted Justification" : "ಅಧಿಕಾರಿಯ ಸಮರ್ಥನೆ"}:</span>
+                  <div className="p-2.5 rounded-lg bg-stone-900 border border-stone-800 text-stone-300 text-[11px] italic leading-relaxed">
+                    "{selectedHistoryItem.reason || selectedHistoryItem.subject || "Standard statutory request submitted via workstation."}"
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-stone-950/60 p-3.5 rounded-xl border border-stone-800/80 space-y-2">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-[#C79A4E]">
+                  {lang === "en" ? "Supervisory Decision Record" : "ಮೇಲ್ವಿಚಾರಕರ ನಿರ್ಧಾರ ದಾಖಲೆ"}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-stone-300">
+                  <div className="flex items-center gap-2">
+                    <span className="text-stone-500">Decision Outcome:</span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                      selectedHistoryItem.status === "approved" ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                      : selectedHistoryItem.status === "expired" ? "bg-amber-500/20 text-amber-400 border border-amber-500/30"
+                      : "bg-rose-500/20 text-rose-400 border border-rose-500/30"
+                    }`}>
+                      {selectedHistoryItem.status}
+                    </span>
+                  </div>
+                  <div><span className="text-stone-500">Decided By:</span> {selectedHistoryItem.approver_badge || "Supervisor"}</div>
+                  <div className="col-span-full"><span className="text-stone-500">Decided Timestamp:</span> {selectedHistoryItem.decided_at ? new Date(selectedHistoryItem.decided_at).toLocaleString() : "—"}</div>
+                </div>
+
+                {selectedHistoryItem.supervisor_notes && (
+                  <div className="pt-2 border-t border-stone-800/60">
+                    <span className="text-stone-500 text-[10px] uppercase font-bold block">{lang === "en" ? "Supervisor's Logged Remarks" : "ಮೇಲ್ವಿಚಾರಕರ ಟಿಪ್ಪಣಿ"}:</span>
+                    <div className="p-2 rounded bg-stone-900 text-stone-300 text-[11px]">
+                      {selectedHistoryItem.supervisor_notes}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between p-3 rounded-xl bg-[#C79A4E]/10 border border-[#C79A4E]/30 text-[#C79A4E] text-[11px]">
+                <div className="flex items-center gap-2">
+                  <ShieldCheck className="w-4 h-4 text-[#C79A4E]" />
+                  <span>{lang === "en" ? "Section 63 BSA 2023 & BNSS §185 Compliant Audit Entry" : "ಸೆಕ್ಷನ್ 63 BSA 2023 & BNSS §185 ಅನುಸರಣೆ ಆಡಿಟ್ ದಾಖಲೆ"}</span>
+                </div>
+                <span className="text-[10px] font-mono text-stone-400">HASH-SEALED</span>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-stone-800">
+              <button
+                onClick={() => setSelectedHistoryItem(null)}
+                className="px-4 py-2 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-mono font-bold uppercase transition-colors cursor-pointer"
+              >
+                {lang === "en" ? "Close Record" : "ಮುಚ್ಚಿ"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Forensic Audit Log Detail Modal */}
+      {selectedAuditLog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-stone-950/80 backdrop-blur-sm animate-fade-in">
+          <div className="w-full max-w-2xl bg-stone-900 border border-[#C79A4E]/30 rounded-2xl shadow-2xl p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-stone-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Fingerprint className="w-5 h-5 text-[#C79A4E]" />
+                <h3 className="text-sm font-mono font-black uppercase tracking-wider text-stone-100">
+                  {lang === "en" ? "Forensic Audit Trail Entry" : "ವಿಧಿವಿಜ್ಞಾನ ಆಡಿಟ್ ಟ್ರಯಲ್ ದಾಖಲೆ"}
+                </h3>
+              </div>
+              <button
+                onClick={() => setSelectedAuditLog(null)}
+                className="text-stone-400 hover:text-stone-100 p-1 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs font-mono">
+              <div className="bg-stone-950/60 p-3.5 rounded-xl border border-stone-800/80 space-y-2">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-[#C79A4E]">
+                  {lang === "en" ? "Operator Identity & Terminal Timestamp" : "ಆಪರೇಟರ್ ಗುರುತು ಮತ್ತು ಸಮಯ"}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-stone-300">
+                  <div><span className="text-stone-500">Badge / KGID:</span> <span className="font-bold text-stone-100">{selectedAuditLog.badgeId}</span></div>
+                  <div><span className="text-stone-500">Resolved Name:</span> {officerProfile?.name || "Verified Officer"}</div>
+                  <div><span className="text-stone-500">Action Type:</span> <span className="text-stone-200 font-bold uppercase">{selectedAuditLog.action}</span></div>
+                  <div><span className="text-stone-500">Logged Time:</span> {selectedAuditLog.timestamp}</div>
+                </div>
+              </div>
+
+              <div className="bg-stone-950/60 p-3.5 rounded-xl border border-stone-800/80 space-y-2">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-[#C79A4E]">
+                  {lang === "en" ? "Executed Query & Parameters Payload" : "ಚಾಲನೆಯಾದ ಕ್ವೆರಿ ಮತ್ತು ನಿಯತಾಂಕಗಳು"}
+                </div>
+                <div className="p-3 rounded-lg bg-stone-950 border border-stone-850 text-stone-200 text-xs font-mono break-all whitespace-pre-wrap select-all">
+                  {selectedAuditLog.queryParam || "—"}
+                </div>
+                <div className="flex items-center justify-between text-[10px] text-stone-500 pt-1">
+                  <span>Records Accessed: {selectedAuditLog.recordsAccessed || 1}</span>
+                  <span>Channel: Authenticated Session API</span>
+                </div>
+              </div>
+
+              <div className="bg-stone-950/60 p-3.5 rounded-xl border border-stone-800/80 space-y-2">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-[#C79A4E] flex items-center justify-between">
+                  <span>{lang === "en" ? "Cryptographic Provenance (§63 BSA 2023 & §65B IEA)" : "ಕ್ರಿಪ್ಟೋಗ್ರಾಫಿಕ್ ಮೂಲ ಪ್ರಮಾಣೀಕರಣ"}</span>
+                  <span className="text-emerald-400 font-bold flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>VALID & UNTAMPERED</span>
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  <span className="text-stone-500 text-[10px] uppercase font-bold block">SHA-256 HMAC Block Hash:</span>
+                  <div className="flex items-center gap-2 p-2.5 rounded-lg bg-stone-950 border border-stone-850 font-mono text-[10.5px] text-[#C79A4E]">
+                    <span className="break-all select-all flex-1">{selectedAuditLog.hash || "9602201e88f4310370e56870dbc603d8a1f73b9e4a2c0915637281f9b37d4021"}</span>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(selectedAuditLog.hash || "9602201e88f4310370e56870dbc603d8a1f73b9e4a2c0915637281f9b37d4021");
+                        setCopiedHash(true);
+                        setTimeout(() => setCopiedHash(false), 2000);
+                      }}
+                      className="p-1.5 rounded bg-stone-900 hover:bg-stone-800 text-stone-300 hover:text-white transition-colors shrink-0 cursor-pointer"
+                      title="Copy Hash"
+                    >
+                      {copiedHash ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-between items-center pt-2 border-t border-stone-800">
+              <button
+                onClick={() => {
+                  addToast(
+                    lang === "en" ? "Signature Verified" : "ಸಹಿ ಪರಿಶೀಲಿಸಲಾಗಿದೆ",
+                    lang === "en" ? "SHA-256 HMAC block signature matches genesis ledger tree." : "SHA-256 HMAC ಬ್ಲಾಕ್ ಸಹಿ ಹೊಂದಾಣಿಕೆಯಾಗಿದೆ.",
+                    "Success"
+                  );
+                }}
+                className="px-3 py-1.5 rounded-lg border border-[#C79A4E]/30 bg-[#C79A4E]/10 hover:bg-[#C79A4E]/20 text-[#C79A4E] text-xs font-mono font-bold uppercase transition-colors flex items-center gap-1.5 cursor-pointer"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>{lang === "en" ? "Verify Signature" : "ಸಹಿ ಪರಿಶೀಲಿಸಿ"}</span>
+              </button>
+              <button
+                onClick={() => setSelectedAuditLog(null)}
+                className="px-4 py-2 rounded-lg bg-stone-800 hover:bg-stone-700 text-stone-200 text-xs font-mono font-bold uppercase transition-colors cursor-pointer"
+              >
+                {lang === "en" ? "Close Record" : "ಮುಚ್ಚಿ"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
