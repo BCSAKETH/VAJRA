@@ -5763,7 +5763,9 @@ async def trigger_spatial_seed_cron(request: Request, background_tasks: Backgrou
     def _run_seeding():
         try:
             logger.info("Executing midnight spatial index synchronization pipeline...")
+            import importlib
             import seed_stratus_index
+            importlib.reload(seed_stratus_index)
             exit_code = seed_stratus_index.main()
             logger.info(f"Midnight spatial seeding finished with code: {exit_code}")
         except Exception as e:

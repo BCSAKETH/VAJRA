@@ -8867,6 +8867,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     # unmatched crime_group correctly returns an empty map
                     # (CrimeMajorHeadID = -1 matches nothing) rather than
                     # silently ignoring the filter and showing everything.
+                    matched_head_id = None
                     raw_crime_group = self.sanitize_sql_input(params.get("crime_group", ""))
                     if raw_crime_group:
                         cg_lower = raw_crime_group.lower()
@@ -8902,6 +8903,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     if _sp_engine and _sp_engine.is_initialized and _sp_engine.total_records > 0:
                         _int_uids = [int(u) for u in unit_ids if str(u).isdigit()]
                         _sp_pts = _sp_engine.query_points(
+                            district_name=district,
                             unit_ids=_int_uids if _int_uids else None,
                             head_id=matched_head_id,
                             max_points=2500
@@ -8994,8 +8996,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 trend = None
                 if catalyst_app:
                     try:
-                        from datetime import timedelta
-                        now = datetime.utcnow()
+                        from datetime import datetime as _dt, timedelta
+                        now = _dt.utcnow()
                         w = 90
                         d_mid = now.strftime("%Y-%m-%d")
                         d_recent = (now - timedelta(days=w)).strftime("%Y-%m-%d")

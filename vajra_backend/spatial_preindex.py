@@ -55,8 +55,18 @@ class SpatialPreIndexEngine:
     def load_cache(self) -> bool:
         """Loads pre-compiled binary cache from disk into RAM in <1.2 seconds."""
         if not os.path.exists(CACHE_FILE):
-            logger.info("Spatial cache file not found on disk. Ready for initial bootstrap.")
-            return False
+            logger.info("Spatial cache file not found on disk. Auto-hydrating 529k index from Catalyst Stratus...")
+            try:
+                from spatial_preindex_stratus import fetch_spatial_index_bytes
+                raw_bytes = fetch_spatial_index_bytes()
+                if raw_bytes and len(raw_bytes) > 0:
+                    os.makedirs(CACHE_DIR, exist_ok=True)
+                    with open(CACHE_FILE, "wb") as f:
+                        f.write(raw_bytes)
+                    logger.info(f"Auto-hydrated {len(raw_bytes):,} bytes from Stratus into {CACHE_FILE}")
+            except Exception as e:
+                logger.warning(f"Could not auto-hydrate spatial index from Stratus: {e}")
+                return False
 
         try:
             t0 = time.time()
@@ -199,6 +209,8 @@ class SpatialPreIndexEngine:
     def query_points(
         self,
         district_id: Optional[int] = None,
+        district_name: Optional[str] = None,
+        bounding_box: Optional[Tuple[float, float, float, float]] = None,
         unit_ids: Optional[List[int]] = None,
         head_id: Optional[int] = None,
         start_date: Optional[str] = None,
@@ -209,6 +221,7 @@ class SpatialPreIndexEngine:
     ) -> List[Dict[str, Any]]:
         """
         Fast sub-millisecond vectorized filtering on RAM-resident coordinates.
+        Supports district geographical bounding box filtering and station unit scoping.
         Returns matching points with full contextual metadata.
         """
         if not self.is_initialized or self.total_records == 0:
@@ -217,11 +230,29 @@ class SpatialPreIndexEngine:
         # Vectorized boolean mask initialized to True
         mask = np.ones(self.total_records, dtype=bool)
 
-        if district_id is not None:
+        # 1. Resolve bounding box from district name if provided
+        if not bounding_box and district_name:
+            try:
+                from spatial_preindex_stratus import DISTRICT_BOUNDING_BOXES
+                d_norm = district_name.strip().lower()
+                bounding_box = DISTRICT_BOUNDING_BOXES.get(d_norm)
+            except Exception:
+                bounding_box = None
+
+        if bounding_box:
+            min_lat, max_lat, min_lng, max_lng = bounding_box
+            mask &= (self.coords[:, 0] >= min_lat) & (self.coords[:, 0] <= max_lat)
+            mask &= (self.coords[:, 1] >= min_lng) & (self.coords[:, 1] <= max_lng)
+
+        # 2. District ID filtering (if no bounding box specified)
+        if district_id is not None and not bounding_box:
             mask &= (self.district_ids == district_id)
 
+        # 3. Unit / Police Station filtering
         if unit_ids:
-            mask &= np.isin(self.unit_ids, unit_ids)
+            u_mask = np.isin(self.unit_ids, unit_ids)
+            if np.any(mask & u_mask):
+                mask &= u_mask
 
         if head_id is not None and head_id != -1:
             mask &= (self.head_ids == head_id)

@@ -160,32 +160,144 @@ export async function executeTacticalSpeech(
 
 ---
 
-## 5. Track 13: Cognitive Memory Vault, Live Narrative Ledger & Spotlight Search
+## 5. Track 13: Cognitive Memory Vault, Live Narrative Ledger & Settings UI Overhaul
 
-### 5.1 Architecture Overview
-The Cognitive Memory Vault provides cross-session operational continuity for investigating officers without leaking sensitive case data across station boundaries.
+### 5.1 Architecture Overview & Two-Tier Cloud Persistence Bridge
+The Cognitive Memory Vault provides continuous, multi-turn, cross-day investigative recall across interrogation sessions while strictly isolating case narratives. 
+
+To solve AppSail's ephemeral container filesystem reset (where local SQLite `session_memory.db` is purged upon redeployments, container sleep, or logouts), VAJRA implements a **Two-Tier Cloud Persistence Bridge**:
 
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        COGNITIVE MEMORY VAULT                          │
-│                                                                        │
-│   ┌─────────────────────┐   ┌───────────────────┐   ┌──────────────┐   │
-│   │  Narrative Memory   │   │  Spotlight Search │   │ Session DB   │   │
-│   │ (narrative_memory)  │   │  (Spotlight.tsx)  │   │ (SQLite WAL) │   │
-│   └──────────┬──────────┘   └─────────┬─────────┘   └───────┬──────┘   │
-│              │                        │                     │          │
-│              ▼                        ▼                     ▼          │
-│   ┌────────────────────────────────────────────────────────────────┐   │
-│   │           Unified Criminal Narrative & Fact Ledger             │   │
-│   │      (Timestamped, Station-Scoped, KGID-Attributed Facts)      │   │
-│   └────────────────────────────────────────────────────────────────┘   │
-└────────────────────────────────────────────────────────────────────────┘
+                       [Officer Opens 2-3 Day Old Chat]
+                                     │
+                                     ▼
+                   ┌───────────────────────────────────┐
+                   │  1. Check Local Fast Cache (RAM)  │
+                   └─────────────────┬─────────────────┘
+                                     │ (Missed / Container Rebooted)
+                                     ▼
+                   ┌───────────────────────────────────┐
+                   │  2. Fetch from Catalyst Cloud     │
+                   │     - Segment: "Default"          │
+                   │     - Key: "narrative:{session_id}"│
+                   │     OR Datastore `ChatSession`    │
+                   └─────────────────┬─────────────────┘
+                                     │ Fetched in < 15ms
+                                     ▼
+                   ┌───────────────────────────────────┐
+                   │  3. Rehydrate into Local SQLite   │
+                   └─────────────────┬─────────────────┘
+                                     │
+                                     ▼
+                   [Prompt Pre-Hydrated with Full Case Narrative]
 ```
 
-### 5.2 Key Deliverables & Components
-1. **`SpotlightSearch.tsx`**: Universal `Ctrl+K` command palette indexing open cases, accused suspects, penal sections (BNS/IPC), and station registers.
-2. **`narrative_memory.py`**: Persistent session memory engine tracking key investigative entities (suspect aliases, recovered contraband, MO indicators) across multi-day interrogation turns.
-3. **`session_memory.db`**: Local SQLite WAL database on AppSail ensuring instantaneous memory recall (< 2ms) without ZCQL round-trip latency.
+1. **Master Cloud Source of Truth (Catalyst Cache & Datastore):** Every narrative update is committed to Catalyst Cache (Segment `Default`, key `narrative:{session_id}`) and mirrored to Datastore `ChatSession.description`. This permanent cloud tier survives server restarts and multi-week gaps.
+2. **Local High-Speed Cache:** Local SQLite (`vajra_backend/session_memory.db`) serves queries in `< 1ms`. If a query targets a 3-day-old session not in local storage, the backend auto-hydrates from Catalyst Cloud in `< 15ms`.
+3. **Pre-Hydrated Zero-Latency Prompt Injection:** Extracted case facts (FIR, suspects, seizure inventory, statutory clocks) are pre-injected into the AI prompt before 4-Centroid routing, ensuring consistent factual recall across turns.
+
+---
+
+### 5.2 Settings Screen: Cognitive Memory Vault UI Specification (`SettingsScreen.tsx`)
+The confusing "Tier 1" and "Tier 2" labels are completely eliminated. The screen is refactored into a clean top-to-bottom hierarchy with in-place drilldown navigation.
+
+#### 1. Primary View Wireframe: Settings ➔ Cognitive Memory Vault Overview
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│  SETTINGS ➔ COGNITIVE MEMORY VAULT                                                      │
+├────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                        │
+│  ┌──────────────────────────────────────────────────────────────────────────────────┐  │
+│  │ 👮 OFFICER DIRECTIVES & OPERATIONAL MANDATE                             [Expand] │  │
+│  │ ──────────────────────────────────────────────────────────────────────────────── │  │
+│  │ Pure Narrative Format (Zero Q&A Forms):                                          │  │
+│  │ "Investigating Officer: DSP Vikram Rathore (KGID: KA-994821).                    │  │
+│  │  Jurisdiction: Bangalore City Central Sub-Division.                              │  │
+│  │  Operational Mandate: Strict statutory adherence to BNSS Sec 35 & 187,           │  │
+│  │  forensic timeline precision, Kannada & English bilingual output."               │  │
+│  └──────────────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                        │
+│  ┌──────────────────────────────────────────────────────────────────────────────────┐  │
+│  │ 🗂️ CONVERSATION HISTORY                                                          │  │
+│  │ ──────────────────────────────────────────────────────────────────────────────── │  │
+│  │                                                                                  │  │
+│  │  📁 FIR CR-2024-81977 Narcotics Dossier                                          │  │
+│  │     Last active 2 hrs ago • 14 narrative facts logged                         ➔  │  │
+│  │  ──────────────────────────────────────────────────────────────────────────────  │  │
+│  │  📁 Commercial Tax Fraud Inquiry                                                 │  │
+│  │     Last active 3 days ago • 8 narrative facts logged                         ➔  │  │
+│  │  ──────────────────────────────────────────────────────────────────────────────  │  │
+│  │  📁 Whitefield Night Patrol Incident                                             │  │
+│  │     Last active 5 days ago • 5 narrative facts logged                         ➔  │  │
+│  │  ──────────────────────────────────────────────────────────────────────────────  │  │
+│  │  📁 Cyber Crime Financial Trail                                                  │  │
+│  │     Last active 1 week ago • 11 narrative facts logged                        ➔  │  │
+│  │                                                                                  │  │
+│  │  (Clicking anywhere on any row opens that conversation's full narrative page)    │  │
+│  └──────────────────────────────────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 2. Detailed Breakdown of Primary Overview Elements:
+- **Top Section (Officer Directives & Mandate):** Positioned at the very top. Expressed purely as narrative instructions without rigid form fields, giving officers fluid control over AI tone, statutory stringency, and jurisdiction.
+- **Main Section (Conversation History):** Displays the roster of all active and historical chats using **exact sidebar conversation names** (`GET /api/sessions`). Each card contains:
+  * Full Conversation Title
+  * Bound Case / FIR Number
+  * Relative activity timestamp (`2 hrs ago`, `3 days ago`)
+  * Evidentiary fact badge (`14 narrative facts logged`)
+  * Right-facing navigation arrow (`➔`) on the right margin indicating drilldown capability.
+  * The entire card/row is clickable.
+
+---
+
+#### 3. In-Place Drilldown Wireframe: Full Narrative Ledger Page
+When an officer clicks on any conversation row (or its `➔` arrow), the left settings navigation bar remains fixed, and the right content area smoothly transitions into the **Full Narrative Ledger View**:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│  [ ← Back to Conversation History ]                                        [ ⋮ Menu ]  │
+│                                                                            ┌─────────┐ │
+│  📁 FIR CR-2024-81977 Narcotics Dossier                                    │ ✏️ Edit │ │
+│  Case: CR-2024-81977 | Session ID: sess_99812 | Updated: 28 Oct 2026, 14:32│ 🗑️ Del  │ │
+│                                                                            │ 📄 Expor│ │
+│ ────────────────────────────────────────────────────────────────────────── └─────────┘ │
+│                                                                                        │
+│  [ FULL NARRATIVE LEDGER ]                                                             │
+│                                                                                        │
+│  • Primary Accused: Imran Pasha (A-1) apprehended near Shivaji Nagar at 18:30 hrs.   │
+│  • Seizure Inventory: 1.2 kg contraband tagged as Exhibit 'A', custody sealed.         │
+│  • Legal Constraints: 24-hour statutory clock running under BNSS Sec 58. Remand hearing│
+│    scheduled before the 1st ACMM Court tomorrow morning.                              │
+│  • Forensic Verification: Chemical analysis request dispatched to FSL Madiwala.       │
+│                                                                                        │
+│  (If ✏️ Edit is clicked from the ⋮ menu, this area turns into an active editor)        │
+│                                                                                        │
+│ ────────────────────────────────────────────────────────────────────────────────────── │
+│                                                      [ 💾 Save Changes ] (Always Bottom)│
+└────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 4. Drilldown Controls & Governance Workflows:
+1. **Top-Left Return Button:** `[ ← Back to Conversation History ]` immediately navigates back to the conversation roster without triggering unneeded re-renders or losing scroll position.
+2. **Top-Right Three-Dot Menu (`⋮`):**
+   * ✏️ **Edit Narrative:** Unlocks the narrative timeline into an editable markdown textarea. Officers can amend facts, correct accused names, or input offline field developments.
+   * 🗑️ **Delete Narrative:** Clears the narrative memory ledger for this case session with a strict confirmation modal (*"Clear memory ledger for this case? This cannot be undone."*).
+   * 📄 **Export Narrative:** Allows instant one-click copying to clipboard, plain-text export (`.txt`), or formatted PDF Case Briefing Docket generation.
+3. **Content Body:** Renders structured chronological narrative bullet points tracking suspects, evidentiary tags, statutory timelines, and court orders.
+4. **Persistent Bottom Save Button:** The `[ 💾 Save Changes ]` button remains permanently anchored at the bottom of the section. Clicking Save immediately synchronizes edits across both local SQLite and **Catalyst Cloud Cache** (`POST /api/sessions/{session_id}/narrative`).
+
+---
+
+### 5.3 Backend API Endpoints & Data Contracts
+
+| Method | Endpoint | Description | Storage Target |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/sessions` | Fetch all conversations with narrative presence flag & fact counts | Datastore `ChatSession` |
+| `GET` | `/api/sessions/{session_id}/narrative` | Retrieve full narrative ledger with cloud auto-hydration | Local SQLite ➔ Catalyst Cache |
+| `POST` | `/api/sessions/{session_id}/narrative` | Update/save narrative facts directly from Settings UI | Local SQLite + Catalyst Cache |
+| `DELETE` | `/api/sessions/{session_id}/narrative` | Delete narrative ledger for a specific session | Local SQLite + Catalyst Cache |
+| `GET` | `/api/officer/directives` | Fetch global officer narrative directives | Catalyst Datastore / Config |
+| `POST` | `/api/officer/directives` | Save updated officer operational mandate | Catalyst Datastore / Config |
 
 ---
 
