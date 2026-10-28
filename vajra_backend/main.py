@@ -13719,6 +13719,85 @@ async def get_ml_system_status(request: Request):
                 "status": "ready",
                 "population_normalization": "Census denominators per 100k residents across 30 profiled districts",
                 "statutory_checklist": "Section 187(3) BNSS remand tracking + Section 111 BNS organized crime"
+            },
+            "quickml_deployed_endpoints": {
+                "provider": "Zoho Catalyst QuickML Gateway",
+                "status": "operational",
+                "models_deployed": 5,
+                "endpoints": ["mo_nlp", "victim_classifier", "socio_economic", "forecaster", "hotspot_cluster"]
+            }
+        }
+    }
+
+class QuickMLPredictPayload(BaseModel):
+    data: Dict[str, Any]
+    explain: Optional[bool] = False
+
+@app.post("/api/ml/quickml/predict/{model_name}")
+async def predict_via_quickml(model_name: str, payload: QuickMLPredictPayload, request: Request, location_context: str = Depends(security_firewall)):
+    """
+    Direct proxy inference gateway to Zoho Catalyst QuickML deployed model endpoints.
+    """
+    from catalyst_quickml_models import QuickMLEndpointClient, ENDPOINT_KEYS
+    valid_names = list(ENDPOINT_KEYS.keys())
+    if model_name not in valid_names:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid QuickML model name '{model_name}'. Must be one of: {', '.join(valid_names)}"
+        )
+    
+    if model_name == "victim_classifier":
+        res = QuickMLEndpointClient.predict_victim_vulnerability(payload.data)
+    elif model_name == "mo_nlp" and "BriefFacts" in payload.data:
+        res = QuickMLEndpointClient.predict_mo_nlp(payload.data["BriefFacts"])
+    elif model_name == "socio_economic":
+        res = QuickMLEndpointClient.predict_socio_economic_risk(payload.data)
+    elif model_name == "forecaster":
+        res = QuickMLEndpointClient.predict_incident_volume_forecast(payload.data)
+    elif model_name == "hotspot_cluster":
+        res = QuickMLEndpointClient.predict_hotspot_cluster(payload.data)
+    else:
+        res = QuickMLEndpointClient.call_predict(model_name, payload.data, explain_model=payload.explain or False)
+    
+    return res
+
+@app.get("/api/ml/quickml/status")
+async def get_quickml_status(request: Request):
+    """
+    Returns deployment status and registered endpoint keys for all 5 QuickML models.
+    """
+    from catalyst_quickml_models import ENDPOINT_KEYS, QUICKML_PREDICT_URL, CATALYST_PROJECT_ID, CATALYST_ORG_ID
+    return {
+        "status": "operational",
+        "provider": "Zoho Catalyst QuickML",
+        "project_id": CATALYST_PROJECT_ID,
+        "org_id": CATALYST_ORG_ID,
+        "gateway_url": QUICKML_PREDICT_URL,
+        "deployed_endpoints": {
+            "mo_nlp": {
+                "key_configured": bool(ENDPOINT_KEYS.get("mo_nlp")),
+                "type": "Text Analytics / Intent Classifier",
+                "target": "CrimeMajorHeadID"
+            },
+            "victim_classifier": {
+                "key_configured": bool(ENDPOINT_KEYS.get("victim_classifier")),
+                "type": "Classification (Random Forest)",
+                "target": "HighVulnerabilityFlag"
+            },
+            "socio_economic": {
+                "key_configured": bool(ENDPOINT_KEYS.get("socio_economic")),
+                "type": "Regression (Ridge)",
+                "target": "CrimeRatePer100k"
+            },
+            "forecaster": {
+                "key_configured": bool(ENDPOINT_KEYS.get("forecaster")),
+                "type": "Spatiotemporal Regression (Random Forest)",
+                "target": "target_7d"
+            },
+            "hotspot_cluster": {
+                "key_configured": bool(ENDPOINT_KEYS.get("hotspot_cluster")),
+                "type": "Density Clustering (K-Means)",
+                "target": "SpatialClusterID"
             }
         }
     }
