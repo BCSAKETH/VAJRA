@@ -6164,6 +6164,85 @@ async def create_investigation(payload: CreateInvestigationRequest, request: Req
         raise HTTPException(status_code=500, detail=f"Could not create investigation: {e}")
 
 
+def _get_officer_open_investigations(employee_id: Any) -> List[Dict[str, Any]]:
+    """
+    Track 23: Authoritative single source of truth for an officer's active open investigations.
+    Includes owned investigations and accepted Cowork collaborations.
+    Excludes regular chats with auto-summary bullets ('•') and closed sessions.
+    """
+    if not catalyst_app or not employee_id:
+        return []
+    try:
+        # 1. Fetch owned sessions with descriptions
+        owned = catalyst_app.zql().execute_query(
+            f"SELECT session_id, title, description, case_no, last_active_at, status FROM ChatSession "
+            f"WHERE employee_id = {employee_id} AND (description IS NOT NULL AND description != '') "
+            f"ORDER BY last_active_at DESC LIMIT 300"
+        )
+        valid_owned = [
+            r["ChatSession"] for r in (owned or [])
+            if not (r["ChatSession"].get("description") or "").strip().startswith("•")
+            and "•" not in (r["ChatSession"].get("description") or "")
+            and r["ChatSession"].get("status") != "closed"
+        ]
+        seen_sids = {r["session_id"] for r in valid_owned if r.get("session_id")}
+
+        # 2. Fetch Cowork participant investigations
+        part_res = catalyst_app.zql().execute_query(
+            f"SELECT session_id, role FROM CoworkParticipant WHERE employee_id = {employee_id} LIMIT 100"
+        )
+        for p in (part_res or []):
+            part = p.get("CoworkParticipant", {})
+            sid = part.get("session_id")
+            if sid and sid not in seen_sids:
+                sess_res = catalyst_app.zql().execute_query(
+                    f"SELECT session_id, title, description, case_no, last_active_at, status FROM ChatSession "
+                    f"WHERE session_id = '{escape_zcql_literal(sid)}' AND description != '' LIMIT 1"
+                )
+                if sess_res:
+                    s = sess_res[0].get("ChatSession", {})
+                    desc = (s.get("description") or "").strip()
+                    if not desc.startswith("•") and "•" not in desc and s.get("status") != "closed":
+                        seen_sids.add(sid)
+                        s["role"] = part.get("role") or "collaborator"
+                        s["is_cowork"] = True
+                        valid_owned.append(s)
+        return valid_owned
+    except Exception as ex:
+        logger.warning(f"_get_officer_open_investigations failed: {ex}")
+        return []
+
+
+def _sanitize_legacy_chat_descriptions():
+    """
+    Track 23: One-time/periodic sanitization of legacy ChatSession rows where
+    an auto-generated bulleted summary was stored in description, preventing
+    it from polluting the formal investigations roster.
+    """
+    if not catalyst_app:
+        return
+    try:
+        rogue = catalyst_app.zql().execute_query(
+            "SELECT ROWID, description FROM ChatSession WHERE description IS NOT NULL AND description != '' LIMIT 100"
+        )
+        for r in (rogue or []):
+            cs = r.get("ChatSession", {})
+            desc = (cs.get("description") or "").strip()
+            if desc.startswith("•") or "•" in desc:
+                row_id = cs.get("ROWID")
+                if row_id:
+                    zcql_update_row("ChatSession", {"ROWID": row_id, "description": ""})
+                    logger.info(f"[TRACK_23] Sanitized rogue chat description for ROWID {row_id}")
+    except Exception as ex:
+        logger.warning(f"Sanitization of legacy chat descriptions skipped: {ex}")
+
+
+@app.on_event("startup")
+async def track23_startup_sanitizer():
+    import threading
+    threading.Thread(target=_sanitize_legacy_chat_descriptions, daemon=True).start()
+
+
 @app.get("/api/investigations")
 async def list_investigations(request: Request, location_context: str = Depends(security_firewall)):
     """
@@ -6178,50 +6257,16 @@ async def list_investigations(request: Request, location_context: str = Depends(
     if not catalyst_app:
         return []
     try:
-        # Same missing-filter bug as GET /api/sessions above -- add the owner
-        # scope so this doesn't also leak every other officer's Investigations.
-        # Same "lost chats" LIMIT fix as GET /api/sessions above (this list
-        # also backs /api/investigations/search, so the cap silently hid
-        # search results too, not just the Investigations page itself).
-        owned = catalyst_app.zql().execute_query(
-            f"SELECT session_id, title, description, case_no, last_active_at FROM ChatSession "
-            f"WHERE employee_id = {employee_id} AND (description IS NOT NULL AND description != '') "
-            f"ORDER BY last_active_at DESC LIMIT 300"
-        )
+        raw_invs = _get_officer_open_investigations(employee_id)
         investigations = [{
-            "session_id": r["ChatSession"]["session_id"],
-            "title": r["ChatSession"]["title"],
-            "description": r["ChatSession"]["description"],
-            "case_no": r["ChatSession"].get("case_no") or None,
-            "last_active_at": r["ChatSession"]["last_active_at"],
-            "role": "owner"
-        } for r in owned if not r["ChatSession"].get("description", "").strip().startswith("•") and "•" not in r["ChatSession"].get("description", "")]
-        # Track session_ids already listed as "owner" so a stray/self
-        # CoworkParticipant row (e.g. from testing an invite on one's own
-        # session) can't make the same investigation show up twice.
-        seen_session_ids = {inv["session_id"] for inv in investigations}
-
-        part_res = catalyst_app.zql().execute_query(
-            f"SELECT session_id, role FROM CoworkParticipant WHERE employee_id = {employee_id} LIMIT 100"
-        )
-        for p in part_res:
-            part = p.get("CoworkParticipant", {})
-            sid = part.get("session_id")
-            if not sid or sid in seen_session_ids:
-                continue
-            sess_res = catalyst_app.zql().execute_query(
-                f"SELECT title, description, case_no, last_active_at FROM ChatSession WHERE session_id = '{escape_zcql_literal(sid)}' AND description != '' LIMIT 1"
-            )
-            if sess_res:
-                s = sess_res[0]["ChatSession"]
-                desc = (s.get("description") or "").strip()
-                if not desc.startswith("•") and "•" not in desc:
-                    seen_session_ids.add(sid)
-                    investigations.append({
-                        "session_id": sid, "title": s["title"], "description": s["description"],
-                        "case_no": s.get("case_no") or None, "last_active_at": s.get("last_active_at"),
-                        "role": part.get("role"), "is_cowork": True
-                    })
+            "session_id": r["session_id"],
+            "title": r.get("title") or "Investigation",
+            "description": r.get("description") or "",
+            "case_no": r.get("case_no") or None,
+            "last_active_at": r.get("last_active_at"),
+            "role": r.get("role") or "owner",
+            "is_cowork": r.get("is_cowork", False)
+        } for r in raw_invs]
 
         # Owner-side investigations don't know yet whether anyone accepted an
         # invite into them -- role stays "owner" either way, so without this
@@ -6989,45 +7034,12 @@ async def officer_digest(request: Request, location_context: str = Depends(secur
             logger.warning(f"officer_digest: district name lookup failed: {e}")
             return None
 
-    def _count_open_investigations() -> int:
-        try:
-            count_res = catalyst_app.zql().execute_query(
-                f"SELECT COUNT(ROWID) FROM ChatSession WHERE employee_id = {employee_id} "
-                f"AND description IS NOT NULL AND description != '' AND (status = 'active' OR status IS NULL)"
-            )
-            return int(count_res[0].get("ChatSession", {}).get("COUNT(ROWID)") or 0) if count_res else 0
-        except Exception as e:
-            # Loophole L3 corollary: never let this endpoint's failure show up
-            # as a broken greeting -- it always returns a safe default instead.
-            logger.warning(f"officer_digest: open-investigations count failed (status column may not exist yet): {e}")
-            return 0
-
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        district_f = ex.submit(_lookup_assigned_district)
-        count_f = ex.submit(_count_open_investigations)
-        assigned_district = district_f.result()
-        open_count = count_f.result()
-
-    open_session_ids: List[str] = []
-    # Section 129 Zone 2 "Pending Tasks" pill needs the actual session ids,
-    # not just a count -- capped at 200 for the IN-clause lookup below
-    # (a bound on the task query's fan-out, NOT the real open_count above,
-    # which was silently capped here in an earlier pass -- confirmed live
-    # regression: an officer with 200+ open investigations saw a wrong,
-    # too-low "Open Investigations" pill).
-    if open_count > 0:
-        try:
-            id_res = catalyst_app.zql().execute_query(
-                f"SELECT session_id FROM ChatSession WHERE employee_id = {employee_id} "
-                f"AND description IS NOT NULL AND description != '' AND (status = 'active' OR status IS NULL) LIMIT 200"
-            )
-            open_session_ids = [
-                sid for r in (id_res or [])
-                if (sid := r.get("ChatSession", {}).get("session_id"))
-            ]
-        except Exception as e:
-            logger.warning(f"officer_digest: open-session id lookup failed: {e}")
+    # Track 23: Front Page Telemetry Count Calibration
+    # Authoritative single-source-of-truth ensuring 100% parity with /api/investigations
+    open_invs = _get_officer_open_investigations(employee_id)
+    open_count = len(open_invs)
+    open_session_ids = [inv["session_id"] for inv in open_invs if inv.get("session_id")]
+    assigned_district = _lookup_assigned_district()
 
     # Section 129 Zone 2 "Pending Tasks" pill: a REAL sum of open
     # (status='pending') InvestigationTask rows across this officer's own
