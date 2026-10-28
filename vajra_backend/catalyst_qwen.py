@@ -45,10 +45,9 @@ class CatalystQwen:
         self.endpoint_url = os.getenv(
             "CATALYST_QWEN_ENDPOINT"
         ) or f"https://console.catalyst.zoho.{domain}/quickml/v1/project/{self.project_id}/genai/endpoints/vlm/generate"
-        self.endpoint_key = os.getenv(
-            "CATALYST_QWEN_ENDPOINT_KEY",
-            "8fd81402df7c9f74cf34f9193822ed27ac1c3a2a4ed6ae9daa58ca8f73010d9cdcacc27ea77daf18fe987104dc8ba3c6"
-        )
+        self.endpoint_key = os.getenv("CATALYST_QWEN_ENDPOINT_KEY") or ""
+        if not self.endpoint_key:
+            logger.warning("CATALYST_QWEN_ENDPOINT_KEY not configured. Qwen VLM service running in clean unconfigured mode.")
         self.org_id = os.getenv("CATALYST_ORG_ID") or os.getenv("CATALYST_PROJECT_KEY") or "60074806366"
         self.model_name = os.getenv("CATALYST_QWEN_MODEL", "VL-Qwen3.6-35B-A3B")
 

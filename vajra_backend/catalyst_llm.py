@@ -127,10 +127,9 @@ class CatalystLLM:
         self.endpoint_url = os.getenv(
             "CATALYST_LLM_ENDPOINT"
         ) or f"https://console.catalyst.zoho.{domain}/quickml/v1/project/{self.project_id}/genai/endpoints/glm-flash-47/chat"
-        self.endpoint_key = os.getenv(
-            "CATALYST_LLM_ENDPOINT_KEY",
-            "ab88e69c79b4142cb5372a8a84581f12b047890c1a5bb28e2c34a3e740a617df89aca7d4ae65ddabd2a9c8af9f89a944"
-        )
+        self.endpoint_key = os.getenv("CATALYST_LLM_ENDPOINT_KEY") or ""
+        if not self.endpoint_key:
+            logger.warning("CATALYST_LLM_ENDPOINT_KEY not configured. GLM LLM service running in clean unconfigured mode.")
         # CATALYST-ORG is the project key (60074806366), confirmed live against QuickML gateway
         self.org_id = os.getenv("CATALYST_ORG_ID") or os.getenv("CATALYST_PROJECT_KEY") or "60074806366"
         self.model_name = os.getenv("CATALYST_LLM_MODEL", "crm-di-glm47b_30b_it")
@@ -140,10 +139,9 @@ class CatalystLLM:
             "CATALYST_RAG_ENDPOINT",
             f"https://console.catalyst.zoho.{domain}/quickml/v1/project/{self.project_id}/genai/endpoints/rag/agent/chat"
         )
-        self.rag_endpoint_key = os.getenv(
-            "CATALYST_RAG_ENDPOINT_KEY",
-            "78a50a95bb2772f664571786b886326a148880f505cc545ae08dcced62822620bda68c2a0c32f4ffb73e092ef2254048"
-        )
+        self.rag_endpoint_key = os.getenv("CATALYST_RAG_ENDPOINT_KEY") or ""
+        if not self.rag_endpoint_key:
+            logger.warning("CATALYST_RAG_ENDPOINT_KEY not configured. LLM RAG mode running in clean unconfigured mode.")
 
     def chat(
         self,

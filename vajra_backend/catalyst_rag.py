@@ -32,11 +32,10 @@ class CatalystRAG:
             "CATALYST_RAG_ENDPOINT",
             "https://console.catalyst.zoho.in/quickml/v1/project/50212000000025002/genai/endpoints/rag/agent/chat"
         )
-        self.endpoint_key = _get_runtime_config(
-            "CATALYST_RAG_ENDPOINT_KEY",
-            "78a50a95bb2772f664571786b886326a148880f505cc545ae08dcced62822620bda68c2a0c32f4ffb73e092ef2254048"
-        )
-        self.app_id = _get_runtime_config("CATALYST_PROJECT_KEY", "60074806366")
+        self.endpoint_key = _get_runtime_config("CATALYST_RAG_ENDPOINT_KEY") or os.getenv("CATALYST_RAG_ENDPOINT_KEY") or ""
+        if not self.endpoint_key:
+            logger.warning("CATALYST_RAG_ENDPOINT_KEY not configured. RAG integration running in clean unconfigured mode.")
+        self.app_id = _get_runtime_config("CATALYST_PROJECT_KEY") or os.getenv("CATALYST_PROJECT_KEY", "60074806366")
 
     def query(
         self,

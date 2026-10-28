@@ -40,28 +40,13 @@ QUICKML_PREDICT_URL = os.getenv(
     f"https://api.catalyst.zoho.in/quickml/v1/project/{CATALYST_PROJECT_ID}/endpoints/predict"
 )
 
-# 5 Production QuickML Endpoint Keys (Trained & Published)
+# 5 Production QuickML Endpoint Keys (Trained & Published via Runtime Environment)
 ENDPOINT_KEYS = {
-    "mo_nlp": os.getenv(
-        "CATALYST_QUICKML_MO_NLP_KEY",
-        "77b6bb55ba2b5f4017f0eb4653e42708d215e43ffa7e69842ac956b4b99aaffe73a46adaf83e32098f72acef830b9604"
-    ),
-    "victim_classifier": os.getenv(
-        "CATALYST_QUICKML_VICTIM_CLASSIFIER_KEY",
-        "d0280478a6b81c930dc946024c44937ffbd324cace00e91a12391287f56aae3dfb7dc29772ddb896870fc5d1286f32c8"
-    ),
-    "socio_economic": os.getenv(
-        "CATALYST_QUICKML_SOCIO_ECONOMIC_KEY",
-        "846efe2d76a0db0370c60e46e69ca9695a9faaabff96568e990b007952837ddc316b0286f7e10bae3f2dcffa15f21a30"
-    ),
-    "forecaster": os.getenv(
-        "CATALYST_QUICKML_FORECASTER_KEY",
-        "7453a495323beebc10682a2cd79a06cf5d8e328cd834f71fe7fa59cc1e9efef1f05234b0cfbcb7cf25f8be42664d7964"
-    ),
-    "hotspot_cluster": os.getenv(
-        "CATALYST_QUICKML_HOTSPOT_CLUSTER_KEY",
-        "fdb56322c41249fb434cb1a7129d0e273567b888c7ef3d6d3a4314fb0f63baa3031092b832312fb9a0e39661cb6ebc93"
-    )
+    "mo_nlp": os.getenv("CATALYST_QUICKML_MO_NLP_KEY", ""),
+    "victim_classifier": os.getenv("CATALYST_QUICKML_VICTIM_CLASSIFIER_KEY", ""),
+    "socio_economic": os.getenv("CATALYST_QUICKML_SOCIO_ECONOMIC_KEY", ""),
+    "forecaster": os.getenv("CATALYST_QUICKML_FORECASTER_KEY", ""),
+    "hotspot_cluster": os.getenv("CATALYST_QUICKML_HOTSPOT_CLUSTER_KEY", ""),
 }
 
 
