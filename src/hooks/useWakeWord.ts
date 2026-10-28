@@ -28,12 +28,7 @@ interface SpeechRecognitionConstructor {
   new (): ISpeechRecognition;
 }
 
-declare global {
-  interface Window {
-    SpeechRecognition?: any;
-    webkitSpeechRecognition?: any;
-  }
-}
+// Window speech recognition casting handled safely via (window as any)
 
 export interface UseWakeWordOptions {
   enabled?: boolean;
@@ -62,7 +57,7 @@ export const useWakeWord = ({
   useEffect(() => {
     try {
       if (typeof window !== "undefined") {
-        const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
         setIsSupported(Boolean(SpeechRec));
       }
     } catch {
@@ -110,7 +105,7 @@ export const useWakeWord = ({
     }
 
     try {
-      const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
+      const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
       if (!SpeechRec) {
         setIsSupported(false);
         return;

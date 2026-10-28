@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import { ChatMessage, useApp, TranscriptTextSize, TtsSettings, TtsSpeed } from "../AppContext";
+import { ChatMessage, useApp, TranscriptTextSize, TtsSettings, TtsSpeed, TtsStyle } from "../AppContext";
 import { translations } from "../i18n";
 import { API_BASE } from "../config";
 import { AlertTriangle, Tag, Paperclip, Volume2, VolumeX, Sparkles, Copy, Check, Eye, X, Loader2, RotateCcw, ShieldCheck, ShieldAlert, ThumbsUp, ThumbsDown, Languages, ChevronLeft, ChevronRight, Mic, Video, FileText, Pencil, Maximize2, Info, Pin, PinOff, ScanLine } from "lucide-react";
