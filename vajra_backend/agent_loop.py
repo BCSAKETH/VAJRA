@@ -4347,7 +4347,13 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # answer came back as the officer's own profile. Strip leading
         # [Context: ...] blocks before those parsers see the text; the full
         # `query` (with headers) still goes to the LLM history unchanged.
-        officer_query = re.sub(r'^\s*(?:\[Context:[^\]]*\]\s*)+', '', query, flags=re.DOTALL)
+        # Strip all system-injected instruction headers (Context, Active Rolling Narrative Ledger, Custom Directives)
+        # so intent classifiers and entity parsers examine ONLY the real human input!
+        officer_query = query
+        officer_query = re.sub(r'\[ACTIVE CASE ROLLING NARRATIVE LEDGER[^\]]*\]', '', officer_query, flags=re.DOTALL)
+        officer_query = re.sub(r'\[CUSTOM INSTRUCTIONS FOR VAJRA:[^\]]*\]', '', officer_query, flags=re.DOTALL)
+        officer_query = re.sub(r'\[Context:[^\]]*\]', '', officer_query, flags=re.DOTALL)
+        officer_query = re.sub(r'^\s*(?:\[Context:[^\]]*\]\s*)+', '', officer_query, flags=re.DOTALL).strip()
 
         # Macro-Memory Context-Aware Persona Injection (Officer Profile & State)
         officer_prof = {}
