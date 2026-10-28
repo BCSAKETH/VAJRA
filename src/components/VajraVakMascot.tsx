@@ -153,6 +153,7 @@ export const useSentinelOwlState = (
           transitionTo("ERROR");
           break;
         case "critical_alert":
+        case "agent_alert":
           setAlertDismissed(false);
           transitionTo("ALERT", true);
           break;

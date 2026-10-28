@@ -23,7 +23,19 @@ export type VajraVakEvent =
   | "page_changed"
   | "idle_timeout"
   | "user_returned"
-  | "deep_analysis_started";
+  | "deep_analysis_started"
+  | "agent_alert";
+
+export interface AgentAlertEvent {
+  agentId: string;
+  agentCode: string;
+  agentName: string;
+  priority: "CRITICAL" | "HIGH" | "MEDIUM";
+  title: string;
+  findings: string;
+  caseNo?: string;
+  timestamp: string;
+}
 
 export interface MascotEventPayload {
   caseNo?: string;
