@@ -18,6 +18,7 @@
     * **Track 22:** Relational Intelligence Network Graph Light Mode Legibility & Node Contrast
     * **Track 23:** Front Page Telemetry Count Calibration (Open Investigations & Pending Tasks Bug)
     * **Track 24:** Operational Secret Management, Key Rotation & Clean Failures
+    * **Track 31:** Autonomous Agent Workspaces: Conversational Grok-Style Agent Builder, Scheduled Cron Monitoring & VAK Alert Pipeline
     * **Track 30:** `[PAUSED / DEFERRED]` High-Performance Bidirectional English <-> Kannada Translation Architecture
     * **Implementation & Verification Roadmap for Active Tracks**
   * **PART 2: PRODUCTION-VERIFIED DEPLOYMENTS & SHIPPED TRACKS REGISTER**
@@ -43,6 +44,7 @@ During pre-finals validation and field testing, ten critical human-machine inter
 8. **Evidentiary SHAP Diverging Bar Chart Value Truncation & Low Contrast (Dark & Light Theme):** The "Evidentiary Factors Driving Recidivism Risk" card renders the Y-axis category names, but **zero bars appear in the chart** (the chart area is completely blank). Traced to an architectural key mismatch: `threat_scoring_engine.py` emits factor objects with `impactPct: pts` (e.g. 20, -25) and `contribution: "positive"|"negative"`, but omits `value` and `conviction_impact_pct`. `ExpandedOverlay.tsx` line 408 looks for `f?.conviction_impact_pct` or `f?.value`. Because both are missing, `value` defaults to `0`, producing zero-width invisible bars across both themes. Furthermore, in light mode, Recharts SVG elements (`<text fill="#CBD5E1">`, CartesianGrid, ReferenceLine) use hardcoded near-white colors that vanish entirely against the inverted light ivory background.
 9. **Relational Network Graph Dark Node Fill & Low Contrast in Light Mode:** In the Criminal Syndicate & Co-Accused Graph (`NetworkGraph.tsx`), node circles are hardcoded to `fill="#0f172a"` (pitch black/dark navy). In light mode, these appear as jarring dark ink blots on an ivory surface. Additionally, node labels using `#22d3ee` (cyan) and `#a78bfa` (lavender) suffer from severe contrast degradation on light backgrounds, failing WCAG accessibility standards.
 10. **Front Page Telemetry Double-Counting Mismatch ("2 Open Investigations" vs 1 Actual):** The home screen quick-action pill displays `"2 Open Investigations"` and `"4 Pending Tasks"`. However, clicking through to the Investigations screen reveals only **1 investigation** (`sess-1-1789310328`). Root cause: `_count_open_investigations()` in `main.py` performs a raw ZCQL `COUNT(ROWID)` query on `ChatSession WHERE employee_id = {employee_id} AND description IS NOT NULL AND description != ''`. An earlier session summarizer had injected bullet-pointed text summaries (`• Find similar chain snatching cases`) into `ChatSession.description` for standard chat sessions. While `GET /api/investigations` filters out bullet point descriptions (`•`), `_count_open_investigations()` in `officer_digest` omitted this check, counting regular chats as investigations. Similarly, pending tasks fanned out across rogue sessions while ignoring tasks in shared Cowork investigations.
+11. **Agent Workspaces Architectural Rigidity & Missing Conversational Agent Builder:** The Agent Workspaces screen regressed into a cramped 3-pane split layout with a rigid bottom section locking autonomous agents into 4 hardcoded departments (Cyber, Legal, Forensics, Surveillance). In daily police operations, officers require flexible, autonomous background agents for recurring tasks (e.g. daily CCTNS queries tracking new FIRs against specific suspects, remand clocks, and beat updates). The screen lacked parity with `InvestigationsScreen.tsx` (clean header, `+ Create New Agent` button, search/status filter pills, and a responsive grid of agent cards), a dedicated full-screen conversational creation chat (Grok Bots style: interviewing the officer on mandate, criteria, schedule, and token budget, followed by a deployment confirmation card), and an automated cron execution pipeline that pushes flagged record alerts directly through the Vajra VAK Mascot and system notification banners.
 
 ---
 
@@ -744,7 +746,267 @@ While intended as development fallbacks, hardcoded credentials in committed repo
 4. **Credential Rotation Directive:**
    * The committed endpoint keys must be immediately rotated and revoked inside the Zoho Catalyst Console (`console.catalyst.zoho.in` -> QuickML -> Endpoints -> Regenerate Key).
 
+
 ---
+
+---
+
+## 18. Track 31: Autonomous Agent Workspaces: Conversational Grok-Style Agent Builder, Scheduled Cron Monitoring & VAK Alert Pipeline
+
+### 18.1 Operational Philosophy & Police Field Problem Formulation
+
+In Karnataka State Police (KSP) daily investigative operations, every station house officer (SHO), sub-inspector (PSI), and supervisory investigator carries an ongoing list of daily, recurring monitoring responsibilities:
+1. **Targeted Suspect & Syndicate Watch:** An officer investigating an ongoing case involving a known suspect or organized syndicate (e.g. under Section 111 BNS) must check every morning: *Were any new FIRs registered against this suspect across the district or state? Have any new co-accused names or aliases entered CCTNS? Has their address or vehicle appeared in recent station dockets?*
+2. **Statutory Remand Clocks (§187 BNSS):** Monitoring active cases where arrested suspects are nearing the 60-day or 90-day statutory charge-sheet filing deadlines to prevent default bail.
+3. **Daily Beat Crime & Hotspot Intel:** Morning roll-call queries checking for overnight property offenses, vehicle thefts, or chain-snatchings reported in the precinct beat.
+4. **1930 Cyber Fraud & Mule Freezes:** Scanning incoming National Cyber Crime Reporting Portal (NCRP / I4C) feeds for bank accounts or phone numbers operating within the district.
+
+Previously, officers were forced to manually run these queries repeatedly or check multiple disjointed ledgers. The **Autonomous Agent Workspaces** platform delegates these recurring workloads to autonomous background agents that execute on scheduled crons (e.g. Daily 08:00 AM IST, Hourly, Every 3 Days) and proactively flag new evidence.
+
+### 18.2 Critique of Legacy UI & Architectural Redesign
+
+The legacy `AgentWorkspaceScreen.tsx` suffered from severe usability and architectural limitations:
+* **Cramped 3-Pane Split Layout:** Crammed active workers on the left, an input form on the right, and an orchestration panel at the bottom, creating extreme visual density and micro-scrolling.
+* **Artificial 4-Department Constraint:** Locked agents into 4 rigid, hardcoded departments (*Cybercrime Division, Legal & Remand, Forensic & Crash Physics, Field Patrol*). In real police operations, an officer needs to build an agent for **any arbitrary case, suspect, beat, or statutory mandate**, without being shoehorned into 4 predefined buckets.
+* **Missing Conversational Builder Experience:** Creating an agent was reduced to a basic form/regex parser rather than a guided, conversational experience like Grok Bots or character builders.
+* **Disconnected Alert Pipeline:** When scheduled background agents detected anomalies, there was no automated mechanism to proactively alert the officer via the **Vajra VAK Mascot** or system notifications.
+
+#### The Architectural Solution: Executive Directory Parity with `InvestigationsScreen.tsx`
+The rewritten `AgentWorkspaceScreen.tsx` adopts the spacious, centered executive directory architecture of `InvestigationsScreen.tsx`:
+1. **Top Header:** Clean title (`Precinct Agent Workspaces` / `Autonomous Agents`) with subtitle and badge, paired with a prominent top-right `+ Create New Agent` button.
+2. **Search & Status Filter Bar:** Unified search input filtering by code, name, or directive, paired with status filter pills: `All`, `Active`, `Running`, `Idle`, `Paused`.
+3. **Responsive Grid of Agent Cards:** Box-type cards displaying operational metrics:
+   * **Agent Header:** Custom code (e.g. `#AGT-RAMESH-WATCH`), name, and live status badge (`Active` with green pulse, `Running` with spinning cyan, `Idle` amber, `Paused` stone).
+   * **Mandate & Target:** Clear plain-text directive and target database/endpoint (e.g. `CCTNS Statewide Accused Registry`).
+   * **Cadence & Schedule:** Human-readable schedule (e.g. `Daily 08:00 AM IST`).
+   * **Daily Token Meter:** Visual progress bar tracking token budget consumption (e.g. `3,140 / 50,000 tokens`).
+   * **Last Heartbeat & Findings:** Indicator showing the last execution timestamp and findings summary (e.g. `🟢 No anomalies flagged` vs `⚠️ 2 new FIRs detected!`).
+   * **Action Toolbar:** Quick actions (`▶ Run Now`, `⏸ Pause/Resume`, `🗑 Delete`).
+4. **Dedicated Full-Screen Sub-Views:** Clicking `+ Create New Agent` or clicking any Agent Card transitions seamlessly into a dedicated full-screen view within the workspace, replacing the cramped split-pane layout.
+
+```mermaid
+flowchart TD
+    subgraph HubView ["Agent Workspaces Executive Directory (Parity with InvestigationsScreen)"]
+        TopBar["Header: Precinct Agent Workspaces + '+ Create New Agent' Button"]
+        SearchBar["Search Input + Status Filters: All | Active | Running | Idle | Paused"]
+        Grid["Responsive Agent Card Grid (Box View)\n[Code • Name • Schedule • Target • Token Meter • Findings]"]
+    end
+
+    subgraph FullView ["Dedicated Full-Screen Workspace Sub-Views"]
+        CreateView["Conversational Agent Builder Chat (Grok-Bots Parity)\n[Guided 5-Turn Interview -> Deployment Confirmation Card]"]
+        AgentChatView["Dedicated Active Agent Chat & Log Stream\n[Chronological Run Ledger • Flagged FIR Evidence • Direct Officer Chat]"]
+    end
+
+    TopBar -->|Click '+ Create New Agent'| CreateView
+    Grid -->|Click Agent Card| AgentChatView
+    CreateView -->|Click '🚀 Deploy Agent'| Grid
+    AgentChatView -->|Click '← Back to Agents'| Grid
+
+    subgraph ExecutionPipeline ["Autonomous Scheduled Cron & Alert Engine"]
+        Cron["Catalyst Job Scheduler / AppSail Cron\n(e.g. Daily 08:00 AM IST)"]
+        CCTNS["CCTNS ZCQL Engine\n(Scan AccusedName, CaseMaster, Unit)"]
+        Findings{"Anomalies / Records Flagged?"}
+        VAK["Vajra VAK Mascot Alert\n(Audio Klaxon + Bottom Screen Speech)"]
+        Banner["System Priority Notification Banner\n(Click -> Direct Deep-Link to Agent Chat)"]
+    end
+
+    Cron --> CCTNS
+    CCTNS --> Findings
+    Findings -- Yes --> VAK
+    Findings -- Yes --> Banner
+    Findings -- No --> LogOnly["Log Clean Run to Agent Ledger & Sleep"]
+    Banner -->|User Clicks Notification| AgentChatView
+```
+
+---
+
+### 18.3 Dedicated Conversational Agent Creator (Grok-Style Chat Builder)
+
+When an officer clicks `+ Create New Agent`, the interface opens a dedicated full-screen conversational creation chat presided over by the **VAK Master Conductor**. Modeled after Grok Bots and character creation agents, the AI conducts an interactive, multi-turn interview to configure the autonomous agent:
+
+```
+VAK Conductor: "Greetings Officer. I am ready to construct a new 24/7 autonomous monitoring agent. What is the primary operational objective of this agent? (e.g., Daily suspect monitoring, CCTNS FIR alerts, remand tracking, or cyber fraud scanning?)"
+
+Officer: "I want to track a suspect named Ramesh Kumar. If any new FIR is filed with this name in Bengaluru or Chitradurga, alert me."
+
+VAK Conductor: "Understood. Tracking suspect 'Ramesh Kumar' across CCTNS registers in Bengaluru City and Chitradurga districts. At what schedule or cadence should this agent execute its sweep? (e.g., Daily at 08:00 AM IST, Hourly, or Every 12 Hours?)"
+
+Officer: "Every morning at 8:00 AM."
+
+VAK Conductor: "Understood: Scheduled daily at 08:00 AM IST (Cron: '0 8 * * *'). When a matching record or new FIR is detected, how should you be alerted? (e.g., VAK Mascot alert, Priority Notification Banner, or Station Digest?)"
+
+Officer: "VAK mascot alert and top notification."
+
+VAK Conductor: "Excellent. I have assembled all operational parameters. Please review the deployment configuration card below:"
+```
+
+#### The Deployment Confirmation Card
+Upon completing the interview, the AI renders a structured, high-contrast deployment card:
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ 🚀 AUTONOMOUS AGENT DEPLOYMENT MANIFEST (§63 BSA COMPLIANT)            │
+├────────────────────────────────────────────────────────────────────────┤
+│ Agent Code:      #AGT-RAMESH-WATCH-2026                                │
+│ Agent Name:      Suspect Watch: Ramesh Kumar (BLR/CTA)                 │
+│ Target Mandate:  Scan CCTNS Accused & CaseMaster for 'Ramesh Kumar'     │
+│ Districts:       Bengaluru City (211) & Chitradurga (216)              │
+│ Schedule:        Daily at 08:00 AM IST (Deterministic Cron: 0 8 * * *) │
+│ Daily Budget:    50,000 tokens (Estimated: ~2,400 tokens / run)        │
+│ Alert Triggers:  Vajra VAK Mascot Klaxon + System Notification Banner │
+│ Ticket Protocol: Paperclip + OpenDots Sovereign Task Synchronizer     │
+├────────────────────────────────────────────────────────────────────────┤
+│ [ 🚀 Deploy Autonomous Agent ]                   [ ✏️ Edit Parameters ]│
+└────────────────────────────────────────────────────────────────────────┘
+```
+Clicking **`[ 🚀 Deploy Autonomous Agent ]`**:
+1. Sends `POST /api/precinct/tickets` to register the agent in the Catalyst Datastore and Job Pool.
+2. Initializes the local execution ledger with an audit trail under Section 63 BSA.
+3. Adds the agent to the active agent card grid.
+4. Triggers an affirmative confirmation toast and returns to the agent directory.
+
+---
+
+### 18.4 Dedicated Active Agent View & Interactive Chat Log Stream
+
+When an officer clicks on an existing agent card in the grid, the screen renders that agent's **Dedicated Chat & Operational Stream**:
+1. **Agent Command Bar:**
+   * Back button: `← Back to Agents`
+   * Agent metadata: Name, Code, Status pill, Schedule, and Token Gauge.
+   * Controls: `[ ▶ Run Manual Scan Now ]`, `[ ⏸ Pause / Resume ]`, `[ ⚙️ Settings ]`.
+2. **Chronological Execution Timeline:**
+   Each scheduled run writes a structured card into the agent's chat stream:
+   * **Clean Run Example:**
+     > `[Today 08:00:14 IST] 🟢 Scheduled Sweep Complete`
+     > `Queried CCTNS Datastore across Bengaluru City and Chitradurga for AccusedName LIKE 'Ramesh Kumar%'.`
+     > `Total records scanned: 4,120. Zero new matching FIRs detected in the last 24 hours. State: SLEEP.`
+   * **Flagged Anomaly Example:**
+     > `[Yesterday 08:00:18 IST] ⚠️ PRIORITY ANOMALY DETECTED`
+     > `New FIR detected matching suspect criteria!`
+     > `• FIR No: Cr. No. 42/2026 (Chitradurga Rural PS)`
+     > `• Accused: Ramesh Kumar s/o Manjunath (Age 34)`
+     > `• Offenses: Section 303(2) & 317(2) BNS`
+     > `• Registered: 2026-10-27 22:45 IST`
+     > `[ 📄 Open Incident Dossier ]  [ 🔗 Trace Co-Accused Graph ]  [ 🛡️ Issue Section 35 BNSS Notice ]`
+3. **Conversational Interactivity:**
+   The officer can chat directly with the agent:
+   * *"Run an immediate manual sweep right now"* -> Agent triggers instant execution and prints live results.
+   * *"Add alias 'Ramanna' to the search watchlist"* -> Agent updates its search criteria in-place.
+   * *"Summarize all activity over the past 7 days"* -> Agent compiles a concise executive summary.
+
+---
+
+### 18.5 Automated Scheduled Cron Execution & Vajra VAK Mascot Alert Pipeline
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Cron as Catalyst Job Scheduler / AppSail Cron
+    participant Agent as Autonomous Agent Runner
+    participant ZCQL as CCTNS ZCQL Datastore
+    participant Bus as vajraVakEventBus
+    participant VAK as Vajra VAK Mascot (Screen UI)
+    participant UI as Officer Command Workstation
+
+    Cron->>Agent: Trigger scheduled heartbeat (e.g. 08:00 AM IST)
+    Agent->>ZCQL: Execute parameterized query (AccusedName LIKE 'Ramesh Kumar%')
+    ZCQL-->>Agent: Return matching records (1 new FIR flagged)
+    
+    rect rgb(255, 240, 240)
+    Note over Agent,UI: Alert Pipeline Triggered
+    Agent->>Agent: Generate Section 63 BSA hashed evidence card
+    Agent->>Bus: emit("agent_alert", { agentId, title, findings, priority: "CRITICAL" })
+    Bus->>VAK: Trigger audio notification & mascot speech bubble
+    VAK-->>UI: "⚠️ Officer! Agent Suspect Watch flagged 1 new FIR in Chitradurga!"
+    Bus->>UI: Render sticky top notification banner
+    end
+
+    UI->>UI: Officer clicks notification banner
+    UI->>UI: Deep-link directly into Agent Workspaces -> Active Agent Chat
+    UI-->>Agent: Render full incident dossier & co-accused linkages
+```
+
+#### Sovereign Event Bus Integration (`src/services/vajraVakEventBus.ts`)
+```typescript
+// Event payload for autonomous agent detections
+export interface AgentAlertEvent {
+  agentId: string;
+  agentCode: string;
+  agentName: string;
+  priority: "CRITICAL" | "HIGH" | "MEDIUM";
+  title: string;
+  findings: string;
+  caseNo?: string;
+  timestamp: string;
+}
+
+// Dispatched by the agent execution worker
+vajraVakEventBus.emit("agent_alert", {
+  agentId: "worker-ramesh-watch",
+  agentCode: "#AGT-RAMESH-WATCH",
+  agentName: "Suspect Watch: Ramesh Kumar",
+  priority: "CRITICAL",
+  title: "New FIR Flagged: Cr. 42/2026 Chitradurga",
+  findings: "Accused Ramesh Kumar identified in robbery investigation.",
+  caseNo: "CR-2026-0042",
+  timestamp: new Date().toISOString()
+});
+```
+
+When received, the **Vajra VAK Mascot** (`VajraVak.tsx`):
+1. Plays the sovereign priority acoustic alert chime (`alert_urgent.wav`).
+2. Displays an animated speech bubble: *"Officer! Agent '#AGT-RAMESH-WATCH' has detected a matching FIR in Chitradurga Rural PS. Click to inspect."*
+3. Clicking the mascot or top notification banner invokes `setCurrentScreen("agent_workspaces")`, sets `selectedWorkerId("worker-ramesh-watch")`, and opens the agent's dedicated chat view immediately.
+
+---
+
+### 18.6 Data Models & Paperclip Ticketing Alignment
+
+The implementation maintains full compatibility with Paperclip task tickets and OpenDots autonomous worker protocols:
+
+```typescript
+export interface WorkerAgent {
+  id: string;
+  code: string;
+  name: string;
+  mandate: string;
+  schedule: string;
+  cron: string;
+  tokenCap: number;
+  tokensUsed: number;
+  targetEndpoint: string;
+  status: "Active" | "Idle" | "Running" | "Paused";
+  lastRun: string;
+  lastRunStatus: "success" | "anomalies_flagged" | "idle";
+  flaggedCount: number;
+  logs: string[];
+  chatHistory: AgentChatMessage[];
+}
+
+export interface AgentChatMessage {
+  id: string;
+  sender: "agent" | "officer" | "system";
+  text: string;
+  timestamp: string;
+  evidenceCard?: {
+    firNo: string;
+    ps: string;
+    sections: string;
+    accusedName: string;
+    sha256: string;
+  };
+}
+```
+
+---
+
+### 18.7 Target File Modifications Table
+
+| Target File | Exact Line(s) | Current Problematic Implementation | Harmonized Production Code | Functional Rationale |
+| :--- | :--- | :--- | :--- | :--- |
+| `src/screens/AgentWorkspaceScreen.tsx` | 429–978 | Cramped 3-pane split layout with hardcoded bottom 4-department widget | Rebuild screen into 3 views: (1) Executive Directory with search/status filters and responsive agent cards (matching `InvestigationsScreen.tsx`), (2) Full-Screen Conversational Agent Builder chat, (3) Dedicated Agent Chat & Execution Log stream | Restores clean executive UX, removes artificial 4-department restriction, and provides Grok-style conversational creation. |
+| `src/services/vajraVakEventBus.ts` | 1–80 | Missing `agent_alert` event definition | Add `agent_alert` event type and dispatch handlers | Connects background agent detections directly to the VAK Mascot and system notification banner. |
+| `src/components/VajraVak.tsx` | 120–250 | Mascot only reacts to manual chat triggers | Listen to `agent_alert` from event bus, play alert audio, and render one-click drilldown pill | Ensures the officer is immediately alerted anywhere in the app when an autonomous agent flags evidence. |
+| `vajra_backend/main.py` | 7200+ | No endpoint to trigger on-demand agent run | Add `POST /api/agents/{id}/execute` to trigger instant CCTNS scan | Enables the `▶ Run Now` button and in-chat direct scan commands. |
 
 ---
 
@@ -900,6 +1162,14 @@ Sprint Focus 5: Operational Secret Hardening (Track 24)
 ├── Purge hardcoded fallback keys from python source files
 ├── Enforce pure os.getenv() runtime secret resolution
 └── Validate clean degradation modes without stack trace secret leakage
+
+Sprint Focus 6: Autonomous Agent Workspaces & VAK Alert Pipeline (Track 31)
+├── Rebuild AgentWorkspaceScreen.tsx into executive directory (parity with InvestigationsScreen.tsx)
+├── Remove rigid 4-department widget; support arbitrary autonomous monitoring tasks
+├── Build full-screen Conversational Agent Builder chat (Grok Bots 5-turn interview & confirmation card)
+├── Implement dedicated Active Agent Chat & chronological run report stream
+├── Wire scheduled cron execution against CCTNS Accused/FIR database
+└── Connect agent anomaly alerts to Vajra VAK Mascot and top system notification banner
 ```
 
 ### Active Verification Checklist
@@ -911,6 +1181,9 @@ Sprint Focus 5: Operational Secret Hardening (Track 24)
 - [ ] CCTNS record presentations route through Qwen MoE synthesis, achieving sub-7s response times with circuit breaker protection (Track 20).
 - [ ] Network graph node circles render with theme-adapted ivory fills and legible node labels in light mode (Track 22).
 - [ ] Front page "Open Investigations" pill count matches the exact count of real active investigations on the Investigations Screen (Track 23).
+- [ ] Agent Workspaces executive directory renders search, status filter pills, and responsive agent cards without the 4-department restriction (Track 31).
+- [ ] Clicking "+ Create New Agent" opens a full-screen conversational creation chat that outputs a structured deployment confirmation card (Track 31).
+- [ ] Background agent detecting a matching FIR emits an alert event that triggers the Vajra VAK Mascot and top notification banner (Track 31).
 
 ---
 
