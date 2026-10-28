@@ -1010,6 +1010,202 @@ export interface AgentChatMessage {
 
 ---
 
+### 18.8 Comprehensive High-Fidelity Screen Wireframes
+
+The following wireframes define the exact visual ergonomics, typography, card metrics, and interactive flows for all three views of the redesigned Agent Workspaces platform:
+
+#### Wireframe 1: Executive Directory Hub View (`AgentWorkspaceScreen.tsx` - Primary State)
+*Parity with `InvestigationsScreen.tsx` (centered document layout, search + status pills, and responsive card grid):*
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  PRECINCT AGENT WORKSPACES                                                                             │
+├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                        │
+│  🤖 PRECINCT AGENT WORKSPACES    [Paperclip + OpenDots]               [ + CREATE NEW AGENT ]           │
+│     Autonomous 24/7 background agents monitoring CCTNS FIRs, suspects, statutory clocks & telemetry    │
+│  ────────────────────────────────────────────────────────────────────────────────────────────────────  │
+│                                                                                                        │
+│  [ 🔍 Search autonomous agents by code, suspect, or mandate...                             ]           │
+│                                                                                                        │
+│  Filter:  [ ALL (5) ]   [ ● ACTIVE (3) ]   [ 🔄 RUNNING (1) ]   [ ⏸ IDLE (1) ]   [ ⏹ PAUSED (0) ]    │
+│                                                                                                        │
+│  ┌──────────────────────────────────────────────┐  ┌──────────────────────────────────────────────┐    │
+│  │ #AGT-RAMESH-WATCH-2026          [● ACTIVE]   │  │ #DOT-187-REMAND                 [● ACTIVE]   │    │
+│  │ ───────────────────────────────────────────  │  │ ───────────────────────────────────────────  │    │
+│  │ Suspect Watch: Ramesh Kumar (BLR/CTA)        │  │ §187 Statutory Remand Sentinel               │    │
+│  │ Mandate: Scan statewide CCTNS for new FIRs   │  │ Mandate: 60/90-day statutory default bail    │    │
+│  │ Target:  CCTNS Accused & CaseMaster Registry │  │ Target:  Section 187 BNSS Judicial Registry  │    │
+│  │ Cadence: Daily 08:00 AM IST (Cron: 0 8 * * *)│  │ Cadence: Hourly Check (Cron: 0 * * * *)      │    │
+│  │                                              │  │                                              │    │
+│  │ Daily Quota: [██████░░░░░░░░░░] 3,140/50,000 │  │ Daily Quota: [█████████████░░░] 18,400/35,000│    │
+│  │ Status: 🟢 Today 08:00 AM — No anomalies     │  │ Status: ⚠️ 42 mins ago — 1 nearing 90-day    │    │
+│  │                                              │  │                                              │    │
+│  │ [ ▶ Run Now ]    [ ⏸ Pause ]   [ 💬 Open ]   │  │ [ ▶ Run Now ]    [ ⏸ Pause ]   [ 💬 Open ]   │    │
+│  └──────────────────────────────────────────────┘  └──────────────────────────────────────────────┘    │
+│                                                                                                        │
+│  ┌──────────────────────────────────────────────┐  ┌──────────────────────────────────────────────┐    │
+│  │ #DOT-1930-CYBER                 [🔄 RUNNING] │  │ #DOT-MUJOCO-FSL                 [⏸ IDLE]     │    │
+│  │ ───────────────────────────────────────────  │  │ ───────────────────────────────────────────  │    │
+│  │ Cyber Fraud 1930 Mule Radar                  │  │ MuJoCo Kinematics & Crash Physics            │    │
+│  │ Mandate: I4C / NCWRS 1930 freeze evasion     │  │ Mandate: DeepMind impact & skid reconstruction│   │
+│  │ Target:  NCWRS Live Cyber Feed               │  │ Target:  FSL Collision Engine                │    │
+│  │ Cadence: Every 15 mins (Cron: */15 * * * *)  │  │ Cadence: On-Demand Inquest                   │    │
+│  │                                              │  │                                              │    │
+│  │ Daily Quota: [████░░░░░░░░░░░░] 2,400/50,000 │  │ Daily Quota: [████████░░░░░░░░] 12,850/75,000│    │
+│  │ Status: 🔄 Sweeping Belagavi mule nodes...   │  │ Status: 🟢 Yesterday 22:30 — Impact solved   │    │
+│  │                                              │  │                                              │    │
+│  │ [ ⏹ Abort ]     [ ⏸ Pause ]   [ 💬 Open ]   │  │ [ ▶ Run Now ]    [ ⏸ Pause ]   [ 💬 Open ]   │    │
+│  └──────────────────────────────────────────────┘  └──────────────────────────────────────────────┘    │
+│                                                                                                        │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Wireframe 2: Conversational Agent Builder Chat View (`+ Create New Agent`)
+*Grok Bots / Character Creator parity with 5-turn natural language interview and live deployment card:*
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  [ ← Back to Agents ]    VAK CONVERSATIONAL AGENT BUILDER                [ 🛡️ Section 63 BSA Verified ]│
+├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                        │
+│  ┌──┐                                                                                                  │
+│  │🤖│ VAK Master Conductor                                                                             │
+│  └──┘ Greetings, Investigating Officer. I am ready to construct a new 24/7 autonomous monitoring       │
+│       agent. What is the primary operational objective of this agent?                                  │
+│                                                                                                        │
+│                                                     ┌──┐                                               │
+│                                     Officer Rathore │👮│                                               │
+│                                                     └──┘                                               │
+│       I want an agent that tracks suspect 'Ramesh Kumar' across all stations in Chitradurga and        │
+│       Bengaluru. If any new FIR is filed with this name or robbery charges, alert me.                  │
+│                                                                                                        │
+│  ┌──┐                                                                                                  │
+│  │🤖│ VAK Master Conductor                                                                             │
+│  └──┘ Understood: Targeted Suspect & Crime Head Surveillance.                                          │
+│       • Suspect Name: 'Ramesh Kumar' (with phonetic aliases)                                           │
+│       • Offenses: Section 303 / 309 / 311 BNS (Theft, Robbery, Organized Crime)                        │
+│       • Jurisdictions: Bengaluru City (211) & Chitradurga (216)                                        │
+│                                                                                                        │
+│       At what time or cadence should this agent run its CCTNS sweep?                                   │
+│                                                                                                        │
+│                                                     ┌──┐                                               │
+│                                     Officer Rathore │👮│                                               │
+│                                                     └──┘                                               │
+│       Every morning at 8:00 AM IST. And alert me with the VAK mascot and notification banner.          │
+│                                                                                                        │
+│  ┌──┐                                                                                                  │
+│  │🤖│ VAK Master Conductor                                                                             │
+│  └──┘ Perfect. All operational parameters have been extracted and bound into the manifest below:       │
+│                                                                                                        │
+│       ┌────────────────────────────────────────────────────────────────────────────────────────┐       │
+│       │ 🚀 AUTONOMOUS AGENT DEPLOYMENT MANIFEST (§63 BSA COMPLIANT)                            │       │
+│       ├────────────────────────────────────────────────────────────────────────────────────────┤       │
+│       │ Agent Code:      #AGT-RAMESH-WATCH-2026                                                │       │
+│       │ Agent Name:      Suspect Watch: Ramesh Kumar (BLR/CTA)                                 │       │
+│       │ Target Mandate:  Scan CCTNS Accused & CaseMaster for 'Ramesh Kumar'                     │       │
+│       │ Target Bounds:   Bengaluru City [12.8°N, 77.4°E] & Chitradurga [13.8°N, 76.0°E]        │       │
+│       │ Schedule:        Daily at 08:00 AM IST (Deterministic Cron: 0 8 * * *)                 │       │
+│       │ Daily Budget:    50,000 tokens (~2,400 tokens / run)                                   │       │
+│       │ Alert Channels:  Vajra VAK Mascot Speech + Audio Klaxon + Sticky Priority Banner       │       │
+│       │ Data Provenance: Grounded CCTNS Karnataka ZCQL Table Accused / CaseMaster              │       │
+│       ├────────────────────────────────────────────────────────────────────────────────────────┤       │
+│       │  [ 🚀 DEPLOY AUTONOMOUS AGENT ]                           [ ✏️ Edit Parameters ]       │       │
+│       └────────────────────────────────────────────────────────────────────────────────────────┘       │
+│                                                                                                        │
+├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ [ Type additional instructions or modifications for this agent...                             ] [ 📤 ] │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Wireframe 3: Dedicated Active Agent Chat & Operational Stream View
+*Full-screen view when clicking an agent card (e.g. `#AGT-RAMESH-WATCH-2026`):*
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  [ ← Back to Agents ]   #AGT-RAMESH-WATCH-2026   [● ACTIVE]   Daily 08:00 AM    [ ▶ RUN NOW ] [ ⏸ PAUSE]│
+├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                        │
+│  ───── [ TODAY: 2026-10-28 ] ────────────────────────────────────────────────────────────────────────  │
+│                                                                                                        │
+│  ┌──┐                                                                                                  │
+│  │🤖│ Agent Heartbeat • 08:00:14 IST                                                                   │
+│  └──┘ 🟢 SCHEDULED SWEEP COMPLETE — ZERO ANOMALIES FLAGGED                                             │
+│       • Query: SELECT AccusedName, FIRNo, DistrictID FROM Accused WHERE AccusedName LIKE 'Ramesh K%'   │
+│       • Districts Scanned: Bengaluru City (211), Chitradurga (216)                                     │
+│       • Records Evaluated: 4,120 active cases                                                          │
+│       • Flagged Matches: 0 new registrations in last 24 hours                                          │
+│       • Token Usage: 2,140 tokens decremented • System State: SLEEP                                    │
+│                                                                                                        │
+│  ───── [ YESTERDAY: 2026-10-27 ] ──────────────────────────────────────────────────────────────────────  │
+│                                                                                                        │
+│  ┌──┐                                                                                                  │
+│  │🤖│ Agent Heartbeat • 08:00:18 IST                                                                   │
+│  └──┘ ⚠️ PRIORITY ANOMALY DETECTED — NEW FIR REGISTRATION FLAGGED!                                     │
+│       A newly registered FIR matches tracked criteria 'Ramesh Kumar' under property crime sections:    │
+│                                                                                                        │
+│       ┌────────────────────────────────────────────────────────────────────────────────────────┐       │
+│       │ 🚨 EVIDENTIARY INCIDENT MATCH (§63 BSA PROVENANCE)                                     │       │
+│       ├────────────────────────────────────────────────────────────────────────────────────────┤       │
+│       │ FIR Number:     Cr. No. 42/2026 (Chitradurga Rural Police Station)                     │       │
+│       │ Accused:        Ramesh Kumar s/o Manjunath, Age 34, R/o Challakere                     │       │
+│       │ Statutory Offenses: Section 303(2) [Theft] & Section 317(2) [Stolen Property] BNS     │       │
+│       │ Registered At:  2026-10-26 23:15:00 IST                                                │       │
+│       │ SHA-256 Hash:   9f83b2a4c8712e09... (Sealed in Stratus Bucket: vajra-spatial-cache)   │       │
+│       ├────────────────────────────────────────────────────────────────────────────────────────┤       │
+│       │ [ 📄 View Full FIR Dossier ]   [ 🕸️ Co-Accused Graph ]   [ ⚖️ §187 Remand Clock ]      │       │
+│       └────────────────────────────────────────────────────────────────────────────────────────┘       │
+│                                                                                                        │
+│                                                     ┌──┐                                               │
+│                                     Officer Rathore │👮│                                               │
+│                                                     └──┘                                               │
+│       Add alias 'Ramanna' to the watchlist and run a check on Challakere vehicle registrations.        │
+│                                                                                                        │
+│  ┌──┐                                                                                                  │
+│  │🤖│ Agent #AGT-RAMESH-WATCH • Just Now                                                               │
+│  └──┘ Criteria updated. Alias 'Ramanna' added to regex filters. Executing Parivahan RTO lookup         │
+│       for Challakere sub-division... 1 matching Bajaj Pulsar (KA-16-EE-4091) registered to accused.    │
+│                                                                                                        │
+├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ [ Direct message this agent (e.g., 'Run scan now', 'Add phone 98450...', 'Pause agent')...    ] [ 📤 ] │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Wireframe 4: Vajra VAK Mascot & Priority Notification Overlay
+*How alerts surface anywhere in the VAJRA platform when an autonomous agent detects new evidence:*
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ [Top Notification Banner]                                                                              │
+│ ⚠️ CRITICAL AGENT ALERT: #AGT-RAMESH-WATCH detected 1 new FIR in Chitradurga! [ Click to Inspect ➔ ] [✕] │
+├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                        │
+│  (Officer is working in AI Chat, Spatial Hotspots, or District Analytics screen...)                    │
+│                                                                                                        │
+│                                                                                                        │
+│                                                                                                        │
+│                                                                                                        │
+│                                                      ┌──────────────────────────────────────────────┐  │
+│                                                      │ 🔊 "Officer Rathore! Agent #AGT-RAMESH-WATCH │  │
+│                                                      │  flagged Cr. 42/2026 in Chitradurga Rural!   │  │
+│                                                      │  [ Open Agent Chat ➔ ]                       │  │
+│                                                      └───────────────────────┬──────────────────────┘  │
+│                                                                              │                         │
+│                                                                           ┌─────┐                      │
+│                                                                           │(⦿_⦿)│  <-- Vajra VAK       │
+│                                                                           │ /█\ │      Mascot Pulse    │
+│                                                                           └─────┘                      │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Track 30: [PAUSED / DEFERRED] High-Performance Bidirectional English <-> Kannada Translation Architecture (Direct Zia Single-Shot & Sub-1.5s Execution)
 
 > [!NOTE]
