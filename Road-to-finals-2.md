@@ -19,6 +19,7 @@
     * **Track 23:** Front Page Telemetry Count Calibration (Open Investigations & Pending Tasks Bug)
     * **Track 24:** Operational Secret Management, Key Rotation & Clean Failures
     * **Track 31:** Autonomous Agent Workspaces: Conversational Grok-Style Agent Builder, Scheduled Cron Monitoring & VAK Alert Pipeline
+    * **Track 32:** Global Workspace Shell Redesign — Seamless Headerless Layout, Claude-Style Centered Hero, Consolidated Navigation & Floating Status Overlay
     * **Track 30:** `[PAUSED / DEFERRED]` High-Performance Bidirectional English <-> Kannada Translation Architecture
     * **Implementation & Verification Roadmap for Active Tracks**
   * **PART 2: PRODUCTION-VERIFIED DEPLOYMENTS & SHIPPED TRACKS REGISTER**
@@ -30,7 +31,7 @@
 
 ## 1. Executive Summary & Problem Formulation
 
-During pre-finals validation and field testing, ten critical human-machine interface, speech synthesis, visual ergonomics, security escalation, ambient conversational, telemetry calibration, and inference latency issues were identified that directly impact officer usability, legal compliance, and operational integrity:
+During pre-finals validation and field testing, twelve critical human-machine interface, speech synthesis, visual ergonomics, security escalation, ambient conversational, telemetry calibration, and inference latency issues were identified that directly impact officer usability, legal compliance, and operational integrity:
 
 1. **Acoustic Gibberish on Kannada Speech Synthesis:** When testing Kannada speech in Settings or reading dossiers, the synthesized audio produced unintelligible phonetic clicks and mangled noise ("gibberish"). Traced to an infrastructure mismatch: the Zoho Catalyst QuickML speech synthesis endpoint (`/quickml/api/v1/project/50212000000025002/models/zia/speech/synthesize`) rejects `"language": "kn"` with HTTP 400 `PATTERN_NOT_MATCHED` and only accepts `"en-us"`. Passing raw Kannada Unicode script into an English neural model (`m_adam`) forces an English grapheme-to-phoneme converter on Kannada glyphs, creating corrupted audio.
 2. **Audio Language Mismatch vs. Visual Text:** The application previously maintained a manual "Primary Audio Language" preference (`ttsSettings.language = "en" | "kn" | "hi"`). When an officer toggled a message into Kannada, but their audio setting was "English" (or vice versa), the TTS engine attempted to force-translate or speak in the opposite language, creating cognitive friction and playback desynchronization.
@@ -45,6 +46,13 @@ During pre-finals validation and field testing, ten critical human-machine inter
 9. **Relational Network Graph Dark Node Fill & Low Contrast in Light Mode:** In the Criminal Syndicate & Co-Accused Graph (`NetworkGraph.tsx`), node circles are hardcoded to `fill="#0f172a"` (pitch black/dark navy). In light mode, these appear as jarring dark ink blots on an ivory surface. Additionally, node labels using `#22d3ee` (cyan) and `#a78bfa` (lavender) suffer from severe contrast degradation on light backgrounds, failing WCAG accessibility standards.
 10. **Front Page Telemetry Double-Counting Mismatch ("2 Open Investigations" vs 1 Actual):** The home screen quick-action pill displays `"2 Open Investigations"` and `"4 Pending Tasks"`. However, clicking through to the Investigations screen reveals only **1 investigation** (`sess-1-1789310328`). Root cause: `_count_open_investigations()` in `main.py` performs a raw ZCQL `COUNT(ROWID)` query on `ChatSession WHERE employee_id = {employee_id} AND description IS NOT NULL AND description != ''`. An earlier session summarizer had injected bullet-pointed text summaries (`• Find similar chain snatching cases`) into `ChatSession.description` for standard chat sessions. While `GET /api/investigations` filters out bullet point descriptions (`•`), `_count_open_investigations()` in `officer_digest` omitted this check, counting regular chats as investigations. Similarly, pending tasks fanned out across rogue sessions while ignoring tasks in shared Cowork investigations.
 11. **Agent Workspaces Architectural Rigidity & Missing Conversational Agent Builder:** The Agent Workspaces screen regressed into a cramped 3-pane split layout with a rigid bottom section locking autonomous agents into 4 hardcoded departments (Cyber, Legal, Forensics, Surveillance). In daily police operations, officers require flexible, autonomous background agents for recurring tasks (e.g. daily CCTNS queries tracking new FIRs against specific suspects, remand clocks, and beat updates). The screen lacked parity with `InvestigationsScreen.tsx` (clean header, `+ Create New Agent` button, search/status filter pills, and a responsive grid of agent cards), a dedicated full-screen conversational creation chat (Grok Bots style: interviewing the officer on mandate, criteria, schedule, and token budget, followed by a deployment confirmation card), and an automated cron execution pipeline that pushes flagged record alerts directly through the Vajra VAK Mascot and system notification banners.
+12. **Workspace Shell Ergonomics, Misaligned Headers & Background Text Overlap:** Visual inspection of the main dashboard and chat interface revealed key ergonomic defects:
+    - A heavy full-width header bar (`VAJRA Copilot Hub`) cut across the canvas, with misaligned borders crossing the sidebar header.
+    - The sidebar header had an unnecessary manual collapse arrow button (`<` / `>`) despite auto-hover expansion, while the main application header duplicated the `[|] ZEN` toggle with raw ASCII characters.
+    - The welcome greeting in `GreetingHeader.tsx` used a generic sun icon (`✴`) stacked on top of the text instead of the authentic `VajraLogo` placed inline at the start of the greeting (`[❖ VajraLogo] Daylight patrol, Siddharth`), resulting in an off-center, fragmented hero layout compared to modern LLM interfaces like Claude.
+    - Active chat sessions displayed raw database IDs (`SESSION: sess-1-1789115315`) instead of the human-readable chat title (`Find similar narcotics cases`).
+    - The floating `Export PDF` button in `AIChatScreen.tsx` lacked an opaque container, allowing chat messages to scroll underneath and overlap directly with the button text.
+    - The chat query input box had an unwanted top micro-pill bar (`[ ✦ ZEN CANVAS ] [ 🎙 Audio Voice ] ...`) that cluttered the interface when Zen mode was toggled.
 
 ---
 
@@ -1204,6 +1212,238 @@ The following wireframes define the exact visual ergonomics, typography, card me
 └────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
+
+---
+
+## Track 32: Global Workspace Shell Redesign — Seamless Headerless Layout, Claude-Style Centered Hero, Consolidated Navigation & Floating Status Overlay
+
+### 32.1 Problem Diagnosis & Aesthetic Audit
+Field usability testing, visual ergonomics review, and comparative analysis against top-tier AI chat interfaces (e.g. Anthropic Claude) identified six structural interface defects in VAJRA 3.0:
+1. **Misaligned Dual-Header Crossing Lines:** The application previously rendered two adjacent horizontal headers (`<UnifiedSidebar>` header at 48px height and `<MainLayout>` header at 56px height) with conflicting bottom border lines (`border-stone-850` vs `border-stone-800`), creating an unsymmetric, cluttered visual boundary at the top-left of the viewport.
+2. **Redundant Controls & Hardcoded ASCII Glyphs:**
+   - The sidebar header contained a manual collapse arrow (`<ChevronLeft>` / `<ChevronRight>`), even though the sidebar automatically expands on mouse hover and collapses back to an icon rail on mouse leave.
+   - The main application header duplicated the collapse toggle with a raw ASCII string (`<span>[|]</span>` and `<span>ZEN</span>`), failing to use official SVG vector iconography and using informal terminology.
+3. **Off-Center Welcoming Hero & Displaced Logo:** In `GreetingHeader.tsx`, the interface rendered a generic sun symbol (`✴`) in a circular box stacked vertically *above* the greeting heading (`Daylight patrol, Siddharth`). This forced the hero downwards, broke horizontal visual symmetry, and omitted the official gold geometric `VajraLogo`. By contrast, modern LLM command hubs (e.g. Claude) integrate their sovereign emblem **inline at the start of the greeting text** (`[❖ Emblem] Greeting, User`), creating a balanced, centered visual anchor.
+4. **Raw Database IDs Exposed to Officers:** In Focus/Zen mode, the main header displayed raw session keys (`SESSION: sess-1-1789115315`) instead of the human-readable investigation title (`Find similar narcotics cases`) that appears in the sidebar.
+5. **Background Chat Text Overlap Bug:** In `AIChatScreen.tsx`, the `Export PDF` and `Browse` controls were positioned as a floating overlay (`absolute top-4 right-4 z-20`) without an opaque container. When messages scrolled upward, officer message text (e.g. `SIDDHARTH BHATIA • KSP-2346836 • 13:03 @vajra`) scrolled underneath and collided directly with the `Export PDF` button.
+6. **Chat Input Micro-Pill Clutter:** `ChatInput.tsx` rendered an extra top bar (`[ ✦ ZEN CANVAS ] [ 🎙 Audio Voice ] [ 📄 + Document ] [ ⚖️ §187 Remand Check ] [ 🌐 EN ]`) whenever Zen mode was active, distorting composer height and disrupting typing flow.
+
+---
+
+### 32.2 The 5 Architectural Pillars
+
+#### Pillar 1: Elimination of the Main Application Header (Seamless Canvas)
+The full-width `<header className="glass-panel border-b border-stone-800...">` is eliminated entirely from `MainLayout.tsx`. The entire main viewport is converted into an unobstructed, edge-to-edge analytical canvas, removing all horizontal border lines and visual clutter.
+
+#### Pillar 2: Consolidated Navigation in Sidebar Header
+All navigation controls are unified within the sidebar header:
+* **Official Branding:** Authentic `<VajraLogo size={22} />` + bold gold tracking text `VAJRA`.
+* **History Navigation:** Back (`<ChevronLeft />`) and Forward (`<ChevronRight />`) screen arrows relocated directly beside the logo.
+* **Focus Mode Toggle:** Replaces raw ASCII `[|]` with an authentic Lucide `<PanelLeft className="w-3.5 h-3.5" />` vector icon with authoritative tooltip `"Toggle Focus Mode (Hide Sidebars for Deep Investigation)"`.
+* **Redundant Arrow Removed:** The manual chevron collapse arrow is eliminated; the sidebar natively expands on hover (`onMouseEnter`) and collapses on exit (`onMouseLeave`).
+
+#### Pillar 3: Floating Top-Right Glass Status Island
+Instead of occupying a full-width header bar, the operational utility controls float in the top-right corner as a compact frosted-glass island (`bg-stone-900/60 backdrop-blur-md border border-stone-800/80 rounded-xl px-3 py-1.5 shadow-lg`):
+* **Language Selector:** Bilingual toggle (`ಕನ್ನಡ` / `EN`).
+* **Theme Controller:** High-contrast light/dark toggle (`Sun` / `Moon`).
+* **Notification Bell:** Live alert center with pending badge counter (`🔔 14`).
+* **Officer Identity Pill:** Official police badge number (`2346836`).
+
+#### Pillar 4: Claude-Style Centered Hero with Inline Sovereign VajraLogo
+In `GreetingHeader.tsx`, the vertical stack with `✴` is replaced with an inline, centered layout:
+```tsx
+<div className="flex items-center justify-center gap-3 mb-2 select-none">
+  <VajraLogo size={28} />
+  <h1 className="text-2xl sm:text-3xl font-serif text-stone-100 tracking-tight font-medium">
+    {greeting}
+  </h1>
+</div>
+```
+The hero greeting, dynamic time-of-day intelligence phrase, centered query capsule, and quick-action telemetry pills form a unified, balanced visual focal point matching state-of-the-art AI command workstations.
+
+#### Pillar 5: Dedicated Chat Sub-Header Bar & Clean Composer
+1. **Non-Overlapping Sub-Header Bar (`AIChatScreen.tsx`):**
+   A static, non-floating bar (`shrink-0 border-b border-stone-850/80 bg-stone-900/90 backdrop-blur-md px-6 py-2.5 flex items-center justify-between z-20`) sits directly at the top of active chat threads:
+   * **Left Side:** Human-readable chat session title (e.g. `📁 Find similar narcotics cases`), synchronized via `activeChatSessionTitle` in `AppContext`.
+   * **Right Side:** `[ 📄 Export PDF ]` + `[ 🌐 Browse ]` + investigation management tools.
+   * **Zero Collision:** Messages scroll strictly inside an independent `overflow-y-auto` container below this bar, completely eliminating background text overlap.
+2. **Purge of Micro-Pill Toolbar (`ChatInput.tsx`):**
+   The unwanted top micro-pill row (`ZEN CANVAS`, `Audio Voice`, `+ Document`, etc.) is purged from `ChatInput.tsx`. The composer remains sleek, unified, and consistent across all operational modes.
+
+---
+
+### 32.3 Comprehensive High-Fidelity Screen Wireframes
+
+#### Wireframe 1: New Chat Screen (Claude-Style Clean Canvas)
+*Top header bar completely removed; navigation in sidebar header; top-right controls float as a sleek glass island; authentic logo is inline with the greeting.*
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ [ SIDEBAR HEADER ]                   │                                              [ FLOATING GLASS ISLAND ]   │
+│                                      │                                              ┌─────────────────────────┐ │
+│ ❖ VAJRA   [ < ] [ > ]   [ ◧ FOCUS ]  │                                              │ ಕನ್ನಡ  ☼  🔔(14)  2346836│ │
+│ (Symmetric & unified)                │                                              └─────────────────────────┘ │
+├──────────────────────────────────────┤                                                                          │
+│ ＋ NEW CHAT                          │                                                                          │
+│ 💬 AI Copilot                        │                                                                          │
+│ 📁 Investigations                    │                                                                          │
+│ 🤖 Agent Workspace                   │               [ PERFECTLY CENTERED HERO CANVAS ]                         │
+│ 🗺️ Spatial Hotspots                  │                                                                          │
+│ 📊 District Command                  │           ┌──────────────────────────────────────────────┐               │
+│ ⚙️ Settings                          │           │  ❖  Daylight patrol, Siddharth               │               │
+│                                      │           │  (Official VajraLogo INLINE at the beginning)│               │
+│                                      │           │                                              │               │
+│ ────────────────────                 │           │  What case or intelligence shall we          │               │
+│ 👤 DSP Rathore                       │           │  investigate today?                          │               │
+│                                      │           └──────────────────────────────────────────────┘               │
+│                                      │                                                                          │
+│                                      │    [ Assess public safety risk ]  [ Find similar cases ]  [ Hotspots ]   │
+│                                      │                                                                          │
+│                                      │    ┌── Centered Query Capsule ──────────────────────────────────────┐    │
+│                                      │    │ Query VAJRA AI copilot... (e.g., 'Show hotspots in Mysuru')    │    │
+│                                      │    │                                                                │    │
+│                                      │    │ [📎] [ CHAT | COWORK ]                   [✦ Standard v] [🎙] [✈]│    │
+│                                      │    └────────────────────────────────────────────────────────────────┘    │
+│                                      │                                                                          │
+│                                      │    ┌── Quick Signal Telemetry Cards ────────────────────────────────┐    │
+│                                      │    │ 📡 OSINT SIGNALS • LIVE                     [ Whole State v ]  │    │
+│                                      │    │ • The Tribune: Truecaller Lite Brings Powerful Caller ID...    │    │
+│                                      │    └────────────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────┴──────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Wireframe 2: Active Chat Conversation View (Sub-Header Bar & Zero Overlap)
+*When chatting, the chat session title and Export PDF sit cleanly in a dedicated sub-header bar below the floating area. Zero text overlap!*
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ ❖ VAJRA   [ < ] [ > ]   [ ◧ FOCUS ]  │                                              ┌─────────────────────────┐ │
+│                                      │                                              │ ಕನ್ನಡ  ☼  🔔(14)  2346836│ │
+│                                      │                                              └─────────────────────────┘ │
+├──────────────────────────────────────┼──────────────────────────────────────────────────────────────────────────┤
+│                                      │ ┌── Dedicated Chat Sub-Header Bar (Opaque backdrop — stops overlap) ───┐ │
+│ [+] New Chat                         │ │ 📁 Find similar narcotics cases            [ 📄 Export PDF ]  [ 🌐 ] │ │
+│ 💬 AI Copilot                        │ └──────────────────────────────────────────────────────────────────────┘ │
+│ 📁 Investigations                    │                                                                          │
+│                                      │   [ Messages scroll cleanly BELOW the sub-header bar ]                   │
+│                                      │                                                                          │
+│                                      │                                      ┌── User Bubble ────────────────┐   │
+│                                      │                                      │ SIDDHARTH BHATIA • 13:04      │   │
+│                                      │                                      │ @vajra find similar narcotics │   │
+│                                      │                                      └───────────────────────────────┘   │
+│                                      │                                                                          │
+│                                      │   ┌── VAJRA Copilot Response ────────────────────────────────────────┐   │
+│                                      │   │ VAJRA.AI • 13:04                                                 │   │
+│                                      │   │ Grounded CCTNS Record Search (§63 BSA 2023 Audited):             │   │
+│                                      │   │ 3 matching property & narcotics syndicate occurrences...         │   │
+│                                      │   └──────────────────────────────────────────────────────────────────┘   │
+│                                      │                                                                          │
+│                                      │   ┌── Clean Input Capsule ───────────────────────────────────────────┐   │
+│                                      │   │ Query VAJRA AI copilot...                                        │   │
+│                                      │   │ [📎] [ CHAT | COWORK ]                    [✦ Standard v] [🎙] [✈]│   │
+│                                      │   └──────────────────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────┴──────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Wireframe 3: Focus Mode (Full Viewport Distraction-Free Canvas)
+*Sidebar collapses completely. A minimal floating exit button appears at the top left, alongside the floating top-right island.*
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ ┌───────────────────────────┐                                                       ┌─────────────────────────┐ │
+│ │ ❖  [ ◧ FOCUS MODE (ON) ]  │                                                       │ ಕನ್ನಡ  ☼  🔔(14)  2346836│ │
+│ └───────────────────────────┘                                                       └─────────────────────────┘ │
+│                                                                                                                 │
+│ ┌── Full-Width Chat Sub-Header Bar ───────────────────────────────────────────────────────────────────────────┐ │
+│ │ 📁 Find similar narcotics cases                                           [ 📄 Export PDF ]  [ 🌐 ]         │ │
+│ └─────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                                                 │
+│   [ 100% FULL-WIDTH INVESTIGATION CANVAS — ZERO DISTRACTIONS ]                                                  │
+│                                                                                                                 │
+│   ┌── Relational Graph / Section 187 Radar / CCTNS Dossier ─────────────────────────────────────────────────┐ │
+│   │ [ 🕸️ Evidentiary Co-Accused Network ]          [ ⚖️ BNSS §187 Remand Clock: 12 Days Remaining ]          │ │
+│   └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                                                 │
+│   ┌── Clean Input Capsule ──────────────────────────────────────────────────────────────────────────────────┐ │
+│   │ Query VAJRA AI copilot...                                                                               │ │
+│   │ [📎] [ CHAT | COWORK ]                                                           [✦ Standard v] [🎙] [✈]│ │
+│   └─────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Wireframe 4: Chat Input Composer Purge (Before vs. After)
+
+##### Before (Unwanted micro-pill toolbar cluttering query box):
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ [ ✦ ZEN CANVAS ]  [ 🎙 Audio Voice ]  [ 📄 + Document ]  [ ⚖️ §187 Remand Check ]                [ 🌐 EN ]  │ <── REMOVED
+├────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ Query VAJRA AI copilot... (e.g., 'Show crimes connected to suspect Ramesh', 'Show hotspots in Mysuru') │
+│                                                                                                        │
+│ [📎] [ CHAT | COWORK ]  Shared session                                           [✦ Standard v] [🎙] [✈]│
+└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+##### After (Clean, unified, and consistent across all modes):
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Query VAJRA AI copilot... (e.g., 'Show crimes connected to suspect Ramesh', 'Show hotspots in Mysuru') │
+│                                                                                                        │
+│ [📎] [ CHAT | COWORK ]  Shared session                                           [✦ Standard v] [🎙] [✈]│
+└────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 32.4 Interactive Workflow & State Transition Architecture
+
+```mermaid
+flowchart TD
+    subgraph S1 [Normal Workspace Shell]
+        A["Sidebar in Compact Icon Rail"] --> B["Mouse hovers on Sidebar -> Auto-expands"]
+        B --> C["Mouse leaves Sidebar -> Auto-collapses back to Rail"]
+        D["Sidebar Header contains: ❖ VAJRA + [ < ] [ > ] + [ ◧ FOCUS ]"]
+        E["Top-Right Island floats gracefully: ಕನ್ನಡ | ☼ | 🔔 | Badge"]
+        F["Main Header Bar completely eliminated (Seamless Canvas)"]
+    end
+
+    subgraph S2 [Active Chat View]
+        G["Officer opens or starts a conversation"] --> H["Sub-Header Bar renders at top of chat canvas"]
+        H --> I["Left: Real Human Title (e.g. Find similar narcotics cases)"]
+        H --> J["Right: [ 📄 Export PDF ] and [ 🌐 Browse ]"]
+        K["Chat messages scroll strictly BELOW Sub-Header -> ZERO Text Overlap"]
+    end
+
+    subgraph S3 [Focus Mode Active]
+        L["Officer clicks [ ◧ FOCUS ]"] --> M["Sidebar collapses completely (0px width)"]
+        M --> N["Canvas expands to 100% viewport width"]
+        N --> O["Floating exit toggle appears at top-left: [ ❖ VAJRA | ◧ FOCUS MODE (ON) ]"]
+        O --> P["Clicking exit toggle restores Sidebar and standard shell"]
+    end
+
+    S1 -->|Click ◧ FOCUS| S3
+    S3 -->|Click ◧ FOCUS MODE (ON)| S1
+```
+
+---
+
+### 32.5 Target File Modifications Table
+
+| Target File | Exact Line(s) | Current Problematic Implementation | Harmonized Production Code | Functional Rationale |
+| :--- | :--- | :--- | :--- | :--- |
+| `src/components/MainLayout.tsx` | 76–140 | Heavy `<header className="glass-panel border-b...">` bar with duplicate `[|] ZEN` button, screen title, and misaligned borders | Remove `<header>` element entirely; render top-right status controls as a floating glass island (`absolute top-3.5 right-5 z-30`); in Focus Mode, render a minimal floating exit button at `top-3.5 left-5` | Eliminates crossing border lines, removes header clutter, and delivers a modern, open canvas like Claude. |
+| `src/components/UnifiedSidebar.tsx` | 192–217 | Sidebar header has raw ASCII `[|]` and redundant manual collapse chevron arrow `<ChevronLeft/Right>` | Move `<ChevronLeft>` and `<ChevronRight>` into the sidebar header beside `VAJRA`; replace `[|]` with `<PanelLeft className="w-3.5 h-3.5" />` (Focus button); delete the manual collapse chevron | Unifies all navigation in the sidebar header with authentic vector iconography; preserves automatic hover-expansion. |
+| `src/components/GreetingHeader.tsx` | 72–85 | Renders generic sun symbol `✴` in a circle vertically stacked above greeting heading | Replace stacked circle with an inline, centered flex container: `<div className="flex items-center justify-center gap-3"><VajraLogo size={28} /><h1 ...>{greeting}</h1></div>` | Delivers Claude-style centered greeting with official sovereign `VajraLogo` inline at the beginning of the text. |
+| `src/screens/AIChatScreen.tsx` | 1992–2061 | `Export PDF` button is `absolute top-4 right-4 z-20` without a solid container, causing scrolling chat text to overlap directly behind it | Replace floating button with a structured, non-overlapping sub-header bar (`shrink-0 border-b border-stone-850/80 bg-stone-900/90 backdrop-blur-md px-6 py-2.5 flex items-center justify-between z-20`) showing real session title on left and actions on right | Guarantees messages scroll strictly beneath the bar with zero background text collision. |
+| `src/components/ChatInput.tsx` | 434–500 | Renders `{zenMode && <div className="...">ZEN CANVAS...</div>}` micro-pill row above query box | Delete lines 434–500 entirely | Purges unnecessary micro-pills, keeping query capsule clean and consistent across all modes. |
+| `src/AppContext.tsx` | 240–245, 525 | `activeChatSessionId` only tracked raw ID, exposing `SESSION: sess-1-...` | Add `activeChatSessionTitle: string | null` and `setActiveChatSessionTitle: (t: string | null) => void` | Propagates the authentic, human-readable session title to the sub-header bar in real time. |
+
 ---
 
 ## Track 30: [PAUSED / DEFERRED] High-Performance Bidirectional English <-> Kannada Translation Architecture (Direct Zia Single-Shot & Sub-1.5s Execution)
@@ -1366,6 +1606,15 @@ Sprint Focus 6: Autonomous Agent Workspaces & VAK Alert Pipeline (Track 31)
 ├── Implement dedicated Active Agent Chat & chronological run report stream
 ├── Wire scheduled cron execution against CCTNS Accused/FIR database
 └── Connect agent anomaly alerts to Vajra VAK Mascot and top system notification banner
+
+Sprint Focus 7: Global Workspace Shell Redesign & Claude-Style Centering (Track 32)
+├── Eliminate full-width <header> from MainLayout.tsx; create edge-to-edge canvas
+├── Consolidate <ChevronLeft/Right> navigation into sidebar header beside VajraLogo
+├── Replace raw ASCII [|] with authentic Lucide <PanelLeft /> vector Focus toggle
+├── Build floating top-right glass status island (Language, Theme, Notifications, Badge)
+├── Inline official <VajraLogo size={28} /> at the start of greeting in GreetingHeader.tsx
+├── Create static, non-overlapping chat sub-header bar in AIChatScreen.tsx (Title + Export PDF)
+└── Purge unwanted micro-pill toolbar from ChatInput.tsx
 ```
 
 ### Active Verification Checklist
@@ -1380,6 +1629,11 @@ Sprint Focus 6: Autonomous Agent Workspaces & VAK Alert Pipeline (Track 31)
 - [ ] Agent Workspaces executive directory renders search, status filter pills, and responsive agent cards without the 4-department restriction (Track 31).
 - [ ] Clicking "+ Create New Agent" opens a full-screen conversational creation chat that outputs a structured deployment confirmation card (Track 31).
 - [ ] Background agent detecting a matching FIR emits an alert event that triggers the Vajra VAK Mascot and top notification banner (Track 31).
+- [ ] Full-width main application header is eliminated, with status controls floating cleanly in the top-right corner as a glass island (Track 32).
+- [ ] Sidebar header cleanly houses `VajraLogo`, Back/Forward navigation, and the `<PanelLeft />` Focus Mode button with zero redundant collapse arrows (Track 32).
+- [ ] New chat hero displays official `VajraLogo` inline at the beginning of the greeting text, centered horizontally and vertically (Track 32).
+- [ ] Active chat threads display real human-readable session title and `Export PDF` in a dedicated sub-header bar with zero text overlap (Track 32).
+- [ ] Chat query input box is completely free of the top micro-pill row in all operational modes (Track 32).
 
 ---
 
