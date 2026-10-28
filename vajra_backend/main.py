@@ -5275,7 +5275,7 @@ async def chat_endpoint(payload: ChatRequest, request: Request, background_tasks
             prior_narrative = get_session_narrative(payload.session_id)
             if prior_narrative and prior_narrative != "No prior narrative recorded for this session.":
                 message = (
-                    f"[ACTIVE CASE ROLLING NARRATIVE LEDGER (SESSION MEMORY):\n{prior_narrative.strip()}]\n\n"
+                    f"===BEGIN_ACTIVE_CASE_ROLLING_NARRATIVE_LEDGER===\n{prior_narrative.strip()}\n===END_ACTIVE_CASE_ROLLING_NARRATIVE_LEDGER===\n\n"
                     f"{message}"
                 )
         except Exception:
@@ -5557,7 +5557,7 @@ async def stream_chat_endpoint(payload: ChatRequest, request: Request, backgroun
         prior_narrative = get_session_narrative(session_id)
         if prior_narrative and prior_narrative != "No prior narrative recorded for this session.":
             message = (
-                f"[ACTIVE CASE ROLLING NARRATIVE LEDGER (SESSION MEMORY):\n{prior_narrative.strip()}]\n\n"
+                f"===BEGIN_ACTIVE_CASE_ROLLING_NARRATIVE_LEDGER===\n{prior_narrative.strip()}\n===END_ACTIVE_CASE_ROLLING_NARRATIVE_LEDGER===\n\n"
                 f"{message}"
             )
     except Exception as _mme:
@@ -5570,8 +5570,7 @@ async def stream_chat_endpoint(payload: ChatRequest, request: Request, backgroun
         officer_directive = directives_map.get(b_key) or directives_map.get(str(employee_id)) or directives_map.get("DEFAULT") or ""
         if officer_directive and officer_directive.strip():
             message = (
-                f"[CUSTOM INSTRUCTIONS FOR VAJRA: {officer_directive.strip()}\n"
-                f"MANDATE: Adhere strictly to these preferences, operational focus, and tone in your response.]\n\n{message}"
+                f"===BEGIN_CUSTOM_INSTRUCTIONS_FOR_VAJRA===\n{officer_directive.strip()}\n===END_CUSTOM_INSTRUCTIONS_FOR_VAJRA===\n\n{message}"
             )
     except Exception:
         pass

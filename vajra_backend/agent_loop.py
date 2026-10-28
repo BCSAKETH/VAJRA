@@ -228,29 +228,51 @@ def check_fast_path_intent(query: str, real_districts: List[str]) -> Optional[Di
     # Fast path for suspect network, associates, criminal history, and risk
     # Directly routes in < 1.5s bypassing upstream LLM timeouts for queries like:
     # "Detailed case history and associates of suspect Upma Ramesh (Blade Upma)"
-    if any(k in c_low for k in ("associates of", "network of", "syndicate of", "gang of", "case history and associates", "history and associates", "associates and history")):
-        m = re.search(r"(?:associates\s+of\s+(?:suspect\s+)?|network\s+(?:of\s+)?(?:suspect\s+)?|syndicate\s+(?:of\s+)?(?:suspect\s+)?|gang\s+(?:of\s+)?(?:suspect\s+)?|case\s+history\s+and\s+associates\s+of\s+(?:suspect\s+)?|history\s+and\s+associates\s+of\s+(?:suspect\s+)?)(?P<name>[a-zA-Z\s]+)", c_raw, re.IGNORECASE)
-        if m:
-            s_name = m.group("name").strip()
-            s_name = re.split(r"[\(\[\{]", s_name)[0].strip()
-            if len(s_name) >= 2:
-                return {"tool": "syndicate_graph", "parameters": {"suspect_name": s_name}}
+    # or "ramesh network", "find ramesh network", "upma ramesh network"
+    # 1. Trailing network / associates / syndicate / gang patterns:
+    m_trail = re.search(r"^(?:(?:find|show|view|plot|get|display|trace|search)\s+)?(?P<name>[a-zA-Z\s]+?)\s+(?:network|associates|syndicate|gang)$", cleaned, re.IGNORECASE)
+    if m_trail:
+        name = m_trail.group("name").strip()
+        name = re.split(r"[\(\[\{]", name)[0].strip()
+        if len(name) >= 2 and name.lower() not in {"criminal", "crime", "the", "a", "all", "our"}:
+            return {"tool": "syndicate_graph", "parameters": {"suspect_name": name.title()}}
 
-    if any(k in c_low for k in ("risk of suspect", "recidivism of suspect", "recidivism risk of", "offender risk for", "risk score for")):
-        m = re.search(r"(?:risk\s+of\s+(?:suspect\s+)?|recidivism\s+(?:risk\s+)?(?:of\s+)?(?:suspect\s+)?|offender\s+risk\s+for\s+(?:suspect\s+)?|risk\s+score\s+for\s+(?:suspect\s+)?)(?P<name>[a-zA-Z\s]+)", c_raw, re.IGNORECASE)
-        if m:
-            s_name = m.group("name").strip()
-            s_name = re.split(r"[\(\[\{]", s_name)[0].strip()
-            if len(s_name) >= 2:
-                return {"tool": "get_offender_risk", "parameters": {"suspect_name": s_name}}
+    # 2. Leading network of / associates of / case history and associates of:
+    if any(k in c_low for k in ("associates", "network", "syndicate", "gang", "case history")):
+        m_lead = re.search(r"(?:(?:associates|network|syndicate|gang)\s+(?:of|for)\s+(?:suspect\s+)?|case\s+history\s+and\s+associates\s+of\s+(?:suspect\s+)?|history\s+and\s+associates\s+of\s+(?:suspect\s+)?)(?P<name>[a-zA-Z\s]+)", cleaned, re.IGNORECASE)
+        if m_lead:
+            name = m_lead.group("name").strip()
+            name = re.split(r"[\(\[\{]", name)[0].strip()
+            if len(name) >= 2 and name.lower() not in {"criminal", "crime", "the", "a", "all", "our"}:
+                return {"tool": "syndicate_graph", "parameters": {"suspect_name": name.title()}}
 
-    if any(k in c_low for k in ("dossier of suspect", "full report on suspect", "detailed dossier for")):
-        m = re.search(r"(?:dossier\s+of\s+(?:suspect\s+)?|full\s+report\s+on\s+(?:suspect\s+)?|detailed\s+dossier\s+for\s+(?:suspect\s+)?)(?P<name>[a-zA-Z\s]+)", c_raw, re.IGNORECASE)
+    if any(k in c_low for k in ("risk", "recidivism")):
+        m = re.search(r"(?:risk\s+(?:of|for)\s+(?:suspect\s+)?|recidivism\s+(?:risk\s+)?(?:of|for)\s+(?:suspect\s+)?|offender\s+risk\s+for\s+(?:suspect\s+)?|risk\s+score\s+for\s+(?:suspect\s+)?)(?P<name>[a-zA-Z\s]+)", cleaned, re.IGNORECASE)
+        if m:
+            s_name = m.group("name").strip()
+            s_name = re.split(r"[\(\[\{]", s_name)[0].strip()
+            if len(s_name) >= 2 and s_name.lower() not in {"criminal", "crime", "the", "a", "all"}:
+                return {"tool": "get_offender_risk", "parameters": {"suspect_name": s_name.title()}}
+        m_trail_risk = re.search(r"^(?:(?:find|show|view|get|check)\s+)?(?P<name>[a-zA-Z\s]+?)\s+(?:risk|recidivism|risk\s+score)$", cleaned, re.IGNORECASE)
+        if m_trail_risk:
+            s_name = m_trail_risk.group("name").strip()
+            s_name = re.split(r"[\(\[\{]", s_name)[0].strip()
+            if len(s_name) >= 2 and s_name.lower() not in {"criminal", "crime", "the", "a", "all"}:
+                return {"tool": "get_offender_risk", "parameters": {"suspect_name": s_name.title()}}
+
+    if any(k in c_low for k in ("dossier", "full report")):
+        m = re.search(r"(?:dossier\s+(?:of|for)\s+(?:suspect\s+)?|full\s+report\s+on\s+(?:suspect\s+)?|detailed\s+dossier\s+for\s+(?:suspect\s+)?)(?P<name>[a-zA-Z\s]+)", cleaned, re.IGNORECASE)
         if m:
             s_name = m.group("name").strip()
             s_name = re.split(r"[\(\[\{]", s_name)[0].strip()
             if len(s_name) >= 2:
-                return {"tool": "generate_full_report", "parameters": {"suspect_name": s_name}}
+                return {"tool": "generate_full_report", "parameters": {"suspect_name": s_name.title()}}
+        m_trail_dos = re.search(r"^(?:(?:find|show|view|get)\s+)?(?P<name>[a-zA-Z\s]+?)\s+(?:dossier|full\s+report)$", cleaned, re.IGNORECASE)
+        if m_trail_dos:
+            s_name = m_trail_dos.group("name").strip()
+            s_name = re.split(r"[\(\[\{]", s_name)[0].strip()
+            if len(s_name) >= 2:
+                return {"tool": "generate_full_report", "parameters": {"suspect_name": s_name.title()}}
 
     # Fast path for similarity / MO / syndicate searches and quick chips
     if "stolen" in c_low and ("wheel" in c_low or "bike" in c_low or "vehicle" in c_low or "cross-match" in c_low):
@@ -1753,7 +1775,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # If no domain verbs, entities, sections, or case numbers were detected,
         # and joke / humor keywords are present, route instantly to conversational humor
         # -------------------------------------------------------------
-        if re.search(r"\b(joke|jokes|funny|funner|funnier|humor|laugh|laughing|make me laugh|chutkule|chutkula|witticism|comedy|roast)\b", clean_text.lower()):
+        if re.search(r"\b(a\s*joke|jokes?|funny|funner|funnier|humor|laugh|laughing|make me laugh|chutkule|chutkula|witticism|comedy|roast)\b", clean_text.lower()):
             is_kn = bool(re.search(r"[\u0C80-\u0CFF]", clean_text)) or any(k in clean_text.lower() for k in ["samachara", "namaskara", "chutuk"])
             return (True, "joke", detected_salutation)
 
@@ -2021,7 +2043,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             officer_name = getattr(self, "resolved_officer_name", "Officer")
             rank = getattr(self, "resolved_rank", "Officer")
             salutation_str = f"{detected_salutation.capitalize()} " if detected_salutation else "Hello "
-            greeting_header = f"{salutation_str}{rank} {officer_name}! Colleague rapport active."
+            greeting_header = f"{salutation_str}{rank} {officer_name}."
 
             en_jokes = [
                 "Why did the police officer keep a pencil behind their ear? To quickly sketch out the crime scene before the evidence could run away! 👮‍♂️",
@@ -3492,12 +3514,18 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "network", "networks", "gang", "gangs"
         }
 
-        # 1. Direct operational suspect capture (handles lowercase e.g. "network of ramesh", "find network of ramesh ok")
+        # 1. Direct operational suspect capture (handles lowercase e.g. "network of ramesh", "ramesh network", "find network of ramesh ok")
         op_suspect_match = re.search(
             r'\b(?:network\s+(?:of|for)|syndicate\s+(?:of|for)|suspect|accused|records\s+for|history\s+of|profile\s+of|gang\s+(?:of|for)|associate\s+of|nexus\s+with)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\b',
             clean_query,
             re.IGNORECASE
         )
+        if not op_suspect_match:
+            op_suspect_match = re.search(
+                r'\b([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\s+(?:network|associates|syndicate|gang)\b',
+                clean_query,
+                re.IGNORECASE
+            )
         if op_suspect_match:
             candidate_op = op_suspect_match.group(1).strip()
             candidate_tokens = candidate_op.split()
@@ -4350,6 +4378,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # Strip all system-injected instruction headers (Context, Active Rolling Narrative Ledger, Custom Directives)
         # so intent classifiers and entity parsers examine ONLY the real human input!
         officer_query = query
+        officer_query = re.sub(r'===BEGIN_ACTIVE_CASE_ROLLING_NARRATIVE_LEDGER===.*?===END_ACTIVE_CASE_ROLLING_NARRATIVE_LEDGER===\s*', '', officer_query, flags=re.DOTALL)
+        officer_query = re.sub(r'===BEGIN_CUSTOM_INSTRUCTIONS_FOR_VAJRA===.*?===END_CUSTOM_INSTRUCTIONS_FOR_VAJRA===\s*', '', officer_query, flags=re.DOTALL)
+        officer_query = re.sub(r'\[ACTIVE CASE ROLLING NARRATIVE LEDGER.*?\n\n(?=[^\n])', '', officer_query, flags=re.DOTALL)
+        officer_query = re.sub(r'\[CUSTOM INSTRUCTIONS FOR VAJRA:.*?\n\n(?=[^\n])', '', officer_query, flags=re.DOTALL)
         officer_query = re.sub(r'\[ACTIVE CASE ROLLING NARRATIVE LEDGER[^\]]*\]', '', officer_query, flags=re.DOTALL)
         officer_query = re.sub(r'\[CUSTOM INSTRUCTIONS FOR VAJRA:[^\]]*\]', '', officer_query, flags=re.DOTALL)
         officer_query = re.sub(r'\[Context:[^\]]*\]', '', officer_query, flags=re.DOTALL)
@@ -4478,11 +4510,11 @@ class VajraAgentLoop(CognitiveBrainMixin):
             # Slot 1: Casual & Joke Pre-Hydration (< 1ms)
             if centroids.get("pure_casual"):
                 joke_text = ""
-                if re.search(r'\b(joke|funny|laugh|make me laugh)\b', officer_query.lower()):
+                if re.search(r'\b(a\s*joke|jokes?|funny|laugh|make me laugh)\b', officer_query.lower()):
                     joke_text = "\n\n😄 **Investigative Witticism & Camaraderie:**\n*Why did the police officer keep a pencil behind their ear? To quickly sketch out the crime scene before the evidence could run away!* 👮‍♂️"
-                    active_centroid_slots["casual"] = f"Colleague rapport established with {resolved_rank} {resolved_officer_name} ({resolved_station}).{joke_text}"
+                    active_centroid_slots["casual"] = f"Namaskara {resolved_rank} {resolved_officer_name}.{joke_text}"
                 else:
-                    active_centroid_slots["casual"] = f"Colleague rapport established with {resolved_rank} {resolved_officer_name} ({resolved_station})."
+                    active_centroid_slots["casual"] = f"Namaskara {resolved_rank} {resolved_officer_name}."
 
             # Slot 2: Desk Briefing Pre-Hydration (< 1ms)
             if centroids.get("desk_briefing"):
