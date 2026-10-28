@@ -90,6 +90,11 @@ class CatalystQwen:
         ]
         try:
             res = requests.post(self.endpoint_url, headers=headers, files=files, timeout=timeout)
+            if res.status_code == 401:
+                token = get_quickml_access_token(force_refresh=True)
+                if token:
+                    headers["Authorization"] = f"Zoho-oauthtoken {token}"
+                    res = requests.post(self.endpoint_url, headers=headers, files=files, timeout=timeout)
             if res.status_code == 200:
                 data = res.json()
                 return (data.get("response") or "").strip()

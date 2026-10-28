@@ -571,7 +571,7 @@ _scoped_token_lock = threading.Lock()
 _scoped_token_caches: Dict[str, Dict[str, Any]] = {}
 
 
-def _get_scoped_access_token(env_var: str, cache_key: str) -> Optional[str]:
+def _get_scoped_access_token(env_var: str, cache_key: str, force_refresh: bool = False) -> Optional[str]:
     """
     Generic dedicated-OAuth-token fetcher, shared by Mail and SmartBrowz (and
     any future component that needs its own scope). The app's main refresh
@@ -588,10 +588,10 @@ def _get_scoped_access_token(env_var: str, cache_key: str) -> Optional[str]:
     """
     with _scoped_token_lock:
         cache = _scoped_token_caches.setdefault(cache_key, {"token": None, "fetched_at": 0.0})
-        if cache["token"] and (time.time() - cache["fetched_at"] < 3000):
+        if not force_refresh and cache["token"] and (time.time() - cache["fetched_at"] < 3000):
             return cache["token"]
         token_file = os.path.join(os.path.dirname(__file__), f".token_cache_{cache_key}")
-        if os.path.exists(token_file) and (time.time() - os.path.getmtime(token_file) < 3000):
+        if not force_refresh and os.path.exists(token_file) and (time.time() - os.path.getmtime(token_file) < 3000):
             try:
                 with open(token_file, "r") as f:
                     t = f.read().strip()
@@ -625,7 +625,7 @@ def _get_scoped_access_token(env_var: str, cache_key: str) -> Optional[str]:
                 return token_val
             logger.error(f"{cache_key} token refresh failed: {data}")
             # If disk cache exists (even if older than 3000s), use it as fallback during rate-limit
-            if os.path.exists(token_file):
+            if not force_refresh and os.path.exists(token_file):
                 try:
                     with open(token_file, "r") as f:
                         t = f.read().strip()
@@ -640,22 +640,22 @@ def _get_scoped_access_token(env_var: str, cache_key: str) -> Optional[str]:
 
 def _get_mail_access_token(force_refresh: bool = False) -> Optional[str]:
     """Dedicated Mail-only token -- see _get_scoped_access_token."""
-    return _get_scoped_access_token("CATALYST_MAIL_REFRESH_TOKEN", "mail")
+    return _get_scoped_access_token("CATALYST_MAIL_REFRESH_TOKEN", "mail", force_refresh=force_refresh)
 
 
-def get_smartbrowz_access_token() -> Optional[str]:
+def get_smartbrowz_access_token(force_refresh: bool = False) -> Optional[str]:
     """Dedicated SmartBrowz-only token (ZohoCatalyst.pdfshot.execute +
     ZohoCatalyst.dataverse.execute) -- see _get_scoped_access_token.
     Falls back to the unified app cached access token if dedicated token is unset."""
-    return _get_scoped_access_token("CATALYST_SMARTBROWZ_REFRESH_TOKEN", "smartbrowz") or get_cached_access_token()
+    return _get_scoped_access_token("CATALYST_SMARTBROWZ_REFRESH_TOKEN", "smartbrowz", force_refresh=force_refresh) or get_cached_access_token(force_refresh=force_refresh)
 
 
-def get_quickml_access_token() -> Optional[str]:
+def get_quickml_access_token(force_refresh: bool = False) -> Optional[str]:
     """Dedicated QuickML LLM Serving token (QuickML.deployment.READ) -- see
     _get_scoped_access_token. Falls back to the main app cached access token
     (which already carries QuickML.deployment.READ scope) if no dedicated
     scoped refresh token is configured."""
-    return _get_scoped_access_token("CATALYST_QUICKML_REFRESH_TOKEN", "quickml") or get_cached_access_token()
+    return _get_scoped_access_token("CATALYST_QUICKML_REFRESH_TOKEN", "quickml", force_refresh=force_refresh) or get_cached_access_token(force_refresh=force_refresh)
 
 
 def send_investigation_email_internal(to_email: str, subject: str, content: str) -> Dict[str, Any]:

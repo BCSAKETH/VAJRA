@@ -1776,7 +1776,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
         has_case_no = bool(self._CASE_NUMBER_REGEX.search(raw_query))
         has_section = bool(self._SECTION_REGEX.search(raw_query))
         has_op_keywords = bool(re.search(
-            r'\b(fir|cr[-_ ]?\d+|case|cases|dossier|remand|custody|bail|section|sec|u/s|bns|bnss|bsa|ipc|chargesheet|suspect|suspects|accused|arrest|offender|syndicate|recidivism|psoti|hotspot|hotspots|crime|crimes|plot|map|patrol|rto|plate|vehicle|cctns)\b',
+            r'\b(fir|cr[-_ ]?\d+|case|cases|dossier|remand|custody|bail|section|sec|u/s|bns|bnss|bsa|ipc|chargesheet|suspect|suspects|accused|arrest|offender|syndicate|recidivism|psoti|hotspot|hotspots|crime|crimes|plot|map|patrol|rto|plate|vehicle|cctns|network|networks|gang|gangs|associate|associates|accomplice|accomplices|nexus|co-accused|coaccused|linkage|linkages|mo|modus)\b',
             clean_lower
         ))
         is_operational = has_case_no or has_section or has_op_keywords
@@ -3385,30 +3385,29 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # neither branch of the old regex could ever match a real case
         # number, meaning "show me case CR-2024-81977" always fell through
         # to vague semantic search instead of a direct, exact lookup.
-        case_match = re.search(r'\b([A-Z]{2,4}-\d{4}-\d{4,6})\b', query, re.IGNORECASE)
-        # Regex match for suspect names (Capitalized words like Ramesh Kumar)
+        # Strip injected officer context / instructions so deterministic entity resolution sees only the actual inquiry
+        clean_query = re.sub(r'\[(?:CUSTOM INSTRUCTIONS|Context|PROACTIVE SYSTEM OVERRIDE)[^\]]*\]', '', query, flags=re.DOTALL | re.IGNORECASE).strip()
+        case_match = re.search(r'\b([A-Z]{2,4}-\d{4}-\d{4,6})\b', clean_query, re.IGNORECASE)
+        # Regex match for suspect names (Capitalized words like Ramesh Kumar or lowercase after operational cues)
         suspect_match = None
-        excluded_names = {"karnataka", "police", "cctns", "scrb", "bengaluru", "peenya", "indiranagar", "station", "act", "bns", "ipc", "bnss", "bsa", "upi"}
+        excluded_names = {
+            "karnataka", "police", "cctns", "scrb", "bengaluru", "peenya", "indiranagar", "station",
+            "act", "bns", "ipc", "bnss", "bsa", "upi", "officer", "inspector", "constable", "dysp",
+            "sp", "cp", "pi", "psi", "asi", "hc", "wpc", "head", "colleague", "sub-inspector",
+            "vikram", "rathod", "officer vikram rathod"
+        }
+        res_off_name = getattr(self, "resolved_officer_name", "")
+        if res_off_name:
+            excluded_names.add(res_off_name.lower())
+            excluded_names.update(w.lower() for w in res_off_name.split())
+        off_name_attr = getattr(self, "officer_name", "")
+        if off_name_attr:
+            excluded_names.add(off_name_attr.lower())
+            excluded_names.update(w.lower() for w in off_name_attr.split())
         if exclude_name:
             excluded_names.add(exclude_name.lower())
-            # Also exclude each individual word of the officer's name (e.g.
-            # "Claire" and "Gibson" separately), since the officer-name
-            # prefix and a real suspect mention can both be present in the
-            # same string and this regex takes the FIRST capitalized match --
-            # a bare first-name-only match earlier in the text would still
-            # win over a real full-name suspect mentioned later otherwise.
             excluded_names.update(w.lower() for w in exclude_name.split())
-        suspect_candidates = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', query)
-        # Prioritize multi-word capitalized names ("Sanaya Patla") over single-word command verbs
-        suspect_candidates.sort(key=lambda c: (len(c.split()) > 1, len(c)), reverse=True)
-        # SECOND distinct name (general fix, not phrasing-specific): a query
-        # naming TWO people ("how is X involved with Y") used to silently
-        # collapse to just the first match here, which is the real root
-        # cause behind Full Dossier mode force-building a single-person
-        # report for a two-person question -- confirmed live. Collecting a
-        # second candidate (any wording) lets the forced-composite decision
-        # below step aside for ANY two-name query, not just the one exact
-        # phrasing the dedicated relationship-handler regex recognizes.
+
         # Non-person / institutional / topic terms that must never be treated as an accused suspect's person name
         _NON_PERSON_TOKENS = {
             "scam", "scams", "fund", "funds", "corporation", "corp", "fraud", "frauds",
@@ -3419,8 +3418,30 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "society", "academy", "foundation", "federation", "association", "committee",
             "council", "bank", "police", "court", "station", "stationery", "hospital",
             "university", "college", "school", "office", "headquarters", "division",
-            "act", "acts", "bns", "ipc", "bnss", "bsa", "upi", "minor", "minors"
+            "act", "acts", "bns", "ipc", "bnss", "bsa", "upi", "minor", "minors",
+            "joke", "jokes", "network", "networks", "gang", "gangs"
         }
+
+        # 1. Direct operational suspect capture (handles lowercase e.g. "network of ramesh", "find network of ramesh ok")
+        op_suspect_match = re.search(
+            r'\b(?:network\s+(?:of|for)|syndicate\s+(?:of|for)|suspect|accused|records\s+for|history\s+of|profile\s+of|gang\s+(?:of|for)|associate\s+of|nexus\s+with)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\b',
+            clean_query,
+            re.IGNORECASE
+        )
+        if op_suspect_match:
+            candidate_op = op_suspect_match.group(1).strip()
+            candidate_tokens = candidate_op.split()
+            while candidate_tokens and candidate_tokens[-1].lower() in {"ok", "okay", "pls", "please", "bro", "sir", "now", "here", "fine", "cool", "fast", "details", "info", "records", "record"}:
+                candidate_tokens.pop()
+            if candidate_tokens:
+                candidate_op = " ".join(candidate_tokens)
+                c_low = candidate_op.lower()
+                if c_low not in excluded_names and not (set(c_low.split()) & _NON_PERSON_TOKENS) and c_low not in self._NAME_STOPWORDS:
+                    suspect_match = candidate_op.title()
+
+        suspect_candidates = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', clean_query)
+        # Prioritize multi-word capitalized names ("Sanaya Patla") over single-word command verbs
+        suspect_candidates.sort(key=lambda c: (len(c.split()) > 1, len(c)), reverse=True)
         suspect2_match = None
         for cand in suspect_candidates:
             cl = cand.lower()
@@ -4377,8 +4398,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
             if centroids.get("pure_casual"):
                 joke_text = ""
                 if re.search(r'\b(joke|funny|laugh|make me laugh)\b', officer_query.lower()):
-                    joke_text = " Forensic Officer Witticism: Why did the police inspector keep a pencil behind his ear? To quickly sketch out the crime scene before the evidence could run away! 👮‍♂️"
-                active_centroid_slots["casual"] = f"Colleague rapport established with {resolved_rank} {resolved_officer_name} ({resolved_station}).{joke_text}"
+                    joke_text = "\n\n😄 **Investigative Witticism & Camaraderie:**\n*Why did the police officer keep a pencil behind their ear? To quickly sketch out the crime scene before the evidence could run away!* 👮‍♂️"
+                    active_centroid_slots["casual"] = f"Colleague rapport established with {resolved_rank} {resolved_officer_name} ({resolved_station}).{joke_text}"
+                else:
+                    active_centroid_slots["casual"] = f"Colleague rapport established with {resolved_rank} {resolved_officer_name} ({resolved_station})."
 
             # Slot 2: Desk Briefing Pre-Hydration (< 1ms)
             if centroids.get("desk_briefing"):
@@ -5575,7 +5598,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                             prior_was_network = any(
                                 "network" in str(h.get("content", "")).lower() or "syndicate" in str(h.get("content", "")).lower()
                                 for h in history[-4:]
-                            )
+                            ) or any(k in _q_low_fallback for k in ("network", "syndicate", "gang", "gangs", "nexus", "associate", "associates"))
                             if prior_was_network:
                                 fallback_decision = {"tool": "syndicate_graph", "parameters": {"suspect_name": s_name}}
                                 fallback_label = "Criminal Syndicate Network Graph"
@@ -5863,32 +5886,6 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 logger.error(f"Error on final synthesis turn: {e}")
                 response_text = last_tool_text_result or "I have successfully retrieved the files. Let me know if you need specific details."
 
-        # Track 20: Dual-Brain Multi-Centroid Unification
-        # If multi-centroid slots are active and response hasn't unified them, synthesize the complete command briefing
-        if getattr(self, "_active_centroid_slots", None) and any(self._active_centroid_slots.values()):
-            casual_present = not self._active_centroid_slots.get("casual") or "Witticism" in (response_text or "") or "Rapport" in (response_text or "")
-            if not casual_present or len(self._active_centroid_slots) > 1:
-                try:
-                    from catalyst_qwen import CatalystQwen
-                    qwen_engine = CatalystQwen()
-                    if qwen_engine.is_configured():
-                        _progress("Synthesizing unified multi-slot command briefing via Qwen MoE (102 tok/s)...")
-                        slots = dict(self._active_centroid_slots)
-                        slots["cctns_operational"] = response_text or last_tool_text_result or str(data_payload) or "CCTNS records examined."
-                        qwen_briefing = qwen_engine.synthesize_cctns_briefing(
-                            slots=slots,
-                            query=officer_query,
-                            officer_name=f"{resolved_rank} {resolved_officer_name}",
-                            station_name=resolved_station,
-                            timeout=12.0
-                        )
-                        if qwen_briefing and len(qwen_briefing.strip()) > 20:
-                            response_text = qwen_briefing
-                            logger.info("[DUAL_BRAIN] Unified multi-slot Qwen MoE briefing synthesis succeeded.")
-                except Exception as e_qwen:
-                    logger.warning(f"[DUAL_BRAIN] Multi-slot Qwen synthesis fallback: {e_qwen}")
-
-
         # A police intelligence platform should never present an answer
         # picked by keyword-matching as if it were real reasoning -- but
         # that's a different failure than this one. Here, a tool was
@@ -5917,6 +5914,44 @@ class VajraAgentLoop(CognitiveBrainMixin):
             response_type = "text"
             data_payload = {"status": "degraded_mode"}
             citations = [{"type": "System Status", "id": "Upstream LLM Latency", "details": "Generative reasoning temporarily paused; deterministic CCTNS lookups active."}]
+
+        # Track 20: Dual-Brain Multi-Centroid Unification
+        # If multi-centroid slots are active and response hasn't unified them, synthesize the complete command briefing
+        if getattr(self, "_active_centroid_slots", None) and any(self._active_centroid_slots.values()):
+            casual_present = not self._active_centroid_slots.get("casual") or "Witticism" in (response_text or "") or "Rapport" in (response_text or "")
+            if not casual_present or len(self._active_centroid_slots) > 1:
+                try:
+                    from catalyst_qwen import CatalystQwen
+                    qwen_engine = CatalystQwen()
+                    if qwen_engine.is_configured():
+                        _progress("Synthesizing unified multi-slot command briefing via Qwen MoE (102 tok/s)...")
+                        slots = dict(self._active_centroid_slots)
+                        slots["cctns_operational"] = response_text or last_tool_text_result or str(data_payload) or "CCTNS records examined."
+                        qwen_briefing = qwen_engine.synthesize_cctns_briefing(
+                            slots=slots,
+                            query=officer_query,
+                            officer_name=f"{resolved_rank} {resolved_officer_name}",
+                            station_name=resolved_station,
+                            timeout=12.0
+                        )
+                        if qwen_briefing and len(qwen_briefing.strip()) > 20:
+                            response_text = qwen_briefing
+                            logger.info("[DUAL_BRAIN] Unified multi-slot Qwen MoE briefing synthesis succeeded.")
+                except Exception as e_qwen:
+                    logger.warning(f"[DUAL_BRAIN] Multi-slot Qwen synthesis fallback: {e_qwen}")
+
+            # Deterministic multi-slot fallback assembler: if Qwen MoE was bypassed or failed,
+            # ensure active conversational slots (joke, briefing, memory) are prepended to the operational response.
+            if getattr(self, "_active_centroid_slots", None):
+                prepends = []
+                for slot_key in ["casual", "desk_briefing", "memory_recap"]:
+                    s_val = (self._active_centroid_slots.get(slot_key) or "").strip()
+                    if s_val and s_val not in (response_text or ""):
+                        prepends.append(s_val)
+                if prepends and response_text:
+                    response_text = "\n\n".join(prepends) + "\n\n---\n\n" + response_text
+                elif prepends and not response_text:
+                    response_text = "\n\n".join(prepends)
 
         # STRICT GUARD: Catch any unparsed tool JSON that slipped through to response_text
         if response_text:

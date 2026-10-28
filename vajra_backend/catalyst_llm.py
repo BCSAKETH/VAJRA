@@ -436,6 +436,31 @@ class CatalystLLM:
                             }]
                         }
 
+                    if res.status_code == 401:
+                        logger.warning(f"Catalyst LLM received 401 INVALID_OAUTHTOKEN. Refreshing token and retrying once...")
+                        fresh_token = get_quickml_access_token(force_refresh=True)
+                        if fresh_token:
+                            headers["Authorization"] = f"Zoho-oauthtoken {fresh_token}"
+                            res = requests.post(self.endpoint_url, headers=headers, json=payload, timeout=_req_timeout)
+                            if res.status_code == 200:
+                                data = res.json()
+                                _resp = ""
+                                if "choices" in data and data["choices"]:
+                                    msg = data["choices"][0].get("message") or {}
+                                    _resp = msg.get("content") or ""
+                                elif "data" in data and data["data"]:
+                                    try:
+                                        _resp = (data["data"][0] or {}).get("data") or ""
+                                    except (IndexError, AttributeError, TypeError):
+                                        _resp = ""
+                                if "</think>" in _resp:
+                                    _resp = _resp.split("</think>", 1)[-1].strip()
+                                return {
+                                    "choices": [{
+                                        "message": {"role": "assistant", "content": _resp}
+                                    }]
+                                }
+
                     if res.status_code in (401, 404):
                         logger.critical(f"Catalyst LLM endpoint misconfigured ({res.status_code}): {res.text}")
                         _last_failure_reason = f"http_{res.status_code}: {res.text[:150]}"
@@ -557,6 +582,11 @@ class CatalystLLM:
         payload = {"text": text, "source_language": source_lang, "target_language": target_lang}
         try:
             res = requests.post(url, headers=headers, json=payload, timeout=10)
+            if res.status_code == 401:
+                token = get_quickml_access_token(force_refresh=True)
+                if token:
+                    headers["Authorization"] = f"Zoho-oauthtoken {token}"
+                    res = requests.post(url, headers=headers, json=payload, timeout=10)
             if res.status_code != 200 and "LESS_THAN_MIN_OCCURANCE" in res.text:
                 # Fallback to legacy v1 payload if hitting v1 endpoint
                 payload_v1 = {"text": text, "src_lang": source_lang, "tgt_lang": target_lang}

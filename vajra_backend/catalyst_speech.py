@@ -657,6 +657,15 @@ def transcribe_audio(audio_bytes: bytes, filename: str, content_type: str, lang:
             files={"file": (filename or "speech.wav", audio_bytes, content_type or "audio/wav")},
             data={"language": lang}, timeout=25,  # under AppSail ~30s kill -> graceful None instead of hard 408
         )
+        if res.status_code == 401:
+            token = get_quickml_access_token(force_refresh=True)
+            if token:
+                headers["Authorization"] = f"Zoho-oauthtoken {token}"
+                res = requests.post(
+                    _STT_URL, headers=headers,
+                    files={"file": (filename or "speech.wav", audio_bytes, content_type or "audio/wav")},
+                    data={"language": lang}, timeout=25,
+                )
         if res.status_code == 200:
             data = res.json()
             if data.get("status") == "success":
