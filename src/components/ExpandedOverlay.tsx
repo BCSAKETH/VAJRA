@@ -418,17 +418,28 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
   });
 
   // Formulate forecast data for recharts
-  const forecastData = (Array.isArray(data.forecast) ? data.forecast : []).map((f: any, idx: number) => ({
-    name: f?.period || `P-${idx + 1}`,
-    Predicted: typeof f?.predicted === "number" ? f.predicted : 0,
-    Baseline: typeof f?.historical_avg === "number" ? f.historical_avg : 10.0,
+  const forecastData = (Array.isArray(data.forecast) ? data.forecast : (Array.isArray(data.series) ? data.series : [])).map((f: any, idx: number) => ({
+    name: f?.period || f?.month || f?.label || `P-${idx + 1}`,
+    Predicted: typeof f?.predicted === "number" ? f.predicted : (typeof f?.value === "number" ? f.value : 0),
+    Baseline: typeof f?.historical_avg === "number" ? f.historical_avg : (typeof f?.baseline === "number" ? f.baseline : 10.0),
   }));
 
   // Formulate crime-trend series for recharts
-  const trendData = (Array.isArray(data.series) ? data.series : []).map((s: any) => ({
-    name: s?.label || `Item`,
-    Incidents: typeof s?.count === "number" ? s.count : (typeof s?.value === "number" ? s.value : 0),
+  const trendData = (Array.isArray(data.series) ? data.series : (Array.isArray(data.points) ? data.points : (Array.isArray(data.trend_data) ? data.trend_data : []))).map((s: any, idx: number) => ({
+    name: s?.label || s?.month || s?.period || `P-${idx + 1}`,
+    Incidents: typeof s?.count === "number" ? s.count : (typeof s?.value === "number" ? s.value : (typeof s?.incidents === "number" ? s.incidents : 0)),
   }));
+
+  // Formulate case distribution series for recharts (supports series, distribution array/dict, or categories)
+  const distributionSeries = useMemo(() => {
+    if (Array.isArray(data.series) && data.series.length > 0) return data.series;
+    if (Array.isArray(data.distribution) && data.distribution.length > 0) return data.distribution;
+    if (Array.isArray(data.categories) && data.categories.length > 0) return data.categories;
+    if (data.distribution && typeof data.distribution === "object") {
+      return Object.entries(data.distribution).map(([name, val]) => ({ name, value: Number(val) }));
+    }
+    return Array.isArray(data.series) ? data.series : [];
+  }, [data]);
 
   return (
     <ErrorBoundary
@@ -635,10 +646,12 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
         {/* Content Pane */}
         <div ref={contentRef} className={inline ? "flex-1 overflow-y-auto overflow-x-hidden" : "flex-1 p-6 overflow-y-auto bg-stone-950/15"}>
           {type === "map" && (() => {
-            const rawHotspots: { lat: number; lng: number; label?: string }[] = Array.isArray(data.hotspots) ? data.hotspots : [];
-            const hotspots = rawHotspots.filter(
-              (h: any) => typeof h?.lat === "number" && !isNaN(h.lat) && typeof h?.lng === "number" && !isNaN(h.lng)
-            );
+            const rawHotspots: any[] = Array.isArray(data.hotspots) ? data.hotspots : [];
+            const hotspots = rawHotspots.map((h: any) => {
+              const lat = typeof h?.lat === "number" ? h.lat : (typeof h?.latitude === "number" ? h.latitude : parseFloat(h?.lat || h?.latitude || ""));
+              const lng = typeof h?.lng === "number" ? h.lng : (typeof h?.longitude === "number" ? h.longitude : parseFloat(h?.lng || h?.longitude || ""));
+              return { ...h, lat, lng };
+            }).filter((h) => typeof h.lat === "number" && !isNaN(h.lat) && typeof h.lng === "number" && !isNaN(h.lng));
             const isSat = mapBasemap === "satellite";
             return (
               <div className="h-full flex flex-col gap-3">
@@ -757,20 +770,22 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                   the backend never actually populated, always showing "None". */}
               <div className="flex-1 flex flex-col gap-3 min-w-0">
                 <h4 className="font-bold text-stone-200 uppercase tracking-[0.14em] text-xs font-mono">
-                  {lang === "en" ? "Syndicate Graph:" : "ಜಾಲ ಗ್ರಾಫ್:"} {data.target_suspect || data.suspect}
+                  {lang === "en" ? "Syndicate Graph:" : "ಜಾಲ ಗ್ರಾಫ್:"} {data.target_suspect || data.suspect || data.kingpin || data.central_lead}
                   {data.engine_mode === "Static Fallback Simulation" && (
                     <span className="ml-2 text-amber-500 normal-case font-normal text-[10px]">{lang === "en" ? "(simulated — suspect not found in database)" : "(ಸಿಮ್ಯುಲೇಟೆಡ್ — ಶಂಕಿತರು ಡೇಟಾಬೇಸ್‌ನಲ್ಲಿ ಕಂಡುಬಂದಿಲ್ಲ)"}</span>
                   )}
                 </h4>
                 {/* Degree-centrality hub: the most-connected entity in this
                     cluster -- the actionable "look here first" signal. */}
-                {data.hub && data.hub.label && (
+                {((data.hub && data.hub.label) || data.kingpin || data.central_lead) && (
                   <div className="flex items-center flex-wrap gap-2 text-[11px] font-mono">
                     <span className="px-2 py-0.5 rounded-full bg-[#C79A4E]/15 border border-[#C79A4E]/30 text-[#C79A4E] font-bold uppercase tracking-wider">
                       {lang === "en" ? "Central Hub" : "ಕೇಂದ್ರ ವ್ಯಕ್ತಿ"}
                     </span>
-                    <span className="text-stone-100 font-bold">{data.hub.label}</span>
-                    <span className="text-stone-500">· {data.hub.degree} {lang === "en" ? "direct links" : "ನೇರ ಸಂಪರ್ಕಗಳು"}</span>
+                    <span className="text-stone-100 font-bold">{data.hub?.label || data.kingpin || data.central_lead}</span>
+                    {data.hub?.degree != null && (
+                      <span className="text-stone-500">· {data.hub.degree} {lang === "en" ? "direct links" : "ನೇರ ಸಂಪರ್ಕಗಳು"}</span>
+                    )}
                   </div>
                 )}
                 {/* F.7: real round-trip (money-laundering-signature) loops
@@ -791,7 +806,16 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                     nodes={data.nodes || []}
                     edges={data.edges || []}
                     activeLayers={data.active_layers}
-                    primaryEntityId={data.primary_entity ? (data.nodes || []).find((n: any) => (n.label || "").toLowerCase() === String(data.primary_entity).toLowerCase())?.id : undefined}
+                    primaryEntityId={(() => {
+                      const targetEntity = data.primary_entity || data.target_suspect || data.suspect || data.kingpin || data.central_lead;
+                      if (!targetEntity) return undefined;
+                      const found = (data.nodes || []).find((n: any) => {
+                        const d = n?.data || n;
+                        return (d?.label || d?.id || "").toLowerCase() === String(targetEntity).toLowerCase();
+                      });
+                      const d = found?.data || found;
+                      return d?.id;
+                    })()}
                     newSinceTimestamp={networkNewSinceTimestamp}
                     onFollowUpQuery={onFollowUpQuery}
                   />
@@ -805,7 +829,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
             </div>
           )}
 
-          {type === "risk" && (() => {
+          {(type === "risk" || type === "offender_risk") && (() => {
             const riskScore = typeof data.risk_score === "number" ? data.risk_score : parseFloat(data.risk_score || "0") || 0;
             const isLowRisk = riskScore < 35;
             const isModerateRisk = riskScore >= 35 && riskScore < 65;
@@ -1419,79 +1443,79 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
                 </div>
               </div>
 
-              {/* Chart-type toggle: the SAME data.series, multiple real
+              {/* Chart-type toggle: the SAME distributionSeries, multiple real
                   presentations -- per live feedback that a pie-only view
                   left no way to ask for a different chart type. */}
               <ChartTypeToggle value={distributionChartType} onChange={setDistributionChartType} options={["pie", "bar"]} lang={lang} />
 
-              <div className="flex-1 flex flex-col md:flex-row items-center justify-center gap-8 min-h-[280px]">
-                <div className="w-full md:w-1/2 h-[280px] flex items-center justify-center">
-                  <ResponsiveContainer minWidth={0} width="100%" height="100%">
-                    {distributionChartType === "pie" ? (
-                      <PieChart>
-                        <Pie
-                          data={data.series || []}
-                          cx="50%"
-                          cy="50%"
-                          innerRadius={60}
-                          outerRadius={90}
-                          paddingAngle={3}
-                          dataKey="value"
-                          // Recharts places one label per slice at a fixed angle with
-                          // no collision detection -- with ~20 real crime categories
-                          // (several under 2%), that reliably produced the overlapping,
-                          // cut-off label mess confirmed live. Below ~4% there's no
-                          // room to draw a readable label anyway; those slices are
-                          // still fully visible by color and covered completely by
-                          // the ledger list beside the chart, so hiding just the
-                          // on-chart label (not the data) is a strict readability win.
-                          label={(entry: any) => (entry.percent >= 0.04 ? `${entry.name} (${(entry.percent * 100).toFixed(0)}%)` : "")}
-                          labelLine={(entry: any) => entry.percent >= 0.04}
-                        >
-                          {(data.series || []).map((entry: any, index: number) => (
-                            <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }} />
-                      </PieChart>
-                    ) : (
-                      <BarChart data={data.series || []} layout="vertical" margin={{ left: 8, right: 16 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" horizontal={false} />
-                        <XAxis type="number" stroke="#94A3B8" fontSize={10} allowDecimals={false} />
-                        <YAxis type="category" dataKey="name" stroke="#94A3B8" fontSize={9.5} width={110} tick={{ fill: "#a89f92" }} />
-                        <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }} />
-                        <Bar dataKey="value" radius={[0, 4, 4, 0]}>
-                          {(data.series || []).map((entry: any, index: number) => (
-                            <Cell key={`bar-cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
-                          ))}
-                        </Bar>
-                      </BarChart>
-                    )}
-                  </ResponsiveContainer>
-                </div>
+              {(() => {
+                const distTotal = typeof data.total === "number" && data.total > 0
+                  ? data.total
+                  : (distributionSeries.reduce((acc: number, item: any) => acc + (Number(item?.value) || 0), 0) || 1);
 
-                {/* Ledger / Table Legend */}
-                <div className="w-full md:w-1/2 overflow-y-auto max-h-[280px] pr-2">
-                  <div className="space-y-2">
-                    {(data.series || []).map((item: any, idx: number) => {
-                      const color = CHART_COLORS[idx % CHART_COLORS.length];
-                      const pct = ((item.value / (data.total || 1)) * 100).toFixed(1);
-                      return (
-                        <div key={idx} className="flex justify-between items-center bg-stone-900/40 p-2.5 rounded border border-stone-850 font-mono text-[11px]">
-                          <div className="flex items-center gap-2">
-                            <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: color }} />
-                            <span className="text-stone-200 font-bold">{item.name}</span>
-                          </div>
-                          <div className="text-right">
-                            <span className="text-[#C79A4E] font-extrabold">{item.value} {lang === "en" ? "cases" : "ಪ್ರಕರಣಗಳು"}</span>
-                            <span className="block text-[9px] text-stone-500">{pct}%</span>
-                          </div>
-                        </div>
-                      );
-                    })}
+                return (
+                  <div className="flex-1 flex flex-col md:flex-row items-center justify-center gap-8 min-h-[280px]">
+                    <div className="w-full md:w-1/2 h-[280px] flex items-center justify-center">
+                      <ResponsiveContainer minWidth={0} width="100%" height="100%">
+                        {distributionChartType === "pie" ? (
+                          <PieChart>
+                            <Pie
+                              data={distributionSeries}
+                              cx="50%"
+                              cy="50%"
+                              innerRadius={60}
+                              outerRadius={90}
+                              paddingAngle={3}
+                              dataKey="value"
+                              label={(entry: any) => (entry.percent >= 0.04 ? `${entry.name} (${(entry.percent * 100).toFixed(0)}%)` : "")}
+                              labelLine={(entry: any) => entry.percent >= 0.04}
+                            >
+                              {distributionSeries.map((entry: any, index: number) => (
+                                <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                              ))}
+                            </Pie>
+                            <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }} />
+                          </PieChart>
+                        ) : (
+                          <BarChart data={distributionSeries} layout="vertical" margin={{ left: 8, right: 16 }}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.03)" horizontal={false} />
+                            <XAxis type="number" stroke="#94A3B8" fontSize={10} allowDecimals={false} />
+                            <YAxis type="category" dataKey="name" stroke="#94A3B8" fontSize={9.5} width={110} tick={{ fill: "#a89f92" }} />
+                            <Tooltip contentStyle={{ background: "rgba(33,31,29, 0.95)", border: "1px solid #1e293b", color: "#f8fafc" }} />
+                            <Bar dataKey="value" radius={[0, 4, 4, 0]}>
+                              {distributionSeries.map((entry: any, index: number) => (
+                                <Cell key={`bar-cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />
+                              ))}
+                            </Bar>
+                          </BarChart>
+                        )}
+                      </ResponsiveContainer>
+                    </div>
+
+                    {/* Ledger / Table Legend */}
+                    <div className="w-full md:w-1/2 overflow-y-auto max-h-[280px] pr-2">
+                      <div className="space-y-2">
+                        {distributionSeries.map((item: any, idx: number) => {
+                          const color = CHART_COLORS[idx % CHART_COLORS.length];
+                          const pct = ((Number(item?.value || 0) / distTotal) * 100).toFixed(1);
+                          return (
+                            <div key={idx} className="flex justify-between items-center bg-stone-900/40 p-2.5 rounded border border-stone-850 font-mono text-[11px]">
+                              <div className="flex items-center gap-2">
+                                <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: color }} />
+                                <span className="text-stone-200 font-bold">{item.name}</span>
+                              </div>
+                              <div className="text-right">
+                                <span className="text-[#C79A4E] font-extrabold">{item.value} {lang === "en" ? "cases" : "ಪ್ರಕರಣಗಳು"}</span>
+                                <span className="block text-[9px] text-stone-500">{pct}%</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
+                );
+              })()}
             </div>
           )}
 
@@ -1512,7 +1536,13 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
               </div>
               <div className="flex-1 space-y-4 py-2">
                 {(() => {
-                  const stages: { stage: string; value: number }[] = data.funnel || [];
+                  const rawStages = data.funnel || data.stages || [];
+                  const stages: { stage: string; value: number }[] = Array.isArray(rawStages)
+                    ? rawStages.map((s: any) => ({
+                        stage: s.stage || s.name || s.label || "Stage",
+                        value: typeof s.value === "number" ? s.value : (Number(s.count) || 0)
+                      }))
+                    : [];
                   const maxVal = Math.max(...stages.map((s) => s.value), 1);
                   return stages.map((s, idx) => (
                     <div key={idx} className="space-y-1">

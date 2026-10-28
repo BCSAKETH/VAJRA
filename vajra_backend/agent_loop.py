@@ -317,18 +317,26 @@ def check_fast_path_intent(query: str, real_districts: List[str]) -> Optional[Di
             if len(name) >= 2 and name.lower() not in {"criminal", "crime", "the", "a", "all", "our"}:
                 return {"tool": "syndicate_graph", "parameters": {"suspect_name": name.title()}}
 
-    if any(k in c_low for k in ("risk", "recidivism")):
-        m = re.search(r"(?:risk\s+(?:of|for)\s+(?:suspect\s+)?|recidivism\s+(?:risk\s+)?(?:of|for)\s+(?:suspect\s+)?|offender\s+risk\s+for\s+(?:suspect\s+)?|risk\s+score\s+for\s+(?:suspect\s+)?)(?P<name>[a-zA-Z\s]+)", cleaned, re.IGNORECASE)
+    if any(k in c_low for k in ("risk", "recidivism", "threat", "danger")):
+        # Clean out conversational filler phrases like "to us and the public", "by us and the public", "to police", "to society"
+        q_norm = re.sub(r"\b(?:to|by)\s+(?:us|the\s+public|society|police|citizens|community|state)(?:\s+and\s+(?:us|the\s+public|society|police|citizens|community|state))?\b", "", cleaned, flags=re.IGNORECASE)
+        m = re.search(r"(?:risk\s+(?:of|for|by|from|posed\s+by)\s+(?:suspect\s+)?|recidivism\s+(?:risk\s+)?(?:of|for|by|from)\s+(?:suspect\s+)?|offender\s+risk\s+for\s+(?:suspect\s+)?|threat\s+(?:score\s+)?(?:of|for|by|from|posed\s+by)\s+(?:suspect\s+)?|danger\s+(?:of|for|by|from|posed\s+by)\s+(?:suspect\s+)?|risk\s+score\s+for\s+(?:suspect\s+)?|posed\s+by\s+(?:suspect\s+)?)(?P<name>[a-zA-Z\s]+)", q_norm, re.IGNORECASE)
+        if not m:
+            m = re.search(r"(?:(?:risk|threat|danger|recidivism)\b.*?\b(?:by|from|of|for)\s+(?:suspect\s+)?)(?P<name>[a-zA-Z\s]+)$", cleaned, re.IGNORECASE)
         if m:
             s_name = m.group("name").strip()
             s_name = re.split(r"[\(\[\{]", s_name)[0].strip()
-            if len(s_name) >= 2 and s_name.lower() not in {"criminal", "crime", "the", "a", "all"}:
+            s_tokens = s_name.split()
+            while s_tokens and s_tokens[-1].lower() in {"now", "today", "here", "please", "pls", "sir", "ok", "okay", "report", "score", "details", "level"}:
+                s_tokens.pop()
+            s_name = " ".join(s_tokens)
+            if len(s_name) >= 2 and s_name.lower() not in {"criminal", "crime", "the", "a", "all", "us", "public"}:
                 return {"tool": "get_offender_risk", "parameters": {"suspect_name": s_name.title()}}
-        m_trail_risk = re.search(r"^(?:(?:find|show|view|get|check)\s+)?(?P<name>[a-zA-Z\s]+?)\s+(?:risk|recidivism|risk\s+score)$", cleaned, re.IGNORECASE)
+        m_trail_risk = re.search(r"^(?:(?:find|show|view|get|check)\s+)?(?P<name>[a-zA-Z\s]+?)\s+(?:risk|recidivism|threat|threat\s+score|risk\s+score)$", cleaned, re.IGNORECASE)
         if m_trail_risk:
             s_name = m_trail_risk.group("name").strip()
             s_name = re.split(r"[\(\[\{]", s_name)[0].strip()
-            if len(s_name) >= 2 and s_name.lower() not in {"criminal", "crime", "the", "a", "all"}:
+            if len(s_name) >= 2 and s_name.lower() not in {"criminal", "crime", "the", "a", "all", "us", "public"}:
                 return {"tool": "get_offender_risk", "parameters": {"suspect_name": s_name.title()}}
 
     if any(k in c_low for k in ("dossier", "full report")):
@@ -2722,12 +2730,15 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 c = m.group(1).strip()
                 if c.lower() not in self._NAME_STOPWORDS and c.lower() not in self._KNOWN_DISTRICT_NAMES and c.lower() not in [d.lower() for d in get_real_districts()]:
                     return _KNOWN_SUSPECT_ALIASES.get(c.lower(), c)
-            # "suspect X" checked before the more generic "for X"/"connected to X"
-            for cue in (r"suspect", r"for", r"connected to", r"of"):
-                m2 = re.search(rf"\b{cue}\s+([a-zA-Z]+)\b", query, re.IGNORECASE)
+            # "suspect X" checked before the more generic "for X"/"connected to X"/"by X"
+            # Support 1- or 2-word names (e.g., "sanaya patla") and "posed by" / "by" cues
+            for cue in (r"posed\s+by", r"suspect", r"by", r"from", r"for", r"connected to", r"of"):
+                m2 = re.search(rf"\b{cue}\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\b", query, re.IGNORECASE)
                 if m2:
                     cand = m2.group(1).strip()
-                    if cand.lower() not in ("suspect",) and cand.lower() not in self._NAME_STOPWORDS and cand.lower() not in self._KNOWN_DISTRICT_NAMES and cand.lower() not in [d.lower() for d in get_real_districts()]:
+                    tokens = [t for t in cand.split() if t.lower() not in {"us", "the", "public", "police", "society", "state", "community", "citizens"}]
+                    cand = " ".join(tokens).strip()
+                    if cand and cand.lower() not in ("suspect",) and cand.lower() not in self._NAME_STOPWORDS and cand.lower() not in self._KNOWN_DISTRICT_NAMES and cand.lower() not in [d.lower() for d in get_real_districts()]:
                         res = cand.title()
                         return _KNOWN_SUSPECT_ALIASES.get(res.lower(), res)
             # Reversed word order ("is ramesh connected to") -- a word
@@ -2878,7 +2889,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
               "proactive deployment", "patrol plan", "which areas", "areas to patrol", "patrol this week",
               "where should i patrol", "send patrols", "allocate patrols", "patrol allocation", "beat allocation",
               "where to send officers", "focus policing", "deploy officers", "ಗಸ್ತು", "ಬೀಟ್", "ಗಸ್ತು ತಿರುಗುವಿಕೆ", "ಬೀಟ್ ಯೋಜನೆ"], "plan_patrol_deployment", {"district": district}, "yes"),
-            (["risk score", "conviction risk", "recidivism", "re-offend", "risk for", "risk of", "ಅಪಾಯ", "ರಿಸ್ಕ್"], "get_offender_risk", {"suspect_name": name}, name),
+            (["risk score", "conviction risk", "recidivism", "re-offend", "risk for", "risk of", "risk posed", "risk by", "threat posed", "threat by", "threat of", "threat score", "threat assessment", "danger posed", "danger of", "public safety risk", "risk to", "threat to", "ಅಪಾಯ", "ರಿಸ್ಕ್"], "get_offender_risk", {"suspect_name": name}, name),
             (["shares a phone", "shares a vehicle", "shared phone", "shared vehicle", "same phone", "same vehicle",
               "syndicate link", "hidden link", "linked by phone", "linked by vehicle", "shared contact",
               "common phone", "common vehicle", "who else uses"], "shared_attribute_links", {"suspect_name": name}, name),
@@ -3152,7 +3163,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                                     "two places at once", "alibi check", "alibi consistency"],
         "get_forecast": ["forecast", "predict", "early warning", "next month", "projection", "expected", "future crime"],
         "get_offender_risk": ["risk score", "conviction risk", "recidivism", "re-offend", "reoffend",
-                             "risk for", "risk of", "dangerous", "threat level"],
+                             "risk for", "risk of", "risk posed", "risk by", "threat posed", "threat by", "threat of", "threat score", "threat assessment", "danger posed", "danger of", "public safety risk", "risk to", "threat to", "dangerous", "threat level"],
         "get_mo_profile": ["mo profile", "modus operandi", "behavioral profile", "behaviour profile", "method of"],
         "summarize_case": ["summarize", "summary", "brief on case", "overview of case"],
         # "list cases"/"cases in"/"cases involving"/"find all" deliberately
@@ -3639,15 +3650,21 @@ class VajraAgentLoop(CognitiveBrainMixin):
         }
 
         # 1. Direct operational suspect capture (handles lowercase e.g. "network of ramesh", "ramesh network", "find network of ramesh ok")
-        op_suspect_match = re.search(
-            r'\b(?:network\s+(?:of|for)|syndicate\s+(?:of|for)|suspect|accused|records\s+for|history\s+of|profile\s+of|gang\s+(?:of|for)|associate\s+of|nexus\s+with)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\b',
+        clean_q_for_suspect = re.sub(
+            r"\b(?:to|by)\s+(?:us|the\s+public|society|police|citizens|community|state)(?:\s+and\s+(?:us|the\s+public|society|police|citizens|community|state))?\b",
+            "",
             clean_query,
+            flags=re.IGNORECASE
+        )
+        op_suspect_match = re.search(
+            r'\b(?:network\s+(?:of|for)|syndicate\s+(?:of|for)|suspect|accused|records\s+for|history\s+of|profile\s+of|gang\s+(?:of|for)|associate\s+of|nexus\s+with|risk\s+(?:of|for|by|from|posed\s+by)|threat\s+(?:of|for|by|from|posed\s+by)|danger\s+(?:of|for|by|from|posed\s+by)|posed\s+by)\s+([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\b',
+            clean_q_for_suspect,
             re.IGNORECASE
         )
         if not op_suspect_match:
             op_suspect_match = re.search(
-                r'\b([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\s+(?:network|associates|syndicate|gang)\b',
-                clean_query,
+                r'\b([a-zA-Z]+(?:\s+[a-zA-Z]+)?)\s+(?:network|associates|syndicate|gang|risk|threat|danger)\b',
+                clean_q_for_suspect,
                 re.IGNORECASE
             )
         if op_suspect_match:

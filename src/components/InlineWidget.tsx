@@ -383,9 +383,10 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
     ? data
     : (Array.isArray(data?.panels) ? data.panels.find((p: any) => p.type === "map" && p.data?.hotspots?.length > 0)?.data : null);
 
-  const effectiveType = (type === "dossier" || !type)
+  const normalizedType = type === "offender_risk" ? "risk" : (type === "syndicate" || type === "network_graph" ? "network" : type);
+  const effectiveType = (normalizedType === "dossier" || !normalizedType)
     ? (netData ? "network" : riskData ? "risk" : mapData ? "map" : "network")
-    : type;
+    : normalizedType;
 
   const effectiveData = effectiveType === "network" ? (netData || data) :
                         effectiveType === "risk" ? (riskData || data) :
@@ -761,7 +762,11 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
                   ? safeEffectiveData.hotspots
                   : (safeEffectiveData.coordinates || []))
           );
-          const hotspots: Hotspot[] = rawHotspots.filter((h: any) => typeof h?.lat === "number" && typeof h?.lng === "number");
+          const hotspots: Hotspot[] = (Array.isArray(rawHotspots) ? rawHotspots : []).map((h: any) => {
+            const lat = typeof h?.lat === "number" ? h.lat : (typeof h?.latitude === "number" ? h.latitude : parseFloat(h?.lat ?? h?.latitude));
+            const lng = typeof h?.lng === "number" ? h.lng : (typeof h?.longitude === "number" ? h.longitude : parseFloat(h?.lng ?? h?.longitude));
+            return { ...h, lat, lng };
+          }).filter((h: any) => !isNaN(h.lat) && !isNaN(h.lng) && h.lat !== 0 && h.lng !== 0);
           const monthLabel = (m: string) => {
             const [y, mo] = m.split("-");
             return new Date(Number(y), Number(mo) - 1, 1).toLocaleString("en-US", { month: "short", year: "numeric" });

@@ -44,31 +44,49 @@ interface NetworkGraphProps {
 
 const DARK_NODE_COLORS: Record<string, string> = {
   suspect: "#00C6AD",
+  central_hub: "#00C6AD",
+  kingpin: "#00C6AD",
   case: "#f59e0b",
+  fir: "#f59e0b",
   person: "#a78bfa",
+  co_accused: "#a78bfa",
+  accused: "#a78bfa",
   vehicle: "#e66767",
   phone: "#38bdf8",
   financial_account: "#22d3ee",
+  overflow: "#78716c",
 };
 
 const LIGHT_NODE_COLORS: Record<string, string> = {
   suspect: "#0D9488",          // Deep Teal (6.2:1 contrast ratio)
+  central_hub: "#0D9488",
+  kingpin: "#0D9488",
   case: "#D97706",             // Rich Amber (4.8:1 contrast ratio)
+  fir: "#D97706",
   person: "#7C3AED",           // Deep Purple (5.4:1 contrast ratio)
+  co_accused: "#7C3AED",
+  accused: "#7C3AED",
   vehicle: "#DC2626",          // Deep Crimson (5.1:1 contrast ratio)
   phone: "#0284C7",            // Deep Sky Blue (4.6:1 contrast ratio)
   financial_account: "#0891B2",// Deep Cyan (4.7:1 contrast ratio)
+  overflow: "#78716c",
 };
 
 const NODE_COLORS = DARK_NODE_COLORS;
 
 const NODE_TYPE_LABELS: Record<string, string> = {
   suspect: "Suspect",
+  central_hub: "Central Hub",
+  kingpin: "Kingpin",
   case: "Linked Case",
+  fir: "FIR",
   person: "Co-Accused",
+  co_accused: "Co-Accused",
+  accused: "Accused",
   vehicle: "Vehicle",
   phone: "Phone",
   financial_account: "Financial Account",
+  overflow: "Other",
 };
 
 // F.1/F.33: toggle-bar labels for the three combined-view layers.
@@ -95,16 +113,30 @@ const MAX_NODES_PER_RING = 16;
 const MIN_ARC_SPACING = 54;
 const RING_STEP = 115;
 
-const getEdgeEndpoints = (e: any): { source: string; target: string } => ({
-  source: String(e?.source || e?.from || ""),
-  target: String(e?.target || e?.to || ""),
-});
+const getEdgeEndpoints = (rawE: any): { source: string; target: string } => {
+  const e = rawE?.data || rawE;
+  return {
+    source: String(e?.source || e?.from || e?.src || ""),
+    target: String(e?.target || e?.to || e?.dst || ""),
+  };
+};
 
 // Simple deterministic radial layout: BFS distance from the "suspect" root
 // determines which ring a node sits on; nodes on the same ring are spread
 // evenly around the circle.
-function computeLayout(nodes: GraphNode[], edges: GraphEdge[]) {
-  const root = nodes.find((n) => n.type === "suspect") || nodes[0];
+function computeLayout(rawNodes: GraphNode[], edges: GraphEdge[]) {
+  // Normalize nodes in case un-normalized objects were passed directly
+  const nodes = (rawNodes || []).map((raw: any) => {
+    const d = raw?.data || raw || {};
+    return {
+      ...d,
+      id: String(d.id || d.label || d.name || ""),
+      label: String(d.label || d.name || d.id || ""),
+      type: d.type || (d.is_kingpin || d.is_central_hub ? "suspect" : "person"),
+    };
+  }).filter((n) => !!n.id);
+
+  const root = nodes.find((n) => n.type === "suspect" || n.type === "central_hub" || n.type === "kingpin") || nodes[0];
   if (!root) return { positions: new Map<string, { x: number; y: number }>(), width: 640, height: 380, renderNodes: nodes, overflowByRing: new Map<number, number>() };
 
   const adjacency = new Map<string, string[]>();
@@ -218,11 +250,57 @@ export const NetworkGraph: React.FC<NetworkGraphProps> = ({
   const [expandedNodes, setExpandedNodes] = useState<GraphNode[]>([]);
   const [expandedEdges, setExpandedEdges] = useState<GraphEdge[]>([]);
   const [expandingNodeId, setExpandingNodeId] = useState<string | null>(null);
+
+  const normalizedPropNodes: GraphNode[] = useMemo(() => {
+    return (propNodes || []).map((raw: any) => {
+      const d = raw?.data || raw || {};
+      const id = String(d.id || d.label || d.name || "");
+      const label = String(d.label || d.name || d.id || "");
+      let type = d.type || (d.is_kingpin || d.is_central_hub ? "suspect" : "person");
+      if (type === "central_hub" || type === "kingpin") type = "suspect";
+      if (type === "accused" || type === "co_accused") type = "person";
+
+      const sublabel = d.sublabel || (
+        d.case_count != null && d.degree != null
+          ? `${d.case_count} case${d.case_count !== 1 ? "s" : ""} · deg ${d.degree}`
+          : d.case_count != null
+          ? `${d.case_count} case${d.case_count !== 1 ? "s" : ""}`
+          : undefined
+      );
+
+      return {
+        ...d,
+        id,
+        label,
+        type,
+        sublabel,
+        case_count: d.case_count,
+        degree: d.degree,
+        centrality: d.centrality ?? d.betweenness,
+        risk: d.risk != null ? Number(d.risk) : undefined,
+      };
+    }).filter((n: GraphNode) => !!n.id);
+  }, [propNodes]);
+
+  const normalizedPropEdges: GraphEdge[] = useMemo(() => {
+    return (propEdges || []).map((raw: any) => {
+      const d = raw?.data || raw || {};
+      const endpoints = getEdgeEndpoints(raw);
+      return {
+        ...d,
+        source: endpoints.source,
+        target: endpoints.target,
+        label: d.label || d.case || "",
+        weight: d.weight != null ? Number(d.weight) : 1,
+      };
+    }).filter((e: GraphEdge) => !!e.source && !!e.target);
+  }, [propEdges]);
+
   const nodes = useMemo(() => {
-    const seen = new Set(propNodes.map((n) => n.id));
-    return [...propNodes, ...expandedNodes.filter((n) => !seen.has(n.id))];
-  }, [propNodes, expandedNodes]);
-  const edges = useMemo(() => [...propEdges, ...expandedEdges], [propEdges, expandedEdges]);
+    const seen = new Set(normalizedPropNodes.map((n) => n.id));
+    return [...normalizedPropNodes, ...expandedNodes.filter((n) => !seen.has(n.id))];
+  }, [normalizedPropNodes, expandedNodes]);
+  const edges = useMemo(() => [...normalizedPropEdges, ...expandedEdges], [normalizedPropEdges, expandedEdges]);
 
   const handleNodeExpand = async (n: GraphNode) => {
     if (n.type === "overflow" || expandingNodeId) return;

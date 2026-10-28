@@ -53,8 +53,9 @@ class ThreatScoreTool(VajraTool):
             f"• **Bail Opposition**: {directives.get('bail_recommendation', 'Assess under judicial guidelines')}"
         )
 
+        dossier["type"] = "risk"
         return {
-            "response_type": "offender_risk",
+            "response_type": "risk",
             "text_result": text_result,
             "data": dossier,
             "citations": [{
