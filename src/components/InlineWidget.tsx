@@ -754,11 +754,14 @@ const InlineWidgetComponent: React.FC<InlineWidgetProps> = ({ type, data, onExpa
           const availableMonths: string[] = Array.isArray(safeEffectiveData.available_months) ? safeEffectiveData.available_months : [];
           const hotspotsByMonth: Record<string, Hotspot[]> = safeEffectiveData.hotspots_by_month || {};
           const effectiveMonth = selectedHotspotMonth ?? (availableMonths.length > 1 ? availableMonths[availableMonths.length - 1] : "__all__");
-          const hotspots: Hotspot[] = (
+          const rawHotspots = (
             effectiveMonth !== "__all__" && hotspotsByMonth[effectiveMonth]
               ? hotspotsByMonth[effectiveMonth]
-              : (safeEffectiveData.hotspots || [])
-          ).filter((h: any) => typeof h?.lat === "number" && typeof h?.lng === "number");
+              : (safeEffectiveData.hotspots && safeEffectiveData.hotspots.length > 0
+                  ? safeEffectiveData.hotspots
+                  : (safeEffectiveData.coordinates || []))
+          );
+          const hotspots: Hotspot[] = rawHotspots.filter((h: any) => typeof h?.lat === "number" && typeof h?.lng === "number");
           const monthLabel = (m: string) => {
             const [y, mo] = m.split("-");
             return new Date(Number(y), Number(mo) - 1, 1).toLocaleString("en-US", { month: "short", year: "numeric" });

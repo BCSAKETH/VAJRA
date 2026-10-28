@@ -1995,7 +1995,15 @@ export const AIChatScreen: React.FC = () => {
         <div className="shrink-0 border-b border-stone-850 bg-stone-900/95 backdrop-blur-md px-6 py-2.5 flex items-center justify-between z-20">
           <div className="flex items-center gap-2 min-w-0 pr-4">
             <span className="text-xs font-mono font-bold text-[#C79A4E] truncate">
-              {activeInvestigationTitle || (activeInvestigationCaseNo ? `Case ${activeInvestigationCaseNo}` : null) || (chatMessages.find((m) => m.role === "user")?.content.slice(0, 45) + "...") || "Active Chat Session"}
+              {(() => {
+                const userMsg = chatMessages.find((m) => m.sender === "user" && m.text)?.text;
+                return (
+                  activeInvestigationTitle ||
+                  (activeInvestigationCaseNo ? `Case ${activeInvestigationCaseNo}` : null) ||
+                  (userMsg ? (userMsg.length > 45 ? `${userMsg.slice(0, 45)}...` : userMsg) : null) ||
+                  "Active Chat Session"
+                );
+              })()}
             </span>
           </div>
 

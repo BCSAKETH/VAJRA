@@ -196,15 +196,21 @@ def query_spatial_incidents(
         total_available = len(coords)
         mask = np.ones(total_available, dtype=bool)
 
-        # 1. District ID filtering
-        if resolved_district_id is not None:
+        # 1. District ID filtering: if records exist for resolved_district_id, filter by it.
+        # Otherwise, fall back to the geographic bounding box for newly bifurcated districts (e.g. Vijayanagara).
+        if resolved_district_id is not None and np.any(district_ids == resolved_district_id):
             mask &= (district_ids == resolved_district_id)
-
-        # 2. Bounding Box filtering (Vectorized)
-        if min_lat is not None and max_lat is not None:
+        elif min_lat is not None and max_lat is not None:
             mask &= (coords[:, 0] >= min_lat) & (coords[:, 0] <= max_lat)
-        if min_lng is not None and max_lng is not None:
-            mask &= (coords[:, 1] >= min_lng) & (coords[:, 1] <= max_lng)
+            if min_lng is not None and max_lng is not None:
+                mask &= (coords[:, 1] >= min_lng) & (coords[:, 1] <= max_lng)
+
+        # 2. Bounding Box filtering (Vectorized) if district_id was matched directly
+        if resolved_district_id is not None and np.any(district_ids == resolved_district_id):
+            if min_lat is not None and max_lat is not None:
+                mask &= (coords[:, 0] >= min_lat) & (coords[:, 0] <= max_lat)
+            if min_lng is not None and max_lng is not None:
+                mask &= (coords[:, 1] >= min_lng) & (coords[:, 1] <= max_lng)
 
         matching_indices = np.where(mask)[0]
 

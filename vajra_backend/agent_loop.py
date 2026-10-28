@@ -210,10 +210,10 @@ def is_known_district_or_stopword(text: str) -> bool:
 # narrow: any conjunction ("and", "compare", "vs") bails out to the normal
 # pipeline rather than risk truncating a real multi-part question.
 _FAST_PATH_PATTERNS = [
-    (re.compile(r"^(?:show\s+)?(?:the\s+)?(?:top|most\s+frequent|highest|main|common)\s+(?:crimes?|offences?|cases?)\s+(?:in|for|at|of|across)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "get_case_types_distribution"),
-    (re.compile(r"^(?:show\s+)?(?:the\s+)?(?:crime\s+)?(?:distribution|breakdown|statistics|stats|categories)\s+(?:in|for|at|of|across)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "get_case_types_distribution"),
-    (re.compile(r"^(?:show\s+)?(?:the\s+)?(?:crime\s+)?trends?\s+(?:in|for|at|of|across)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "get_crime_trends"),
-    (re.compile(r"^(?:show\s+)?(?:the\s+)?(?:crime\s+)?hotspots?\s+(?:in|for|at|of|across)\s+(?P<district>[a-zA-Z\s]+)$", re.IGNORECASE), "query_hotspots"),
+    (re.compile(r"^(?:show\s+|plot\s+|map\s+|display\s+|view\s+|find\s+)?(?:the\s+)?(?:top|most\s+frequent|highest|main|common)\s+(?:crimes?|offences?|cases?)\s+(?:in|for|at|of|across)\s+(?P<district>[a-zA-Z\s\-]+)$", re.IGNORECASE), "get_case_types_distribution"),
+    (re.compile(r"^(?:show\s+|plot\s+|map\s+|display\s+|view\s+|find\s+)?(?:the\s+)?(?:crime\s+)?(?:distribution|breakdown|statistics|stats|categories)\s+(?:in|for|at|of|across)\s+(?P<district>[a-zA-Z\s\-]+)$", re.IGNORECASE), "get_case_types_distribution"),
+    (re.compile(r"^(?:show\s+|plot\s+|map\s+|display\s+|view\s+|find\s+)?(?:the\s+)?(?:crime\s+)?trends?\s+(?:in|for|at|of|across)\s+(?P<district>[a-zA-Z\s\-]+)$", re.IGNORECASE), "get_crime_trends"),
+    (re.compile(r"^(?:show\s+|plot\s+|map\s+|display\s+|view\s+|find\s+)?(?:the\s+)?(?:crime\s+)?hotspots?\s+(?:in|for|at|of|across)\s+(?P<district>[a-zA-Z\s\-]+)$", re.IGNORECASE), "query_hotspots"),
 ]
 
 
@@ -234,7 +234,7 @@ def check_fast_path_intent(query: str, real_districts: List[str]) -> Optional[Di
         return {"tool": "find_similar_cases", "parameters": {"query": cleaned}}
 
     # Strip conversational filler prefix so natural phrasings match instantly
-    cleaned = re.sub(r"^(?:what\s+(?:are|is)\s+(?:the\s+)?|tell\s+me\s+(?:about\s+)?(?:the\s+)?|can\s+you\s+(?:show|give|tell)\s+(?:me\s+)?(?:the\s+)?|please\s+(?:show|give|tell\s+me\s+)?(?:the\s+)?|give\s+me\s+(?:the\s+)?|show\s+(?:me\s+)?(?:the\s+)?|list\s+(?:the\s+)?|which\s+(?:are\s+)?(?:the\s+)?|what\s+are\s+)", "", cleaned, flags=re.IGNORECASE).strip()
+    cleaned = re.sub(r"^(?:what\s+(?:are|is)\s+(?:the\s+)?|tell\s+me\s+(?:about\s+)?(?:the\s+)?|can\s+you\s+(?:show|give|tell|plot|map)\s+(?:me\s+)?(?:the\s+)?|please\s+(?:show|give|tell\s+me\s+|plot\s+|map\s+)?(?:the\s+)?|give\s+me\s+(?:the\s+)?|show\s+(?:me\s+)?(?:the\s+)?|plot\s+(?:me\s+)?(?:the\s+)?|map\s+(?:me\s+)?(?:the\s+)?|display\s+(?:me\s+)?(?:the\s+)?|view\s+(?:the\s+)?|list\s+(?:the\s+)?|which\s+(?:are\s+)?(?:the\s+)?|what\s+are\s+)", "", cleaned, flags=re.IGNORECASE).strip()
     for pattern, tool_name in _FAST_PATH_PATTERNS:
         match = pattern.match(cleaned)
         if match:
@@ -252,6 +252,8 @@ def check_fast_path_intent(query: str, real_districts: List[str]) -> Optional[Di
                 resolved = "Mangaluru City"
             elif rd_low in ("hubli", "hubballi", "dharwad"):
                 resolved = "Hubballi-Dharwad"
+            elif rd_low in ("vijayanagara", "vijayanagar", "hospet"):
+                resolved = "Vijayanagara"
             else:
                 resolved = next((d for d in real_districts if raw_dist.lower() in d.lower() or d.lower() in raw_dist.lower()), None)
             if resolved:
@@ -1602,8 +1604,9 @@ class VajraAgentLoop(CognitiveBrainMixin):
     _DOMAIN_ACTION_VERBS = {
         "find", "show", "search", "list", "get", "fetch", "check", "analyze", "compare",
         "investigate", "track", "trace", "identify", "locate", "summarize", "recap",
+        "plot", "map", "chart", "draw", "graph", "display", "view",
         "who", "what", "where", "when", "why", "how", "is", "are", "does", "details",
-        "ಹುಡುಕು", "ತೋರಿಸು", "ಪರಿಶೀಲಿಸು", "ಮಾಹಿತಿ"
+        "ಹುಡುಕು", "ತೋರಿಸು", "ಪರಿಶೀಲಿಸು", "ಮಾಹಿತಿ", "ನಕ್ಷೆ"
     }
 
     _DOMAIN_CCTNS_ENTITIES = {
@@ -1690,29 +1693,8 @@ class VajraAgentLoop(CognitiveBrainMixin):
             return (True, "kannada_greeting" if is_kn else "greeting", detected_salutation)
 
         # -------------------------------------------------------------
-        # TASK 1: SEMANTIC VECTOR ROUTER (scikit-learn TF-IDF Cosine Similarity)
-        # Vectorize query and compare mathematically against Casual vs Operational anchors
-        # -------------------------------------------------------------
-        has_case_no = bool(self._CASE_NUMBER_REGEX.search(clean_text))
-        has_section = bool(self._SECTION_REGEX.search(clean_text))
-
-        if not has_case_no and not has_section:
-            try:
-                query_vec = _INTENT_VECTORIZER.transform([clean_text.lower()])
-                casual_sims = cosine_similarity(query_vec, _CASUAL_MAT)[0]
-                operational_sims = cosine_similarity(query_vec, _OPERATIONAL_MAT)[0]
-                max_casual = float(np.max(casual_sims)) if len(casual_sims) > 0 else 0.0
-                max_operational = float(np.max(operational_sims)) if len(operational_sims) > 0 else 0.0
-
-                # If query is mathematically closer to Casual anchors and exceeds confidence threshold
-                if max_casual > max_operational and max_casual >= 0.15:
-                    is_kn = bool(re.search(r'[\u0C80-\u0CFF]', clean_text)) or any(k in clean_text.lower() for k in ["samachara", "namaskara", "yeno"])
-                    return (True, "kannada_greeting" if is_kn else "semantic_casual", detected_salutation)
-            except Exception as e:
-                logger.warning(f"[INTENT_ROUTER] TF-IDF semantic vector routing failed: {e}")
-
-        # -------------------------------------------------------------
         # GATE 1: Domain Hard-Veto Guard (Law Enforcement Vocabulary)
+        # Must execute BEFORE semantic vector router to eliminate false positives
         # -------------------------------------------------------------
         tokens = [t for t in re.split(r'[^a-zA-Z0-9\u0C80-\u0CFF]+', clean_text.lower()) if t]
         token_set = set(tokens)
@@ -1738,12 +1720,34 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # -------------------------------------------------------------
         substantive_tokens = [t for t in tokens if t not in self._CONVERSATIONAL_TOKENS]
 
-        if len(substantive_tokens) == 0:
-            is_kn = bool(re.search(r'[\u0C80-\u0CFF]', clean_text))
-            return (True, "kannada_greeting" if is_kn else "greeting", detected_salutation)
+        # If substantive query terms exist, VETO greeting fast-path immediately!
+        if len(substantive_tokens) > 0:
+            return (False, None, detected_salutation)
 
-        # Substantive tokens exist -> VETO greeting fast-path!
-        return (False, None, detected_salutation)
+        # -------------------------------------------------------------
+        # TASK 1: SEMANTIC VECTOR ROUTER (scikit-learn TF-IDF Cosine Similarity)
+        # Vectorize query and compare mathematically against Casual vs Operational anchors
+        # Only reached when zero substantive tokens or domain entities were detected
+        # -------------------------------------------------------------
+        has_case_no = bool(self._CASE_NUMBER_REGEX.search(clean_text))
+        has_section = bool(self._SECTION_REGEX.search(clean_text))
+
+        if not has_case_no and not has_section:
+            try:
+                query_vec = _INTENT_VECTORIZER.transform([clean_text.lower()])
+                casual_sims = cosine_similarity(query_vec, _CASUAL_MAT)[0]
+                operational_sims = cosine_similarity(query_vec, _OPERATIONAL_MAT)[0]
+                max_casual = float(np.max(casual_sims)) if len(casual_sims) > 0 else 0.0
+                max_operational = float(np.max(operational_sims)) if len(operational_sims) > 0 else 0.0
+
+                if max_casual > max_operational and max_casual >= 0.15:
+                    is_kn = bool(re.search(r'[\u0C80-\u0CFF]', clean_text)) or any(k in clean_text.lower() for k in ["samachara", "namaskara", "yeno"])
+                    return (True, "kannada_greeting" if is_kn else "semantic_casual", detected_salutation)
+            except Exception as e:
+                logger.warning(f"[INTENT_ROUTER] TF-IDF semantic vector routing failed: {e}")
+
+        is_kn = bool(re.search(r'[\u0C80-\u0CFF]', clean_text))
+        return (True, "kannada_greeting" if is_kn else "greeting", detected_salutation)
 
     def _strip_salutations(self, text: str) -> Tuple[str, bool, Optional[str]]:
         """
@@ -1772,7 +1776,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
         has_case_no = bool(self._CASE_NUMBER_REGEX.search(raw_query))
         has_section = bool(self._SECTION_REGEX.search(raw_query))
         has_op_keywords = bool(re.search(
-            r'\b(fir|cr[-_ ]?\d+|case|dossier|remand|custody|bail|section|sec|u/s|bns|bnss|bsa|ipc|chargesheet|suspect|accused|arrest|offender|syndicate|recidivism|psoti|hotspot|patrol|rto|plate|vehicle|cctns)\b',
+            r'\b(fir|cr[-_ ]?\d+|case|cases|dossier|remand|custody|bail|section|sec|u/s|bns|bnss|bsa|ipc|chargesheet|suspect|suspects|accused|arrest|offender|syndicate|recidivism|psoti|hotspot|hotspots|crime|crimes|plot|map|patrol|rto|plate|vehicle|cctns)\b',
             clean_lower
         ))
         is_operational = has_case_no or has_section or has_op_keywords
@@ -9056,6 +9060,25 @@ class VajraAgentLoop(CognitiveBrainMixin):
                                 "registered_date": pt.get("registered_date"),
                             })
 
+                    # Fallback to direct Stratus NPZ streaming if RAM index had 0 points
+                    if not coordinates and district:
+                        try:
+                            from spatial_preindex_stratus import query_spatial_incidents
+                            stratus_res = query_spatial_incidents(district=district, max_points=2500)
+                            for pt in stratus_res.get("incidents", []):
+                                coordinates.append({
+                                    "lat": pt["lat"],
+                                    "lng": pt["lng"],
+                                    "label": pt.get("crime_no"),
+                                    "crime_head_name": crime_names_by_id.get(str(pt.get("CrimeMajorHeadID"))),
+                                    "station_name": station_names_by_id.get(str(pt.get("PoliceStationID"))),
+                                    "registered_date": pt.get("registered_date") or datetime.utcfromtimestamp(pt.get("timestamp", 0)).strftime("%Y-%m-%d"),
+                                })
+                            if coordinates:
+                                logger.info(f"Loaded {len(coordinates)} incident coordinates from Stratus NPZ for {district}")
+                        except Exception as e_stratus:
+                            logger.warning(f"Stratus spatial pre-index query notice: {e_stratus}")
+
                     if not coordinates:
                         from datetime import timedelta as _td
                         _recency_cutoff = (datetime.utcnow() - _td(days=180)).strftime("%Y-%m-%d")
@@ -9195,15 +9218,15 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
                 scope_label = f" in {district}" if district else ""
                 if centroids:
-                    data = {"hotspots": centroids, "trend": trend, "hexbins": hexbins,
+                    data = {"hotspots": centroids, "coordinates": coordinates, "count": len(coordinates), "trend": trend, "hexbins": hexbins,
                             "hotspots_by_month": hotspots_by_month_clustered, "available_months": available_months,
                             "projected_hexbins": projected_hexbins}
-                    text_result = f"Plotted spatial crime density map{scope_label}. Detected {len(centroids)} active hotspot clusters containing dense incident concentrations.{trend_txt}"
+                    text_result = f"Plotted spatial crime density map{scope_label}. Detected {len(centroids)} active hotspot clusters from {len(coordinates)} geocoded incidents.{trend_txt}"
                 else:
-                    data = {"hotspots": coordinates, "trend": trend, "hexbins": hexbins,
+                    data = {"hotspots": coordinates, "coordinates": coordinates, "count": len(coordinates), "trend": trend, "hexbins": hexbins,
                         "hotspots_by_month": hotspots_by_month_clustered, "available_months": available_months,
                         "projected_hexbins": projected_hexbins}
-                    text_result = f"The CCTNS database does not currently contain enough dense incident coordinates{scope_label} to form statistical clusters using DBSCAN. Displaying raw incident marker positions.{trend_txt}"
+                    text_result = f"Plotted spatial crime incident map{scope_label} with {len(coordinates)} geocoded incident positions.{trend_txt}"
 
                 citations.append({"type": "Geospatial DBSCAN Analyst", "id": "KSP Hotspots", "details": f"Incident spatial coordinates{scope_label}"})
                 self._write_audit_log(employee_id, "Spatial Hotspot Query", district or "All Districts", "Get crime hotspots", text_result, session_id)

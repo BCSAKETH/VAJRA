@@ -1055,10 +1055,13 @@ async def get_spatial_hotspots(
     # time-lapse slider instead of one frozen snapshot.
     return {
         "hotspots": result_data.get("hotspots") or [],
+        "coordinates": result_data.get("coordinates") or [],
+        "count": result_data.get("count", 0),
         "hexbins": result_data.get("hexbins") or [],
         "trend": result_data.get("trend"),
         "hotspots_by_month": result_data.get("hotspots_by_month") or {},
         "available_months": result_data.get("available_months") or [],
+        "projected_hexbins": result_data.get("projected_hexbins") or [],
     }
 
 
