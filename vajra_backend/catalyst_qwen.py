@@ -55,7 +55,7 @@ class CatalystQwen:
     def is_configured(self) -> bool:
         return bool(self.endpoint_url)
 
-    def _call(self, prompt: str, images_b64: Optional[List[str]] = None) -> Optional[str]:
+    def _call(self, prompt: str, images_b64: Optional[List[str]] = None, timeout: float = 90.0) -> Optional[str]:
         """
         Shared request path for every method below. CONFIRMED LIVE
         (2026-09-17) against the recreated endpoint's real contract: true
@@ -90,7 +90,7 @@ class CatalystQwen:
             ("prompt", (None, prompt)),
         ]
         try:
-            res = requests.post(self.endpoint_url, headers=headers, files=files, timeout=90)
+            res = requests.post(self.endpoint_url, headers=headers, files=files, timeout=timeout)
             if res.status_code == 200:
                 data = res.json()
                 return (data.get("response") or "").strip()
@@ -271,4 +271,48 @@ class CatalystQwen:
                     pass
             logger.warning(f"Qwen tool-decision response wasn't usable JSON: {raw[:300]!r}")
 
+        return None
+
+    def synthesize_cctns_briefing(
+        self,
+        slots: Dict[str, Any],
+        query: str,
+        officer_name: str = "Officer",
+        station_name: str = "Jurisdiction PS",
+        timeout: float = 12.0,
+    ) -> Optional[str]:
+        """
+        Track 20: High-Speed Presentation & Delivery Engine (Brain 2).
+        Synthesizes structured multi-centroid facts (casual, desk updates, session memory,
+        and CCTNS operational findings) into an authoritative, professional police command briefing.
+        Employs circuit breaker timeout (default 12.0s) falling back cleanly to in-process PNLG if tripped.
+        """
+        if not self.is_configured():
+            return None
+
+        prompt = (
+            "Ignore the attached image, it is blank and irrelevant. You are VAJRA 3.0's Brain 2 High-Speed Presentation Engine for Karnataka Police. "
+            "Your task is to synthesize the following structured investigative facts and context into an authoritative, professional police command briefing. "
+            "Strict rules:\n"
+            "1. Do NOT invent or alter case numbers, sections, or factual data.\n"
+            "2. Ensure strict alignment with Bharatiya Nagarik Suraksha Sanhita (BNSS 2023) Section 187 remand limits and Bharatiya Sakshya Adhiniyam (BSA 2023) Section 63 electronic evidence preservation.\n"
+            f"3. Address the officer respectfully: {officer_name} ({station_name}).\n"
+            "4. Structure with clean markdown headings where relevant:\n"
+            "   ### 📋 Incident Overview\n"
+            "   ### ⚡ Risk / Syndicate Analysis\n"
+            "   ### 🔍 Statutory Compliance & Evidentiary Preservation (Section 63 BSA / Section 187 BNSS)\n\n"
+            "Retrieved Multi-Centroid Slots:\n"
+            f"- Casual / Rapport: {slots.get('casual', 'None')}\n"
+            f"- Station Desk Telemetry: {slots.get('desk_briefing', 'None')}\n"
+            f"- Conversation Memory Recall: {slots.get('memory_recap', 'None')}\n"
+            f"- CCTNS Operational Findings: {slots.get('cctns_operational', 'None')}\n\n"
+            f"Officer's Original Query: {query}\n\n"
+            "Deliver a unified, complete, and highly authoritative response answering all components of the officer's request:"
+        )
+
+        res = self._call(prompt, [_BLANK_PNG_B64], timeout=timeout)
+        if res:
+            res = re.sub(r'\\{2,}', '', res)
+            res = re.sub(r'\\+$', '', res, flags=re.MULTILINE).strip()
+            return res
         return None
