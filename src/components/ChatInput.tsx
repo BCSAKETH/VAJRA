@@ -431,67 +431,6 @@ export const ChatInput: React.FC<ChatInputProps> = React.memo(({
         <VajraVakMascot lang={lang} currentInput={inputVal} isThinking={isThinking} taskBadgeCount={pendingTaskCount} />
       </div>
 
-      {/* Zen Command Canvas Micro-Pills */}
-      {zenMode && (
-        <div className="flex items-center justify-between gap-1.5 pb-2 border-b border-[#C79A4E]/20 text-[11px] font-mono flex-wrap">
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-[#C79A4E]/15 border border-[#C79A4E]/30 text-[#E4C590] font-bold tracking-wider uppercase text-[10px]">
-              <Sparkles className="w-2.5 h-2.5 text-[#C79A4E]" />
-              ZEN CANVAS
-            </span>
-
-            <button
-              type="button"
-              onClick={isRecording ? stopRecording : startRecording}
-              className={`flex items-center gap-1 px-2.5 py-0.5 rounded-full border transition-all cursor-pointer ${
-                isRecording
-                  ? "bg-rose-500/20 text-rose-300 border-rose-500/40 animate-pulse"
-                  : "bg-stone-900/80 hover:bg-[#C79A4E]/15 text-stone-300 hover:text-[#E4C590] border-stone-800 hover:border-[#C79A4E]/40"
-              }`}
-              title="Toggle Audio Voice (Auto-detects KN/EN)"
-            >
-              {isRecording ? <MicOff className="w-3 h-3 text-rose-400" /> : <Mic className="w-3 h-3 text-[#C79A4E]" />}
-              <span>{isRecording ? "Recording…" : "Audio Voice"}</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              disabled={isThinking || isUploading}
-              className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-stone-900/80 hover:bg-[#C79A4E]/15 text-stone-300 hover:text-[#E4C590] border border-stone-800 hover:border-[#C79A4E]/40 transition-all cursor-pointer disabled:opacity-40"
-              title="Attach Document / PDF / Evidence"
-            >
-              <FilePlus className="w-3 h-3 text-[#C79A4E]" />
-              <span>+ Document</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setInputVal("Run BNSS §187 remand calculation for suspect in custody under FIR-2026-0814. Check maximum police custody limit (15 days vs 60/90 days default).");
-                if (textareaRef.current) textareaRef.current.focus();
-              }}
-              className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-stone-900/80 hover:bg-[#C79A4E]/15 text-stone-300 hover:text-[#E4C590] border border-stone-800 hover:border-[#C79A4E]/40 transition-all cursor-pointer"
-              title="Insert Section 187 Remand Check query"
-            >
-              <Scale className="w-3 h-3 text-[#C79A4E]" />
-              <span>§187 Remand Check</span>
-            </button>
-          </div>
-
-          <div className="flex items-center gap-1.5 ml-auto">
-            <button
-              type="button"
-              onClick={() => setLang(lang === "en" ? "kn" : "en")}
-              className="flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-stone-900/80 hover:bg-[#C79A4E]/15 text-[#E4C590] border border-stone-800 hover:border-[#C79A4E]/40 transition-all cursor-pointer font-bold"
-              title="Toggle Language (KN / EN)"
-            >
-              <Globe className="w-3 h-3 text-[#C79A4E]" />
-              <span>{lang === "en" ? "EN" : "KN"}</span>
-            </button>
-          </div>
-        </div>
-      )}
       {/* File input (hidden) */}
       <input
         type="file"

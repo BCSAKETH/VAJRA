@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { useApp } from "../AppContext";
+import { VajraLogo } from "./VajraLogo";
 
 function getTimeBucket(): "morning" | "afternoon" | "evening" | "night" {
   const h = new Date().getHours();
@@ -70,13 +71,13 @@ export const GreetingHeader: React.FC = () => {
 
   return (
     <div className="text-center mb-2 flex flex-col items-center justify-center animate-fade-in select-none">
-      <div className="w-10 h-10 rounded-full bg-[#C79A4E]/10 border border-[#C79A4E]/30 flex items-center justify-center text-[#C79A4E] text-xl mb-3 shadow-[0_0_20px_rgba(199,154,78,0.15)]">
-        ✴
+      <div className="flex items-center justify-center gap-3 mb-1">
+        <VajraLogo size={28} />
+        <h1 className="text-2xl sm:text-3xl font-serif text-stone-100 tracking-tight font-medium transition-all duration-300">
+          {greeting}
+        </h1>
       </div>
-      <h1 className="text-2xl sm:text-3xl font-serif text-stone-100 tracking-tight font-medium transition-all duration-300">
-        {greeting}
-      </h1>
-      <p className="text-xs text-stone-400 mt-1.5 font-sans">
+      <p className="text-xs text-stone-400 font-sans">
         {lang === "en"
           ? "What case or intelligence shall we investigate today?"
           : "ನಾವು ಇಂದು ಯಾವ ಪ್ರಕರಣ ಅಥವಾ ಗುಪ್ತಚರ ಮಾಹಿತಿಯನ್ನು ಪರಿಶೀಲಿಸೋಣ?"}

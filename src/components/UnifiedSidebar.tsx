@@ -5,7 +5,7 @@ import {
   MessageSquarePlus, FolderKanban, Map, UserCheck, Loader2,
   ChevronLeft, ChevronRight, Shield, IdCard, Building2, X, LogOut,
   Settings as SettingsIcon, Search, LayoutList, Plus, ChevronUp, ChevronDown,
-  Bot,
+  Bot, PanelLeft,
 } from "lucide-react";
 import { VajraLogo } from "./VajraLogo";
 import { GroupedSessionList, SessionSummary, Investigation, SessionMetaEntry, GroupInfo } from "./GroupedSessionList";
@@ -52,6 +52,7 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
     t, lang, currentScreen, setCurrentScreen, roleTier, badgeNumber, setIsAuthenticated,
     activeChatSessionId, requestChatSessionSelect, requestNewChat, chatSessionsRefreshNonce,
     isSettingsOpen, openSettings, zenMode, toggleZenMode,
+    goBack, goForward, canGoBack, canGoForward,
   } = useApp();
 
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
@@ -194,24 +195,37 @@ const UnifiedSidebarComponent: React.FC<UnifiedSidebarProps> = ({ isExpanded, on
           <div className="flex items-center gap-2">
             <VajraLogo size={22} />
             <span className="font-black text-xs tracking-widest text-[#C79A4E]">VAJRA</span>
+            {/* History Navigation: Back & Forward Arrows */}
+            <div className="flex items-center gap-0.5 ml-2">
+              <button
+                onClick={goBack}
+                disabled={!canGoBack}
+                title={lang === "en" ? "Back" : "ಹಿಂದೆ"}
+                className="p-1 rounded hover:bg-stone-800 text-stone-400 hover:text-stone-200 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={goForward}
+                disabled={!canGoForward}
+                title={lang === "en" ? "Forward" : "ಮುಂದೆ"}
+                className="p-1 rounded hover:bg-stone-800 text-stone-400 hover:text-stone-200 disabled:opacity-30 disabled:cursor-not-allowed cursor-pointer transition-colors"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
           </div>
         ) : (
           <VajraLogo size={22} className="mx-auto" />
         )}
         <div className="flex items-center gap-1">
+          {/* Focus Mode vector icon toggle */}
           <button
             onClick={toggleZenMode}
-            title={zenMode ? "Exit Zen Canvas [|]" : "Enter Zen Canvas [|]"}
-            className="px-1.5 py-1 rounded-md border border-stone-800 hover:border-[#C79A4E]/50 bg-stone-900/50 hover:bg-stone-800 text-stone-400 hover:text-[#C79A4E] text-[10.5px] font-mono font-bold transition-colors cursor-pointer"
+            title="Toggle Focus Mode (Hide Sidebars for Deep Investigation)"
+            className="p-1.5 rounded-lg border border-stone-800 hover:border-[#C79A4E]/50 bg-stone-900/50 hover:bg-stone-800 text-stone-400 hover:text-[#C79A4E] transition-colors cursor-pointer"
           >
-            [|]
-          </button>
-          <button
-            onClick={onToggleExpand}
-            aria-label={isExpanded ? "Collapse sidebar" : "Expand sidebar"}
-            className="p-1 rounded-md border border-stone-800 hover:border-stone-700 bg-stone-900/50 hover:bg-stone-800 text-stone-400 hover:text-stone-200 transition-colors cursor-pointer"
-          >
-            {isExpanded ? <ChevronLeft className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+            <PanelLeft className="w-3.5 h-3.5" />
           </button>
         </div>
       </div>

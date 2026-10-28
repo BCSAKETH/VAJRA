@@ -647,10 +647,12 @@ export const AIChatScreen: React.FC = () => {
   // from stale session memory -- see agent_loop.py's answer_mode=="dossier"
   // handling).
   const [activeInvestigationCaseNo, setActiveInvestigationCaseNo] = useState<string | null>(null);
+  const [activeInvestigationTitle, setActiveInvestigationTitle] = useState<string | null>(null);
   useEffect(() => {
     if (!activeSessionId) {
       setIsActiveInvestigation(false);
       setActiveInvestigationCaseNo(null);
+      setActiveInvestigationTitle(null);
       return;
     }
     let cancelled = false;
@@ -658,13 +660,14 @@ export const AIChatScreen: React.FC = () => {
       headers: { Authorization: `Bearer ${localStorage.getItem("vajra_token") || ""}` },
     })
       .then((r) => (r.ok ? r.json() : []))
-      .then((list: { session_id: string; case_no?: string | null }[]) => {
+      .then((list: { session_id: string; title?: string | null; case_no?: string | null }[]) => {
         if (cancelled) return;
         const match = list.find((i) => i.session_id === activeSessionId);
         setIsActiveInvestigation(!!match);
         setActiveInvestigationCaseNo(match?.case_no || null);
+        setActiveInvestigationTitle(match?.title || null);
       })
-      .catch(() => { if (!cancelled) { setIsActiveInvestigation(false); setActiveInvestigationCaseNo(null); } });
+      .catch(() => { if (!cancelled) { setIsActiveInvestigation(false); setActiveInvestigationCaseNo(null); setActiveInvestigationTitle(null); } });
     return () => { cancelled = true; };
   }, [activeSessionId]);
 
@@ -1987,78 +1990,81 @@ export const AIChatScreen: React.FC = () => {
           newChatRequestNonce, wired above). */}
       <div className="flex-1 min-h-0 flex flex-col relative overflow-hidden">
       {/* Forensic watermark: activates once dialogue commences (Section 13.5) */}
-      {chatMessages.length > 0 && <WatermarkOverlay />}
-      {/* Header export action button + §9.5/§9.6/§9.7 Investigation-only controls */}
-      <div className="absolute top-4 right-4 z-20 flex items-center gap-2">
-        {isActiveInvestigation && (
-          <>
+      {/* Track 32 Pillar 5: Dedicated Chat Sub-Header Bar (Opaque backdrop — stops text overlap) */}
+      {chatMessages.length > 0 && (
+        <div className="shrink-0 border-b border-stone-850 bg-stone-900/95 backdrop-blur-md px-6 py-2.5 flex items-center justify-between z-20">
+          <div className="flex items-center gap-2 min-w-0 pr-4">
+            <span className="text-xs font-mono font-bold text-[#C79A4E] truncate">
+              {activeInvestigationTitle || (activeInvestigationCaseNo ? `Case ${activeInvestigationCaseNo}` : null) || (chatMessages.find((m) => m.role === "user")?.content.slice(0, 45) + "...") || "Active Chat Session"}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            {isActiveInvestigation && (
+              <>
+                <button
+                  onClick={() => setShowTaskChecklist(true)}
+                  title={lang === "en" ? "Guided Tasks" : "ಮಾರ್ಗದರ್ಶಿ ಕಾರ್ಯಗಳು"}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/80 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer"
+                >
+                  <ListChecks className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => setShowCaseDiary(true)}
+                  title={lang === "en" ? "Case Diary" : "ಪ್ರಕರಣ ದಿನಚರಿ"}
+                  className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/80 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer"
+                >
+                  <BookText className="w-3.5 h-3.5" />
+                </button>
+                <div className="relative">
+                  <button
+                    onClick={() => setShowManageMenu((v) => !v)}
+                    title={lang === "en" ? "Manage Investigation" : "ತನಿಖೆ ನಿರ್ವಹಿಸಿ"}
+                    className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/80 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer"
+                  >
+                    <MoreVertical className="w-3.5 h-3.5" />
+                  </button>
+                  {showManageMenu && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setShowManageMenu(false)} />
+                      <div className="absolute right-0 top-9 z-50 bg-stone-900 border border-stone-800 rounded-lg shadow-2xl py-1 w-56">
+                        <button onClick={() => { setShowInvitePanel(true); setShowManageMenu(false); }} className="w-full text-left px-3 py-2 text-xs text-stone-300 hover:bg-stone-800 cursor-pointer">
+                          {lang === "en" ? "Add member" : "ಸದಸ್ಯರನ್ನು ಸೇರಿಸಿ"}
+                        </button>
+                        <button onClick={() => { setShowAddCaseModal(true); setShowManageMenu(false); }} className="w-full text-left px-3 py-2 text-xs text-stone-300 hover:bg-stone-800 cursor-pointer">
+                          {lang === "en" ? "Add another case" : "ಇನ್ನೊಂದು ಪ್ರಕರಣ ಸೇರಿಸಿ"}
+                        </button>
+                        <button onClick={handleGenerateDossier} className="w-full text-left px-3 py-2 text-xs text-stone-300 hover:bg-stone-800 cursor-pointer">
+                          {lang === "en" ? "Generate Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್ ರಚಿಸಿ"}
+                        </button>
+                        <div className="border-t border-stone-800 my-1" />
+                        <button onClick={handleCloseInvestigation} className="w-full text-left px-3 py-2 text-xs text-rose-400 hover:bg-rose-500/10 cursor-pointer">
+                          {lang === "en" ? "Close Investigation" : "ತನಿಖೆ ಮುಚ್ಚಿ"}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              </>
+            )}
             <button
-              onClick={() => setShowTaskChecklist(true)}
-              title={lang === "en" ? "Guided Tasks" : "ಮಾರ್ಗದರ್ಶಿ ಕಾರ್ಯಗಳು"}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer"
+              onClick={handleExportPDF}
+              disabled={isExportingPdf}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/80 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer disabled:opacity-50 disabled:cursor-wait"
             >
-              <ListChecks className="w-3.5 h-3.5" />
+              <Download className={`w-3.5 h-3.5 ${isExportingPdf ? "animate-bounce" : ""}`} />
+              <span>{isExportingPdf ? (lang === "en" ? "Exporting…" : "ರಫ್ತು ಮಾಡಲಾಗುತ್ತಿದೆ…") : t.exportPdf}</span>
             </button>
             <button
-              onClick={() => setShowCaseDiary(true)}
-              title={lang === "en" ? "Case Diary" : "ಪ್ರಕರಣ ದಿನಚರಿ"}
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer"
+              onClick={() => setShowBrowser(true)}
+              title={lang === "en" ? "Browse with VAJRA" : "VAJRA ಬ್ರೌಸ್"}
+              className="flex items-center justify-center p-1.5 rounded-lg border border-stone-800 bg-stone-900/80 hover:bg-stone-800 text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer"
             >
-              <BookText className="w-3.5 h-3.5" />
+              <Globe className="w-3.5 h-3.5" />
             </button>
-            <div className="relative">
-              <button
-                onClick={() => setShowManageMenu((v) => !v)}
-                title={lang === "en" ? "Manage Investigation" : "ತನಿಖೆ ನಿರ್ವಹಿಸಿ"}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer"
-              >
-                <MoreVertical className="w-3.5 h-3.5" />
-              </button>
-              {showManageMenu && (
-                <>
-                  <div className="fixed inset-0 z-40" onClick={() => setShowManageMenu(false)} />
-                  <div className="absolute right-0 top-9 z-50 bg-stone-900 border border-stone-800 rounded-lg shadow-2xl py-1 w-56">
-                    {/* Reuses the EXISTING invite flow verbatim (setShowInvitePanel
-                        already works for any Nth member) -- the only gap was ever
-                        having a second way to trigger it beyond the automatic
-                        first-participant prompt. */}
-                    <button onClick={() => { setShowInvitePanel(true); setShowManageMenu(false); }} className="w-full text-left px-3 py-2 text-xs text-stone-300 hover:bg-stone-800 cursor-pointer">
-                      {lang === "en" ? "Add member" : "ಸದಸ್ಯರನ್ನು ಸೇರಿಸಿ"}
-                    </button>
-                    <button onClick={() => { setShowAddCaseModal(true); setShowManageMenu(false); }} className="w-full text-left px-3 py-2 text-xs text-stone-300 hover:bg-stone-800 cursor-pointer">
-                      {lang === "en" ? "Add another case" : "ಇನ್ನೊಂದು ಪ್ರಕರಣ ಸೇರಿಸಿ"}
-                    </button>
-                    <button onClick={handleGenerateDossier} className="w-full text-left px-3 py-2 text-xs text-stone-300 hover:bg-stone-800 cursor-pointer">
-                      {lang === "en" ? "Generate Full Dossier" : "ಪೂರ್ಣ ದೋಶಿಯರ್ ರಚಿಸಿ"}
-                    </button>
-                    <div className="border-t border-stone-800 my-1" />
-                    <button onClick={handleCloseInvestigation} className="w-full text-left px-3 py-2 text-xs text-rose-400 hover:bg-rose-500/10 cursor-pointer">
-                      {lang === "en" ? "Close Investigation" : "ತನಿಖೆ ಮುಚ್ಚಿ"}
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          </>
-        )}
-        {chatMessages.length > 0 && (
-          <button
-            onClick={handleExportPDF}
-            disabled={isExportingPdf}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-xs font-semibold text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer disabled:opacity-50 disabled:cursor-wait"
-          >
-            <Download className={`w-3.5 h-3.5 ${isExportingPdf ? "animate-bounce" : ""}`} />
-            <span>{isExportingPdf ? (lang === "en" ? "Exporting…" : "ರಫ್ತು ಮಾಡಲಾಗುತ್ತಿದೆ…") : t.exportPdf}</span>
-          </button>
-        )}
-        <button
-          onClick={() => setShowBrowser(true)}
-          title={lang === "en" ? "Browse with VAJRA" : "VAJRA ಬ್ರೌಸ್"}
-          className="flex items-center justify-center p-1.5 rounded-lg border border-stone-800 bg-stone-900/60 hover:bg-stone-800 text-stone-400 hover:text-stone-100 transition-all shadow-md cursor-pointer"
-        >
-          <Globe className="w-3.5 h-3.5" />
-        </button>
-      </div>
+          </div>
+        </div>
+      )}
 
       {/* §9.4 Case Board (Investigation, full panel) / Chip Strip (regular
           chat, thin row) -- placed above the message list per the blueprint,
