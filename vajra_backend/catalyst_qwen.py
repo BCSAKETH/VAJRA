@@ -330,3 +330,72 @@ class CatalystQwen:
             res = re.sub(r'\\+$', '', res, flags=re.MULTILINE).strip()
             return res
         return None
+
+    def synthesize_fast_path_briefing(
+        self,
+        tool_name: str,
+        tool_data: Dict[str, Any],
+        query: str,
+        officer_name: str = "Officer",
+        lang: str = "en",
+        timeout: float = 6.0,
+    ) -> Optional[str]:
+        """
+        Fast-Path High-Speed Intelligence Briefing Synthesis via Catalyst QuickML Qwen.
+        Transforms raw tool telemetry (risk scores, network graph, hotspot clusters)
+        into a comprehensive, structured police command briefing in under 2 seconds.
+        """
+        if not self.is_configured() or not tool_data:
+            return None
+
+        is_kn = lang == "kn" or bool(re.search(r"[\u0C80-\u0CFF]", query or ""))
+        salutation = f"ನಮಸ್ಕಾರ {officer_name}" if is_kn else f"Namaskara {officer_name}"
+
+        # Clean compact telemetry summary for prompt budget
+        try:
+            summary_dict = {}
+            for k, v in tool_data.items():
+                if k in ("nodes", "edges") and isinstance(v, list):
+                    # Summarize graph nodes & edges
+                    summary_dict[f"{k}_count"] = len(v)
+                    if k == "nodes":
+                        summary_dict["sample_entities"] = [
+                            n.get("data", {}).get("label") or n.get("label") or str(n)
+                            for n in v[:8]
+                        ]
+                elif k in ("hotspots", "series", "cases", "points") and isinstance(v, list):
+                    summary_dict[f"{k}_count"] = len(v)
+                    summary_dict[f"top_{k}"] = v[:6]
+                elif not str(k).startswith("_"):
+                    summary_dict[k] = v
+            telemetry_str = json.dumps(summary_dict, default=str)[:3000]
+        except Exception:
+            telemetry_str = str(tool_data)[:2500]
+
+        prompt = (
+            "Ignore the attached image, it is blank and irrelevant. "
+            "You are VAJRA, the official Senior AI Intelligence Copilot for the Karnataka State Police (KSP).\n"
+            f"Officer Asking: {officer_name}\n"
+            f"Officer's Operational Query: '{query}'\n"
+            f"Executed CCTNS Analytics Tool: {tool_name}\n\n"
+            f"Verified Grounded Database Telemetry:\n{telemetry_str}\n\n"
+            "BRIEFING GENERATION DIRECTIVES:\n"
+            f"1. Begin with: '{salutation}'.\n"
+            "2. Produce a thorough, authoritative, multi-paragraph investigative command briefing answering the officer's exact question.\n"
+            "3. Format with clean Markdown headers and bold-key bullet points:\n"
+            "   - `### 📋 Executive Assessment`: Direct synthesis explaining the subject, scope, and key operational findings.\n"
+            "   - `### ⚖️ Empirical Risk & Telemetry Breakdown` (or `### 🕸️ Syndicate Topology & Network Bridge Analysis` for graphs, or `### 🎯 Geospatial Crime Dynamics` for hotspots): Specific percentages, scores, co-accused linkages, or regional patterns.\n"
+            "   - `### 💡 Operational Next Steps & Statutory Directives`: 2-3 concrete police actions (e.g. BNSS §187 remand guidance, bail opposition, surveillance, beat redeployment).\n"
+            "4. NEVER invent names, case numbers, or facts not supported by the telemetry. Ground all statements strictly in the data provided.\n"
+            "5. Tone: Sharp, disciplined Karnataka Police Intelligence Officer. Zero corporate fluff, apologies, or subservience."
+        )
+
+        res = self._call(prompt, [_BLANK_PNG_B64], timeout=timeout)
+        if res:
+            res = re.sub(r'\\{2,}', '', res)
+            res = re.sub(r'\\+$', '', res, flags=re.MULTILINE).strip()
+            # Verify minimum substance
+            if len(res) > 50 and "tool" not in res[:30]:
+                return res
+        return None
+

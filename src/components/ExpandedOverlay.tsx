@@ -391,10 +391,15 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
   };
 
   // Formulate factor data for recharts with police-friendly translations
-  const shapData = (Array.isArray(data.shap_factors) ? data.shap_factors : (Array.isArray(data.factors) ? data.factors : [])).map((f: any) => {
+  const rawShapList = Array.isArray(data.shap_factors)
+    ? data.shap_factors
+    : (Array.isArray(data.factors)
+      ? data.factors
+      : (Array.isArray(data.evidentiary_factors) ? data.evidentiary_factors : []));
+  const shapData = rawShapList.map((f: any) => {
     const cfg = f?.name ? POLICE_EVIDENTIARY_FACTORS[f.name] : undefined;
     const displayName = cfg ? (lang === "en" ? cfg.en : cfg.kn) : (f?.name || "Factor");
-    const desc = cfg ? (lang === "en" ? cfg.descEn : cfg.descKn) : "";
+    const desc = cfg ? (lang === "en" ? cfg.descEn : cfg.descKn) : (f?.desc || "");
 
     // Robust impact parsing: handles impactPct, impact_pct, conviction_impact_pct, and numeric value
     const rawImpact = typeof f?.impactPct === "number" ? f.impactPct
@@ -1683,7 +1688,7 @@ export const ExpandedOverlay: React.FC<ExpandedOverlayProps> = ({ type: rawType,
               </div>
               <div className="flex-1 overflow-y-auto pr-2">
                 <div className="relative border-l border-[#C79A4E]/30 ml-4 space-y-6 py-2">
-                  {(data.timeline || []).map((e: any, idx: number) => (
+                  {((data.timeline || data.milestones || data.events || data.history || []) as any[]).map((e: any, idx: number) => (
                     <div key={idx} className="relative pl-6">
                       <div className="absolute -left-[5px] top-1.5 w-2.5 h-2.5 rounded-full bg-[#C79A4E]" />
                       <div className="bg-stone-900/60 border border-stone-850 p-3 rounded-lg">

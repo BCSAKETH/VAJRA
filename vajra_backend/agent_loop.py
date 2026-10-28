@@ -4595,6 +4595,33 @@ class VajraAgentLoop(CognitiveBrainMixin):
             _text = _exec_res.get("text_result") or _exec_res.get("text") or f"Executed {_tool} successfully."
             _rtype = _exec_res.get("response_type") or ("map" if "hotspot" in _tool else "text")
             _cits = _exec_res.get("citations") or [{"type": "CCTNS Spatial Engine", "id": _params.get("district", "Statewide"), "details": "Direct sub-3s analytical execution"}]
+
+            # Track 21: Fast-Path Qwen MoE Intelligence Briefing Synthesis
+            # Replaces terse 3-bullet static text with an authoritative, deep investigative briefing in sub-2s
+            _is_kn_fp = bool(re.search(r'[\u0C80-\u0CFF]', officer_query))
+            try:
+                from catalyst_qwen import CatalystQwen
+                _qwen = CatalystQwen()
+                if _qwen.is_configured() and _data:
+                    _progress(f"Synthesizing investigative command briefing via Qwen...")
+                    _qwen_briefing = _qwen.synthesize_fast_path_briefing(
+                        tool_name=_tool,
+                        tool_data=_data,
+                        query=officer_query,
+                        officer_name=f"{resolved_rank} {resolved_officer_name}".strip() or "Officer",
+                        lang="kn" if _is_kn_fp else "en",
+                        timeout=5.0
+                    )
+                    if _qwen_briefing and len(_qwen_briefing.strip()) > 50:
+                        _text = _qwen_briefing
+                        _cits.append({
+                            "type": "QuickML Presentation Synthesis",
+                            "id": "Qwen MoE",
+                            "details": "High-speed narrative command briefing"
+                        })
+            except Exception as _qwen_err:
+                logger.warning(f"[FAST_PATH] Qwen synthesis fallback: {_qwen_err}")
+
             context = session_memory.get_session_context(session_id)
             history = context.get("messages", [])
             history.append({"role": "user", "content": officer_query})
