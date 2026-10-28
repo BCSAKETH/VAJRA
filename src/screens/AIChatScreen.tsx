@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo, Suspense, lazy } from "react";
+import { createPortal } from "react-dom";
 import { useApp, ChatMessage } from "../AppContext";
 import { API_BASE } from "../config";
 import { ChatBubble } from "../components/ChatBubble";
@@ -14,6 +15,7 @@ import { InvestigationBrowser } from "../components/InvestigationBrowser";
 import { VajraLogo } from "../components/VajraLogo";
 import { OSINTCard } from "../components/OSINTCard";
 import { ApprovalsCard } from "../components/ApprovalsCard";
+import { ExportDossierContainer } from "../components/ExportDossierContainer";
 import { ThinkingOrb } from "../components/ui/thinking-orbs/react/ThinkingOrb";
 import type { OrbState } from "../components/ui/thinking-orbs";
 import { vakBus } from "../services/vajraVakEventBus";
@@ -1731,8 +1733,34 @@ export const AIChatScreen: React.FC = () => {
   // for one at all.
   const [showReasonModal, setShowReasonModal] = useState(false);
   const [reasonModalLang, setReasonModalLang] = useState<"en" | "kn">("en");
+  const [isPrintExportMounted, setIsPrintExportMounted] = useState(false);
+  const [printDossierLang, setPrintDossierLang] = useState<"en" | "kn">("en");
 
-  const executeExport = async (targetLang: "en" | "kn", officerReason?: string) => {
+  const derivedSessionTitle = useMemo(() => {
+    if (activeInvestigationCaseNo) return `Case ${activeInvestigationCaseNo} Investigation`;
+    const firstUserMsg = chatMessages.find((m) => m.sender === "user" || (m as any).role === "user");
+    if (firstUserMsg && firstUserMsg.text) {
+      const clean = firstUserMsg.text.slice(0, 48).trim();
+      return clean.length >= 48 ? clean + "…" : clean;
+    }
+    return "Valmiki Corporation Fund Trail Investigation";
+  }, [activeInvestigationCaseNo, chatMessages]);
+
+  const triggerVectorPrint = (targetLang: "en" | "kn") => {
+    setPrintDossierLang(targetLang);
+    setIsPrintExportMounted(true);
+    setTimeout(() => {
+      const cleanup = () => {
+        setIsPrintExportMounted(false);
+        window.removeEventListener("afterprint", cleanup);
+      };
+      window.addEventListener("afterprint", cleanup);
+      window.print();
+      setTimeout(cleanup, 4000);
+    }, 250);
+  };
+
+  const executeExport = async (targetLang: "en" | "kn", officerReason?: string, mode: "vector" | "cloud" = "vector") => {
     if (isExportingPdf) return;
     setIsExportingPdf(true);
     setShowExportModal(false);
@@ -1771,7 +1799,11 @@ export const AIChatScreen: React.FC = () => {
               setActiveApprovalId(reqId);
               const rr = await requestExport(targetLang, reqId);
               if (rr.status === 200) {
-                await downloadPdfResponse(rr, targetLang);
+                if (mode === "vector") {
+                  triggerVectorPrint(targetLang);
+                } else {
+                  await downloadPdfResponse(rr, targetLang);
+                }
                 addToast(lang === "en" ? "Approved — exported" : "ಅನುಮೋದಿಸಲಾಗಿದೆ — ರಫ್ತು ಮಾಡಲಾಗಿದೆ",
                   lang === "en" ? "A supervisor approved this export." : "ಮೇಲ್ವಿಚಾರಕರು ಈ ರಫ್ತನ್ನು ಅನುಮೋದಿಸಿದ್ದಾರೆ.", "Info");
                 setIsExportingPdf(false);
@@ -1796,12 +1828,21 @@ export const AIChatScreen: React.FC = () => {
       if (!response.ok) {
         throw new Error(await response.text());
       }
-      await downloadPdfResponse(response, targetLang);
-      addToast(
-        lang === "en" ? "Dossier Exported" : "ದೋಶಿಯರ್ ರಫ್ತು ಮಾಡಲಾಗಿದೆ",
-        lang === "en" ? `Official ${targetLang.toUpperCase()} PDF report downloaded successfully.` : `ಅಧಿಕೃತ PDF ವರದಿ ಯಶಸ್ವಿಯಾಗಿ ಡೌನ್‌ಲೋಡ್ ಆಗಿದೆ.`,
-        "Success"
-      );
+      if (mode === "vector") {
+        triggerVectorPrint(targetLang);
+        addToast(
+          lang === "en" ? "Vector Dossier Ready" : "ವೆಕ್ಟರ್ ದೋಶಿಯರ್ ಸಿದ್ಧವಾಗಿದೆ",
+          lang === "en" ? "Print dialog opened. Select 'Save as PDF' for the official vector document." : "ಅಧಿಕೃತ ವೆಕ್ಟರ್ ದಾಖಲೆಗಾಗಿ 'Save as PDF' ಆಯ್ಕೆಮಾಡಿ.",
+          "Success"
+        );
+      } else {
+        await downloadPdfResponse(response, targetLang);
+        addToast(
+          lang === "en" ? "Dossier Exported" : "ದೋಶಿಯರ್ ರಫ್ತು ಮಾಡಲಾಗಿದೆ",
+          lang === "en" ? `Official ${targetLang.toUpperCase()} PDF report downloaded successfully.` : `ಅಧಿಕೃತ PDF ವರದಿ ಯಶಸ್ವಿಯಾಗಿ ಡೌನ್‌ಲೋಡ್ ಆಗಿದೆ.`,
+          "Success"
+        );
+      }
     } catch (err: any) {
       addToast(
         lang === "en" ? "Export Failed" : "ರಫ್ತು ವಿಫಲವಾಗಿದೆ",
@@ -1815,7 +1856,7 @@ export const AIChatScreen: React.FC = () => {
 
   const handleReasonSubmit = async (reason: string) => {
     setShowReasonModal(false);
-    await executeExport(reasonModalLang, reason);
+    await executeExport(reasonModalLang, reason, "vector");
   };
 
   // Built from real accused/district/crime-type values fetched fresh from
@@ -2594,15 +2635,24 @@ export const AIChatScreen: React.FC = () => {
               </button>
               <button
                 type="button"
-                onClick={() => executeExport(exportTargetLang)}
+                onClick={() => executeExport(exportTargetLang, undefined, "cloud")}
+                disabled={isExportingPdf}
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl border border-stone-700 hover:bg-stone-800 text-stone-300 text-xs font-semibold transition-all cursor-pointer disabled:opacity-50"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>{lang === "en" ? "Cloud PDF" : "ಕ್ಲೌಡ್ PDF"}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => executeExport(exportTargetLang, undefined, "vector")}
                 disabled={isExportingPdf}
                 className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#C79A4E] hover:bg-[#b0853e] text-stone-950 text-xs font-bold shadow-lg transition-all cursor-pointer disabled:opacity-50 disabled:cursor-wait"
               >
-                <Download className="w-3.5 h-3.5 stroke-[2.5]" />
+                <FileText className="w-3.5 h-3.5 stroke-[2.5]" />
                 <span>
                   {isExportingPdf
-                    ? (lang === "en" ? "Generating PDF…" : "ರಚಿಸಲಾಗುತ್ತಿದೆ…")
-                    : (lang === "en" ? `Generate ${exportTargetLang.toUpperCase()} PDF` : `${exportTargetLang === "kn" ? "ಕನ್ನಡ" : "ಇಂಗ್ಲಿಷ್"} PDF ರಫ್ತು`)}
+                    ? (lang === "en" ? "Preparing Export…" : "ಸಿದ್ಧಪಡಿಸಲಾಗುತ್ತಿದೆ…")
+                    : (lang === "en" ? "Print / Save Vector PDF (Hybrid)" : "ವೆಕ್ಟರ್ PDF ರಫ್ತು")}
                 </span>
               </button>
             </div>
@@ -2628,6 +2678,24 @@ export const AIChatScreen: React.FC = () => {
           />
         </Suspense>
       )}
+
+      {/* Off-screen / Print-dedicated DOM Screenshot Hybrid Export Container Portaled directly to document.body */}
+      {isPrintExportMounted && typeof document !== "undefined" &&
+        createPortal(
+          <div id="export-dossier-root" className="hidden print:block fixed inset-0 z-[99999] bg-white">
+            <ExportDossierContainer
+              chatMessages={chatMessages as any}
+              activeSessionTitle={derivedSessionTitle}
+              badgeNumber={badgeNumber || "2346836"}
+              officerName={officerName || "Saketh B C"}
+              roleTier={roleTier}
+              lang={printDossierLang}
+              caseNo={activeInvestigationCaseNo || "CR-2026-78156"}
+            />
+          </div>,
+          document.body
+        )
+      }
       </div>
     </div>
   );

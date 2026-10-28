@@ -11,7 +11,7 @@ import {
   Radio, Fingerprint, Zap, Download, Copy, Check, ExternalLink,
   ChevronRight, ChevronDown, Sparkles, Building2, TestTube, AlertOctagon,
   Calendar, HeartHandshake, UserX, Award, Briefcase, Compass, ScanFace,
-  Terminal, Search, FileCheck, Gavel, Database, X
+  Terminal, Search, FileCheck, Gavel, Database, X, Loader2
 } from "lucide-react";
 import { OpenUINode } from "../services/openuiParser";
 import { StatuteIcon } from "./StatuteIcon";

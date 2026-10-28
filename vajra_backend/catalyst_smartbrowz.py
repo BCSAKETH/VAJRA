@@ -406,7 +406,7 @@ def _render_visual_widget_card(panel_type: str, data: Any, lang: str = "en") -> 
     return card_html
 
 
-def _generate_vajra_crest_svg(size: int = 48) -> str:
+def _generate_vajra_crest_svg(size: int = 48, uid_suffix: str = "") -> str:
     """
     E.5/D.11: single visual source of truth for the PDF's crest -- a direct
     Python port of src/components/VajraLogo.tsx's REAL, currently-shipped
@@ -512,13 +512,13 @@ def _generate_vajra_crest_svg(size: int = 48) -> str:
       <g fill="#C79A4E"><path d="{spikes_path}"/></g>
       <circle cx="24" cy="24" r="19.4" stroke="#C79A4E" stroke-width="1.1" fill="none"/>
       <circle cx="24" cy="24" r="18.7" fill="#211F1D"/>
-      <path id="top-arc-crest" d="M 9.1,24 A 14.9,14.9 0 0,1 38.9,24" fill="none"/>
-      <path id="bot-arc-crest" d="M 38.9,24 A 14.9,14.9 0 0,1 9.1,24" fill="none"/>
+      <path id="top-arc-crest{uid_suffix}" d="M 9.1,24 A 14.9,14.9 0 0,1 38.9,24" fill="none"/>
+      <path id="bot-arc-crest{uid_suffix}" d="M 38.9,24 A 14.9,14.9 0 0,1 9.1,24" fill="none"/>
       <text font-size="2.85" font-weight="800" letter-spacing="0.22" text-anchor="middle" fill="#C79A4E" font-family="-apple-system, sans-serif">
-        <textPath href="#top-arc-crest" startOffset="50%">KARNATAKA STATE POLICE</textPath>
+        <textPath href="#top-arc-crest{uid_suffix}" startOffset="50%">KARNATAKA STATE POLICE</textPath>
       </text>
       <text font-size="2.85" font-weight="800" letter-spacing="0.32" text-anchor="middle" fill="#C79A4E" font-family="-apple-system, sans-serif">
-        <textPath href="#bot-arc-crest" startOffset="50%">CRIME INTELLIGENCE</textPath>
+        <textPath href="#bot-arc-crest{uid_suffix}" startOffset="50%">CRIME INTELLIGENCE</textPath>
       </text>
       <g fill="#C79A4E" stroke="none"><path d="{star_left}"/><path d="{star_right}"/></g>
       <circle cx="24" cy="24" r="13.4" stroke="#C79A4E" stroke-width="0.85" opacity="0.65" fill="none"/>
@@ -554,8 +554,8 @@ def render_dossier_html(
         audit_raw = f"{case_no}:{officer_badge}:{timestamp}:{narrative[:200]}"
         audit_hash = hashlib.sha256(audit_raw.encode("utf-8")).hexdigest()
 
-    header_logo_svg = _generate_vajra_crest_svg(52)
-    seal_logo_svg = _generate_vajra_crest_svg(36)
+    header_logo_svg = _generate_vajra_crest_svg(28, "-hdr")
+    seal_logo_svg = _generate_vajra_crest_svg(48, "-seal")
     watermark_label = f"KARNATAKA STATE POLICE • CONFIDENTIAL • {officer_badge} • OFFICIAL RECORD"
 
     # Bilingual strings
@@ -1106,18 +1106,12 @@ def render_dossier_html(
     }}
     .content-wrap {{ position: relative; z-index: 1; }}
     .header-banner {{
-        background: #161412; padding: 14px 18px; display: flex; align-items: center;
-        gap: 14px; border-radius: 6px 6px 0 0; margin-bottom: 0;
+        background: #ffffff; padding: 14px 20px; display: flex; align-items: center;
+        gap: 14px; border-bottom: 2px solid #C79A4E; margin-bottom: 12px;
     }}
     .header-logo {{ flex-shrink: 0; }}
     .header-text {{ flex: 1; }}
-    .header-title {{ font-size: 15pt; font-weight: 900; color: #f5f5f4; letter-spacing: 0.04em; text-transform: uppercase; line-height: 1.2; }}
-    .header-sub {{ font-size: 8.5pt; font-weight: 600; color: #C79A4E; letter-spacing: 0.03em; margin-top: 2px; }}
-    .classification-bar {{
-        background: #C79A4E; color: #161412; text-align: center; padding: 3px 8px;
-        font-size: 7.5pt; font-weight: 800; letter-spacing: 0.1em; text-transform: uppercase;
-        margin-bottom: 12px;
-    }}
+    .header-title {{ font-size: 14pt; font-weight: 900; color: #1c1917; letter-spacing: 0.02em; line-height: 1.2; font-family: -apple-system, sans-serif; }}
     .verification-container {{
         margin-top: 16px; page-break-inside: avoid; border-top: 1.5px solid #C79A4E;
         padding-top: 12px; display: flex; justify-content: space-between; align-items: center; gap: 14px;
@@ -1127,17 +1121,18 @@ def render_dossier_html(
     .auth-text {{ font-size: 7.5pt; color: #57534e; line-height: 1.45; font-family: -apple-system, sans-serif; }}
     .auth-hash {{ font-family: monospace; color: #1c1917; font-weight: 600; word-break: break-all; }}
     .seal-badge {{
-        width: 110px; height: 110px; border-radius: 50%; border: 2px solid #C79A4E; padding: 3px;
-        flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+        width: 126px; height: 126px; border-radius: 50%; border: 2.5px solid #C79A4E; padding: 3px;
+        flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: #fafaf9;
+        box-shadow: 0 4px 14px rgba(199, 154, 78, 0.16);
     }}
     .seal-inner {{
-        width: 100%; height: 100%; border-radius: 50%; border: 1px solid #C79A4E;
+        width: 100%; height: 100%; border-radius: 50%; border: 1.2px solid #C79A4E;
         display: flex; flex-direction: column; align-items: center; justify-content: center;
-        text-align: center; padding: 3px;
+        text-align: center; padding: 5px; background: #ffffff;
     }}
-    .seal-title {{ font-size: 6pt; font-weight: 800; color: #C79A4E; font-family: monospace; letter-spacing: 0.06em; margin-top: 2px; }}
-    .seal-subtitle {{ font-size: 5pt; font-weight: 700; color: #78716c; font-family: monospace; letter-spacing: 0.05em; }}
-    .seal-status {{ font-size: 4.5pt; font-weight: 800; color: #16a34a; font-family: monospace; letter-spacing: 0.06em; margin-top: 1px; }}
+    .seal-title {{ font-size: 7.5pt; font-weight: 800; color: #8c6b2d; font-family: monospace; letter-spacing: 0.08em; margin-top: 3px; }}
+    .seal-subtitle {{ font-size: 5.5pt; font-weight: 700; color: #78716c; font-family: monospace; letter-spacing: 0.06em; }}
+    .seal-status {{ font-size: 5.5pt; font-weight: 900; color: #16a34a; font-family: monospace; letter-spacing: 0.08em; margin-top: 2px; }}
 </style>
 </head>
 <body>
@@ -1146,11 +1141,9 @@ def render_dossier_html(
     <div class="header-banner">
         <div class="header-logo">{header_logo_svg}</div>
         <div class="header-text">
-            <div class="header-title">{ksp_header}</div>
-            <div class="header-sub">{ksp_sub}</div>
+            <div class="header-title">{title}</div>
         </div>
     </div>
-    <div class="classification-bar">{badge_label}</div>
 
     <div class="meta-grid">
         <div class="meta-row">
@@ -1188,7 +1181,7 @@ def render_dossier_html(
                 {seal_logo_svg}
                 <div class="seal-title">VAJRA - SCRB</div>
                 <div class="seal-subtitle">OFFICIAL RECORD</div>
-                <div class="seal-status">SYSTEM VERIFIED</div>
+                <div class="seal-status">● SYSTEM VERIFIED</div>
             </div>
         </div>
     </div>

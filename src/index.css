@@ -362,3 +362,60 @@ html.light .glass-card:hover {
 .animate-rippling {
   animation: rippling var(--duration, 600ms) ease-out forwards;
 }
+
+/* ==========================================================================
+   DOM SCREENSHOT HYBRID EXPORT ENGINE (@media print isolation)
+   ========================================================================== */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 8mm 10mm;
+  }
+
+  body {
+    background: #ffffff !important;
+    color: #1c1917 !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Isolate only the export container during print */
+  body > *:not(#export-dossier-root) {
+    display: none !important;
+  }
+
+  /* When exporting, hide non-export UI elements inside #root if present */
+  .hide-on-print,
+  nav,
+  aside,
+  header:not(#export-dossier-root header),
+  button:not(#export-dossier-root button),
+  .chat-composer-bar,
+  .spotlight-backdrop {
+    display: none !important;
+  }
+
+  #export-dossier-root {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+  }
+
+  * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    -moz-print-color-adjust: exact !important;
+  }
+
+  .avoid-page-break {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+}
