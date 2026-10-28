@@ -1832,7 +1832,7 @@ export const AIChatScreen: React.FC = () => {
         triggerVectorPrint(targetLang);
         addToast(
           lang === "en" ? "Vector Dossier Ready" : "ವೆಕ್ಟರ್ ದೋಶಿಯರ್ ಸಿದ್ಧವಾಗಿದೆ",
-          lang === "en" ? "Print dialog opened. Select 'Save as PDF' for the official vector document." : "ಅಧಿಕೃತ ವೆಕ್ಟರ್ ದಾಖಲೆಗಾಗಿ 'Save as PDF' ಆಯ್ಕೆಮಾಡಿ.",
+          lang === "en" ? "Print dialog opened. Select 'Save as PDF' (Tip: uncheck 'Headers and footers' in settings for clean margins)." : "ಅಧಿಕೃತ ವೆಕ್ಟರ್ ದಾಖಲೆಗಾಗಿ 'Save as PDF' ಆಯ್ಕೆಮಾಡಿ.",
           "Success"
         );
       } else {

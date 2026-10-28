@@ -369,7 +369,7 @@ html.light .glass-card:hover {
 @media print {
   @page {
     size: A4 portrait;
-    margin: 8mm 10mm;
+    margin: 10mm 12mm 10mm 12mm;
   }
 
   body {
@@ -408,14 +408,41 @@ html.light .glass-card:hover {
     border-radius: 0 !important;
   }
 
+  /* Watermark repeats on each printed page seamlessly without stretching flow */
+  .print-watermark {
+    position: fixed !important;
+    inset: 0 !important;
+    pointer-events: none !important;
+    z-index: 40 !important;
+  }
+
+  /* Content flow: allow natural page breaks between chat turns without blank voids */
+  main {
+    break-inside: auto !important;
+    page-break-inside: auto !important;
+  }
+
+  /* Only atomic components that must not be sliced avoid page break */
+  .avoid-page-break,
+  .exhibit-plate,
+  .seal-container {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  tr {
+    break-inside: avoid !important;
+    page-break-inside: avoid !important;
+  }
+
+  p, li {
+    orphans: 3;
+    widows: 3;
+  }
+
   * {
     -webkit-print-color-adjust: exact !important;
     print-color-adjust: exact !important;
     -moz-print-color-adjust: exact !important;
-  }
-
-  .avoid-page-break {
-    break-inside: avoid !important;
-    page-break-inside: avoid !important;
   }
 }
