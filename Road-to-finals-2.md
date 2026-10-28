@@ -20,6 +20,7 @@
     * **Track 24:** Operational Secret Management, Key Rotation & Clean Failures
     * **Track 31:** Autonomous Agent Workspaces: Conversational Grok-Style Agent Builder, Scheduled Cron Monitoring & VAK Alert Pipeline
     * **Track 32:** Global Workspace Shell Redesign — Seamless Headerless Layout, Claude-Style Centered Hero, Consolidated Navigation & Floating Status Overlay
+    * **Track 33:** Supervisor Compliance Portal Redesign — Dedicated Personnel Governance View, Approval History Inspection & Forensic Audit Overlays
     * **Track 30:** `[PAUSED / DEFERRED]` High-Performance Bidirectional English <-> Kannada Translation Architecture
     * **Implementation & Verification Roadmap for Active Tracks**
   * **PART 2: PRODUCTION-VERIFIED DEPLOYMENTS & SHIPPED TRACKS REGISTER**
@@ -31,7 +32,7 @@
 
 ## 1. Executive Summary & Problem Formulation
 
-During pre-finals validation and field testing, twelve critical human-machine interface, speech synthesis, visual ergonomics, security escalation, ambient conversational, telemetry calibration, and inference latency issues were identified that directly impact officer usability, legal compliance, and operational integrity:
+During pre-finals validation and field testing, thirteen critical human-machine interface, speech synthesis, visual ergonomics, security escalation, ambient conversational, telemetry calibration, and inference latency issues were identified that directly impact officer usability, legal compliance, and operational integrity:
 
 1. **Acoustic Gibberish on Kannada Speech Synthesis:** When testing Kannada speech in Settings or reading dossiers, the synthesized audio produced unintelligible phonetic clicks and mangled noise ("gibberish"). Traced to an infrastructure mismatch: the Zoho Catalyst QuickML speech synthesis endpoint (`/quickml/api/v1/project/50212000000025002/models/zia/speech/synthesize`) rejects `"language": "kn"` with HTTP 400 `PATTERN_NOT_MATCHED` and only accepts `"en-us"`. Passing raw Kannada Unicode script into an English neural model (`m_adam`) forces an English grapheme-to-phoneme converter on Kannada glyphs, creating corrupted audio.
 2. **Audio Language Mismatch vs. Visual Text:** The application previously maintained a manual "Primary Audio Language" preference (`ttsSettings.language = "en" | "kn" | "hi"`). When an officer toggled a message into Kannada, but their audio setting was "English" (or vice versa), the TTS engine attempted to force-translate or speak in the opposite language, creating cognitive friction and playback desynchronization.
@@ -53,6 +54,10 @@ During pre-finals validation and field testing, twelve critical human-machine in
     - Active chat sessions displayed raw database IDs (`SESSION: sess-1-1789115315`) instead of the human-readable chat title (`Find similar narcotics cases`).
     - The floating `Export PDF` button in `AIChatScreen.tsx` lacked an opaque container, allowing chat messages to scroll underneath and overlap directly with the button text.
     - The chat query input box had an unwanted top micro-pill bar (`[ ✦ ZEN CANVAS ] [ 🎙 Audio Voice ] ...`) that cluttered the interface when Zen mode was toggled.
+13. **Supervisor Compliance Portal Ergonomics, Missing Detail Modals & Bottom Roster Bloat:** In `SupervisorDashboardScreen.tsx`, three critical supervisory workflow bottlenecks degraded compliance operations:
+    - **Roster Page Bloat:** The full state-level officer roster (`PersonnelGovernancePanel.tsx`) was appended at the very bottom of the dashboard beneath four heavy panels, forcing supervisors to endlessly scroll past audit logs and feedback boards just to onboard an officer or reassign a police station.
+    - **Opaque Emergency Break-Glass Decisions:** In the live approval queue, Section 185 BNSS emergency district access requests only exposed binary `[Acknowledge]` and `[Revoke]` buttons with zero ability to inspect the officer's full written operational justification, and revoking lacked a mandatory feedback dialog to explain why access was denied to the requesting officer.
+    - **Unclickable Audit Records & Missing History Detail (`[👁]`):** In the Approval History table, rows were completely static without an inspection affordance. Similarly, the Cryptographic Audit Ledger showed truncated SHA-256 hashes without allowing supervisors to click a row to view the full executed SQL query, target coordinates, and §63 BSA 2023 evidentiary provenance.
 
 ---
 
@@ -1443,6 +1448,253 @@ flowchart TD
 | `src/screens/AIChatScreen.tsx` | 1992–2061 | `Export PDF` button is `absolute top-4 right-4 z-20` without a solid container, causing scrolling chat text to overlap directly behind it | Replace floating button with a structured, non-overlapping sub-header bar (`shrink-0 border-b border-stone-850/80 bg-stone-900/90 backdrop-blur-md px-6 py-2.5 flex items-center justify-between z-20`) showing real session title on left and actions on right | Guarantees messages scroll strictly beneath the bar with zero background text collision. |
 | `src/components/ChatInput.tsx` | 434–500 | Renders `{zenMode && <div className="...">ZEN CANVAS...</div>}` micro-pill row above query box | Delete lines 434–500 entirely | Purges unnecessary micro-pills, keeping query capsule clean and consistent across all modes. |
 | `src/AppContext.tsx` | 240–245, 525 | `activeChatSessionId` only tracked raw ID, exposing `SESSION: sess-1-...` | Add `activeChatSessionTitle: string | null` and `setActiveChatSessionTitle: (t: string | null) => void` | Propagates the authentic, human-readable session title to the sub-header bar in real time. |
+
+---
+
+## Track 33: Supervisor Compliance Portal Redesign — Dedicated Personnel Governance View, Approval History Inspection & Forensic Audit Overlays
+
+### 33.1 Architecture Overview & Ergonomic Transformation
+The Supervisor Compliance Portal (`SupervisorDashboardScreen.tsx`) serves as the administrative apex of VAJRA 3.0, enforcing statutory oversight under **Section 185 of the Bharatiya Nagarik Suraksha Sanhita (BNSS), 2023** (emergency inter-district access) and **Section 63 of the Bharatiya Sakshya Adhiniyam (BSA), 2023** (cryptographic chain of custody).
+
+Pre-finals usability audits identified three severe operational bottlenecks:
+1. **Personnel Roster Screen Bloat:** The full state-level officer roster (`PersonnelGovernancePanel.tsx`) was rendered at the bottom of the dashboard beneath four dense data panels. Supervisors had to scroll through 1,500+ vertical pixels of audit logs, feedback cards, and consistency flags just to onboard an officer, execute a station transfer, or reset credentials.
+2. **Opaque Emergency Break-Glass Decisions:** In the live approval queue, Section 185 BNSS emergency district access requests only exposed binary `[Acknowledge]` and `[Revoke]` buttons. Supervisors could not inspect the officer's full operational nexus statement, and clicking `Revoke` did not provide a message prompt to inform the officer why their access was revoked.
+3. **Static Audit Records & Missing History Detail (`[👁]`):** The Approval History table displayed truncated summary rows with no click-to-expand mechanism. Similarly, the Cryptographic Audit Ledger showed truncated SHA-256 hashes without allowing supervisors to inspect the underlying SQL queries, bounding coordinates, and tamper-verification details.
+
+Track 33 resolves these defects through four architectural pillars:
+
+---
+
+### 33.2 The Four Architectural Pillars
+
+#### Pillar 1: Dedicated Top-Bar "Officer Onboarding & Roster" Button & View Switcher
+* **Relocation from Bottom to Top:** `PersonnelGovernancePanel.tsx` is completely removed from the bottom of the main dashboard.
+* **Top Header Button:** A prominent button **`[ 👥 Officer Roster & Onboarding ]`** is positioned directly before `[ 🔔 Alerts On ]` and `[ 🛡️ Verify Ledger Chain ]` in the top header.
+* **Dedicated Workspace View:** Clicking the button switches `activeSupervisorView` from `"dashboard"` to `"personnel"`, presenting the officer roster across the full viewport with a clean **`[ ← Back to Supervisor Dashboard ]`** navigation header.
+
+#### Pillar 2: Emergency Break-Glass Full Inspection & Revocation Justification
+* **Inspect Modal for Emergency Grants:** Emergency break-glass items in `pendingDistrict` receive an **`[ 🔍 Inspect Full Request ]`** button, opening the review modal with the officer's KGID, full name, home station, target district, and full statutory justification under BNSS §185.
+* **Mandatory Revocation Reason:** Clicking `[ Revoke ]` opens a confirmation modal requiring the supervisor to enter a revocation rationale (e.g. *"Vehicle transit does not justify database access. Coordinate via VHF channel 4."*). This reason is persisted to the backend review endpoint (`/api/district-access/${rowid}/review`) and pushed directly to the officer's live notification feed.
+
+#### Pillar 3: Approval History Table `[ 👁 ]` Inspection Overlay Modal
+* **Interactive Table Column:** An **Eye Icon button (`👁`)** is added to every row in the Approval History table in the final column after the timestamp.
+* **Approval History Detail Modal:** Clicking `👁` opens `<ApprovalHistoryDetailModal>`, displaying:
+  * Requesting Officer Identity (Badge, Name, Rank, Police Station)
+  * Action Requested (Export / POCSO Victim Identity / District Access)
+  * Officer's original written request justification
+  * Decision Status (`Approved` / `Rejected` / `Expired`), Deciding Supervisor, Timestamp, and Logged Remarks.
+
+#### Pillar 4: Cryptographic Audit Ledger Click-to-Inspect Forensic Modal & 2x2 Balanced Grid
+* **Clickable Audit Rows:** Every log entry in the Cryptographic Audit Ledger is made clickable with hover elevation.
+* **Forensic Audit Detail Modal:** Clicking a log row opens `<AuditLogDetailModal>`, presenting:
+  * Full untruncated SHA-256 HMAC cryptographic block hash
+  * Officer KGID, resolved name, and terminal timestamp
+  * Full raw SQL query string and parameter payload
+  * Cryptographic chain continuity verification status (§63 BSA 2023 & §65B IEA compliant).
+* **2x2 Balanced Grid Layout:** Organizes the lower governance panels into a symmetric, theme-aware 2x2 grid:
+  * **Top-Left:** Legal Consistency Flags (`ConsistencyFlags`)
+  * **Top-Right:** Cryptographic Audit Ledger (`AuditLogRecord`)
+  * **Bottom-Left:** Feedback Review Board (`FeedbackRecord`)
+  * **Bottom-Right:** Officer Actions Oversight (`AccessOversightOfficer`)
+
+---
+
+### 33.3 High-Fidelity Screen Wireframes
+
+#### Wireframe 1: Main Supervisor Dashboard (Restructured & Balanced)
+
+```
+┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 🛡️ SUPERVISOR COMPLIANCE PORTAL                                [ 👥 Officer Onboarding ]  [ 🔔 Alerts On ]  [ 🛡️ Verify ]│
+│ Karnataka State Police · State Crime Records Bureau (SCRB)                                                            │
+├───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                                       │
+│ [ COMMAND CENTER KPI TILES ]                                                                                          │
+│ ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐ ┌────────────────────┐ ┌──────────────────────┐  │
+│ │ ⏳ PENDING APPROVAL│ │ ⚠️ CONSISTENCY FLAGS│ │ 📜 AUDIT LOGS      │ │ 💬 MODEL FEEDBACK  │ │ 👥 ACTIVE OFFICERS   │  │
+│ │   3 Awaiting Sign  │ │   5 Legal Mismatches│ │   1,420 Hashed     │ │   92% Pos Rating   │ │   34 Supervised      │  │
+│ └────────────────────┘ └────────────────────┘ └────────────────────┘ └────────────────────┘ └──────────────────────┘  │
+│                                                                                                                       │
+│ ── 1. REAL-TIME APPROVAL QUEUE ────────────────────────────────────────────────────────────────────────────────────── │
+│ [ 📄 Exports (1) ]  [ 🔒 POCSO Access (0) ]  [ 🗺️ District Access (2) ]  [ 👤 Profile (0) ]  [ 🚨 Evictions (0) ]     │
+│                                                                                                                       │
+│ ┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐ │
+│ │ ⚠️ BREAK-GLASS · ALREADY ACTIVE                                                                                   │ │
+│ │ Officer 2346836 (Siddharth Rao) · District: Chitradurga                                                           │ │
+│ │ Reason: Emergency cross-district nexus query on fugitive Ramesh Kumar under BNSS §185                             │ │
+│ │                                                      [ 🔍 Inspect Full Request ]  [ Acknowledge ]  [ ❌ Revoke ]  │ │
+│ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                                                       │
+│ ── 2. APPROVAL AUDIT HISTORY ──────────────────────────────────────────────────────────────────────────────────────── │
+│ Type: [ All v ]   Decision: [ All v ]                                                          [ 🔄 Refresh History ] │
+│ ┌─────────┬──────────────────────┬──────────────────────┬─────────────┬──────────────┬──────────────────┬───────────┐ │
+│ │ TYPE    │ OFFICER              │ SUBJECT              │ DECISION    │ DECIDED BY   │ WHEN             │ DETAILS   │ │
+│ ├─────────┼──────────────────────┼──────────────────────┼─────────────┼──────────────┼──────────────────┼───────────┤ │
+│ │ EXPORT  │ KSP-2346836 (S. Rao) │ FIR Dossier Cr. 42   │ APPROVED    │ DSP Rathore  │ 28/10 13:04 IST  │  [ 👁 ]   │ │
+│ │ DIST    │ KSP-2346811 (M. Ali) │ Mysuru Rural Inquest │ REJECTED    │ DSP Rathore  │ 28/10 11:20 IST  │  [ 👁 ]   │ │
+│ │ POCSO   │ KSP-2346890 (K. Dev) │ Cr. 104/2026 Victim  │ EXPIRED     │ System Auto  │ 27/10 18:00 IST  │  [ 👁 ]   │ │
+│ └─────────┴──────────────────────┴──────────────────────┴─────────────┴──────────────┴──────────────────┴───────────┘ │
+│                                                                                                                       │
+│ ── 3. GOVERNANCE PANELS (2x2 BALANCED GRID) ───────────────────────────────────────────────────────────────────────── │
+│ ┌── TOP-LEFT: LEGAL CONSISTENCY FLAGS ───────────┐ ┌── TOP-RIGHT: CRYPTOGRAPHIC AUDIT LEDGER ───────────────────────┐ │
+│ │ ⚠️ 5 Flags Detected             [ 🔄 Refresh ] │ │ 📜 Immutable Hash Chain                 [ 🔄 Refresh ]         │ │
+│ │ • Cr. No 89/2026: Sec 379 IPC -> Sec 303(2) BNS│ │ [ 🔍 Search Badge (e.g. KSP-2, 2346836)...          ] [Filter] │ │
+│ │   Confidence: 94% · [ 🔒 Resolve Dual Control ]│ │                                                                │ │
+│ │ • Cr. No 112/2026: Sec 420 IPC -> Sec 318(4) BNS│ │ • KSP-2346836 • QUERY_HOTSPOTS (Chitradurga)                  │ │
+│ │   Confidence: 91% · [ 🔒 Resolve Dual Control ]│ │   Hash: 9602201e88f4310370e5...  [Click row to inspect ➔]       │ │
+│ └────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘ │
+│ ┌── BOTTOM-LEFT: FEEDBACK REVIEW BOARD ──────────┐ ┌── BOTTOM-RIGHT: OFFICER ACTIONS OVERSIGHT ─────────────────────┐ │
+│ │ 💬 Model Improvement Signals    [ 🔄 Refresh ] │ │ 👥 Personnel Activity & Anomaly Detection   [ 🔄 Refresh ]         │ │
+│ │ 👍 "Identified 3 co-accused with 100% accuracy"│ │ • Siddharth Rao (2346836) · 14 Queries · 8 Subjects · Active Now│ │
+│ │ 👎 "Station jurisdiction suggested wrong PS"   │ │ • Ramesh Patil (2346802)  · 4 Queries  · 2 Subjects · 2h ago     │ │
+│ │    Correction: Malleswaram PS, not Sadashivanagar│ 🚨 Anomaly: 1 Officer Exceeded Query Threshold (>50/hr)        │ │
+│ └────────────────────────────────────────────────┘ └────────────────────────────────────────────────────────────────┘ │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Wireframe 2: Dedicated Personnel Governance & Onboarding View (After Clicking Top Button)
+
+```
+┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ [ ← Back to Supervisor Dashboard ]                                                                                    │
+│                                                                                                                       │
+│ 👥 PERSONNEL GOVERNANCE & ACCESS CONTROL ROSTER                                                                       │
+│ Full state-level officer administration, station transfers, credential resets, and administrative provisioning        │
+├───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                                       │
+│ [ 🔍 Search by Name, KGID, or Police Station...            ]   [ 🔄 Refresh Roster ]   [ ＋ Onboard New Officer ]     │
+│                                                                                                                       │
+│ ┌───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐ │
+│ │ KGID    │ OFFICER NAME       │ RANK  │ DESIGNATION │ POLICE STATION  │ PHONE / EMAIL    │ STATUS │ ACTIONS        │ │
+│ ├─────────┼────────────────────┼───────┼─────────────┼─────────────────┼──────────────────┼────────┼────────────────┤ │
+│ │ 2346836 │ Siddharth Rao      │ PI    │ SHO         │ Cubbon Park PS  │ +91 98450 11223  │ ACTIVE │ [Transfer] [🔑]│ │
+│ │ 2346811 │ Mohammed Ali       │ PSI   │ IO          │ Halasuru Gate PS│ +91 98450 44556  │ ACTIVE │ [Transfer] [🔑]│ │
+│ │ 2346890 │ Kavitha Dev        │ DySP  │ Supervisory │ Central Sub-Div │ +91 98450 77889  │ ACTIVE │ [Transfer] [🔑]│ │
+│ │ 2346802 │ Ramesh Patil       │ HC    │ Head Const. │ Malleswaram PS  │ +91 98450 99001  │ BLOCKED│ [Unblock]  [🔑]│ │
+│ └───────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘ │
+│                                                                                                                       │
+│ [ STATS: 34 Active Officers | 1 Suspended / Blocked | 30 Police Stations Configured across Karnataka ]               │
+└───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Wireframe 3: Approval History Detail Modal (Triggered by `[ 👁 ]`)
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 👁️ APPROVAL AUDIT RECORD: REQ-DIST-10829                                                 [ ✕ ] │
+├────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                │
+│  REQUESTING OFFICER DETAILS                                                                    │
+│  • Badge / KGID:     KSP-2346811                                                               │
+│  • Officer Name:     Mohammed Ali                                                              │
+│  • Rank & Station:   PSI · Halasuru Gate Police Station (Bengaluru City)                       │
+│                                                                                                │
+│  OPERATIONAL REQUEST SPECIFICATIONS                                                            │
+│  • Request Category: Inter-District Jurisdiction Access (Section 185 BNSS)                     │
+│  • Target District:  Mysuru Rural District                                                     │
+│  • Submitted Time:   2026-10-28 10:45:12 IST                                                   │
+│                                                                                                │
+│  OFFICER'S SUBMITTED JUSTIFICATION & NOTES                                                     │
+│  ┌──────────────────────────────────────────────────────────────────────────────────────────┐  │
+│  │ "Tracking accused gold smuggling vehicle KA-09-EA-4412 currently flagged crossing        │  │
+│  │ Mandya-Mysuru boundary toll plaza. Request 4-hour statewide docket query access."        │  │
+│  └──────────────────────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                                │
+│  SUPERVISORY DECISION RECORD                                                                   │
+│  • Outcome:          ❌ REJECTED                                                                │
+│  • Decided By:       DSP Anand Rathore (KSP-2346800)                                           │
+│  • Decided At:       2026-10-28 11:20:04 IST                                                   │
+│                                                                                                │
+│  SUPERVISOR'S LOGGED REMARKS (DISPATCHED TO OFFICER'S FEED)                                    │
+│  ┌──────────────────────────────────────────────────────────────────────────────────────────┐  │
+│  │ "Vehicle transit does not justify open-ended database access. Coordinate directly with   │  │
+│  │ Mysuru Rural SP Control Room via VHF wireless channel 4."                                │  │
+│  └──────────────────────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                                │
+│  Cryptographic Provenance: SHA-256 HMAC `f8e9102c34a1b89...` §63 BSA 2023 Compliant           │
+│                                                                                                │
+│                                                                             [ Close Record ]   │
+└────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+#### Wireframe 4: Cryptographic Audit Log Inspect Modal (Click Row on Audit Ledger)
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 📜 FORENSIC AUDIT TRAIL ENTRY: LOG-772910                                                [ ✕ ] │
+├────────────────────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                                │
+│  OPERATOR IDENTITY                                                                             │
+│  • Operator:         Inspector Siddharth Rao (KSP-2346836)                                     │
+│  • Station / Unit:   Cubbon Park PS · Bengaluru City                                           │
+│  • Logged Timestamp: 2026-10-28 11:43:21 UTC (17:13:21 IST)                                    │
+│                                                                                                │
+│  ACTION & EXECUTED QUERY PAYLOAD                                                               │
+│  • Action Type:      GEOSPATIAL_DBSCAN_HOTSPOT_QUERY                                           │
+│  • Target Territory: Chitradurga District [13.8°N, 76.0°E] to [14.6°N, 77.0°E]                │
+│                                                                                                │
+│  FULL EXECUTED SQL / QUERY PARAMETERS                                                          │
+│  ┌──────────────────────────────────────────────────────────────────────────────────────────┐  │
+│  │ SELECT latitude, longitude, crime_group, date_from, fir_no FROM CaseMaster              │  │
+│  │ WHERE latitude >= 13.8 AND latitude <= 14.6 AND longitude >= 76.0 AND longitude <= 77.0│  │
+│  │ AND crime_group = 'MURDER' LIMIT 2500;                                                   │  │
+│  └──────────────────────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                                │
+│  CRYPTOGRAPHIC PROVENANCE (§63 BSA 2023 & §65B IEA AUDITED)                                    │
+│  • Record Integrity Hash (SHA-256):                                                            │
+│    `9602201e88f4310370e56870dbc603d8a1f73b9e4a2c0915637281f9b37d4021`                          │
+│  • Previous Block Hash:                                                                        │
+│    `3f91048bcae91203875f10239487cde123498176234091872349081273491823`                          │
+│  • Cryptographic Chain Integrity:  ✅ VALID & UNTAMPERED                                       │
+│                                                                                                │
+│                                                      [ Verify Signature ]   [ Close Record ]   │
+└────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### 33.4 Mermaid Component State Transition Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> SupervisorDashboard: Open Supervisor View
+    SupervisorDashboard --> PersonnelWorkspace: Click [ 👥 Officer Onboarding ]
+    PersonnelWorkspace --> SupervisorDashboard: Click [ ← Back to Dashboard ]
+
+    state SupervisorDashboard {
+        [*] --> BrowsingCompliance
+        BrowsingCompliance --> HistoryDetailModal: Click [ 👁 ] on History Row
+        HistoryDetailModal --> BrowsingCompliance: Dismiss Modal
+        
+        BrowsingCompliance --> AuditDetailModal: Click Audit Log Row
+        AuditDetailModal --> BrowsingCompliance: Dismiss Modal
+        
+        BrowsingCompliance --> BreakGlassInspectModal: Click [ 🔍 Inspect ] on Emergency Card
+        BreakGlassInspectModal --> BrowsingCompliance: Close / Acknowledge
+        
+        BrowsingCompliance --> RevokeReasonDialog: Click [ ❌ Revoke ]
+        RevokeReasonDialog --> BrowsingCompliance: Submit Revoke Justification
+    }
+```
+
+---
+
+### 33.5 Target File Modifications Table
+
+| Target File | Exact Line(s) | Current Problematic Implementation | Harmonized Production Code | Functional Rationale |
+| :--- | :--- | :--- | :--- | :--- |
+| `src/screens/SupervisorDashboardScreen.tsx` | 890–958 | Header bar only has Alerts On and Verify Ledger; full roster is buried at line 1948 | Add state `activeSupervisorView: "dashboard" \| "personnel"`; in header render `[ 👥 Officer Roster & Onboarding ]`; if `"personnel"`, render `<PersonnelGovernancePanel onBack={() => setActiveSupervisorView("dashboard")} />` | Elevates officer administration to a first-class screen, eliminating vertical scroll fatigue. |
+| `src/screens/SupervisorDashboardScreen.tsx` | 1157–1188 | Emergency break-glass cards only have binary `Acknowledge` and `Revoke` buttons | Add `[ Inspect ]` button opening review modal; clicking `Revoke` opens confirmation modal with `revokeReason` textarea passed to `/api/district-access/${rowid}/review` | Ensures supervisors can read full operational justification and inform the officer why access was denied. |
+| `src/screens/SupervisorDashboardScreen.tsx` | 1360–1405 | Approval History table rows are static without click affordance | Add a final table column header (`Details`); render `[ 👁 ]` button on each row opening `<ApprovalHistoryDetailModal>` | Delivers complete audit transparency for all past supervisory decisions. |
+| `src/screens/SupervisorDashboardScreen.tsx` | 1730–1755 | Cryptographic audit logs only show truncated hash and query text | Add click handler on each log row opening `<AuditLogDetailModal>` showing full executed SQL query, coordinates, and SHA-256 chain verification | Enables deep forensic inspection of investigative queries under §63 BSA 2023. |
+| `src/screens/SupervisorDashboardScreen.tsx` | 1947–1951 | Bottom `<PersonnelGovernancePanel />` renders unconditionally inside main scrollable view | Delete lines 1947–1951 from the main layout view; render conditionally only when `activeSupervisorView === "personnel"` | Removes heavy table clutter from the main compliance screen. |
+| `src/components/PersonnelGovernancePanel.tsx` | 70–85 | Component has no back navigation affordance | Add optional prop `onBack?: () => void` and render `[ ← Back to Supervisor Dashboard ]` button at top | Seamlessly integrates the dedicated view with the main dashboard. |
 
 ---
 
