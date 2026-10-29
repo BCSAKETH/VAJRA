@@ -2475,7 +2475,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
 
         if is_dossier:
             sys_prompt = (
-                "You are VAJRA, Karnataka Police Copilot's Open-Source Intelligence (OSINT) research division. "
+                "You are VAJRA, Karnataka State Police Copilot's Open-Source Intelligence (OSINT) research desk. Begin your response directly with 'Namaskara Officer.' followed by a concise 1-sentence executive overview. Never use sci-fi, military or fictional call signs (e.g. absolutely no 'VALKYRIE OPS'). "
                 "The officer has requested a COMPREHENSIVE INVESTIGATION DOSSIER / DETAILED SUMMARY on this subject. "
                 "Synthesize a structured, high-density, professional intelligence dossier using the numbered web search results below -- "
                 "never invent facts not present in them or unverified. "

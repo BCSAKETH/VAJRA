@@ -47,8 +47,8 @@ data/*.csv
 **/*.dist-info/**
 
 # Heavy binaries & unneeded files
-vendor/imageio_ffmpeg/binaries
-vendor/imageio_ffmpeg/binaries/**
+vendor/imageio_ffmpeg
+vendor/imageio_ffmpeg/**
 vendor/pymupdf
 vendor/pymupdf/**
 vendor/pillow.libs/libavif*

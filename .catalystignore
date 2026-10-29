@@ -16,10 +16,10 @@ vajra_backend/*.new*
 vajra_backend/data/quickml_export
 vajra_backend/data/quickml_export/**
 vajra_backend/data/*.csv
-vajra_backend/vendor/imageio_ffmpeg/binaries
-vajra_backend/vendor/imageio_ffmpeg/binaries/**
-vajra_backend/**/imageio_ffmpeg/binaries
-vajra_backend/**/imageio_ffmpeg/binaries/**
+vajra_backend/vendor/imageio_ffmpeg
+vajra_backend/vendor/imageio_ffmpeg/**
+vajra_backend/**/imageio_ffmpeg
+vajra_backend/**/imageio_ffmpeg/**
 vajra_backend/vendor/pymupdf
 vajra_backend/vendor/pymupdf/**
 vajra_backend/vendor/pillow.libs/libavif*

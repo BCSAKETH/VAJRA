@@ -36,83 +36,168 @@ def get_last_debug() -> dict:
 
 def get_ffmpeg_path() -> Optional[str]:
     """
-    Locates the vendored ffmpeg binary. Cached after the first call (a
-    missing/broken binary won't magically appear mid-process, so there's
-    no value re-probing on every attachment).
+    Locates the ffmpeg binary via multi-tier fallback:
+    1. System PATH (shutil.which)
+    2. Well-known Linux executable locations
+    3. Vendored Linux x86_64 static binary
+    4. imageio_ffmpeg library resolution
     """
     global _ffmpeg_path_cache, _ffmpeg_checked
     if _ffmpeg_checked:
         return _ffmpeg_path_cache
     _ffmpeg_checked = True
+
+    import shutil
+
+    # 1. System path check
+    for sys_name in ["ffmpeg", "ffmpeg.exe"]:
+        sys_p = shutil.which(sys_name)
+        if sys_p and os.path.exists(sys_p):
+            _ffmpeg_path_cache = sys_p
+            return sys_p
+
+    # 2. Well-known Linux paths
+    if os.name != 'nt':
+        for p in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/opt/homebrew/bin/ffmpeg"]:
+            if os.path.exists(p) and os.access(p, os.X_OK):
+                _ffmpeg_path_cache = p
+                return p
+
+    # 3. Direct vendored binary check
+    cur_dir = os.path.dirname(os.path.abspath(__file__))
+    vendored_candidates = []
+    if os.name != 'nt':
+        vendored_candidates.extend([
+            os.path.join(cur_dir, "vendor", "imageio_ffmpeg", "binaries", "ffmpeg-linux-x86_64-v7.0.2"),
+            os.path.join(cur_dir, "vendor", "bin", "ffmpeg"),
+        ])
+    else:
+        vendored_candidates.extend([
+            os.path.join(cur_dir, "vendor", "imageio_ffmpeg", "binaries", "ffmpeg.exe"),
+            os.path.join(cur_dir, "vendor", "bin", "ffmpeg.exe"),
+        ])
+    for vc in vendored_candidates:
+        if os.path.exists(vc):
+            try:
+                os.chmod(vc, 0o755)
+            except Exception:
+                pass
+            _ffmpeg_path_cache = vc
+            return vc
+
+    # 4. imageio_ffmpeg library resolution
     try:
         import imageio_ffmpeg
-        path = imageio_ffmpeg.get_ffmpeg_exe()
-        # A zip->unzip deploy round-trip via Windows tooling doesn't
-        # preserve the Unix execute bit -- force it back rather than fail
-        # with a silent PermissionError on first real use.
+        path_res = imageio_ffmpeg.get_ffmpeg_exe()
         try:
-            os.chmod(path, 0o755)
+            os.chmod(path_res, 0o755)
         except Exception:
             pass
-        if not os.path.exists(path):
-            logger.warning(f"ffmpeg binary path reported but missing: {path}")
-            return None
-        _ffmpeg_path_cache = path
-        return path
+        if os.path.exists(path_res):
+            _ffmpeg_path_cache = path_res
+            return path_res
     except Exception as e:
-        logger.warning(f"ffmpeg unavailable: {e}")
-        return None
+        logger.warning(f"imageio_ffmpeg resolution failed: {e}")
+
+    # 5. Direct search in site-packages for bundled ffmpeg
+    try:
+        import site
+        site_dirs = []
+        if hasattr(site, "getsitepackages"):
+            site_dirs.extend(site.getsitepackages())
+        if hasattr(site, "getusersitepackages"):
+            site_dirs.append(site.getusersitepackages())
+        for sd in site_dirs:
+            bin_dir = os.path.join(sd, "imageio_ffmpeg", "binaries")
+            if os.path.isdir(bin_dir):
+                for fn in os.listdir(bin_dir):
+                    if (os.name != 'nt' and fn.startswith("ffmpeg-linux")) or (os.name == 'nt' and fn.endswith(".exe")):
+                        full_bin = os.path.join(bin_dir, fn)
+                        try:
+                            os.chmod(full_bin, 0o755)
+                        except Exception:
+                            pass
+                        _ffmpeg_path_cache = full_bin
+                        return full_bin
+    except Exception as e:
+        logger.debug(f"site-packages ffmpeg discovery notice: {e}")
+
+    return None
 
 
 def get_media_duration(file_bytes: bytes, ext: str) -> Optional[float]:
-    """Real duration in seconds via ffmpeg's own stderr report -- None on
-    any failure (unsupported/corrupt file, ffmpeg missing, timeout)."""
+    """Real duration in seconds via ffmpeg or OpenCV fallback -- None on failure."""
     global _last_debug
     _last_debug = {}
     ffmpeg = get_ffmpeg_path()
     _last_debug["ffmpeg_path"] = ffmpeg
-    if not ffmpeg:
-        _last_debug["error"] = "ffmpeg_path_none"
-        return None
     tmp_path = None
+
+    if ffmpeg:
+        try:
+            with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tf:
+                tf.write(file_bytes)
+                tmp_path = tf.name
+            proc = subprocess.run(
+                [ffmpeg, "-i", tmp_path, "-f", "null", "-"],
+                capture_output=True, text=True, timeout=15
+            )
+            _last_debug["returncode"] = proc.returncode
+            _last_debug["stderr_tail"] = (proc.stderr or "")[-800:]
+            m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", proc.stderr or "")
+            if m:
+                h, mn, s = m.groups()
+                dur = int(h) * 3600 + int(mn) * 60 + float(s)
+                _last_debug["duration_parsed"] = dur
+                return dur
+            _last_debug["error"] = "duration_regex_no_match"
+        except Exception as e:
+            _last_debug["error"] = f"exception: {type(e).__name__}: {e}"
+            logger.warning(f"ffmpeg duration probe failed: {e}")
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+    # OpenCV fallback if ffmpeg is unavailable or probe failed
     try:
-        with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tf:
-            tf.write(file_bytes)
-            tmp_path = tf.name
-        proc = subprocess.run(
-            [ffmpeg, "-i", tmp_path, "-f", "null", "-"],
-            capture_output=True, text=True, timeout=15
-        )
-        _last_debug["returncode"] = proc.returncode
-        _last_debug["stderr_tail"] = (proc.stderr or "")[-800:]
-        m = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", proc.stderr or "")
-        if m:
-            h, mn, s = m.groups()
-            dur = int(h) * 3600 + int(mn) * 60 + float(s)
-            _last_debug["duration_parsed"] = dur
-            return dur
-        _last_debug["error"] = "duration_regex_no_match"
-    except Exception as e:
-        _last_debug["error"] = f"exception: {type(e).__name__}: {e}"
-        logger.warning(f"ffmpeg duration probe failed: {e}")
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
+        import cv2
+        tmp_cv = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tf:
+                tf.write(file_bytes)
+                tmp_cv = tf.name
+            cap = cv2.VideoCapture(tmp_cv)
+            if cap.isOpened():
+                fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+                dur = count / fps if fps > 0 and count > 0 else None
+                cap.release()
+                if dur and dur > 0:
+                    _last_debug["duration_parsed_cv2"] = dur
+                    return dur
+        finally:
+            if tmp_cv and os.path.exists(tmp_cv):
+                try:
+                    os.unlink(tmp_cv)
+                except Exception:
+                    pass
+    except Exception as _cve:
+        logger.debug(f"OpenCV duration fallback failed: {_cve}")
+
+    if not ffmpeg and "duration_parsed_cv2" not in _last_debug:
+        _last_debug["error"] = "ffmpeg_and_cv2_unavailable"
     return None
 
 
 def extract_video_frames(file_bytes: bytes, ext: str, max_frames: int = 3) -> List[Tuple[float, bytes]]:
     """
     Up to max_frames JPEG frames spaced evenly across the video's real
-    duration. Each entry is (real_timestamp_seconds, jpeg_bytes) -- never a
-    guessed timestamp. Empty list on any failure.
+    duration. Each entry is (real_timestamp_seconds, jpeg_bytes).
+    Uses ffmpeg if available, with automatic OpenCV fallback.
     """
-    ffmpeg = get_ffmpeg_path()
-    if not ffmpeg:
-        return []
     duration = get_media_duration(file_bytes, ext)
     if not duration or duration <= 0:
         duration = float(max_frames * 3)  # last-resort spacing if probing failed
@@ -121,37 +206,76 @@ def extract_video_frames(file_bytes: bytes, ext: str, max_frames: int = 3) -> Li
     else:
         timestamps = [duration * (i + 1) / (max_frames + 1) for i in range(max_frames)]
 
-    frames: List[Tuple[float, bytes]] = []
-    tmp_path = None
+    ffmpeg = get_ffmpeg_path()
+    if ffmpeg:
+        frames: List[Tuple[float, bytes]] = []
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tf:
+                tf.write(file_bytes)
+                tmp_path = tf.name
+            for ts in timestamps:
+                out_path = f"{tmp_path}_{ts:.2f}.jpg"
+                try:
+                    subprocess.run(
+                        [ffmpeg, "-ss", f"{ts:.2f}", "-i", tmp_path, "-frames:v", "1", "-q:v", "3", "-y", out_path],
+                        capture_output=True, timeout=15
+                    )
+                    if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+                        with open(out_path, "rb") as fh:
+                            frames.append((ts, fh.read()))
+                except Exception as e:
+                    logger.warning(f"ffmpeg frame extraction at {ts:.2f}s failed: {e}")
+                finally:
+                    if os.path.exists(out_path):
+                        try:
+                            os.unlink(out_path)
+                        except Exception:
+                            pass
+            if frames:
+                return frames
+        finally:
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
+
+    # OpenCV fallback for direct, fast in-memory frame extraction
     try:
-        with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tf:
-            tf.write(file_bytes)
-            tmp_path = tf.name
-        for ts in timestamps:
-            out_path = f"{tmp_path}_{ts:.2f}.jpg"
-            try:
-                subprocess.run(
-                    [ffmpeg, "-ss", f"{ts:.2f}", "-i", tmp_path, "-frames:v", "1", "-q:v", "3", "-y", out_path],
-                    capture_output=True, timeout=15
-                )
-                if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
-                    with open(out_path, "rb") as fh:
-                        frames.append((ts, fh.read()))
-            except Exception as e:
-                logger.warning(f"ffmpeg frame extraction at {ts:.2f}s failed: {e}")
-            finally:
-                if os.path.exists(out_path):
-                    try:
-                        os.unlink(out_path)
-                    except Exception:
-                        pass
-    finally:
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-    return frames
+        import cv2
+        tmp_cv = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tf:
+                tf.write(file_bytes)
+                tmp_cv = tf.name
+            cap = cv2.VideoCapture(tmp_cv)
+            if cap.isOpened():
+                cv_frames = []
+                for ts in timestamps:
+                    cap.set(cv2.CAP_PROP_POS_MSEC, ts * 1000)
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        # Resize frame if too large (keep width <= 1024 for Qwen vision token efficiency)
+                        h, w = frame.shape[:2]
+                        if w > 1024:
+                            frame = cv2.resize(frame, (1024, int(h * 1024 / w)))
+                        ret_jpg, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                        if ret_jpg:
+                            cv_frames.append((ts, buf.tobytes()))
+                cap.release()
+                if cv_frames:
+                    return cv_frames
+        finally:
+            if tmp_cv and os.path.exists(tmp_cv):
+                try:
+                    os.unlink(tmp_cv)
+                except Exception:
+                    pass
+    except Exception as _cve:
+        logger.warning(f"OpenCV frame extraction fallback failed: {_cve}")
+
+    return []
 
 
 def chunk_audio(file_bytes: bytes, ext: str, chunk_sec: int = 20, max_chunks: int = 3, overlap_sec: int = 0) -> List[Tuple[float, float, bytes]]:

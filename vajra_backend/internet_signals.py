@@ -415,6 +415,10 @@ def clean_search_query(q: str) -> str:
     ]
     for pat in stopwords:
         s = re.sub(pat, " ", s, flags=re.IGNORECASE)
+    # Phonetic and common scam/entity typo normalizations
+    s = re.sub(r"\bvalmi+ki\b", "valmiki", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bmud+a\b", "muda", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bmu+da\b", "muda", s, flags=re.IGNORECASE)
     s = re.sub(r"[^\w\s\-\.]", " ", s)
     tokens = [w for w in s.split() if len(w) > 1 and w.lower() not in {
         "and", "or", "the", "for", "about", "with", "from", "in", "on", "to", "at", "an", "is", "it",
