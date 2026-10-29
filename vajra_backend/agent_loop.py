@@ -2512,6 +2512,25 @@ class VajraAgentLoop(CognitiveBrainMixin):
             "</unverified_web_osint>\n\n"
             f"OFFICER'S QUESTION: {question.strip()}"
         )
+        # Fast-Path: Catalyst QuickML Qwen MoE presentation synthesis (3-4s vs 35s GLM)
+        try:
+            from catalyst_qwen import CatalystQwen, _BLANK_PNG_B64
+            qwen_engine = CatalystQwen()
+            if qwen_engine.is_configured():
+                q_prompt = (
+                    "Ignore the attached image, it is blank and irrelevant. "
+                    f"{sys_prompt}\n\n"
+                    f"{user_content}"
+                )
+                q_res = qwen_engine._call(q_prompt, [_BLANK_PNG_B64], timeout=12.0)
+                if q_res:
+                    q_ans = re.sub(r'\\{2,}', '', q_res)
+                    q_ans = re.sub(r'\\+$', '', q_ans, flags=re.MULTILINE).strip()
+                    if q_ans and len(q_ans) > 50 and not q_ans.startswith("{"):
+                        return q_ans
+        except Exception as _q_web_err:
+            logger.warning(f"[OSINT_WEB] Qwen synthesis fallback to GLM: {_q_web_err}")
+
         try:
             res = self.llm.chat(
                 [{"role": "system", "content": sys_prompt},
@@ -2878,7 +2897,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
               "google ", "find online", "on the internet", "the internet", "whole internet", "across the internet",
               "analyse the internet", "analyze the internet", "search for", "search the internet",
               "pincode", "pin code", "postal code", "zip code", "college", "engineering college", "university",
-              "hospital", "scam in", "fraud in", "scam of", "news about", "news on", "latest news on",
+              "hospital", "scam", "scams", "scandal", "corporation scam", "valmiki", "valmiiki", "scam in", "fraud in", "scam of", "news about", "news on", "latest news on",
               "press release", "public report", "who is the director", "who is the principal", "who is the chairman",
               "tkrec", "tkrcet", "bmsce", "rvce", "msrit", "pesu"], "web_search", {"query": query}, "yes"),
             (["summarize this url", "read this url", "summarize this page", "read this link", "open this link",
@@ -4610,7 +4629,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                         query=officer_query,
                         officer_name=f"{resolved_rank} {resolved_officer_name}".strip() or "Officer",
                         lang="kn" if _is_kn_fp else "en",
-                        timeout=5.0
+                        timeout=12.0
                     )
                     if _qwen_briefing and len(_qwen_briefing.strip()) > 50:
                         _text = _qwen_briefing
@@ -6243,9 +6262,10 @@ class VajraAgentLoop(CognitiveBrainMixin):
         # STRICT GUARD: Catch any unparsed tool JSON that slipped through to response_text
         if response_text:
             chk_t = response_text.strip()
-            if chk_t.startswith("{") and ('"tool"' in chk_t or '"parameters"' in chk_t):
+            if ('"tool"' in chk_t and ('"parameters"' in chk_t or '"query"' in chk_t)) or (chk_t.startswith("{") and '"tool"' in chk_t):
                 try:
-                    leaked_dict = json.loads(self._extract_json(chk_t))
+                    extracted_json = self._extract_json(chk_t)
+                    leaked_dict = json.loads(extracted_json) if extracted_json else {}
                     if "tool" in leaked_dict:
                         t_name = leaked_dict["tool"]
                         t_params = leaked_dict.get("parameters", {})
@@ -6787,6 +6807,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
         """
         Executes the registered backend capabilities via the dynamic ToolManager.
         """
+        from datetime import datetime, timedelta, timezone
         from tools.registry import ToolManager
         officer_context = {
             "employee_id": employee_id,

@@ -35,22 +35,26 @@ class ThreatScoreTool(VajraTool):
             district_name=district_name
         )
         
-        suspect_resolved = dossier.get("suspect_name", suspect)
-        composite_score = dossier.get("composite_threat_score", 0)
-        risk_level = dossier.get("risk_tier", "LOW")
-        rrp = dossier.get("relapse_recidivism_potential", 0)
-        fer = dossier.get("flight_evasion_risk", 0)
-        sin = dossier.get("syndicate_nexus_score", 0)
-        directives = dossier.get("procedural_directives", {})
+        suspect_resolved = dossier.get("suspect") or dossier.get("suspect_name") or suspect
+        composite_score = dossier.get("psoti_score", dossier.get("risk_score", dossier.get("composite_threat_score", 0)))
+        risk_level = dossier.get("threat_tier", dossier.get("risk_rating", dossier.get("risk_tier", "LOW")))
+        sub = dossier.get("sub_metrics") or {}
+        rrp = sub.get("relapse_potential", dossier.get("relapse_recidivism_potential", 0))
+        fer = sub.get("flight_risk", dossier.get("flight_evasion_risk", 0))
+        sin = sub.get("syndicate_nexus", dossier.get("syndicate_nexus_score", 0))
+        directive_text = dossier.get("tactical_directive") or dossier.get("prosecution_advice") or ""
+        directives = dossier.get("procedural_directives") or {}
+        statutory_directive = directive_text or directives.get("statutory_directive", "Standard legal compliance (§187 BNSS)")
+        bail_rec = directives.get("bail_recommendation", "Assess under judicial guidelines")
         
         text_result = (
             f"⚖️ **PSOTI Threat & Risk Assessment: {suspect_resolved}**\n"
-            f"• **Composite Threat Score**: **{composite_score}/100** ({risk_level} RISK)\n"
+            f"• **Composite Threat Score**: **{composite_score}/100** ({risk_level})\n"
             f"• **Recidivism Potential (RRP)**: {rrp}/100\n"
             f"• **Flight & Evasion Risk (FER)**: {fer}/100\n"
             f"• **Syndicate Nexus (SIN)**: {sin}/100\n"
-            f"• **BNSS Remand Guidance**: {directives.get('statutory_directive', 'Standard legal compliance (§187 BNSS)')}\n"
-            f"• **Bail Opposition**: {directives.get('bail_recommendation', 'Assess under judicial guidelines')}"
+            f"• **BNSS Remand Guidance**: {statutory_directive}\n"
+            f"• **Bail Opposition**: {bail_rec}"
         )
 
         dossier["type"] = "risk"
