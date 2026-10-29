@@ -108,6 +108,21 @@ def get_datascience_and_costs_html():
         $$\\text{sim}(q, d_i) = \\frac{e_q \\cdot e_{d_i}}{\\|e_q\\|_2 \\|e_{d_i}\\|_2} \\in [-1, 1], \\quad e \\in \\mathbb{R}^{384}$$
     </div>
 
+    <h4>Model 5: Multi-Tier AV Forensic Extraction & Keyframe Triage (FFmpeg & OpenCV)</h4>
+    <p>
+        Digital evidence pipelines process surveillance video, CCTV clips, and audio recordings via a resilient 4-tier execution cascade:
+    </p>
+    <ul>
+        <li><strong>Tier 1 — System PATH:</strong> Automatic discovery of system binaries via <code>shutil.which('ffmpeg')</code>.</li>
+        <li><strong>Tier 2 — Standard Linux Paths:</strong> Direct execution from <code>/usr/bin/ffmpeg</code>, <code>/usr/local/bin/ffmpeg</code>, and <code>/opt/homebrew/bin/ffmpeg</code>.</li>
+        <li><strong>Tier 3 — Vendored Static Binary:</strong> Bundled static binary with automated POSIX <code>0o755</code> execution permissions.</li>
+        <li><strong>Tier 4 — Pure-OpenCV Fallback:</strong> Zero-dependency frame extraction via <code>cv2.VideoCapture</code> with uniform 1 FPS temporal subsampling, MD5 frame hashing, and QuickML VLM inspection.</li>
+    </ul>
+    <div class="formula-block">
+        $$\\text{Keyframes}(V) = \\left\\{ F_{\\lfloor k \\cdot \\text{FPS} \\rfloor} \\;\\middle\\|\\; k \\in \\{0, 1, \\dots, \\min(T, K_{\\max})\\} \\right\\}, \\quad H_k = \\text{SHA256}(F_k)$$
+    </div>
+
+
     <div class="page-break"></div>
 
     <h3>6.3 Empirical Verification Results Against Ground-Truth</h3>
