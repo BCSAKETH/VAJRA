@@ -42,10 +42,9 @@ def get_ffmpeg_path() -> Optional[str]:
     3. Vendored Linux x86_64 static binary
     4. imageio_ffmpeg library resolution
     """
-    global _ffmpeg_path_cache, _ffmpeg_checked
-    if _ffmpeg_checked:
+    global _ffmpeg_path_cache
+    if _ffmpeg_path_cache and os.path.exists(_ffmpeg_path_cache):
         return _ffmpeg_path_cache
-    _ffmpeg_checked = True
 
     import shutil
 
@@ -63,7 +62,49 @@ def get_ffmpeg_path() -> Optional[str]:
                 _ffmpeg_path_cache = p
                 return p
 
-    # 3. Direct vendored binary check
+    # 3. Check for decompressed /tmp/ffmpeg or unpack bin/ffmpeg.gz (Linux AppSail PaaS)
+    if os.name != 'nt':
+        tmp_ff = "/tmp/ffmpeg"
+        if os.path.exists(tmp_ff) and os.access(tmp_ff, os.X_OK) and os.path.getsize(tmp_ff) > 10_000_000:
+            _ffmpeg_path_cache = tmp_ff
+            return tmp_ff
+
+        cur_dir = os.path.dirname(os.path.abspath(__file__))
+        gz_candidates = [
+            os.path.join(cur_dir, "bin", "ffmpeg.gz"),
+            os.path.join(cur_dir, "vendor", "bin", "ffmpeg.gz"),
+            os.path.join(cur_dir, "ffmpeg.gz"),
+        ]
+        # Auto-generate bin/ffmpeg.gz if missing but raw vendored binary is present
+        raw_vendored = os.path.join(cur_dir, "vendor", "imageio_ffmpeg", "binaries", "ffmpeg-linux-x86_64-v7.0.2")
+        if not any(os.path.exists(g) for g in gz_candidates) and os.path.exists(raw_vendored):
+            try:
+                bin_dir = os.path.join(cur_dir, "bin")
+                os.makedirs(bin_dir, exist_ok=True)
+                target_gz = os.path.join(bin_dir, "ffmpeg.gz")
+                import gzip
+                with open(raw_vendored, "rb") as f_in, gzip.open(target_gz, "wb") as f_out:
+                    shutil.copyfileobj(f_in, f_out)
+                gz_candidates.insert(0, target_gz)
+            except Exception as _gze:
+                logger.debug(f"Auto-gzip fallback notice: {_gze}")
+        for gz in gz_candidates:
+            if os.path.exists(gz):
+                try:
+                    import gzip
+                    logger.info(f"Unpacking {gz} to {tmp_ff}...")
+                    with gzip.open(gz, "rb") as f_in:
+                        with open(tmp_ff, "wb") as f_out:
+                            shutil.copyfileobj(f_in, f_out)
+                    os.chmod(tmp_ff, 0o755)
+                    if os.path.exists(tmp_ff) and os.path.getsize(tmp_ff) > 10_000_000:
+                        logger.info(f"Successfully installed FFmpeg at {tmp_ff} ({os.path.getsize(tmp_ff)} bytes)")
+                        _ffmpeg_path_cache = tmp_ff
+                        return tmp_ff
+                except Exception as ex:
+                    logger.warning(f"Failed to unpack {gz}: {ex}")
+
+    # 4. Direct vendored binary check
     cur_dir = os.path.dirname(os.path.abspath(__file__))
     vendored_candidates = []
     if os.name != 'nt':

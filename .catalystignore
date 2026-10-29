@@ -49,3 +49,17 @@ vajra_backend/**/test
 vajra_backend/**/test/**
 vajra_backend/**/testing
 vajra_backend/**/testing/**
+
+vajra_backend/vendor/**/*.h
+vajra_backend/vendor/**/*.c
+vajra_backend/vendor/**/*.cpp
+vajra_backend/vendor/**/*.f
+vajra_backend/vendor/**/*.f90
+vajra_backend/vendor/**/*.pyx
+vajra_backend/vendor/**/*.pxd
+vajra_backend/vendor/**/*.rst
+vajra_backend/vendor/**/*.html
+vajra_backend/vendor/**/README*
+vajra_backend/vendor/**/LICENSE*
+vajra_backend/vendor/**/*.pyi
+vajra_backend/session_memory.db

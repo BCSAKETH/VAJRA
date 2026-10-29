@@ -71,3 +71,7 @@ vajra_client_deploy.zip
 vendor_backup_numba/
 vlogin11.json
 broken_brain.md
+
+# Generated AppSail deployment binaries (stay on disk, not pushed to git)
+vajra_backend/bin/
+*.gz
