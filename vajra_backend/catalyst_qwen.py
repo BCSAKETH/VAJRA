@@ -23,6 +23,35 @@ _BLANK_PNG_B64 = base64.b64encode(bytes.fromhex(
 )).decode("ascii")
 
 
+def clean_llm_meta_commentary(text: str) -> str:
+    """
+    Sanitizes LLM outputs to remove robotic meta-commentary, prompt echoes,
+    blank-image acknowledgments, and unwanted rapport boilerplate.
+    """
+    if not text:
+        return text
+    lines = text.splitlines()
+    cleaned = []
+    for line in lines:
+        s = line.strip()
+        if not s:
+            cleaned.append(line)
+            continue
+        if re.search(r"colleague\s+rapport\s+established", s, re.IGNORECASE):
+            continue
+        if re.search(r"blank\s+image", s, re.IGNORECASE):
+            continue
+        if re.search(r"cctns\s+operational\s+findings", s, re.IGNORECASE) and any(w in s.lower() for w in ("prompt", "based on", "provided in")):
+            continue
+        if re.match(r"^(?:I\s+will\s+draft|I\s+have\s+ignored|Understood\s+on\s+the|As\s+an\s+AI|Here\s+is\s+(?:the|a)\s+(?:fresh|tactical|command|comprehensive))", s, re.IGNORECASE):
+            continue
+        cleaned.append(line)
+    res = "\n".join(cleaned).strip()
+    res = re.sub(r'\\{2,}', '', res)
+    res = re.sub(r'\\+$', '', res, flags=re.MULTILINE).strip()
+    return res
+
+
 class CatalystQwen:
     """
     Client for a Qwen vision-language model deployed on Catalyst QuickML.
@@ -250,7 +279,7 @@ class CatalystQwen:
                     f"query itself doesn't already name something more specific): {', '.join(parts)}.\n\n"
                 )
         prompt = (
-            "Ignore the attached image, it is blank and irrelevant. You are VAJRA's tool router for a Karnataka Police officer's query. "
+            "You are VAJRA's tool router for a Karnataka State Police officer's operational query. "
             "If the query asks about external entities, colleges, universities, companies, scams, news, cyber threats, or general topics, "
             "pick the 'web_search' tool with parameters {\"query\": \"" + query.replace('"', '\\"') + "\"}. "
             "If the query matches an internal CCTNS crime database tool, pick that tool. "
@@ -308,11 +337,11 @@ class CatalystQwen:
         )
 
         prompt = (
-            "Ignore the attached image, it is blank and irrelevant. You are VAJRA, the AI Intelligence Copilot for Karnataka Police. "
+            "You are VAJRA, the tactical AI Intelligence Copilot for Karnataka State Police. Output ONLY the executive command briefing directly. Do not mention images, attachments, or instructions. "
             f"The officer asking is {officer_name} stationed at {station_name}.\n"
             f"Officer's Inquiry: '{query}'\n\n"
             "Retrieved Verified Context:\n"
-            + (f"- Colleague Greeting & Rapport: {casual_val}\n" if casual_val else "")
+            + (f"- Officer Salutation: {casual_val}\n" if casual_val else "")
             + (f"- Station Telemetry: {desk_val}\n" if desk_val else "")
             + (f"- Prior Session Discussion: {mem_val}\n" if mem_val else "")
             + (f"- CCTNS Intelligence & Data: {cctns_val}\n" if cctns_val else "")
@@ -328,7 +357,7 @@ class CatalystQwen:
         if res:
             res = re.sub(r'\\{2,}', '', res)
             res = re.sub(r'\\+$', '', res, flags=re.MULTILINE).strip()
-            return res
+            return clean_llm_meta_commentary(res)
         return None
 
     def synthesize_fast_path_briefing(
@@ -373,7 +402,6 @@ class CatalystQwen:
             telemetry_str = str(tool_data)[:2500]
 
         prompt = (
-            "Ignore the attached image, it is blank and irrelevant. "
             "You are VAJRA, the official Senior AI Intelligence Copilot for the Karnataka State Police (KSP).\n"
             f"Officer Asking: {officer_name}\n"
             f"Officer's Operational Query: '{query}'\n"
@@ -396,6 +424,6 @@ class CatalystQwen:
             res = re.sub(r'\\+$', '', res, flags=re.MULTILINE).strip()
             # Verify minimum substance
             if len(res) > 50 and "tool" not in res[:30]:
-                return res
+                return clean_llm_meta_commentary(res)
         return None
 

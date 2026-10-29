@@ -128,7 +128,7 @@ from vajra_core import catalyst_app, VajraGraphRAG, VajraSemanticMemory, MOBehav
     _district_for_accused, _AUDIT_LOG_LOCK  # Track 9: AuditLog mutex
 from session_memory import VajraSessionMemory, dual_memory, DualTierMemoryManager
 from catalyst_llm import CatalystLLM
-from catalyst_qwen import CatalystQwen
+from catalyst_qwen import CatalystQwen, clean_llm_meta_commentary
 from catalyst_rag import CatalystRAG
 from vajra_cognitive_brain import CognitiveBrainMixin
 from tool_training_optimizer import get_matching_tool_exemplars, resolve_entity_aliases, update_bandit_weights, get_tool_bandit_weight
@@ -2514,7 +2514,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
         )
         # Fast-Path: Catalyst QuickML Qwen MoE presentation synthesis (3-4s vs 35s GLM)
         try:
-            from catalyst_qwen import CatalystQwen, _BLANK_PNG_B64
+            from catalyst_qwen import CatalystQwen, clean_llm_meta_commentary, _BLANK_PNG_B64
             qwen_engine = CatalystQwen()
             if qwen_engine.is_configured():
                 q_prompt = (
@@ -3918,7 +3918,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     from catalyst_stratus import get_attachment_bytes
                     img_bytes = get_attachment_bytes(attachment_stratus_id)
                     if img_bytes:
-                        from catalyst_qwen import CatalystQwen
+                        from catalyst_qwen import CatalystQwen, clean_llm_meta_commentary
                         qwen_res = CatalystQwen().analyze(
                             [img_bytes],
                             instruction="Extract and describe all investigatively relevant content from this "
@@ -4619,7 +4619,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             # Replaces terse 3-bullet static text with an authoritative, deep investigative briefing in sub-2s
             _is_kn_fp = bool(re.search(r'[\u0C80-\u0CFF]', officer_query))
             try:
-                from catalyst_qwen import CatalystQwen
+                from catalyst_qwen import CatalystQwen, clean_llm_meta_commentary
                 _qwen = CatalystQwen()
                 if _qwen.is_configured() and _data:
                     _progress(f"Synthesizing investigative command briefing via Qwen...")
@@ -6135,7 +6135,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
                 else:
                     # Track 20: Dual-Brain High-Speed Presentation Synthesis via Catalyst QuickML Qwen MoE 3B (@ 102 tok/s)
                     try:
-                        from catalyst_qwen import CatalystQwen
+                        from catalyst_qwen import CatalystQwen, clean_llm_meta_commentary
                         qwen_engine = CatalystQwen()
                         if qwen_engine.is_configured():
                             _progress("Synthesizing high-speed command briefing via Qwen MoE (102 tok/s)...")
@@ -6226,7 +6226,7 @@ class VajraAgentLoop(CognitiveBrainMixin):
             casual_present = not self._active_centroid_slots.get("casual") or "Witticism" in (response_text or "") or "Rapport" in (response_text or "")
             if not casual_present or len(self._active_centroid_slots) > 1:
                 try:
-                    from catalyst_qwen import CatalystQwen
+                    from catalyst_qwen import CatalystQwen, clean_llm_meta_commentary
                     qwen_engine = CatalystQwen()
                     if qwen_engine.is_configured():
                         _progress("Synthesizing unified multi-slot command briefing via Qwen MoE (102 tok/s)...")
@@ -6283,6 +6283,11 @@ class VajraAgentLoop(CognitiveBrainMixin):
                     if last_tool_text_result:
                         response_text = last_tool_text_result
 
+        try:
+            from catalyst_qwen import clean_llm_meta_commentary
+            response_text = clean_llm_meta_commentary(response_text)
+        except Exception:
+            pass
         # Update cached history
         history.append({"role": "assistant", "content": response_text})
         context["messages"] = history
