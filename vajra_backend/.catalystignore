@@ -52,6 +52,8 @@ vendor/imageio_ffmpeg/binaries/**
 vendor/pymupdf
 vendor/pymupdf/**
 vendor/pillow.libs/libavif*
+vendor/fontTools
+vendor/fontTools/**
 vendor/bin
 vendor/bin/**
 **/*.exe
